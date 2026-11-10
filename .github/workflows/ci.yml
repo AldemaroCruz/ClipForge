@@ -45,11 +45,24 @@ jobs:
         id: scratch
         run: |
           set -euo pipefail
+          ci_uid="$(id -u)"
+          ci_gid="$(id -g)"
+          [[ "$ci_uid" =~ ^[0-9]+$ && "$ci_gid" =~ ^[0-9]+$ && "$ci_uid" -ne 0 ]]
+          umask 077
           ci_scratch="$(mktemp -d "$RUNNER_TEMP/clipforge-ci.XXXXXXXX")"
           mkdir "$ci_scratch/ci-results" "$ci_scratch/trivy-cache" "$ci_scratch/image" \
-            "$ci_scratch/browser-image" "$ci_scratch/ci-results/browser"
+            "$ci_scratch/browser-image" "$ci_scratch/ci-results/browser" \
+            "$ci_scratch/scanner-tmp" "$ci_scratch/permission-input"
+          printf '%s\n' 'clipforge-ci-readonly-input' > "$ci_scratch/permission-input/permission-input.txt"
+          stat -c 'runner_scratch=%n uid=%u gid=%g mode=%a' "$ci_scratch" \
+            "$ci_scratch/trivy-cache" "$ci_scratch/ci-results" "$ci_scratch/scanner-tmp"
           {
             echo "CI_SCRATCH=$ci_scratch"
+            echo "CI_RUN_UID=$ci_uid"
+            echo "CI_RUN_GID=$ci_gid"
+            echo "CI_CONTAINER_USER=$ci_uid:$ci_gid"
+            echo "CI_SCAN_TMP=$ci_scratch/scanner-tmp"
+            echo "CI_PERMISSION_INPUT=$ci_scratch/permission-input"
             echo "CI_CONTEXT=$ci_scratch/context"
             echo "CI_REPORTS=$ci_scratch/ci-results"
             echo "CI_CACHE=$ci_scratch/trivy-cache"
@@ -68,7 +81,12 @@ jobs:
           set -euo pipefail
           docker pull --platform linux/amd64 "$ACTIONLINT_IMAGE"
           docker run --rm --pull never --platform linux/amd64 --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges \
             "$ACTIONLINT_IMAGE" --version > "$CI_REPORTS/actionlint-version.txt"
+          docker run --rm --pull never --platform linux/amd64 --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges --entrypoint /bin/sh \
+            "$ACTIONLINT_IMAGE" -ec 'printf "effective_identity=%s:%s\n" "$(id -u)" "$(id -g)"' \
+            > "$CI_REPORTS/actionlint-identity.txt"
           test "$(head -n 1 "$CI_REPORTS/actionlint-version.txt")" = 1.7.12
 
       - name: Require actionlint and reject an invalid workflow fixture before builds
@@ -133,6 +151,13 @@ jobs:
       - name: Check PowerShell and JavaScript syntax from the curated context
         run: |
           set -euo pipefail
+          bash -n scripts/check_ci_permissions.sh
+          docker run --rm --pull never --platform linux/amd64 --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,size=256m \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/scripts/check_ci_permissions.sh,dst=/probe.sh,readonly" \
+            --entrypoint /usr/local/bin/shellcheck "$ACTIONLINT_IMAGE" /probe.sh \
+            > "$CI_REPORTS/permission-helper-shellcheck.log"
           pwsh -NoLogo -NoProfile -NonInteractive \
             -File "$CI_CONTEXT/scripts/Test-PowerShellScripts.ps1" \
             -ScriptsDirectory "$CI_CONTEXT/scripts"
@@ -147,14 +172,18 @@ jobs:
           docker pull --platform linux/amd64 "$GITLEAKS_IMAGE"
           docker pull --platform linux/amd64 "$TRIVY_IMAGE"
           docker run --rm --pull never --platform linux/amd64 --network none \
+            --read-only --cap-drop ALL --security-opt no-new-privileges \
             "$GITLEAKS_IMAGE" version > "$CI_REPORTS/gitleaks-version.txt"
-          docker run --rm --pull never --platform linux/amd64 \
+          bash scripts/check_ci_permissions.sh "$TRIVY_IMAGE" trivy trivy
+          bash scripts/check_ci_permissions.sh "$GITLEAKS_IMAGE" gitleaks gitleaks
+          docker run --rm --user "$CI_CONTAINER_USER" --pull never --platform linux/amd64 \
             --read-only --cap-drop ALL --security-opt no-new-privileges \
             --tmpfs /tmp:rw,nosuid,size=512m \
             --mount "type=bind,src=$CI_CACHE,dst=/cache" \
             "$TRIVY_IMAGE" image --cache-dir /cache --download-db-only \
             --disable-telemetry --skip-version-check --no-progress
-          docker run --rm --pull never --platform linux/amd64 --network none \
+          docker run --rm --user "$CI_CONTAINER_USER" --pull never --platform linux/amd64 --network none \
+            --read-only --cap-drop ALL --security-opt no-new-privileges \
             --mount "type=bind,src=$CI_CACHE,dst=/cache,readonly" \
             "$TRIVY_IMAGE" --cache-dir /cache --version > "$CI_REPORTS/trivy-version.txt"
           cp -- "$CI_CACHE/db/metadata.json" "$CI_REPORTS/trivy-db-metadata.json"
@@ -164,7 +193,7 @@ jobs:
         timeout-minutes: 5
         run: |
           set -euo pipefail
-          docker run --rm --pull never --platform linux/amd64 --network none \
+          docker run --rm --user "$CI_CONTAINER_USER" --pull never --platform linux/amd64 --network none \
             --read-only --cap-drop ALL --security-opt no-new-privileges \
             --tmpfs /tmp:rw,nosuid,size=256m \
             --mount "type=bind,src=$CI_SCAN_SOURCE,dst=/source,readonly" \
@@ -190,7 +219,8 @@ jobs:
       - name: Capture independent candidate package and source inventory
         run: |
           set -euo pipefail
-          docker run --rm --pull never --network none --read-only \
+          bash scripts/check_ci_permissions.sh "$CI_IMAGE_ID" ci ci
+          docker run --rm --user "$CI_CONTAINER_USER" --pull never --network none --read-only \
             --cap-drop ALL --security-opt no-new-privileges \
             --mount "type=bind,src=$CI_REPORTS,dst=/ci-results" \
             "$CI_IMAGE_ID" python -B scripts/capture_ci_inventory.py \
@@ -201,7 +231,7 @@ jobs:
         timeout-minutes: 12
         run: |
           set -euo pipefail
-          docker run --rm --pull never --platform linux/amd64 --network none \
+          docker run --rm --user "$CI_CONTAINER_USER" --pull never --platform linux/amd64 --network none \
             --read-only --cap-drop ALL --security-opt no-new-privileges \
             --tmpfs /tmp:rw,exec,nosuid,size=2g \
             --mount "type=bind,src=$CI_REPORTS,dst=/ci-results" \
@@ -217,8 +247,9 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm --pull never --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges \
             "$CI_IMAGE_ID" python -m bandit --version > "$CI_REPORTS/bandit-version.txt"
-          docker run --rm --pull never --network none --read-only \
+          docker run --rm --user "$CI_CONTAINER_USER" --pull never --network none --read-only \
             --cap-drop ALL --security-opt no-new-privileges \
             --tmpfs /tmp:rw,nosuid,size=256m \
             --mount "type=bind,src=$CI_REPORTS,dst=/ci-results" \
@@ -240,7 +271,8 @@ jobs:
           browser_id="$(cat "$CI_REPORTS/browser-image-id.txt")"
           [[ "$browser_id" =~ ^sha256:[0-9a-f]{64}$ ]]
           echo "CI_BROWSER_ID=$browser_id" >> "$GITHUB_ENV"
-          docker run --rm --pull never --network none --read-only \
+          bash scripts/check_ci_permissions.sh "$browser_id" browser browser
+          docker run --rm --user "$CI_CONTAINER_USER" --pull never --network none --read-only \
             --cap-drop ALL --security-opt no-new-privileges \
             --mount "type=bind,src=$CI_REPORTS,dst=/ci-results" \
             "$browser_id" python -B scripts/capture_ci_inventory.py \
@@ -251,7 +283,7 @@ jobs:
         timeout-minutes: 20
         run: |
           set -euo pipefail
-          docker run --rm --init --pull never --platform linux/amd64 --network none \
+          docker run --rm --user "$CI_CONTAINER_USER" --init --pull never --platform linux/amd64 --network none \
             --read-only --cap-drop ALL --security-opt no-new-privileges \
             --shm-size=1g --tmpfs /tmp:rw,exec,nosuid,size=3g \
             --mount "type=bind,src=$CI_BROWSER_REPORTS,dst=/ci-results" \
@@ -276,28 +308,24 @@ jobs:
           docker image save --output "$CI_BROWSER_ARCHIVE/image.tar" "$CI_BROWSER_ID"
           sha256sum "$CI_BROWSER_ARCHIVE/image.tar" | awk '{print $1}' > "$CI_REPORTS/browser-image-archive.sha256"
 
-      - name: Allocate exclusive scanner scratch storage
+      - name: Verify exclusive runner-owned scanner scratch
         id: scanner_scratch
         if: ${{ !cancelled() && steps.export_image.outcome == 'success' }}
         run: |
           set -euo pipefail
-          volume="clipforge-ci-scan-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          if docker volume inspect "$volume" >/dev/null 2>&1; then
-            echo 'Scanner scratch volume already exists; refusing to reuse it.'
-            exit 1
-          fi
-          docker volume create --label "clipforge.ci.run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" "$volume"
-          echo "CI_SCAN_TMP=$volume" >> "$GITHUB_ENV"
+          test "$CI_SCAN_TMP" = "$CI_SCRATCH/scanner-tmp"
+          test ! -L "$CI_SCAN_TMP"
+          test "$(stat -c '%u:%g:%a' "$CI_SCAN_TMP")" = "$CI_CONTAINER_USER:700"
 
       - name: Generate the complete CycloneDX SBOM without network
         if: ${{ !cancelled() && steps.export_image.outcome == 'success' && steps.scanner_prep.outcome == 'success' && steps.scanner_scratch.outcome == 'success' }}
         timeout-minutes: 8
         run: |
           set -euo pipefail
-          docker run --rm --pull never --platform linux/amd64 --network none \
+          docker run --rm --user "$CI_CONTAINER_USER" --pull never --platform linux/amd64 --network none \
             --read-only --cap-drop ALL --security-opt no-new-privileges \
             --tmpfs /tmp:rw,nosuid,size=256m \
-            --mount "type=volume,src=$CI_SCAN_TMP,dst=/scan-tmp" --env TMPDIR=/scan-tmp \
+            --mount "type=bind,src=$CI_SCAN_TMP,dst=/scan-tmp" --env TMPDIR=/scan-tmp \
             --mount "type=bind,src=$CI_CACHE,dst=/cache" \
             --mount "type=bind,src=$CI_ARCHIVE,dst=/inputs,readonly" \
             --mount "type=bind,src=$CI_REPORTS,dst=/reports" \
@@ -311,10 +339,10 @@ jobs:
         timeout-minutes: 8
         run: |
           set -euo pipefail
-          docker run --rm --pull never --platform linux/amd64 --network none \
+          docker run --rm --user "$CI_CONTAINER_USER" --pull never --platform linux/amd64 --network none \
             --read-only --cap-drop ALL --security-opt no-new-privileges \
             --tmpfs /tmp:rw,nosuid,size=256m \
-            --mount "type=volume,src=$CI_SCAN_TMP,dst=/scan-tmp" --env TMPDIR=/scan-tmp \
+            --mount "type=bind,src=$CI_SCAN_TMP,dst=/scan-tmp" --env TMPDIR=/scan-tmp \
             --mount "type=bind,src=$CI_CACHE,dst=/cache" \
             --mount "type=bind,src=$CI_ARCHIVE,dst=/inputs,readonly" \
             --mount "type=bind,src=$CI_REPORTS,dst=/reports" \
@@ -330,10 +358,10 @@ jobs:
         run: |
           set -euo pipefail
           scan_status=0
-          docker run --rm --pull never --platform linux/amd64 --network none \
+          docker run --rm --user "$CI_CONTAINER_USER" --pull never --platform linux/amd64 --network none \
             --read-only --cap-drop ALL --security-opt no-new-privileges \
             --tmpfs /tmp:rw,nosuid,size=256m \
-            --mount "type=volume,src=$CI_SCAN_TMP,dst=/scan-tmp" --env TMPDIR=/scan-tmp \
+            --mount "type=bind,src=$CI_SCAN_TMP,dst=/scan-tmp" --env TMPDIR=/scan-tmp \
             --mount "type=bind,src=$CI_CACHE,dst=/cache" \
             --mount "type=bind,src=$CI_BROWSER_ARCHIVE,dst=/inputs,readonly" \
             --mount "type=bind,src=$CI_REPORTS,dst=/reports" \
@@ -341,10 +369,10 @@ jobs:
             --skip-db-update --skip-java-db-update --offline-scan \
             --disable-telemetry --skip-version-check --no-progress --ignorefile "" \
             --scanners vuln --format cyclonedx --output /reports/browser-sbom.cdx.json || scan_status=1
-          docker run --rm --pull never --platform linux/amd64 --network none \
+          docker run --rm --user "$CI_CONTAINER_USER" --pull never --platform linux/amd64 --network none \
             --read-only --cap-drop ALL --security-opt no-new-privileges \
             --tmpfs /tmp:rw,nosuid,size=256m \
-            --mount "type=volume,src=$CI_SCAN_TMP,dst=/scan-tmp" --env TMPDIR=/scan-tmp \
+            --mount "type=bind,src=$CI_SCAN_TMP,dst=/scan-tmp" --env TMPDIR=/scan-tmp \
             --mount "type=bind,src=$CI_CACHE,dst=/cache" \
             --mount "type=bind,src=$CI_BROWSER_ARCHIVE,dst=/inputs,readonly" \
             --mount "type=bind,src=$CI_REPORTS,dst=/reports" \
@@ -375,13 +403,15 @@ jobs:
           retention-days: 7
           include-hidden-files: true
 
-      - name: Remove only this run's scanner scratch volume
-        if: ${{ always() && steps.scanner_scratch.outcome == 'success' }}
+      - name: Remove only this run's scanner scratch directory
+        if: ${{ always() && steps.scratch.outcome == 'success' }}
         run: |
           set -euo pipefail
-          owner="$(docker volume inspect --format '{{index .Labels "clipforge.ci.run"}}' "$CI_SCAN_TMP")"
-          test "$owner" = "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          docker volume rm "$CI_SCAN_TMP"
+          test "$CI_SCAN_TMP" = "$CI_SCRATCH/scanner-tmp"
+          test ! -L "$CI_SCAN_TMP"
+          test "$(realpath "$CI_SCAN_TMP")" = "$(realpath "$CI_SCRATCH")/scanner-tmp"
+          test "$(stat -c '%u:%g' "$CI_SCAN_TMP")" = "$CI_CONTAINER_USER"
+          rm -rf -- "$CI_SCAN_TMP"
 
   gate:
     name: CI Gate

@@ -63,3 +63,10 @@ autenticación, visibilidad, remoto vacío y escaneo del contenido exacto del
 índice. No usar Stage All, `git add .`, force-push o integrar contenido remoto
 inesperado. No crear un PR sin una rama base existente. Esta autorización no
 aprueba CI/release/despliegue ni excepciones de seguridad o cambios operativos.
+
+CI-FIX-01 autoriza el contrato de permisos del workflow, con un commit y push
+normal a `ci/bootstrap-sec03` y una ejecución nueva. Los escritores de scratch
+usan UID/GID explícitos del runner; los permisos se prueban sin capacidades
+adicionales, chmod 777, cambios de aplicación o excepciones de scanners.
+No atribuir fallos de preparación a CVE. Si aparece otro error independiente,
+conservar evidencia y proponer el siguiente paso sin encadenar reintentos.

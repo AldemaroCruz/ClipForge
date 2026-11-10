@@ -1,5 +1,12 @@
 # CI-01 / SEC-01 / SEC-02: pruebas aisladas desde fuentes
 
+La primera ejecución real de GIT-01 fue
+[42859254764](https://github.com/AldemaroCruz/ClipForge/actions/runs/42859254764),
+commit `f0cdfd29107229761aa2663bae9fee36ffd89e33`. Falló preparando la DB Trivy:
+`mkdir /cache/db: permission denied`, antes de tests o scans. No fue un rechazo
+por CVE. [CI-FIX-01.md](CI-FIX-01.md) documenta la corrección de permisos,
+comprobaciones y límites; no modifica los bloqueos Bandit/Trivy.
+
 GIT-01 usa `ci/bootstrap-sec03` para la referencia inicial. El primer envío no
 constituye aprobación de CI o release: Bandit/Trivy siguen bloqueando bajo las
 reglas vigentes. Cualquier ejecución real de Actions debe identificarse por
