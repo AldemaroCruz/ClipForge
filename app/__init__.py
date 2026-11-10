@@ -1,0 +1,1 @@
+"""ClipForge local MVP."""

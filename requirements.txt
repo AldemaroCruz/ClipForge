@@ -1,0 +1,15 @@
+# SEC-01: 0.133.0 removes the old Starlette <0.47 bound; verified on PyPI.
+fastapi==0.133.0
+# Minimum verified fix for the three baseline Starlette advisories.
+starlette==1.3.1
+uvicorn==0.34.2
+# Fixes the baseline advisories and additional GHSA-v9pg-7xvm-68hf.
+python-multipart==0.0.31
+faster-whisper==1.1.1
+# faster-whisper 1.1.1 imports requests without declaring it directly.
+# Do not rely on huggingface-hub to install this dependency transitively.
+requests==2.34.2
+
+# faster-whisper 1.1.1 passes metadata_errors to av.open; PyAV 19 removed it.
+# Exact compatibility pin; update only with the functional decoder checks.
+av==18.1.0

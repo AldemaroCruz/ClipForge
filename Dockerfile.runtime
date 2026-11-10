@@ -1,0 +1,20 @@
+# Recommended upgrade: inherit the actual working local image by verified ID/tag.
+# Prepare-Upgrade.ps1 creates the lock and tags the existing trusted image.
+ARG BASE_RUNTIME
+FROM ${BASE_RUNTIME}
+ARG LOCK_DIR
+WORKDIR /app
+COPY app/ ./app/
+COPY tests/ ./tests/
+COPY scripts/capture_runtime.py scripts/verify_runtime.py ./release-tools/
+COPY ${LOCK_DIR}/runtime-lock.json ./release-tools/runtime-lock.json
+COPY ${LOCK_DIR}/runtime-requirements.txt ./release-tools/runtime-requirements.txt
+RUN python release-tools/verify_runtime.py release-tools/runtime-lock.json \
+ && python -m pip check \
+ && python -m app.check_runtime \
+ && python -m app.check_media \
+ && python -m app.check_presentation \
+ && python -m app.check_branding
+LABEL org.opencontainers.image.title="ClipForge AI" \
+      org.opencontainers.image.version="0.4.2"
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]

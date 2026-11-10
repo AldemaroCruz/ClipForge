@@ -1,0 +1,6 @@
+# Optional overlay only. Does not change volumes, ports or the base image.
+# docker compose -f compose.yaml -f compose.ai.yaml up --build -d --wait
+services:
+  clipforge:
+    env_file:
+      - .env.ai

@@ -1,0 +1,402 @@
+name: ClipForge CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# CI builds and inspects a disposable image. It has no publishing/cloud identity.
+permissions:
+  contents: read
+
+concurrency:
+  group: clipforge-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  # Official GHCR linux/amd64 manifests; see docs/CI.md for verification sources.
+  GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:b109bc5f8f76a38196a3e413704fc5b9e3c32360bce4e4b603bd6f45b3721dbb
+  ACTIONLINT_IMAGE: docker.io/rhysd/actionlint:1.7.12@sha256:9d36088643581e728c969f35141f88139fec77280b2be23c1f66f8e40e1025e7
+  TRIVY_IMAGE: ghcr.io/aquasecurity/trivy:0.76.2@sha256:6fa071ef8daa2e58b90cbf1710bedca91adbb3bf98693533226f442035b836a6
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  checks:
+    name: Offline tests and security checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out the triggering commit without retained credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Python for the stdlib-only context helper
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Allocate fresh CI scratch directories outside the checkout
+        id: scratch
+        run: |
+          set -euo pipefail
+          ci_scratch="$(mktemp -d "$RUNNER_TEMP/clipforge-ci.XXXXXXXX")"
+          mkdir "$ci_scratch/ci-results" "$ci_scratch/trivy-cache" "$ci_scratch/image" \
+            "$ci_scratch/browser-image" "$ci_scratch/ci-results/browser"
+          {
+            echo "CI_SCRATCH=$ci_scratch"
+            echo "CI_CONTEXT=$ci_scratch/context"
+            echo "CI_REPORTS=$ci_scratch/ci-results"
+            echo "CI_CACHE=$ci_scratch/trivy-cache"
+            echo "CI_ARCHIVE=$ci_scratch/image"
+            echo "CI_BROWSER_ARCHIVE=$ci_scratch/browser-image"
+            echo "CI_BROWSER_REPORTS=$ci_scratch/ci-results/browser"
+            echo "CI_SCAN_SOURCE=$ci_scratch/source-scan"
+            echo "CI_IMAGE_TAG=clipforge-ci:${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "CI_BROWSER_TAG=clipforge-ci-browser:${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          } >> "$GITHUB_ENV"
+
+      - name: Prepare verified actionlint separately with network
+        id: actionlint_prep
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          docker pull --platform linux/amd64 "$ACTIONLINT_IMAGE"
+          docker run --rm --pull never --platform linux/amd64 --network none --read-only \
+            "$ACTIONLINT_IMAGE" --version > "$CI_REPORTS/actionlint-version.txt"
+          test "$(head -n 1 "$CI_REPORTS/actionlint-version.txt")" = 1.7.12
+
+      - name: Require actionlint and reject an invalid workflow fixture before builds
+        id: actionlint
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          docker run --rm -i --pull never --platform linux/amd64 --network none \
+            --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,size=256m "$ACTIONLINT_IMAGE" - \
+            < "$GITHUB_WORKSPACE/.github/workflows/ci.yml" \
+            > "$CI_REPORTS/actionlint.stdout.log" 2> "$CI_REPORTS/actionlint.stderr.log"
+          printf '%s\n' 'name: Invalid SEC-02 fixture' 'on: push' 'jobs:' \
+            '  broken:' '    runs-on: ubuntu-24.04' '    steps:' \
+            '      - runn: echo invalid' > "$CI_SCRATCH/actionlint-invalid.yml"
+          if docker run --rm -i --pull never --platform linux/amd64 --network none \
+            --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,size=256m "$ACTIONLINT_IMAGE" - \
+            < "$CI_SCRATCH/actionlint-invalid.yml" \
+            > "$CI_REPORTS/actionlint-invalid.stdout.log" 2> "$CI_REPORTS/actionlint-invalid.stderr.log"; then
+            echo 'Actionlint accepted an invalid workflow.' >&2
+            exit 1
+          else
+            invalid_exit=$?
+          fi
+          test "$invalid_exit" -eq 1
+          python -B - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          reports = Path(os.environ["CI_REPORTS"])
+          diagnosis = (reports / "actionlint-invalid.stdout.log").read_text() + (reports / "actionlint-invalid.stderr.log").read_text()
+          if 'step must run script with "run" section or run action with "uses" section' not in diagnosis:
+              raise SystemExit("Negative fixture must fail for its missing valid step command.")
+          result = {"schema_version": 1, "version": "1.7.12", "workflow_exit": 0,
+                    "invalid_fixture_exit": 1, "invalid_fixture_rejected": True,
+                    "workflow_sha256": hashlib.sha256((Path(os.environ["GITHUB_WORKSPACE"]) / ".github/workflows/ci.yml").read_bytes()).hexdigest()}
+          with (reports / "actionlint-summary.json").open("x") as stream:
+              json.dump(result, stream, indent=2)
+          PY
+
+      - name: Prepare and verify the allowlisted source context
+        id: prepare_context
+        run: |
+          set -euo pipefail
+          python -B scripts/prepare_ci_context.py prepare \
+            --source "$GITHUB_WORKSPACE" --destination "$CI_CONTEXT" \
+            --manifest "$CI_REPORTS/context-manifest.json"
+          python -B scripts/prepare_ci_context.py verify \
+            --context "$CI_CONTEXT" --manifest "$CI_REPORTS/context-manifest.json"
+
+      - name: Prepare the complete permitted tracked-source secret-scan snapshot
+        run: |
+          set -euo pipefail
+          git ls-files -z > "$CI_SCRATCH/tracked-paths.nul"
+          python -B scripts/prepare_ci_scan.py \
+            --source "$GITHUB_WORKSPACE" --paths "$CI_SCRATCH/tracked-paths.nul" \
+            --destination "$CI_SCAN_SOURCE"
+          cp -- "$CI_SCAN_SOURCE/.clipforge-source-manifest.json" "$CI_REPORTS/source-scan-manifest.json"
+
+      - name: Check PowerShell and JavaScript syntax from the curated context
+        run: |
+          set -euo pipefail
+          pwsh -NoLogo -NoProfile -NonInteractive \
+            -File "$CI_CONTEXT/scripts/Test-PowerShellScripts.ps1" \
+            -ScriptsDirectory "$CI_CONTEXT/scripts"
+          node --check "$CI_CONTEXT/app/static/app.js"
+          node --check "$CI_CONTEXT/app/static/operations.js"
+
+      - name: Prepare pinned scanners and the vulnerability database with network
+        id: scanner_prep
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          docker pull --platform linux/amd64 "$GITLEAKS_IMAGE"
+          docker pull --platform linux/amd64 "$TRIVY_IMAGE"
+          docker run --rm --pull never --platform linux/amd64 --network none \
+            "$GITLEAKS_IMAGE" version > "$CI_REPORTS/gitleaks-version.txt"
+          docker run --rm --pull never --platform linux/amd64 \
+            --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,size=512m \
+            --mount "type=bind,src=$CI_CACHE,dst=/cache" \
+            "$TRIVY_IMAGE" image --cache-dir /cache --download-db-only \
+            --disable-telemetry --skip-version-check --no-progress
+          docker run --rm --pull never --platform linux/amd64 --network none \
+            --mount "type=bind,src=$CI_CACHE,dst=/cache,readonly" \
+            "$TRIVY_IMAGE" --cache-dir /cache --version > "$CI_REPORTS/trivy-version.txt"
+          cp -- "$CI_CACHE/db/metadata.json" "$CI_REPORTS/trivy-db-metadata.json"
+          sha256sum "$CI_CACHE/db/trivy.db" | awk '{print $1}' > "$CI_REPORTS/trivy-db.sha256"
+
+      - name: Scan the permitted tracked-source snapshot for secrets without network
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          docker run --rm --pull never --platform linux/amd64 --network none \
+            --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,size=256m \
+            --mount "type=bind,src=$CI_SCAN_SOURCE,dst=/source,readonly" \
+            --mount "type=bind,src=$CI_REPORTS,dst=/reports" \
+            "$GITLEAKS_IMAGE" dir /source --no-banner --redact=100 \
+            --ignore-gitleaks-allow --exit-code 1 --timeout 120 \
+            --report-format json --report-path /reports/gitleaks-source.json
+
+      - name: Build a fresh Linux amd64 CI image from the verified context
+        id: build
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          python -B scripts/prepare_ci_context.py verify \
+            --context "$CI_CONTEXT" --manifest "$CI_REPORTS/context-manifest.json"
+          docker build --platform linux/amd64 --target ci --file "$CI_CONTEXT/Dockerfile.ci" \
+            --tag "$CI_IMAGE_TAG" --iidfile "$CI_REPORTS/image-id.txt" "$CI_CONTEXT"
+          image_id="$(cat "$CI_REPORTS/image-id.txt")"
+          [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image_id")" = linux/amd64
+          echo "CI_IMAGE_ID=$image_id" >> "$GITHUB_ENV"
+
+      - name: Capture independent candidate package and source inventory
+        run: |
+          set -euo pipefail
+          docker run --rm --pull never --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --mount "type=bind,src=$CI_REPORTS,dst=/ci-results" \
+            "$CI_IMAGE_ID" python -B scripts/capture_ci_inventory.py \
+            --image-id "$CI_IMAGE_ID" --output /ci-results/image-inventory.json
+
+      - name: Run the complete strict suite without network or operational mounts
+        id: tests
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          docker run --rm --pull never --platform linux/amd64 --network none \
+            --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,exec,nosuid,size=2g \
+            --mount "type=bind,src=$CI_REPORTS,dst=/ci-results" \
+            --env CLIPFORGE_AI_PROVIDER=disabled \
+            --env CLIPFORGE_DATA_DIR=/tmp/clipforge-ci-data \
+            --env PYTHONDONTWRITEBYTECODE=1 \
+            "$CI_IMAGE_ID" python scripts/run_ci_tests.py \
+            --report /ci-results/test-summary.json
+
+      - name: Static security analysis without suppression or external network
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          docker run --rm --pull never --network none --read-only \
+            "$CI_IMAGE_ID" python -m bandit --version > "$CI_REPORTS/bandit-version.txt"
+          docker run --rm --pull never --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,size=256m \
+            --mount "type=bind,src=$CI_REPORTS,dst=/ci-results" \
+            "$CI_IMAGE_ID" python -m bandit -r /app/app /app/scripts \
+            --severity-level all --confidence-level all --ignore-nosec \
+            --format json --output /ci-results/bandit.json
+
+      - name: Prepare the pinned browser image separately from browser execution
+        id: build_browser
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          python -B scripts/prepare_ci_context.py verify \
+            --context "$CI_CONTEXT" --manifest "$CI_REPORTS/context-manifest.json"
+          docker build --platform linux/amd64 --target browser \
+            --file "$CI_CONTEXT/Dockerfile.ci" --tag "$CI_BROWSER_TAG" \
+            --iidfile "$CI_REPORTS/browser-image-id.txt" "$CI_CONTEXT"
+          browser_id="$(cat "$CI_REPORTS/browser-image-id.txt")"
+          [[ "$browser_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "CI_BROWSER_ID=$browser_id" >> "$GITHUB_ENV"
+          docker run --rm --pull never --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --mount "type=bind,src=$CI_REPORTS,dst=/ci-results" \
+            "$browser_id" python -B scripts/capture_ci_inventory.py \
+            --image-id "$browser_id" --output /ci-results/browser-image-inventory.json
+
+      - name: Execute six browser scenarios against isolated fixture APIs
+        if: ${{ !cancelled() && steps.build_browser.outcome == 'success' }}
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          docker run --rm --init --pull never --platform linux/amd64 --network none \
+            --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --shm-size=1g --tmpfs /tmp:rw,exec,nosuid,size=3g \
+            --mount "type=bind,src=$CI_BROWSER_REPORTS,dst=/ci-results" \
+            "$CI_BROWSER_ID" python scripts/run_ci_browser.py \
+            --report /ci-results/browser-summary.json
+
+      - name: Export only the disposable CI image for offline inspection
+        id: export_image
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          docker image save --output "$CI_ARCHIVE/image.tar" "$CI_IMAGE_ID"
+          sha256sum "$CI_ARCHIVE/image.tar" | awk '{print $1}' > "$CI_REPORTS/image-archive.sha256"
+
+      - name: Export the separately inventoried browser image
+        id: export_browser
+        if: ${{ !cancelled() && steps.build_browser.outcome == 'success' }}
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          docker image save --output "$CI_BROWSER_ARCHIVE/image.tar" "$CI_BROWSER_ID"
+          sha256sum "$CI_BROWSER_ARCHIVE/image.tar" | awk '{print $1}' > "$CI_REPORTS/browser-image-archive.sha256"
+
+      - name: Allocate exclusive scanner scratch storage
+        id: scanner_scratch
+        if: ${{ !cancelled() && steps.export_image.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          volume="clipforge-ci-scan-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if docker volume inspect "$volume" >/dev/null 2>&1; then
+            echo 'Scanner scratch volume already exists; refusing to reuse it.'
+            exit 1
+          fi
+          docker volume create --label "clipforge.ci.run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" "$volume"
+          echo "CI_SCAN_TMP=$volume" >> "$GITHUB_ENV"
+
+      - name: Generate the complete CycloneDX SBOM without network
+        if: ${{ !cancelled() && steps.export_image.outcome == 'success' && steps.scanner_prep.outcome == 'success' && steps.scanner_scratch.outcome == 'success' }}
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          docker run --rm --pull never --platform linux/amd64 --network none \
+            --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,size=256m \
+            --mount "type=volume,src=$CI_SCAN_TMP,dst=/scan-tmp" --env TMPDIR=/scan-tmp \
+            --mount "type=bind,src=$CI_CACHE,dst=/cache" \
+            --mount "type=bind,src=$CI_ARCHIVE,dst=/inputs,readonly" \
+            --mount "type=bind,src=$CI_REPORTS,dst=/reports" \
+            "$TRIVY_IMAGE" image --input /inputs/image.tar --cache-dir /cache \
+            --skip-db-update --skip-java-db-update --offline-scan \
+            --disable-telemetry --skip-version-check --no-progress --ignorefile "" \
+            --scanners vuln --format cyclonedx --output /reports/sbom.cdx.json
+
+      - name: Block HIGH and CRITICAL vulnerabilities without network
+        if: ${{ !cancelled() && steps.export_image.outcome == 'success' && steps.scanner_prep.outcome == 'success' && steps.scanner_scratch.outcome == 'success' }}
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          docker run --rm --pull never --platform linux/amd64 --network none \
+            --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,size=256m \
+            --mount "type=volume,src=$CI_SCAN_TMP,dst=/scan-tmp" --env TMPDIR=/scan-tmp \
+            --mount "type=bind,src=$CI_CACHE,dst=/cache" \
+            --mount "type=bind,src=$CI_ARCHIVE,dst=/inputs,readonly" \
+            --mount "type=bind,src=$CI_REPORTS,dst=/reports" \
+            "$TRIVY_IMAGE" image --input /inputs/image.tar --cache-dir /cache \
+            --skip-db-update --skip-java-db-update --offline-scan \
+            --disable-telemetry --skip-version-check --no-progress --ignorefile "" \
+            --scanners vuln --list-all-pkgs --severity HIGH,CRITICAL --exit-code 1 \
+            --format json --output /reports/trivy-high-critical.json
+
+      - name: Inventory browser runtime and block its vulnerabilities too
+        if: ${{ !cancelled() && steps.export_browser.outcome == 'success' && steps.scanner_prep.outcome == 'success' && steps.scanner_scratch.outcome == 'success' }}
+        timeout-minutes: 16
+        run: |
+          set -euo pipefail
+          scan_status=0
+          docker run --rm --pull never --platform linux/amd64 --network none \
+            --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,size=256m \
+            --mount "type=volume,src=$CI_SCAN_TMP,dst=/scan-tmp" --env TMPDIR=/scan-tmp \
+            --mount "type=bind,src=$CI_CACHE,dst=/cache" \
+            --mount "type=bind,src=$CI_BROWSER_ARCHIVE,dst=/inputs,readonly" \
+            --mount "type=bind,src=$CI_REPORTS,dst=/reports" \
+            "$TRIVY_IMAGE" image --input /inputs/image.tar --cache-dir /cache \
+            --skip-db-update --skip-java-db-update --offline-scan \
+            --disable-telemetry --skip-version-check --no-progress --ignorefile "" \
+            --scanners vuln --format cyclonedx --output /reports/browser-sbom.cdx.json || scan_status=1
+          docker run --rm --pull never --platform linux/amd64 --network none \
+            --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,size=256m \
+            --mount "type=volume,src=$CI_SCAN_TMP,dst=/scan-tmp" --env TMPDIR=/scan-tmp \
+            --mount "type=bind,src=$CI_CACHE,dst=/cache" \
+            --mount "type=bind,src=$CI_BROWSER_ARCHIVE,dst=/inputs,readonly" \
+            --mount "type=bind,src=$CI_REPORTS,dst=/reports" \
+            "$TRIVY_IMAGE" image --input /inputs/image.tar --cache-dir /cache \
+            --skip-db-update --skip-java-db-update --offline-scan \
+            --disable-telemetry --skip-version-check --no-progress --ignorefile "" \
+            --scanners vuln --list-all-pkgs --severity HIGH,CRITICAL --exit-code 1 \
+            --format json --output /reports/browser-trivy-high-critical.json || scan_status=1
+          exit "$scan_status"
+
+      - name: Require complete reports and a nonempty suite with no omissions
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          python -B scripts/prepare_ci_context.py verify \
+            --context "$CI_CONTEXT" --manifest "$CI_REPORTS/context-manifest.json"
+          python -B "$CI_CONTEXT/scripts/validate_ci_reports.py" \
+            --reports "$CI_REPORTS" --context "$CI_CONTEXT" \
+            --output "$CI_REPORTS/report-validation.json"
+
+      - name: Preserve reports from this CI scratch directory only
+        if: ${{ always() && steps.scratch.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: clipforge-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.CI_REPORTS }}/
+          if-no-files-found: error
+          retention-days: 7
+          include-hidden-files: true
+
+      - name: Remove only this run's scanner scratch volume
+        if: ${{ always() && steps.scanner_scratch.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          owner="$(docker volume inspect --format '{{index .Labels "clipforge.ci.run"}}' "$CI_SCAN_TMP")"
+          test "$owner" = "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker volume rm "$CI_SCAN_TMP"
+
+  gate:
+    name: CI Gate
+    needs: [checks]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    permissions: {}
+    timeout-minutes: 3
+    steps:
+      - name: Require successful checks; reject failure, cancellation and omission
+        env:
+          CHECKS_RESULT: ${{ needs.checks.result }}
+        run: |
+          set -euo pipefail
+          if [[ "$CHECKS_RESULT" != "success" ]]; then
+            echo "Required CI checks did not succeed: $CHECKS_RESULT"
+            exit 1
+          fi

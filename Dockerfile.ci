@@ -1,0 +1,65 @@
+# CI image only. Never use the operator's running image, locks, data or secrets.
+FROM python:3.12-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS ci
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    CLIPFORGE_DATA_DIR=/tmp/clipforge-ci-data \
+    CLIPFORGE_AI_PROVIDER=disabled \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
+WORKDIR /app
+
+# Fixed Debian snapshot; package signatures remain mandatory. Check-Valid-Until
+# only permits this historical signed snapshot, not unauthenticated packages.
+RUN printf '%s\n' \
+      'Types: deb' \
+      'URIs: https://snapshot.debian.org/archive/debian/20261109T000000Z/' \
+      'Suites: trixie trixie-updates' \
+      'Components: main' \
+      'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+      'Check-Valid-Until: no' \
+      '' \
+      'Types: deb' \
+      'URIs: https://snapshot.debian.org/archive/debian-security/20261109T000000Z/' \
+      'Suites: trixie-security' \
+      'Components: main' \
+      'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+      'Check-Valid-Until: no' > /etc/apt/ci-snapshot.sources \
+ && apt-get -o Dir::Etc::sourcelist=/etc/apt/ci-snapshot.sources -o Dir::Etc::sourceparts=- update \
+ && apt-get -o Dir::Etc::sourcelist=/etc/apt/ci-snapshot.sources -o Dir::Etc::sourceparts=- install -y --no-install-recommends ffmpeg fonts-dejavu-core zlib1g=1:1.3.dfsg+really1.3.1-1+deb13u1 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Preparation downloads only public, hash-locked wheels. Installation then has
+# no network. Native/functional checks run later in docker run --network none.
+COPY requirements-ci.lock requirements.txt requirements-test.txt requirements-ci-tools.txt requirements-ci-tools.lock /tmp/
+RUN python -m pip download --require-hashes --only-binary=:all: --dest /opt/ci-wheels -r /tmp/requirements-ci.lock -r /tmp/requirements-ci-tools.lock -c /tmp/requirements.txt -c /tmp/requirements-test.txt -c /tmp/requirements-ci-tools.txt
+RUN --network=none python -m pip install --no-index --find-links=/opt/ci-wheels --require-hashes --only-binary=:all: -r /tmp/requirements-ci.lock -r /tmp/requirements-ci-tools.lock -c /tmp/requirements.txt -c /tmp/requirements-test.txt -c /tmp/requirements-ci-tools.txt \
+ && rm -rf /opt/ci-wheels
+
+COPY app/ ./app/
+COPY scripts/ ./scripts/
+COPY tests/ ./tests/
+# Packaging regressions inspect the production files as source; they do not
+# replace this CI image's separately locked dependency set.
+COPY Dockerfile requirements.txt requirements-test.txt requirements-ci.lock requirements-ci-tools.txt requirements-ci-tools.lock ./
+CMD ["python", "scripts/run_ci_tests.py", "--report", "/ci-results/test-summary.json"]
+
+# Separate browser preparation. Every added tool/library remains in the image
+# inventory and scan; no package or vulnerability is hidden from either stage.
+FROM ci AS browser
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ci-browsers
+RUN apt-get -o Dir::Etc::sourcelist=/etc/apt/ci-snapshot.sources -o Dir::Etc::sourceparts=- update \
+ && apt-get -o Dir::Etc::sourcelist=/etc/apt/ci-snapshot.sources -o Dir::Etc::sourceparts=- install -y --no-install-recommends \
+      libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libcups2t64 \
+      libnspr4 libnss3 libxcomposite1 libxdamage1 \
+ && rm -rf /var/lib/apt/lists/*
+RUN python -m playwright install chromium
+# Runtime profiles/crashpad stay inside the exclusive tmpfs. Keep / read-only.
+ENV XDG_CONFIG_HOME=/tmp/clipforge-ci-browser-config \
+    XDG_CACHE_HOME=/tmp/clipforge-ci-browser-cache
+CMD ["python", "scripts/run_ci_browser.py", "--report", "/ci-results/browser-summary.json"]
+
+# Building without --target keeps the unit/native-check image as the default.
+# Chromium is downloaded only when --target browser is requested explicitly.
+FROM ci AS default

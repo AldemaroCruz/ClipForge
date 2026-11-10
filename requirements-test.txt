@@ -1,0 +1,2 @@
+# Install requirements.txt as well when testing outside the Docker image.
+httpx==0.28.1

@@ -1,0 +1,8 @@
+# Optional test image, NOT the image to deploy. Production dependencies unchanged.
+ARG RUNTIME_IMAGE
+FROM ${RUNTIME_IMAGE}
+WORKDIR /app
+COPY scripts/run_tests.py scripts/capture_runtime.py ./test-tools/
+# TestClient only. No transitive upgrades in production site-packages.
+RUN python -m pip install --no-cache-dir --no-deps --target /opt/test-deps httpx==0.28.1 httpcore==1.0.9
+CMD ["python", "/app/test-tools/run_tests.py"]

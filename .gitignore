@@ -1,0 +1,56 @@
+data/
+cache/
+.venv/
+__pycache__/
+*.pyc
+*.log
+backups/
+test-output/
+.env*
+!/.env.ai.example
+release/
+evidence/
+test-evidence/
+restore-check-*/
+compose.runtime.yaml
+
+compose.rollback.yaml
+
+# Disposable CI outputs; never publish an installation or scanner cache.
+.ci-local/
+ci-results/
+
+# Terraform working state and local variable values are not source artifacts.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+terraform.tfvars
+terraform.tfvars.json
+*.auto.tfvars
+*.auto.tfvars.json
+
+# Credential locations at any level; only the root dotenv example is allowed.
+.aws/
+.gcloud/
+credentials/
+secrets/
+application_default_credentials.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Private media and generated archives outside the operational directories.
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.wav
+*.mp3
+*.flac
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
