@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse
 from .editorial import (DraftUpdate, EditorialContent, ProjectName, RangeChange,
                         RevisionRequest, retime_cues, validate_range)
 from .media import inspect_media, MediaValidationError
+from .media_binaries import resolve_media_binary
 from .presentation import Presentation
 from .state import write_json_atomic
 from .subtitles import SubtitleError, cues_from_segments, validate_cues
@@ -337,7 +338,7 @@ def project_thumbnail(job_id: str):
             with tempfile.TemporaryDirectory(prefix=".thumb-", dir=directory) as temporary:
                 output = Path(temporary) / "source.jpg"
                 try:
-                    result = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y",
+                    result = subprocess.run([resolve_media_binary("ffmpeg"), "-nostdin", "-v", "error", "-y",
                         "-protocol_whitelist", "file,pipe", "-i", str(source), "-map", "0:v:0", "-frames:v", "1",
                         "-vf", "scale=320:-2", "-threads", "1", str(output)], capture_output=True, timeout=15)
                     if result.returncode or not output.is_file():

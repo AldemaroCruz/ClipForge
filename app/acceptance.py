@@ -16,6 +16,7 @@ import time
 import zipfile
 from .backup import digest_file
 from .state import write_json_atomic
+from .media_binaries import resolve_media_binary
 
 
 def read_json(path: Path) -> dict:
@@ -89,7 +90,7 @@ def inspect_project(root: Path, job_id: str, *, decode: bool = False, require_ai
                     if basename=='clip.mp4':
                         has_video=True
                         if decode:
-                            result=subprocess.run(['ffmpeg','-nostdin','-v','error','-protocol_whitelist','file,pipe',
+                            result=subprocess.run([resolve_media_binary('ffmpeg'),'-nostdin','-v','error','-protocol_whitelist','file,pipe',
                                 '-i',str(disk),'-map','0:v:0','-map','0:a:0','-f','null','-'],capture_output=True,timeout=1800)
                             if result.returncode: raise ValueError('El MP4 no se decodifica completo con audio y video.')
                             checked_videos+=1

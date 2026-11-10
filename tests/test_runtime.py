@@ -26,7 +26,7 @@ class RuntimeCheckTests(unittest.TestCase):
             return module
         self.imports = mock.patch.object(runtime.importlib, "import_module", side_effect=fake_import).start()
         self.versions = mock.patch.object(runtime, "version", return_value="test-version").start()
-        self.which = mock.patch.object(runtime.shutil, "which", side_effect=lambda n: f"/usr/bin/{n}").start()
+        self.which = mock.patch.object(runtime, "resolve_media_binary", side_effect=lambda n: f"/usr/bin/{n}").start()
         self.run = mock.patch.object(runtime.subprocess, "run", return_value=subprocess.CompletedProcess(
             [], 0, stdout="binary version test\n", stderr=""
         )).start()
@@ -81,7 +81,11 @@ class RuntimeCheckTests(unittest.TestCase):
         self.assertFalse(report["transcription_tested"])
 
     def test_missing_ffmpeg_is_failure(self):
-        self.which.side_effect = lambda n: None if n == "ffmpeg" else f"/usr/bin/{n}"
+        def resolve(name):
+            if name == "ffmpeg":
+                raise FileNotFoundError("synthetic missing ffmpeg")
+            return f"/usr/bin/{name}"
+        self.which.side_effect = resolve
         report = runtime.check_runtime()
         self.assertEqual(report["status"], "failed")
         self.assertEqual(report["errors"][0]["component"], "ffmpeg")

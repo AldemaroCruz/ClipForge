@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .media_binaries import resolve_media_binary
+
 
 class MediaValidationError(ValueError):
     """Expected input rejection, with a stable code and safe user-facing message."""
@@ -40,7 +42,7 @@ def probe_media(path: Path) -> dict[str, Any]:
         raise MediaValidationError("EMPTY_INPUT", "El archivo está vacío. Sube un MP4 con video y voz.")
     try:
         result = subprocess.run(
-            ["ffprobe", "-v", "error", "-protocol_whitelist", "file,pipe",
+            [resolve_media_binary("ffprobe"), "-v", "error", "-protocol_whitelist", "file,pipe",
              "-show_entries",
              "format=duration,format_name:stream=index,codec_type,codec_name,duration,sample_rate,channels,width,height:stream_disposition=attached_pic",
              "-of", "json", str(path.resolve())],

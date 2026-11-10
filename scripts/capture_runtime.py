@@ -14,6 +14,7 @@ import sys
 import time
 
 
+
 def sha(path):
     h=hashlib.sha256()
     with path.open('rb') as f:
@@ -54,7 +55,10 @@ def model_snapshot(home,model):
 
 
 def ffmpeg_version():
-    lines=subprocess.check_output(['ffmpeg','-version'],text=True,timeout=10).splitlines()
+    # Metadata-only consumers import packages() without an app import root.
+    # Media capture uses the existing scoped PYTHONPATH of Prepare-Upgrade.
+    from app.media_binaries import resolve_media_binary
+    lines=subprocess.check_output([resolve_media_binary('ffmpeg'),'-version'],text=True,timeout=10).splitlines()
     if not lines or not lines[0].strip():
         raise ValueError('FFmpeg version output is empty; capture stopped')
     return lines[0]

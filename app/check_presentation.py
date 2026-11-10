@@ -9,11 +9,12 @@ from pathlib import Path
 from .media import probe_media
 from .presentation import Presentation
 from .render import render_clip
+from .media_binaries import resolve_media_binary
 
 
 def make_source(path: Path, seconds: float = 2) -> None:
     subprocess.run([
-        "ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i",
+        resolve_media_binary("ffmpeg"), "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i",
         "testsrc2=size=320x180:rate=5", "-f", "lavfi", "-i",
         "sine=frequency=440:sample_rate=16000", "-t", str(seconds),
         "-c:v", "libx264", "-threads", "1", "-preset", "ultrafast",
@@ -23,7 +24,7 @@ def make_source(path: Path, seconds: float = 2) -> None:
 
 def caption_pixels(path: Path) -> bytes:
     return subprocess.run([
-        "ffmpeg", "-nostdin", "-v", "error", "-ss", "0.8", "-i", str(path),
+        resolve_media_binary("ffmpeg"), "-nostdin", "-v", "error", "-ss", "0.8", "-i", str(path),
         "-frames:v", "1", "-vf", "crop=880:400:100:1280,format=gray",
         "-f", "rawvideo", "-",
     ], check=True, capture_output=True, timeout=30).stdout
@@ -37,7 +38,7 @@ def caption_color_stats(path: Path, color: str) -> dict:
     """
     width, height = 1080, 480
     pixels = subprocess.run([
-        "ffmpeg", "-nostdin", "-v", "error", "-ss", "0.8", "-i", str(path),
+        resolve_media_binary("ffmpeg"), "-nostdin", "-v", "error", "-ss", "0.8", "-i", str(path),
         "-frames:v", "1", "-vf", f"crop={width}:{height}:0:1320,format=rgb24",
         "-f", "rawvideo", "-",
     ], check=True, capture_output=True, timeout=30).stdout
@@ -80,7 +81,7 @@ def check_presentation() -> dict:
                     or metadata["audio_streams"] != 1 or metadata["video_codec"] != "h264"
                     or metadata["audio_codec"] != "aac"):
                     raise AssertionError(f"Invalid export metadata: {name}")
-                subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", str(path),
+                subprocess.run([resolve_media_binary("ffmpeg"), "-nostdin", "-v", "error", "-i", str(path),
                                 "-f", "null", "-"], check=True, capture_output=True, timeout=30)
                 if "Edición local" not in path.with_suffix(".srt").read_text(encoding="utf-8"):
                     raise AssertionError("Missing SRT content")

@@ -1,5 +1,11 @@
 # SEC-03: propuesta de decisión individual sobre SAST
 
+**Actualización SEC-04:** este documento y su ficha conservan la revisión histórica
+de SEC-03. Actions ya se ejecutó en el run `42866539507`, con seguridad bloqueante.
+El selector Linux y las ubicaciones nuevas se evalúan en [SEC-04](SEC-04.md).
+Los hashes de la ficha histórica no corresponden al nuevo `audio_check.py`;
+no se transfieren aceptaciones ni evidencia de código anterior a código nuevo.
+
 **Estado: PROPUESTA; ninguna aceptación aprobada ni aplicada.** Este documento reutiliza [SEC-02-subprocess.md](SEC-02-subprocess.md); no cambia Bandit, su validador, umbrales, exclusiones ni código. Las alertas restantes conservan el bloqueo de CI.
 
 ## Separación de decisiones

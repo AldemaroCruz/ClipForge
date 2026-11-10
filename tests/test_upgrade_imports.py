@@ -25,7 +25,7 @@ class UpgradeImportTests(unittest.TestCase):
         self.root = Path(self.temp.name) / "tools"
         (self.root / "app").mkdir(parents=True)
         (self.root / "scripts").mkdir()
-        for name in ("__init__.py", "backup.py", "lease.py"):
+        for name in ("__init__.py", "backup.py", "lease.py", "media_binaries.py"):
             shutil.copy2(SOURCE_ROOT / "app" / name, self.root / "app" / name)
         for name in ("check_idle.py", "capture_runtime.py", "verify_runtime.py"):
             shutil.copy2(SOURCE_ROOT / "scripts" / name, self.root / "scripts" / name)

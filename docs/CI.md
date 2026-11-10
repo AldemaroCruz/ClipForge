@@ -1,5 +1,13 @@
 # CI-01 / SEC-01 / SEC-02: pruebas aisladas desde fuentes
 
+**Estado actual:** Actions se ejecutó en
+[42866539507](https://github.com/AldemaroCruz/ClipForge/actions/runs/42866539507),
+commit `2c5ea13e4c5935bad84a0ce7ad6c453fe221e52c`: permisos, 541 tests,
+11 checks y seis escenarios browser pasaron; Bandit/Trivy y el gate bloquearon.
+CI-FIX-01 está cerrado. Los resultados anteriores de este documento son
+históricos; [SEC-04](SEC-04.md) contiene el incremento local posterior, aún sin
+commit/push ni ejecución nueva en GitHub. No hay aprobación de CI o release.
+
 La primera ejecución real de GIT-01 fue
 [42859254764](https://github.com/AldemaroCruz/ClipForge/actions/runs/42859254764),
 commit `f0cdfd29107229761aa2663bae9fee36ffd89e33`. Falló preparando la DB Trivy:

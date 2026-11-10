@@ -7,13 +7,14 @@ by replacing the decoder, swallowing metadata_errors, or manufacturing silence.
 
 import importlib
 import math
-import shutil
 import struct
 import subprocess
 import tempfile
 import wave
 from pathlib import Path
 from typing import Any
+
+from .media_binaries import resolve_media_binary
 
 SAMPLE_RATE = 16000
 DURATION_SECONDS = 1
@@ -34,9 +35,7 @@ def make_test_wav(path: Path) -> None:
 
 
 def make_test_mp4(wav: Path, mp4: Path) -> None:
-    executable = shutil.which("ffmpeg")
-    if executable is None:
-        raise FileNotFoundError("FFmpeg is required for the MP4/AAC decoder check")
+    executable = resolve_media_binary("ffmpeg")
     command = [
         executable, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
         "-f", "lavfi", "-i", "color=c=black:s=160x90:r=5",

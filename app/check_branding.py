@@ -5,11 +5,12 @@ import tempfile
 from pathlib import Path
 
 from .presentation import Presentation
+from .media_binaries import resolve_media_binary
 from .render import render_clip
 
 
 def black_source(path: Path):
-    subprocess.run(['ffmpeg','-nostdin','-v','error','-y','-f','lavfi','-i',
+    subprocess.run([resolve_media_binary('ffmpeg'),'-nostdin','-v','error','-y','-f','lavfi','-i',
                     'color=c=black:size=320x180:rate=5','-f','lavfi','-i',
                     'sine=frequency=440:sample_rate=16000','-t','2',
                     '-c:v','libx264','-threads','1','-pix_fmt','yuv420p',
@@ -17,7 +18,7 @@ def black_source(path: Path):
 
 
 def pixels(path: Path) -> dict:
-    raw=subprocess.run(['ffmpeg','-nostdin','-v','error','-ss','0.8','-i',str(path),
+    raw=subprocess.run([resolve_media_binary('ffmpeg'),'-nostdin','-v','error','-ss','0.8','-i',str(path),
                         '-frames:v','1','-vf','scale=270:480,format=rgb24',
                         '-f','rawvideo','-'],check=True,capture_output=True,timeout=30).stdout
     if len(raw)!=270*480*3:

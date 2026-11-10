@@ -11,6 +11,7 @@ import importlib.metadata
 import json
 from pathlib import Path
 import re
+import sys
 
 
 def normalized_name(name: str) -> str:
@@ -72,6 +73,22 @@ def main(argv=None) -> int:
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
     inventory = capture(args.image_id)
+    # Direct script execution starts at /app/scripts. Import only the authored
+    # helper beside this script, without importing the API or reading user data.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from app.media_binaries import BINARIES, PACKAGE_LIST, resolve_media_binary
+    ffmpeg_package = next(package for package in inventory["targets"][0]["Packages"]
+                          if package["Name"] == "ffmpeg")
+    inventory["media_binaries"] = []
+    for name in sorted(BINARIES):
+        path = Path(resolve_media_binary(name))
+        metadata = path.stat()
+        inventory["media_binaries"].append({
+            "name": name, "path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "uid": metadata.st_uid, "gid": metadata.st_gid, "mode": oct(metadata.st_mode & 0o7777),
+            "package": ffmpeg_package, "package_file_list": str(PACKAGE_LIST),
+            "provenance_scope": "root-managed Debian package list; signed APT build; not protection against compromised root/builder",
+        })
     with args.output.open("x", encoding="utf-8", newline="\n") as stream:
         json.dump(inventory, stream, indent=2, sort_keys=True)
         stream.write("\n")

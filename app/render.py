@@ -6,13 +6,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .presentation import Presentation
+from .media_binaries import resolve_media_binary
 from .subtitles import to_ass, to_srt, to_vtt, validate_cues
 
 
 def run_ffmpeg(*args: Any) -> None:
     try:
         result = subprocess.run(
-            ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", *map(str, args)],
+            [resolve_media_binary("ffmpeg"), "-nostdin", "-hide_banner", "-loglevel", "error", "-y", *map(str, args)],
             capture_output=True, text=True, errors="replace", timeout=1800,
         )
     except FileNotFoundError as exc:

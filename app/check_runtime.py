@@ -9,13 +9,13 @@ Also decodes generated WAV/MP4 fixtures and runs bundled Silero ONNX on silence.
 import importlib
 import json
 import platform
-import shutil
 import subprocess
 import sys
 from importlib.metadata import version
 from typing import Any
 
 from .audio_check import check_audio_stack
+from .media_binaries import resolve_media_binary
 
 # (distribution name, import name, required callable or None).
 DEPENDENCIES = (
@@ -61,9 +61,7 @@ def check_runtime() -> dict[str, Any]:
             })
     for name in BINARIES:
         try:
-            executable = shutil.which(name)
-            if executable is None:
-                raise FileNotFoundError(f"{name} is not installed or not on PATH")
+            executable = resolve_media_binary(name)
             result = subprocess.run(
                 [executable, "-version"], check=True, capture_output=True,
                 text=True, errors="replace", timeout=10,

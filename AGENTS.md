@@ -4,7 +4,7 @@ La carpeta de trabajo autorizada es `C:\Users\itres\Desktop\clipforge-mvp`.
 También contiene una instalación v0.4.2 operativa: autorizar cambios de código
 no autoriza actualizar, reconstruir o reemplazar su servicio.
 La copia `C:\Users\itres\source\repos\clipforge` se conserva; no escribir,
-sincronizar, fusionar ni borrar esa copia como parte de CI-01, SEC-01, SEC-02 o SEC-03.
+sincronizar, fusionar ni borrar esa copia como parte de CI-01 o SEC-01 a SEC-04.
 
 - La sesión principal coordina; puede delegar como máximo a tres especialistas
   de QA, seguridad e infraestructura. Los especialistas no crean coordinadores
@@ -44,7 +44,9 @@ sincronizar, fusionar ni borrar esa copia como parte de CI-01, SEC-01, SEC-02 o 
 
 Alcance y comandos: [docs/CI.md](docs/CI.md). Diagnóstico y estado SEC-01:
 [docs/SEC-01.md](docs/SEC-01.md). Conservar los informes anteriores; un nuevo
-intento usa directorios propios. GitHub Actions sigue pendiente hasta ejecutarlo.
+intento usa directorios propios. Actions se ejecutó: CI-FIX-01, commit
+`2c5ea13e4c5935bad84a0ce7ad6c453fe221e52c`, run `42866539507`.
+Permisos comprobados en Ubuntu; CI/release/despliegue siguen bloqueados por seguridad.
 Resultados y pendientes SEC-02: [docs/SEC-02.md](docs/SEC-02.md).
 
 SEC-02 terminó su alcance técnico local; CI/release/despliegue siguen sin aprobar.
@@ -70,3 +72,12 @@ usan UID/GID explícitos del runner; los permisos se prueban sin capacidades
 adicionales, chmod 777, cambios de aplicación o excepciones de scanners.
 No atribuir fallos de preparación a CVE. Si aparece otro error independiente,
 conservar evidencia y proponer el siguiente paso sin encadenar reintentos.
+
+SEC-04 autoriza el selector confiable de FFmpeg/ffprobe para candidatas Linux y
+comparación causal de detecciones con imágenes/DB identificadas. No buscar
+alternativas en PATH, introducir rutas Linux en ejecución nativa Windows ni
+suprimir B404/B603. La compatibilidad declarada sigue siendo Docker Desktop
+con contenedores Linux. Conservar permisos de CI-FIX-01 e informes históricos.
+No actualizar pins sin fix verificable de la misma distribución. No crear
+commit/push/merge/release en este incremento antes de revisar la entrega.
+Estado y decisiones: [docs/SEC-04.md](docs/SEC-04.md).

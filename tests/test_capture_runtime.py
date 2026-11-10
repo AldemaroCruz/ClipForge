@@ -40,6 +40,9 @@ MODEL = {
 
 class CaptureRuntimeTests(unittest.TestCase):
     def setUp(self):
+        resolver = patch("app.media_binaries.resolve_media_binary", return_value="/usr/bin/ffmpeg")
+        resolver.start()
+        self.addCleanup(resolver.stop)
         self.temporary = tempfile.TemporaryDirectory(prefix="clipforge-capture-contract-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
@@ -62,7 +65,7 @@ class CaptureRuntimeTests(unittest.TestCase):
     def test_ffmpeg_version_preserves_first_line_and_timeout_ten(self):
         with patch.object(capture.subprocess, "check_output", return_value=VERSION_LINE + "\nsecond line") as command:
             self.assertEqual(capture.ffmpeg_version(), VERSION_LINE)
-        command.assert_called_once_with(["ffmpeg", "-version"], text=True, timeout=10)
+        command.assert_called_once_with(["/usr/bin/ffmpeg", "-version"], text=True, timeout=10)
 
     def test_ffmpeg_version_rejects_empty_or_blank_first_line(self):
         for value in ("", "\n", "\r\n", " \t\n", "\nffmpeg version SYNTHETIC later line"):
@@ -71,25 +74,25 @@ class CaptureRuntimeTests(unittest.TestCase):
                     with self.assertRaises(ValueError) as raised:
                         capture.ffmpeg_version()
                 self.assertEqual(str(raised.exception), EMPTY_VERSION)
-                command.assert_called_once_with(["ffmpeg", "-version"], text=True, timeout=10)
+                command.assert_called_once_with(["/usr/bin/ffmpeg", "-version"], text=True, timeout=10)
 
     def test_ffmpeg_version_preserves_nonzero_command_failure(self):
-        error = subprocess.CalledProcessError(7, ["ffmpeg", "-version"], output="SYNTHETIC command output")
+        error = subprocess.CalledProcessError(7, ["/usr/bin/ffmpeg", "-version"], output="SYNTHETIC command output")
         with patch.object(capture.subprocess, "check_output", side_effect=error) as command:
             with self.assertRaises(subprocess.CalledProcessError) as raised:
                 capture.ffmpeg_version()
         self.assertIs(raised.exception, error)
         self.assertEqual(raised.exception.returncode, 7)
-        command.assert_called_once_with(["ffmpeg", "-version"], text=True, timeout=10)
+        command.assert_called_once_with(["/usr/bin/ffmpeg", "-version"], text=True, timeout=10)
 
     def test_ffmpeg_version_preserves_timeout_exception(self):
-        error = subprocess.TimeoutExpired(["ffmpeg", "-version"], 10)
+        error = subprocess.TimeoutExpired(["/usr/bin/ffmpeg", "-version"], 10)
         with patch.object(capture.subprocess, "check_output", side_effect=error) as command:
             with self.assertRaises(subprocess.TimeoutExpired) as raised:
                 capture.ffmpeg_version()
         self.assertIs(raised.exception, error)
         self.assertEqual(raised.exception.timeout, 10)
-        command.assert_called_once_with(["ffmpeg", "-version"], text=True, timeout=10)
+        command.assert_called_once_with(["/usr/bin/ffmpeg", "-version"], text=True, timeout=10)
 
     def test_controlled_python_process_exercises_success_error_and_timeout(self):
         original = subprocess.check_output
@@ -101,7 +104,7 @@ class CaptureRuntimeTests(unittest.TestCase):
         for script, expected_error, fixture_timeout in cases:
             with self.subTest(expected_error=expected_error):
                 def controlled(command, *, text, timeout):
-                    self.assertEqual(command, ["ffmpeg", "-version"])
+                    self.assertEqual(command, ["/usr/bin/ffmpeg", "-version"])
                     self.assertIs(text, True)
                     self.assertEqual(timeout, 10)  # The production setting never changes.
                     return original(
@@ -142,14 +145,14 @@ class CaptureRuntimeTests(unittest.TestCase):
         mocks.packages.assert_called_once_with()
         mocks.model.assert_called_once_with(self.home, "tiny")
         mocks.pip.assert_called_once_with([sys.executable, "-m", "pip", "check"], capture_output=True, text=True, timeout=60)
-        mocks.ffmpeg.assert_called_once_with(["ffmpeg", "-version"], text=True, timeout=10)
+        mocks.ffmpeg.assert_called_once_with(["/usr/bin/ffmpeg", "-version"], text=True, timeout=10)
         self.assertFalse(self.home.exists())
 
     def test_capture_ffmpeg_failures_publish_no_outputs(self):
         failures = (
             ("", None, ValueError), (" \n", None, ValueError),
-            (None, subprocess.CalledProcessError(7, ["ffmpeg", "-version"]), subprocess.CalledProcessError),
-            (None, subprocess.TimeoutExpired(["ffmpeg", "-version"], 10), subprocess.TimeoutExpired),
+            (None, subprocess.CalledProcessError(7, ["/usr/bin/ffmpeg", "-version"]), subprocess.CalledProcessError),
+            (None, subprocess.TimeoutExpired(["/usr/bin/ffmpeg", "-version"], 10), subprocess.TimeoutExpired),
         )
         for index, (text, error, expected_type) in enumerate(failures):
             with self.subTest(error=expected_type, output=text):
@@ -159,7 +162,7 @@ class CaptureRuntimeTests(unittest.TestCase):
                         capture.capture(destination, self.home, "tiny")
                 self.assertFalse(destination.exists())
                 self.assertFalse(self.home.exists())
-                mocks.ffmpeg.assert_called_once_with(["ffmpeg", "-version"], text=True, timeout=10)
+                mocks.ffmpeg.assert_called_once_with(["/usr/bin/ffmpeg", "-version"], text=True, timeout=10)
 
     def test_cli_source_entry_fails_closed_without_publishing_outputs(self):
         tree = ast.parse(Path(capture.__file__).read_text(encoding="utf-8"))
@@ -170,8 +173,8 @@ class CaptureRuntimeTests(unittest.TestCase):
         entry = compile(ast.Module(body=guards, type_ignores=[]), str(capture.__file__), "exec")
         failures = (
             ("", None, "ValueError"),
-            (None, subprocess.CalledProcessError(7, ["ffmpeg", "-version"], output="SYNTHETIC_MUST_NOT_LEAK"), "CalledProcessError"),
-            (None, subprocess.TimeoutExpired(["ffmpeg", "-version"], 10), "TimeoutExpired"),
+            (None, subprocess.CalledProcessError(7, ["/usr/bin/ffmpeg", "-version"], output="SYNTHETIC_MUST_NOT_LEAK"), "CalledProcessError"),
+            (None, subprocess.TimeoutExpired(["/usr/bin/ffmpeg", "-version"], 10), "TimeoutExpired"),
         )
         for index, (text, error, error_type) in enumerate(failures):
             with self.subTest(error_type=error_type):
@@ -195,7 +198,7 @@ class CaptureRuntimeTests(unittest.TestCase):
                 self.assertFalse(destination.exists())
                 self.assertFalse(self.home.exists())
                 mocks.model.assert_called_once_with(self.home, "tiny")
-                mocks.ffmpeg.assert_called_once_with(["ffmpeg", "-version"], text=True, timeout=10)
+                mocks.ffmpeg.assert_called_once_with(["/usr/bin/ffmpeg", "-version"], text=True, timeout=10)
 
     def test_pip_check_failure_remains_blocking_before_model_or_ffmpeg(self):
         with self.fixtures(pip_code=1) as mocks:
@@ -213,6 +216,23 @@ class CaptureRuntimeTests(unittest.TestCase):
         from_imports = [node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
         self.assertNotIn("subprocess", imports)
         self.assertNotIn("subprocess", from_imports)
+
+    def test_metadata_only_import_and_verifier_help_need_no_application_package(self):
+        tools = self.root / "metadata-only-tools"
+        tools.mkdir()
+        for filename in ("capture_runtime.py", "verify_runtime.py"):
+            (tools / filename).write_bytes((SOURCE_ROOT / "scripts" / filename).read_bytes())
+        # No app/ directory, package/model enumeration, lock or cache is needed.
+        commands = (
+            [sys.executable, "-B", "-S", "-c", "from capture_runtime import packages; print('metadata-only-import-ok')"],
+            [sys.executable, "-B", "-S", "verify_runtime.py", "--help"],
+        )
+        for command in commands:
+            with self.subTest(command=command[-1]):
+                result = subprocess.run(command, cwd=tools, env={"PYTHONPATH": "", "PYTHONDONTWRITEBYTECODE": "1"},
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("ModuleNotFoundError", result.stderr)
 
 
 if __name__ == "__main__":

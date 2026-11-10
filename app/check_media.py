@@ -11,12 +11,13 @@ from pathlib import Path
 from typing import Any
 
 from .media import MediaValidationError, inspect_media
+from .media_binaries import resolve_media_binary
 
 
 def make_fixture(path: Path, *, audio: str | None = "tone", video: bool = True,
                  seconds: float = 22) -> None:
     """Create cheap synthetic MP4s in a caller-owned temporary directory."""
-    args = ["ffmpeg", "-nostdin", "-v", "error", "-y"]
+    args = [resolve_media_binary("ffmpeg"), "-nostdin", "-v", "error", "-y"]
     if video:
         args += ["-f", "lavfi", "-i", "color=c=black:s=160x90:r=2"]
     if audio is not None:
