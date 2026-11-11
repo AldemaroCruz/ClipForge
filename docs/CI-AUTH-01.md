@@ -112,3 +112,146 @@ Expediente nuevo: `.ci-local/ci-auth01-5fd6be89/`. Conserva el estado inicial,
 comparación con el patch revisado, commits, regresiones, contextos, builds y cada
 intento con su código. Los resultados y el enlace al run se incorporan al cierre;
 la mera presencia del workflow no declara validado GitHub Actions ni aprueba release.
+
+## Cierre observado en GitHub: run 42947739289
+
+Revisión de artefactos el 2026-11-11. Commit
+`7fe3a486911c281c58fb7de3df72ad87f2c696e9`, rama `ci/bootstrap-sec03`,
+[run 42947739289](https://github.com/AldemaroCruz/ClipForge/actions/runs/42947739289).
+Se reutilizó `clipforge-ci-42947739289-1`, ya descargado en
+`.ci-local/ci-auth01-5fd6be89/github-artifacts-42947739289-1/`.
+Los 203 archivos coinciden con el manifiesto previo en nombres, bytes y SHA256;
+no se descargaron nuevamente ni se repitieron builds, tests o scanners.
+
+**Integración funcional comprobada en GitHub; CI global rechazado por seguridad.**
+El validador final contiene exactamente cuatro errores `security_finding`:
+`bandit`, `trivy`, `browser-trivy`, `postgres_trivy`. No contiene errores de
+identidad, integridad, esquema, ejecución, omisión o limpieza. El job CI Gate
+también falla al propagar esos rechazos; no es otro defecto de integración.
+
+### Discovery, regresiones y aceptación
+
+- **681 IDs descubiertos, únicos y ejecutados**, cero duplicados, fallos,
+  errores, skips, expected failures o unexpected successes. El check de
+  completeness y las listas reales concuerdan; no se usa el contador como
+  sustituto del inventario. SHA256 de IDs UTF8/LF:
+  `1d7d3ba67a46dadd6ea1edbd66e4fa68cf2425da1a2cb4d07c169f2f271068fd`.
+- Se conservan los **612 IDs de AUTH-01**, sin retirados. Las **69 altas** son
+  9 de `test_ci_auth_browser`, 18 de `test_ci_postgres`, 23 de `test_ci_reports`
+  y 19 de `test_postgres_inventory`. Son tests de integración y contratos CI;
+  las fixtures negativas de scanner/validador no se presentan como fallos reales.
+- Pasan los **11 checks**: isolated_environment, ffmpeg, ffprobe, pip_check,
+  runtime, media, presentation, branding, test_inventory,
+  test_execution_completeness y coverage.
+- Pasan los seis escenarios previos: **smoke** (`simulated_fetch`) y
+  **workflow, editorial, delivery, ai y operations** (HTTP directo). Todos
+  tienen exit0, sin timeout ni bridge. Los 60 pasos reportados no son 60 tests
+  unitarios ni se suman a 681. ASR/LLM siguen siendo fixtures.
+- AUTH adicional: **siete pasos aprobados**, HTTP directo, PostgreSQL real,
+  `auth_mocked=false` y reinicio real del proceso Uvicorn: login,
+  admin_create_user, independent_sessions, process_restart, password_revocation,
+  admin_deactivation y logout_mobile. No son siete IDs unitarios adicionales.
+- Migración real, suite, browser y auth-browser registran salida0. La red
+  Docker propia es **internal**, sin salida externa, con PostgreSQL sin puerto
+  publicado y rol de aplicación sin privilegios de superusuario/createdb.
+  No se describe esa integración como `--network none`.
+
+Cobertura Coverage 7.17.2, 49 archivos `app/` y `scripts/`, sin omit ni líneas
+excluidas: **líneas 5125/6288 = 81,50445292620866 %; ramas 1278/1790 =
+71,39664804469274 %; combinada 79,26466947264174 %**. Mide el proceso unittest
+con mocks/threads explícitos; excluye navegador, AUTH/PostgreSQL en otros procesos
+y subprocesos de checks nativos. No se inventó un umbral. Por ejemplo,
+`scripts/auth_migrate.py` tiene cero cobertura en ese proceso; eso no contradice
+la migración real separada con exit0.
+
+### Seguridad real del mismo run
+
+Bandit 1.9.4: **39 findings, 36 LOW y 3 MEDIUM; cero errores**, 7950 LOC,
+49 archivos, nosec0 y skipped_tests0. Reglas: **B404=15, B603=20, B108=3,
+B105=1**. Las tres MEDIUM son B108 en `scripts/ci_postgres.py:227,295,302`;
+no se aceptan ni se clasifican automáticamente como falsos positivos.
+
+| Imagen | HIGH | CRITICAL | IDs únicos | Paquetes inventariados / componentes SBOM |
+| --- | ---: | ---: | ---: | --- |
+| CI | 281 | 1 | 66 | 349 / 350 |
+| Browser | 283 | 1 | 68 | 361 / 362 |
+| PostgreSQL | 147 | 2 | 62 | 149 / 151 |
+
+Son **715 filas y 97 IDs distintos en la unión**, no 196 CVEs únicos.
+Los informes son H/C; no acreditan ausencia de otros niveles. En CI/browser,
+todos esos findings pertenecen a paquetes OS; los targets Python56 y Node1
+permanecen presentes, sin findings H/C en este filtro. Las principales
+concentraciones por source son FFmpeg153, krb556 y util-linux36 filas en cada
+imagen de aplicación; browser añade dos de CUPS. Matriz completa por paquete,
+versión, fuente y SeveritySource en el expediente de cierre.
+
+PostgreSQL se desglosa expresamente:
+
+- Motor **18.6**, paquete `postgresql-18=18.6-1.pgdg13+2`, binario inventariado,
+  perteneciente al paquete e incluido en SBOM; cero findings atribuidos al motor
+  en estos JSON, sin afirmar que esté libre de vulnerabilidades.
+- Sistema Debian: **145 paquetes**, **122 HIGH + 1 CRITICAL**, 36 IDs únicos.
+  Incluye krb5, util-linux, libxml2, gnupg2, ncurses, perl, sqlite3 y otros.
+- `/usr/local/bin/gosu` **1.19**, módulo principal v1.19.0, con Go **1.24.6**:
+  cuatro componentes reales, **25 HIGH + 1 CRITICAL**, 26 IDs en stdlib embebida.
+  No son vulnerabilidades atribuidas al servidor SQL. No se inventan targets
+  Python/Node para esta imagen. Su SBOM tiene 149 libraries, un OS y una
+  application; el informe registra SCA exit1 por findings y SBOM exit0.
+
+CRITICAL: las tres imágenes contienen **CVE-2026-6653** en
+`libxml2=2.12.7+dfsg+really2.9.14-2.1+deb13u3`, SeveritySource nvd,
+DataSource Debian, estado affected y FixedVersion ausente. PostgreSQL contiene
+además **CVE-2025-68121**, Go `stdlib v1.24.6` de gosu, SeveritySource nvd y
+DataSource Go. Su `Status=fixed` significa fix catalogado
+`1.24.13, 1.25.7, 1.26.0-rc.3`, no instalado. No se inicia aquí remediación ni
+verificación general de fixes; se conserva la evidencia original.
+
+Identidades reales, concordantes entre archivos ID, inventario, Trivy y SBOM:
+
+```text
+CI      sha256:ef2a2c36f0a7214992b545b06b72ec4136f14cd07f64f72b28e733d0fd72990a
+browser sha256:d732173631c8867e92abd65e762feef2ba127b9553a27ea3c443240200f9f02b
+PG      sha256:8bca9649e52d948114ccc8164b55b7ab26b64e729893e420114bb5c87bf7c7cc
+```
+
+Trivy **0.76.2**, DB schema2, SHA256
+`cf7fa3086682e8f77298ca8178419a530f97d7c4bd3ac203a64f2977f82e94a6`;
+UpdatedAt `2026-11-10T19:01:23.081219346Z`, DownloadedAt
+`2026-11-11T02:41:54.100579649Z`, NextUpdate
+`2026-11-11T19:01:23.081218965Z`. Son metadatos/hash compartidos registrados por
+el run y concordantes con Trivy-version; cada JSON de imagen no contiene una
+huella DB individual. SeveritySource ausente se conserva ausente, sin inferirlo
+desde DataSource. Los TAR y el payload DB no están adjuntos: se verificaron las
+declaraciones de sus hashes contra el manifiesto, sin recalcular esos payloads.
+Gitleaks del run registra cero findings sobre 164 fuentes;
+sus hashes coinciden con los blobs del SHA que disparó Actions. Esto no es un
+nuevo escaneo de la documentación modificada en este cierre.
+
+### Limpieza, conservación y decisiones
+
+Los reportes de limpieza principal e idempotente indican `clean`, propiedad
+verificada, sin contenedores/redes propios ni archivos privados restantes.
+Se retiraron únicamente los recursos identificados de esa ejecución. El job
+conservó reportes y retiró su scratch de scanner, ambos con resultado success.
+No se ejecutó una nueva consulta Docker contra recursos del propietario.
+Los 203 archivos del bundle siguen byteidénticos al manifiesto de descarga;
+su inventario de nombres no incluye dumps, archivos privados del lanzador,
+cookies, tokens ni TARs. No se ejecutó otro scanner de secretos sobre reportes.
+No se publican logs privados, connection strings o variables de contenedor.
+
+El [registro de riesgos](RISK-REGISTER.md) añade 715 SCA y 39 SAST con sus fuentes,
+identidades y severidades originales. Conserva las 4.717 observaciones previas
+y ambos intentos SAST AUTH-01; ninguna aceptación, supresión o cambio de política.
+El cierre modifica solamente esta documentación y el registro; no incluye los
+experimentos SEC-05 preexistentes. Pro/ESM aplazado y presupuesto de servicios
+nuevos cero. Sin commit/push, dependencias, distribución, lógica AUTH o cambios
+operativos; release/despliegue siguen bloqueados.
+
+Expediente de revisión: `.ci-local/ci-auth01-close-038d6d04/`, con
+[QA](../.ci-local/ci-auth01-close-038d6d04/qa/REPORT.md),
+[seguridad y matriz](../.ci-local/ci-auth01-close-038d6d04/security/analysis-1/review.md),
+[infraestructura](../.ci-local/ci-auth01-close-038d6d04/infra/report.md), delta de
+riesgos y hashes. **No se identifica otro
+fallo de integración además de los cuatro bloqueos de seguridad** en la evidencia
+conservada de este run. No se reabre SEC-05 ni se implementan recuperación local
+de cuentas o auditoría de acciones en este cierre.
