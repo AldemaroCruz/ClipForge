@@ -68,6 +68,19 @@ class CIScanTests(unittest.TestCase):
                 reader.assert_not_called()
                 self.assertFalse(self.destination.exists())
 
+    def test_exact_policy_is_scanned_without_extending_the_build_context(self):
+        name = ".gitleaks.toml"
+        (self.source / name).write_text("# authored snapshot-name fixture\n", encoding="utf-8")
+        self.write_paths([*self.names, name])
+        self.prepare()
+        manifest = json.loads((self.destination / scan.MANIFEST).read_text())
+        self.assertIn(name, {item["path"] for item in manifest["files"]})
+        self.assertEqual((self.destination / name).read_bytes(), (self.source / name).read_bytes())
+        self.assertNotIn(name, scan.context.ROOT_FILES)
+        for unapproved in (".GITLEAKS.TOML", ".gitleaks.local.toml", "gitleaks.toml"):
+            with self.subTest(name=unapproved), self.assertRaises(scan.ScanError):
+                scan.validate_paths([unapproved])
+
     def test_name_preflight_does_not_stat_a_forced_secret(self):
         self.write_paths(["README.md", ".env.ai"])
         original = scan.context._checked_stat

@@ -1,7 +1,7 @@
 "use strict";
 window.ClipForgeAuth = (() => {
   let user = null, token = null;
-  const isLogin = location.pathname === "/login";
+  const isLogin = ["/login", "/recover"].includes(location.pathname);
   const safeMethods = new Set(["GET", "HEAD", "OPTIONS"]);
   function clearLocal() {
     try { localStorage.removeItem("clipforge-last-job"); if (user) localStorage.removeItem(`clipforge-last-job:${user.id}`); } catch (_) {}
@@ -31,6 +31,11 @@ window.ClipForgeAuth = (() => {
     user = result.user; token = result.csrf_token;
     return user;
   }
+  async function recover(code, newPassword) {
+    token = (await json("/auth/csrf")).csrf_token;
+    try {return await json("/auth/recover", payload({code,new_password:newPassword}));}
+    finally {token = null;}
+  }
   const ready = isLogin ? Promise.resolve(null) : json("/auth/me").then(result => {
     user = result.user; token = result.csrf_token;
     document.querySelectorAll("[data-auth-user]").forEach(n => n.textContent = user.username);
@@ -57,6 +62,6 @@ window.ClipForgeAuth = (() => {
       try {await logout();} catch (error) {button.disabled=false;document.querySelectorAll("[data-auth-error]").forEach(n=>n.textContent=error.message);}
     }));
   });
-  return {ready, login, logout, json, payload, fetch:authenticatedFetch,
+  return {ready, login, recover, logout, json, payload, fetch:authenticatedFetch,
     storageKey:() => user ? `clipforge-last-job:${user.id}` : null};
 })();

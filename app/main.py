@@ -600,6 +600,12 @@ def login_page():
                         headers={"Cache-Control": "no-store"})
 
 
+@app.get("/recover", response_class=HTMLResponse)
+def recovery_page():
+    return HTMLResponse((ASSETS / "recover.html").read_text(encoding="utf-8"),
+                        headers={"Cache-Control": "no-store"})
+
+
 @app.get("/account", response_class=HTMLResponse)
 def account_page():
     return HTMLResponse((ASSETS / "account.html").read_text(encoding="utf-8"),

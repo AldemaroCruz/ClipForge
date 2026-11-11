@@ -104,3 +104,70 @@ browser-trivy y postgres_trivy. Las pruebas funcionales y limpieza pasan;
 **registrado no significa aceptado**. Pro/ESM sigue aplazado, presupuesto de
 servicios nuevos cero y release/despliegue bloqueados. Estos scans no describen
 la instalación operativa. Detalle: [cierre CI-AUTH-01](CI-AUTH-01.md).
+
+## AUTH-02: candidata local nueva, registrada sin aceptación
+
+Se añaden **754 observaciones reales** de la candidata2: 715 SCA y 39 SAST,
+conservando íntegros los 5.471 registros anteriores y sus severidades. Son
+6.225 registros en `records`; no son identificadores únicos. Los intentos SAST
+históricos AUTH-01 conservan además su sección original.
+
+CI `61d41e02…` y browser `7df5d31b…` tienen identidades nuevas; PostgreSQL
+`8bca9649…` conserva la misma imagen fijada, pero también recibió un scan nuevo.
+Trivy0.76.2 utilizó DB schema2 SHA256
+`4c2300c4576c99501ddad6911f1ced5bcd8ddaf65d925f82205a436154b20e61`,
+UpdatedAt `2026-11-11T13:00:47.186797699Z`, congelada/RO y verificada antes/después.
+Los paquetes/versiones coinciden con el inventario del run anterior. Los
+resultados de ese run no se reasignan a estas imágenes.
+
+| Medición AUTH-02 | LOW | MEDIUM | HIGH | CRITICAL | IDs distintos |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Bandit nuevo | 36 | 3 | 0 | 0 | 4 reglas, 39 ubicaciones |
+| Trivy CI | No medido en este filtro | No medido en este filtro | 281 | 1 | 66 |
+| Trivy browser | No medido en este filtro | No medido en este filtro | 283 | 1 | 68 |
+| Trivy PostgreSQL | No medido en este filtro | No medido en este filtro | 147 | 2 | 62 |
+
+Unión SCA: 97 IDs, no la suma de las tres imágenes. Persisten CRITICAL de
+libxml2/CVE-2026-6653 y Go stdlib/CVE-2025-68121 dentro de gosu. Se mantiene
+la separación motor SQL/OS/Go y la ausencia original de SeveritySource cuando
+corresponde. Bandit terminó sin errores y las tres parejas SBOM/Trivy son reales;
+los exit1 por findings continúan bloqueantes.
+
+`auth02_functional_risks` documenta sin asignar severidades ficticias de scanner:
+el poder del administrador que podría utilizar un código para asumir una cuenta
+normal, y la ausencia de inmutabilidad de auditoría frente al propietario de PG.
+Reautenticación, límites, códigos hash/15min/unuso y auditoría atómica reducen
+exposición; no eliminan ese poder ni lo convierten en una aceptación de riesgo.
+La entrega exige verificar manualmente al destinatario.
+
+[AUTH-02](AUTH-02.md) documenta permisos, pruebas reales, imágenes y límites.
+No hay aceptación de hallazgos, excepciones, cambio de distribución, Pro/ESM,
+servicios nuevos, release o despliegue. Los reportes no describen la instalación
+operativa ni las cuentas conservadas del propietario.
+
+Además, `auth02_secret_scan` conserva **un finding Gitleaks generic-api-key** en
+`FROZEN_AUTH01_DDL_SHA256` (`tests/test_auth_recovery.py:41`). Se comprobó que el
+valor es exactamente el SHA256 del DDL público AUTH-01, no una credencial de
+ejecución. No tiene una severidad SCA inventada ni aceptación/exclusión: el gate
+sigue bloqueándolo. El informe redacted y la prueba reproducible se conservan;
+los 754 registros SCA/SAST nuevos y las observaciones históricas no se alteran.
+
+### Clasificación posterior autorizada del checksum público
+
+El propietario aprobó solamente el falso positivo de esa constante, cuya
+correspondencia exacta con las 13 sentencias históricas se verificó. Se añade
+una observación posterior; el reporte original y su rechazo no se editan.
+`.gitleaks.toml` mantiene defaults y exige simultáneamente la regla concreta,
+ruta exacta y línea/literal exactos. La matriz real de precisión pasó 8/8.
+No se permite ampliar esta clasificación automáticamente ante cambios de uso.
+
+Es una clasificación de un dato público, no aceptación de credenciales ni de
+riesgos SAST/SCA. Todos los findings Bandit/Trivy continúan registrados, no
+aceptados; el nuevo run tendrá imágenes/reportes propios. No se reasignan sus
+resultados históricos a imágenes del nuevo commit.
+
+El primer índice siguió detectando ese mismo checksum: la fixture de primera
+línea no cubría el LF que la versión fijada conserva en currentLine. No hubo
+otra detección. Se conserva el intento y se amplía la matriz a 12/12 (24 scans),
+incluido el archivo público completo, con ajuste exclusivo del framing LF.
+No se modifica el literal, su uso, la regla ni la ruta exacta autorizada.

@@ -23,6 +23,11 @@ from scripts import capture_ci_inventory as capture
 from scripts import prepare_ci_context as context
 from scripts import prepare_ci_scan as scan
 from scripts import validate_ci_reports as gate
+from scripts import gitleaks_policy as policy
+try:  # CI discovery imports test modules directly; local module launches use the namespace package.
+    from test_gitleaks_policy import fixture_policy_bytes
+except ModuleNotFoundError:
+    from tests.test_gitleaks_policy import fixture_policy_bytes
 
 
 SYNTHETIC = "SYNTHETIC FIXTURE ONLY: no scanner or real security acceptance"
@@ -52,6 +57,9 @@ POSTGRES_PACKAGES["gobinary"].append({"Name": "stdlib", "Version": "v1.24.6"})
 SCENARIOS = ("smoke", "workflow", "editorial", "delivery", "ai", "operations")
 AUTH_SCENARIO_STEPS = ("login", "admin_create_user", "independent_sessions", "process_restart",
                        "password_revocation", "admin_deactivation", "logout_mobile")
+RECOVERY_SCENARIO_STEPS = ("recovery_admin_reauthentication", "recovery_issue", "recovery_replace",
+                           "recovery_process_restart", "recovery_consume", "recovery_session_revocation",
+                           "recovery_single_use", "recovery_audit_privacy")
 
 
 def write_json(path, value):
@@ -96,7 +104,9 @@ def create_fixture(tmpRoot):
     workflow.write_text("# " + SYNTHETIC + "\nname: synthetic\non: push\njobs: {}\n", encoding="utf-8")
     context.prepare_context(source, prepared, reports / "context-manifest.json")
     context_manifest = read_json(reports / "context-manifest.json")
-    tracked = sorted([record["path"] for record in context_manifest["files"]] + [".github/workflows/ci.yml"])
+    (source / ".gitleaks.toml").write_bytes(fixture_policy_bytes())
+    tracked = sorted([record["path"] for record in context_manifest["files"]]
+                     + [".github/workflows/ci.yml", ".gitleaks.toml"])
     index = root / "tracked-fixture-paths.txt"
     index.write_bytes(("\0".join(tracked) + "\0").encode("utf-8"))
     scan.prepare_scan(source, index, root / "scan")
@@ -161,6 +171,18 @@ def create_fixture(tmpRoot):
         "steps": 7, "details": [{"id": name, "status": "passed", "detail": SYNTHETIC + ": " + name}
                                  for name in AUTH_SCENARIO_STEPS],
     })
+    # This strict-shape recovery report is schema-fixture data, not browser execution evidence.
+    write_json(reports / "browser-auth-recovery/browser-auth-recovery-summary.json", {
+        "schema_version": 1, "status": "passed", "exit_code": 0, "timed_out": False,
+        "script": "browser_auth_recovery.py", "transport": "direct_http", "postgresql": "real",
+        "auth_mocked": False, "process_restart": True, "external_network": False,
+        "image_id": BROWSER_IMAGE_ID, "postgres_image_id": POSTGRES_IMAGE_ID,
+        "context_manifest_sha256": hashlib.sha256((reports / "context-manifest.json").read_bytes()).hexdigest(),
+        "toolchain": {"playwright_version": "1.64.1", "chromium_version": "156.0.8078.4",
+                      "chromium_revision": "1248", "system": "Linux", "machine": "x86_64"},
+        "steps": 8, "details": [{"id": name, "status": "passed"} for name in RECOVERY_SCENARIO_STEPS],
+    })
+    (reports / "browser-auth-recovery/FIXTURE-ONLY.txt").write_text(SYNTHETIC + "\n", encoding="utf-8")
     write_json(reports / "gitleaks-source.json", [])
     write_json(reports / "actionlint-summary.json", {
         "synthetic_fixture": SYNTHETIC, "schema_version": 1, "version": "1.7.12",
@@ -270,6 +292,34 @@ def create_fixture(tmpRoot):
         "private_files_removed": ["postgres-password", "database-password", "initialize.sql"],
         "remaining_container_ids": [], "remaining_network_ids": [], "private_files_remaining": [],
         "checked_utc": "2026-11-10T00:01:00Z", "report": "synthetic-attempt/cleanup",
+    })
+    (reports / "gitleaks-version.txt").write_text("8.30.1\n", encoding="utf-8")
+    policy.record_execution(config=root / "scan/.gitleaks.toml",
+        source_manifest=reports / "source-scan-manifest.json", raw_report=reports / "gitleaks-source.json",
+        raw_exit=0, scanner_image=policy.GITLEAKS_IMAGE, version_file=reports / "gitleaks-version.txt",
+        policy_copy=reports / "gitleaks-policy.toml", output=reports / "gitleaks-execution.json")
+    precision_cases = [
+        ("approved", 1, 0, []),
+        ("same_file_other_secret", 2, 1, ["generic-api-key"]),
+        ("changed_value", 1, 1, ["generic-api-key"]),
+        ("other_path", 1, 1, ["generic-api-key"]),
+        ("other_rule", 2, 1, ["github-pat"]),
+        ("same_line_other_secret", 2, 2, ["generic-api-key"]),
+        ("changed_identifier", 1, 1, ["generic-api-key"]),
+        ("nested_path", 1, 1, ["generic-api-key"]),
+        ("approved_after_prelude", 1, 0, []),
+        ("approved_full_file", 1, 0, []),
+        ("same_file_secret_before", 2, 1, ["generic-api-key"]),
+        ("same_line_prefix", 2, 2, ["generic-api-key"]),
+    ]
+    write_json(reports / "gitleaks-precision.json", {
+        "schema_version": 1, "status": "passed", "scanner_image": policy.GITLEAKS_IMAGE,
+        "scanner_version": policy.GITLEAKS_VERSION, "policy_sha256": policy.POLICY_SHA256,
+        "synthetic_only": True, "external_network": False,
+        "cases": [{"id": name, "status": "passed", "default_exit": 1, "configured_exit": int(after > 0),
+                   "default_findings": before, "configured_findings": after,
+                   "removed_only_approved": True, "remaining_rules": rules}
+                  for name, before, after, rules in precision_cases],
     })
     return reports, prepared
 
@@ -1008,10 +1058,192 @@ class CIReportContractTests(unittest.TestCase):
         report["scenarios"] = report["scenarios"][:-1]
         self.rejects_report("browser/browser-summary.json", report, "browser")
 
+    def test_recovery_browser_report_is_independently_mandatory(self):
+        (self.reports / "browser-auth-recovery/browser-auth-recovery-summary.json").unlink()
+        result = gate.validate_reports(self.reports, self.context)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual([(error["control"], error["category"]) for error in result["errors"]],
+                         [("browser_auth_recovery", "evidence_error")])
+
+    def test_recovery_browser_requires_every_field_and_strict_public_types(self):
+        path = "browser-auth-recovery/browser-auth-recovery-summary.json"
+        original = read_json(self.reports / path)
+        for field in original:
+            with self.subTest(missing=field):
+                report = copy.deepcopy(original)
+                del report[field]
+                self.rejects_report(path, report, "browser_auth_recovery")
+        mutations = [("schema_version", True), ("status", "failed"), ("exit_code", 1), ("exit_code", False),
+                     ("timed_out", True), ("timed_out", 0), ("script", "browser_auth.py"),
+                     ("transport", "simulated_fetch"), ("postgresql", "mocked"),
+                     ("process_restart", False), ("process_restart", 1), ("auth_mocked", True),
+                     ("auth_mocked", 0), ("external_network", True), ("external_network", 0),
+                     ("steps", 7), ("steps", True), ("details", []), ("details", None),
+                     ("toolchain", False), ("errors", []), ("simulated", True),
+                     ("synthetic_fixture", SYNTHETIC), ("recovery_code", "DO_NOT_EXPORT_FIXTURE")]
+        for field, value in mutations:
+            with self.subTest(field=field, value=value):
+                report = copy.deepcopy(original)
+                report[field] = value
+                self.rejects_report(path, report, "browser_auth_recovery")
+
+    def test_recovery_browser_requires_eight_unique_private_safe_step_records(self):
+        path = "browser-auth-recovery/browser-auth-recovery-summary.json"
+        original = read_json(self.reports / path)
+        self.assertTrue(set(RECOVERY_SCENARIO_STEPS).isdisjoint(AUTH_SCENARIO_STEPS))
+        for mutation in ("missing", "duplicate", "auth7", "failed", "extra", "wrongtype", "nondict"):
+            with self.subTest(mutation=mutation):
+                report = copy.deepcopy(original)
+                steps = report["details"]
+                if mutation == "missing":
+                    steps.pop()
+                elif mutation == "duplicate":
+                    steps.append(copy.deepcopy(steps[0]))
+                elif mutation == "auth7":
+                    steps[0]["id"] = AUTH_SCENARIO_STEPS[0]
+                elif mutation == "failed":
+                    steps[0]["status"] = "failed"
+                elif mutation == "extra":
+                    steps[0]["detail"] = "DO_NOT_EXPORT_FIXTURE"
+                elif mutation == "wrongtype":
+                    steps[0]["id"] = True
+                else:
+                    steps[0] = "not a step record"
+                self.rejects_report(path, report, "browser_auth_recovery")
+
+    def test_recovery_browser_binds_both_images_and_exact_context_manifest(self):
+        path = "browser-auth-recovery/browser-auth-recovery-summary.json"
+        original = read_json(self.reports / path)
+        for field, value in [("image_id", IMAGE_ID), ("image_id", True),
+                             ("postgres_image_id", IMAGE_ID), ("postgres_image_id", None),
+                             ("context_manifest_sha256", "f" * 64), ("context_manifest_sha256", False)]:
+            with self.subTest(field=field, value=value):
+                report = copy.deepcopy(original)
+                report[field] = value
+                self.rejects_report(path, report, "browser_auth_recovery")
+
+    def test_recovery_browser_requires_complete_linux_toolchain_without_private_paths(self):
+        path = "browser-auth-recovery/browser-auth-recovery-summary.json"
+        original = read_json(self.reports / path)
+        for field in original["toolchain"]:
+            with self.subTest(missing=field):
+                report = copy.deepcopy(original)
+                del report["toolchain"][field]
+                self.rejects_report(path, report, "browser_auth_recovery")
+        for field, value in [("playwright_version", 1), ("chromium_version", " "),
+                             ("system", "Windows"), ("machine", "arm64"),
+                             ("executable", "/private/fixture/chromium")]:
+            with self.subTest(field=field, value=value):
+                report = copy.deepcopy(original)
+                report["toolchain"][field] = value
+                self.rejects_report(path, report, "browser_auth_recovery")
+
+    def test_recovery_browser_does_not_replace_auth7_or_historical_scenarios(self):
+        for path, control in [("browser-auth/browser-auth-summary.json", "browser_auth"),
+                              ("browser/browser-summary.json", "browser")]:
+            with self.subTest(path=path):
+                original = read_json(self.reports / path)
+                (self.reports / path).unlink()
+                try:
+                    result = gate.validate_reports(self.reports, self.context)
+                    self.assertEqual([(error["control"], error["category"]) for error in result["errors"]],
+                                     [(control, "evidence_error")])
+                finally:
+                    write_json(self.reports / path, original)
+
     def test_gitleaks_findings_and_non_array_results_are_rejected(self):
         for report in ({}, False, "", [{"Description": "SYNTHETIC secret finding, no secret value"}]):
             with self.subTest(report=report):
                 self.rejects_report("gitleaks-source.json", report, "gitleaks")
+
+    def test_gitleaks_requires_separate_policy_execution_and_precision_evidence(self):
+        self.assertFalse((self.context / ".gitleaks.toml").exists())
+        self.assertEqual(policy.validate_policy(self.reports / "gitleaks-policy.toml")["sha256"], policy.POLICY_SHA256)
+        for name, control in (("gitleaks-policy.toml", "gitleaks_execution"),
+                              ("gitleaks-execution.json", "gitleaks_execution"),
+                              ("gitleaks-version.txt", "gitleaks_execution"),
+                              ("gitleaks-precision.json", "gitleaks_precision")):
+            with self.subTest(name=name):
+                raw = (self.reports / name).read_bytes()
+                (self.reports / name).unlink()
+                try:
+                    result = gate.validate_reports(self.reports, self.context)
+                    self.assertEqual([(error["control"], error["category"]) for error in result["errors"]],
+                                     [(control, "evidence_error")])
+                finally:
+                    (self.reports / name).write_bytes(raw)
+
+    def test_gitleaks_execution_rejects_missing_forged_or_wrong_typed_metadata(self):
+        path = "gitleaks-execution.json"
+        original = read_json(self.reports / path)
+        for field in original:
+            with self.subTest(missing=field):
+                report = copy.deepcopy(original); del report[field]
+                self.rejects_report(path, report, "gitleaks_execution")
+        for field, value in [("schema_version", True), ("status", "error"), ("raw_exit_code", 1),
+                             ("raw_exit_code", False), ("raw_exit_code", 125),
+                             ("policy_sha256", "f" * 64), ("source_manifest_sha256", "f" * 64),
+                             ("raw_report_sha256", "f" * 64), ("scanner_image", "latest"),
+                             ("scanner_version", "8.30.0"), ("findings_count", False), ("errors", {})]:
+            with self.subTest(field=field, value=value):
+                report = copy.deepcopy(original); report[field] = value
+                self.rejects_report(path, report, "gitleaks_execution")
+
+    def test_gitleaks_modified_policy_flags_cannot_keep_passing_receipts(self):
+        path = self.reports / "gitleaks-policy.toml"
+        original = path.read_bytes()
+        for modified in (original + b"\n", original.replace(b"useDefault = true", b"useDefault = false"),
+                         original.replace(b'condition = "AND"', b'condition = "OR"')):
+            with self.subTest(policy_hash=hashlib.sha256(modified).hexdigest()):
+                path.write_bytes(modified)
+                result = gate.validate_reports(self.reports, self.context)
+                self.assertTrue(any(error["control"] == "gitleaks_execution"
+                                    and error["category"] == "evidence_error" for error in result["errors"]))
+
+    def test_gitleaks_unclassified_findings_stay_blocking_with_consistent_execution(self):
+        write_json(self.reports / "gitleaks-source.json", [{"RuleID": "unclassified-fixture", "Secret": "REDACTED"}])
+        execution = read_json(self.reports / "gitleaks-execution.json")
+        execution.update(status="security_findings", raw_exit_code=1, findings_count=1,
+                         raw_report_sha256=hashlib.sha256((self.reports / "gitleaks-source.json").read_bytes()).hexdigest())
+        write_json(self.reports / "gitleaks-execution.json", execution)
+        result = gate.validate_reports(self.reports, self.context)
+        self.assertEqual([(error["control"], error["category"]) for error in result["errors"]],
+                         [("gitleaks", "security_finding")])
+        execution["raw_exit_code"] = 0
+        write_json(self.reports / "gitleaks-execution.json", execution)
+        result = gate.validate_reports(self.reports, self.context)
+        self.assertTrue(any(error["control"] == "gitleaks_execution"
+                            and error["category"] == "evidence_error" for error in result["errors"]))
+        self.assertTrue(any(error["control"] == "gitleaks" and error["category"] == "security_finding"
+                            for error in result["errors"]))
+
+    def test_gitleaks_precision_rejects_missing_cases_wrong_identity_and_relaxed_results(self):
+        path = "gitleaks-precision.json"
+        original = read_json(self.reports / path)
+        for field, value in [("schema_version", True), ("status", "failed"),
+                             ("policy_sha256", "f" * 64), ("scanner_image", "latest"),
+                             ("scanner_version", "8.30.0"), ("synthetic_only", False),
+                             ("external_network", True), ("cases", [])]:
+            with self.subTest(field=field):
+                report = copy.deepcopy(original); report[field] = value
+                self.rejects_report(path, report, "gitleaks_precision")
+        for mutation in ("missing", "duplicate", "exit", "count", "classification", "other_rule", "boolean",
+                         "old_first_line_only", "framing_drops_unrelated", "prefix_classified"):
+            with self.subTest(mutation=mutation):
+                report = copy.deepcopy(original)
+                if mutation == "missing": report["cases"].pop()
+                elif mutation == "duplicate": report["cases"].append(copy.deepcopy(report["cases"][0]))
+                elif mutation == "exit": report["cases"][0]["configured_exit"] = 1
+                elif mutation == "count": report["cases"][0]["configured_findings"] = 1
+                elif mutation == "classification": report["cases"][0]["removed_only_approved"] = False
+                elif mutation == "boolean": report["cases"][0]["default_exit"] = True
+                elif mutation == "old_first_line_only": report["cases"] = report["cases"][:8]
+                elif mutation == "framing_drops_unrelated":
+                    next(c for c in report["cases"] if c["id"] == "same_file_secret_before")["configured_findings"] = 0
+                elif mutation == "prefix_classified":
+                    next(c for c in report["cases"] if c["id"] == "same_line_prefix")["configured_findings"] = 1
+                else: next(c for c in report["cases"] if c["id"] == "other_rule")["remaining_rules"] = []
+                self.rejects_report(path, report, "gitleaks_precision")
 
     def test_actionlint_schema_exits_and_rejection_probe_are_strict(self):
         original = read_json(self.reports / "actionlint-summary.json")

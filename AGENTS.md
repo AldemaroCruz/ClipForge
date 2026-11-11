@@ -1,5 +1,36 @@
 # ClipForge: instrucciones de desarrollo
 
+## Publicación puntual AUTH-02 autorizada
+
+El propietario revisó AUTH-02-review-final.patch SHA256
+`e1ca7a3e544483002938576d1c6be18cf36c20cfea87bd830ea4ef021b156b8c` y autoriza
+commit específico y push normal solo a `ci/bootstrap-sec03` en
+`AldemaroCruz/ClipForge`, tras verificar selección y escanear los blobs exactos
+del índice con la configuración versionada de Gitleaks. No reaplicar el patch.
+La única clasificación nueva autorizada es el checksum público en la asignación
+exacta de FROZEN_AUTH01_DDL_SHA256 de tests/test_auth_recovery.py. Usar defaults
+nativos completos y AND regla/ruta/línea literal; cambios requieren revisión.
+Mantener originales, probar precisión con scanner real y observar Actions del SHA
+nuevo. Sin excepciones Bandit/Trivy, force-push, merge, tags, release, despliegue,
+servicios pagos, Pro/ESM, cambios operativos ni datos del propietario.
+
+## AUTH-02 autorizado, sin promoción
+
+AUTH-02 autoriza recuperación de cuentas normales activas por administrador con
+sesión, CSRF y reautenticación limitada; códigos de alta entropía, hash solamente,
+15 minutos, un uso y revocación transaccional de sesiones. No recuperar admins,
+reactivar cuentas, cambiar roles/propiedad, impersonar o enviar correo externo.
+Auditoría persistente sin secretos y consistente con las acciones; revisión nueva
+sin editar DDL histórico. UI administrativa paginada y solo lectura.
+Pruebas en nueva candidata/PostgreSQL propios con datos sintéticos; conservar la
+candidata del propietario y la instalación operativa. Nuevo recorrido real de
+browser obligatorio en CI, además de los seis previos y AUTH-01; mantener gates.
+Puede crearse solo el commit documental separado de CI-AUTH-01 con los tres
+archivos revisados y escaneo de blobs exactos del índice. Sin commit de código
+AUTH-02 ni push hasta revisar la entrega. SEC-05/Pro/ESM siguen aplazados,
+presupuesto cero y release/despliegue bloqueados. Esta autorización reemplaza la
+exclusión histórica de recuperación únicamente para este alcance.
+
 ## Integración CI-AUTH-01 autorizada
 
 El propietario revisó AUTH-01 (patch SHA-256

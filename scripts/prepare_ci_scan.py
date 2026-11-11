@@ -29,7 +29,7 @@ ROOT_NAMES = frozenset(context.ROOT_FILES) | frozenset({
     ".dockerignore", ".gitignore", ".env.ai.example", "AGENTS.md", "Makefile",
     "Dockerfile.runtime", "Dockerfile.tests", "compose.yaml", "compose.ai.yaml",
     "pyproject.toml", "pytest.ini", "tox.ini", "mypy.ini", "ruff.toml",
-    ".ruff.toml", ".pre-commit-config.yaml",
+    ".ruff.toml", ".pre-commit-config.yaml", ".gitleaks.toml",
 })
 CODE = frozenset({".py", ".ps1", ".sh", ".bash", ".js", ".ts", ".html", ".css", ".svg"})
 TEXT = frozenset({".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".ini", ".tf", ".hcl", ".example"})

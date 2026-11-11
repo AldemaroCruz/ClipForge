@@ -167,6 +167,7 @@ jobs:
           node --check "$CI_CONTEXT/app/static/operations.js"
           node --check "$CI_CONTEXT/app/static/auth.js"
           node --check "$CI_CONTEXT/app/static/account.js"
+          node --check "$CI_CONTEXT/app/static/recover.js"
 
       - name: Prepare pinned scanners and the vulnerability database with network
         id: scanner_prep
@@ -193,18 +194,41 @@ jobs:
           cp -- "$CI_CACHE/db/metadata.json" "$CI_REPORTS/trivy-db-metadata.json"
           sha256sum "$CI_CACHE/db/trivy.db" | awk '{print $1}' > "$CI_REPORTS/trivy-db.sha256"
 
+      - name: Verify the exact policy classification against offline precision fixtures
+        run: |
+          set -euo pipefail
+          python -B scripts/check_gitleaks_precision.py \
+            --config "$CI_SCAN_SOURCE/.gitleaks.toml" \
+            --report "$CI_REPORTS/gitleaks-precision.json" \
+            --scratch "$CI_SCRATCH/gitleaks-precision" --user "$CI_CONTAINER_USER"
+
       - name: Scan the permitted tracked-source snapshot for secrets without network
         timeout-minutes: 5
         run: |
           set -euo pipefail
+          set +e
           docker run --rm --user "$CI_CONTAINER_USER" --pull never --platform linux/amd64 --network none \
             --read-only --cap-drop ALL --security-opt no-new-privileges \
             --tmpfs /tmp:rw,nosuid,size=256m \
             --mount "type=bind,src=$CI_SCAN_SOURCE,dst=/source,readonly" \
             --mount "type=bind,src=$CI_REPORTS,dst=/reports" \
-            "$GITLEAKS_IMAGE" dir /source --no-banner --redact=100 \
+            "$GITLEAKS_IMAGE" dir /source --config /source/.gitleaks.toml --no-banner --redact=100 \
             --ignore-gitleaks-allow --exit-code 1 --timeout 120 \
             --report-format json --report-path /reports/gitleaks-source.json
+          scanner_exit=$?
+          python -B scripts/gitleaks_policy.py record \
+            --config "$CI_SCAN_SOURCE/.gitleaks.toml" \
+            --source-manifest "$CI_REPORTS/source-scan-manifest.json" \
+            --raw-report "$CI_REPORTS/gitleaks-source.json" --exit-code "$scanner_exit" \
+            --version-file "$CI_REPORTS/gitleaks-version.txt" --scanner-image "$GITLEAKS_IMAGE" \
+            --policy-copy "$CI_REPORTS/gitleaks-policy.toml" \
+            --output "$CI_REPORTS/gitleaks-execution.json"
+          receipt_exit=$?
+          set -e
+          if (( scanner_exit != 0 )); then
+            exit "$scanner_exit"
+          fi
+          exit "$receipt_exit"
 
       - name: Prepare the pinned PostgreSQL image separately with network
         id: postgres_prep
@@ -321,6 +345,17 @@ jobs:
             --reports-subdir browser-auth --browser -- python -B scripts/run_ci_auth_browser.py \
             --report /ci-results/browser-auth-summary.json --image-id "$CI_BROWSER_ID" \
             --postgres-image-id "$POSTGRES_IMAGE_ID" \
+            --context-manifest-sha256 "$(sha256sum "$CI_REPORTS/context-manifest.json" | awk '{print $1}')"
+
+      - name: Execute mandatory real account recovery browser acceptance
+        if: ${{ !cancelled() && steps.build_browser.outcome == 'success' && steps.postgres.outcome == 'success' }}
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          python -B scripts/ci_postgres.py run --role auth-recovery --image-id "$CI_BROWSER_ID" \
+            --reports-subdir browser-auth-recovery --browser -- python -B scripts/run_ci_auth_browser.py \
+            --scenario recovery --report /ci-results/browser-auth-recovery-summary.json \
+            --image-id "$CI_BROWSER_ID" --postgres-image-id "$POSTGRES_IMAGE_ID" \
             --context-manifest-sha256 "$(sha256sum "$CI_REPORTS/context-manifest.json" | awk '{print $1}')"
 
       - name: Remove only this run's database, test containers and internal network

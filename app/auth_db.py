@@ -96,6 +96,6 @@ def database_ready() -> bool:
     try:
         with get_engine().connect() as connection:
             revisions = connection.execute(text("SELECT revision FROM auth_schema_migrations ORDER BY revision")).scalars().all()
-        return revisions == ["auth01_0001"]
+        return revisions == ["auth01_0001", "auth02_0002"]
     except (AuthConfigurationError, SQLAlchemyError):
         return False

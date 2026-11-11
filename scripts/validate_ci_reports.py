@@ -16,11 +16,13 @@ try:
     from scripts import prepare_ci_scan as scan
     from scripts.capture_ci_inventory import normalized_name
     from scripts.capture_postgres_inventory import POSTGRES_IMAGE
+    from scripts import gitleaks_policy
 except ModuleNotFoundError:
     import prepare_ci_context as context
     import prepare_ci_scan as scan
     from capture_ci_inventory import normalized_name
     from capture_postgres_inventory import POSTGRES_IMAGE
+    import gitleaks_policy
 
 
 class ValidationError(ValueError):
@@ -43,6 +45,27 @@ SHA = re.compile(r"[0-9a-f]{64}")
 IMAGE = re.compile(r"sha256:[0-9a-f]{64}")
 AUTH_STEPS = {"login", "admin_create_user", "independent_sessions", "process_restart",
               "password_revocation", "admin_deactivation", "logout_mobile"}
+RECOVERY_STEPS = {"recovery_admin_reauthentication", "recovery_issue", "recovery_replace",
+                  "recovery_process_restart", "recovery_consume", "recovery_session_revocation",
+                  "recovery_single_use", "recovery_audit_privacy"}
+RECOVERY_REPORT_FIELDS = {"schema_version", "status", "exit_code", "script", "steps", "details",
+                          "timed_out", "transport", "postgresql", "process_restart", "auth_mocked",
+                          "external_network", "image_id", "postgres_image_id",
+                          "context_manifest_sha256", "toolchain"}
+GITLEAKS_PRECISION_CASES = {
+    "approved": (1, 0, set()),
+    "same_file_other_secret": (2, 1, {"generic-api-key"}),
+    "changed_value": (1, 1, {"generic-api-key"}),
+    "other_path": (1, 1, {"generic-api-key"}),
+    "other_rule": (2, 1, {"github-pat"}),
+    "same_line_other_secret": (2, 2, {"generic-api-key"}),
+    "changed_identifier": (1, 1, {"generic-api-key"}),
+    "nested_path": (1, 1, {"generic-api-key"}),
+    "approved_after_prelude": (1, 0, set()),
+    "approved_full_file": (1, 0, set()),
+    "same_file_secret_before": (2, 1, {"generic-api-key"}),
+    "same_line_prefix": (2, 2, {"generic-api-key"}),
+}
 
 
 def require(condition, message, *, security=False):
@@ -541,6 +564,44 @@ def validate_browser_auth(report, image_id, postgres_image_id, context_manifest_
     require(names == AUTH_STEPS, "Browser auth required step details are missing or unexpected")
 
 
+def validate_browser_auth_recovery(report, image_id, postgres_image_id, context_manifest_sha256):
+    report = obj(report, "browser recovery")
+    require(set(report) == RECOVERY_REPORT_FIELDS, "Browser recovery fields are missing or unexpected")
+    require(type(report.get("schema_version")) is int and report["schema_version"] == 1,
+            "Invalid browser recovery schema")
+    require(report.get("status") == "passed" and type(report.get("exit_code")) is int
+            and report["exit_code"] == 0 and report.get("timed_out") is False,
+            "Browser recovery execution failed or incomplete")
+    require(report.get("script") == "browser_auth_recovery.py" and report.get("transport") == "direct_http"
+            and report.get("postgresql") == "real" and report.get("auth_mocked") is False
+            and report.get("process_restart") is True and report.get("external_network") is False,
+            "Browser recovery requires real HTTP/PostgreSQL, process restart and isolated authentication")
+    for field, expected in (("image_id", image_id), ("postgres_image_id", postgres_image_id)):
+        require(type(expected) is str and IMAGE.fullmatch(expected) and report.get(field) == expected,
+                "Browser recovery image identity mismatch: " + field)
+    require(type(context_manifest_sha256) is str and SHA.fullmatch(context_manifest_sha256)
+            and report.get("context_manifest_sha256") == context_manifest_sha256,
+            "Browser recovery context identity mismatch")
+    toolchain = obj(report.get("toolchain"), "browser recovery toolchain")
+    require(set(toolchain) == {"playwright_version", "chromium_version", "chromium_revision", "system", "machine"},
+            "Browser recovery toolchain fields are missing or unexpected")
+    for field, value in toolchain.items():
+        string(value, "browser recovery " + field)
+    require(toolchain["system"] == "Linux" and toolchain["machine"] == "x86_64",
+            "Unexpected browser recovery platform")
+    require(integer(report.get("steps"), "browser recovery steps") == len(RECOVERY_STEPS),
+            "Browser recovery did not complete every required step")
+    names = set()
+    for step in array(report.get("details"), "browser recovery details", nonempty=True):
+        step = obj(step, "browser recovery step")
+        require(set(step) == {"id", "status"}, "Browser recovery step fields are missing or unexpected")
+        name = string(step.get("id"), "browser recovery step id")
+        require(name not in names and step.get("status") == "passed",
+                "Browser recovery step failed, duplicated or incomplete")
+        names.add(name)
+    require(names == RECOVERY_STEPS, "Browser recovery required steps are missing or unexpected")
+
+
 def lifecycle_identity(report, schema):
     report = obj(report, "PostgreSQL lifecycle")
     require(report.get("schema") == schema and not {"error", "errors", "error_type"} & report.keys(),
@@ -617,6 +678,41 @@ def validate_postgres_cleanup(report, isolation):
                     "PostgreSQL cleanup names unrelated private files")
 
 
+def validate_gitleaks_precision(report):
+    report = obj(report, "Gitleaks precision")
+    require(set(report) == {"schema_version", "status", "scanner_image", "policy_sha256", "cases",
+                           "synthetic_only", "external_network", "scanner_version"},
+            "Gitleaks precision fields are missing or unexpected")
+    require(type(report["schema_version"]) is int and report["schema_version"] == 1
+            and report["status"] == "passed" and report["synthetic_only"] is True
+            and report["external_network"] is False, "Gitleaks precision execution failed/incomplete")
+    require(report["policy_sha256"] == gitleaks_policy.POLICY_SHA256
+            and report["scanner_image"] == gitleaks_policy.GITLEAKS_IMAGE
+            and report["scanner_version"] == gitleaks_policy.GITLEAKS_VERSION,
+            "Gitleaks precision policy/scanner mismatch")
+    seen = set()
+    for item in array(report["cases"], "Gitleaks precision cases", nonempty=True):
+        item = obj(item, "Gitleaks precision case")
+        require(set(item) == {"id", "status", "default_exit", "configured_exit", "default_findings",
+                              "configured_findings", "removed_only_approved", "remaining_rules"},
+                "Gitleaks precision case is incomplete/unexpected")
+        name = string(item["id"], "Gitleaks precision case ID")
+        require(name in GITLEAKS_PRECISION_CASES and name not in seen, "Unexpected/duplicate precision case")
+        seen.add(name)
+        before, after, rules = GITLEAKS_PRECISION_CASES[name]
+        require(item["status"] == "passed" and item["removed_only_approved"] is True,
+                "Gitleaks precision classification changed unapproved findings")
+        for field, expected in (("default_exit", 1), ("configured_exit", int(after > 0)),
+                                ("default_findings", before), ("configured_findings", after)):
+            require(integer(item[field], "Gitleaks precision " + field) == expected,
+                    "Gitleaks precision execution/count mismatch")
+        remaining = array(item["remaining_rules"], "Gitleaks precision remaining rules")
+        require(all(type(value) is str for value in remaining)
+                and len(remaining) == len(set(remaining)) and set(remaining) == rules,
+                "Gitleaks precision no longer retains other default findings")
+    require(seen == set(GITLEAKS_PRECISION_CASES), "Gitleaks precision did not execute all twenty-four scans")
+
+
 def validate_reports(reports: Path, source_context: Path) -> dict:
     errors = []
     def check(name, operation):
@@ -646,6 +742,11 @@ def validate_reports(reports: Path, source_context: Path) -> dict:
         (reports / "browser-image-id.txt").read_text().strip(),
         (reports / "postgres-image-id.txt").read_text().strip(),
         hashlib.sha256((reports / "context-manifest.json").read_bytes()).hexdigest()))
+    check("browser_auth_recovery", lambda: validate_browser_auth_recovery(
+        load(reports / "browser-auth-recovery/browser-auth-recovery-summary.json"),
+        (reports / "browser-image-id.txt").read_text().strip(),
+        (reports / "postgres-image-id.txt").read_text().strip(),
+        hashlib.sha256((reports / "context-manifest.json").read_bytes()).hexdigest()))
     check("postgres_isolation", lambda: validate_postgres_isolation(
         load(reports / "postgres-isolation.json"), (reports / "image-id.txt").read_text().strip(),
         (reports / "postgres-image-id.txt").read_text().strip()))
@@ -654,6 +755,12 @@ def validate_reports(reports: Path, source_context: Path) -> dict:
     expected_locs = {name: sum(bool(line.strip()) and not line.strip().startswith(b"#")
                                for line in (source_context / name).read_bytes().split(b"\n")) for name in sources}
     check("bandit", lambda: validate_bandit(load(reports / "bandit.json"), sources, expected_locs))
+    check("gitleaks_execution", lambda: gitleaks_policy.validate_execution(
+        load(reports / "gitleaks-execution.json"), policy_path=reports / "gitleaks-policy.toml",
+        source_manifest_raw=(reports / "source-scan-manifest.json").read_bytes(),
+        raw_report=(reports / "gitleaks-source.json").read_bytes(),
+        version_text=(reports / "gitleaks-version.txt").read_text(encoding="utf-8")))
+    check("gitleaks_precision", lambda: validate_gitleaks_precision(load(reports / "gitleaks-precision.json")))
     check("gitleaks", lambda: require(not array(load(reports / "gitleaks-source.json"), "Gitleaks"),
                                      "Secret findings remain blocking", security=True))
     def actionlint():

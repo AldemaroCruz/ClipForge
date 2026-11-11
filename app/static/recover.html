@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ClipForge · Recuperar cuenta</title>
+  <link rel="stylesheet" href="/static/account.css">
+  <script src="/static/auth.js" defer></script><script src="/static/recover.js" defer></script>
+</head>
+<body><main class="login">
+  <div class="eyebrow">ClipForge · Estudio local</div><h1>Recuperar tu cuenta</h1>
+  <p class="muted">Pide un código a tu administrador por un canal privado. Caduca en 15 minutos y solo sirve una vez.</p>
+  <section class="panel">
+    <form id="recovery-form" autocomplete="off">
+      <label for="recovery-code">Código de recuperación</label>
+      <input id="recovery-code" type="password" autocomplete="off" required maxlength="128" spellcheck="false" autocapitalize="none">
+      <label for="recovery-new-password">Nueva contraseña</label>
+      <input id="recovery-new-password" type="password" autocomplete="new-password" required minlength="12" maxlength="128">
+      <label for="recovery-confirm-password">Repite la nueva contraseña</label>
+      <input id="recovery-confirm-password" type="password" autocomplete="new-password" required minlength="12" maxlength="128">
+      <small>Se cerrarán todas tus sesiones. Después tendrás que iniciar sesión normalmente.</small>
+      <div class="actions"><button type="submit">Establecer contraseña</button></div>
+    </form>
+    <p id="recovery-status" class="status" role="alert" aria-live="polite"></p>
+    <a id="recovery-login-link" href="/login" hidden>Iniciar sesión con tu nueva contraseña</a>
+  </section>
+  <p><a href="/login">Volver al inicio de sesión</a></p>
+</main></body></html>

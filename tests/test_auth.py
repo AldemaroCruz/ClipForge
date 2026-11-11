@@ -362,22 +362,23 @@ class AuthPostgresTests(unittest.TestCase):
         second = auth_migrations.upgrade(self.engine)
         with Session(self.engine) as database:
             self.assertEqual(len(database.scalars(select(User)).all()), 3)
-        self.assertEqual(first, {'status': 'current', 'revision': 'auth01_0001'})
+        self.assertEqual(first, {'status': 'current', 'revision': 'auth02_0002'})
         self.assertEqual(second, first)
         with self.engine.connect() as connection:
             names = set(connection.execute(text('SELECT tablename FROM pg_tables WHERE schemaname=:schema'), {'schema': self.schema}).scalars())
         self.assertEqual(names, {'auth_users', 'auth_workspaces', 'auth_memberships',
-            'auth_projects', 'auth_sessions', 'auth_challenges', 'auth_login_attempts', 'auth_schema_migrations'})
+            'auth_projects', 'auth_sessions', 'auth_challenges', 'auth_login_attempts', 'auth_schema_migrations',
+            'auth_recovery_codes', 'auth_audit_events', 'auth_security_attempts'})
 
     def test_unknown_migration_revision_fails_without_mutating_users(self):
         with self.engine.begin() as connection:
-            connection.execute(text("UPDATE auth_schema_migrations SET revision='future_auth_99'"))
+            connection.execute(text("UPDATE auth_schema_migrations SET revision='future_auth_99' WHERE revision='auth02_0002'"))
         with self.assertRaises(auth_migrations.MigrationError):
             auth_migrations.upgrade(self.engine)
         with Session(self.engine) as database:
             self.assertEqual(len(database.scalars(select(User)).all()), 3)
-            revisions = database.execute(text('SELECT revision FROM auth_schema_migrations')).scalars().all()
-        self.assertEqual(revisions, ['future_auth_99'])
+            revisions = database.execute(text('SELECT revision FROM auth_schema_migrations ORDER BY revision')).scalars().all()
+        self.assertEqual(revisions, ['auth01_0001', 'future_auth_99'])
 
     def test_database_failure_returns_controlled_response_and_no_credentials(self):
         client = self.client(self.alice)

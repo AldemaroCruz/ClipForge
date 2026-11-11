@@ -1,0 +1,16 @@
+# AUTH-02: owner-approved public DDL checksum only. Preserve every default rule.
+title = "ClipForge: exact AUTH-01 DDL checksum classification"
+minVersion = "v8.30.1"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Approved public DDL checksum; review again if literal or assignment changes"
+condition = "AND"
+regexTarget = "line"
+paths = ['''^/source/tests/test_auth_recovery\.py$''']
+regexes = ['''^\n?FROZEN_AUTH01_DDL_SHA256 = '523b1fa864b7e9814e00962fa046eb7f6094c3512eb98824f27757658e1e8c5e'$''']

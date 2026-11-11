@@ -12,7 +12,8 @@ from sqlalchemy.schema import CreateSchema
 from .auth_db import AuthConfigurationError, database_schema, get_engine
 
 
-REVISION = "auth01_0001"
+INITIAL_REVISION = "auth01_0001"
+REVISION = "auth02_0002"
 DDL_0001 = (
     """CREATE TABLE auth_users (
         id VARCHAR(32) PRIMARY KEY, username VARCHAR(64) NOT NULL UNIQUE,
@@ -47,6 +48,34 @@ DDL_0001 = (
     "CREATE INDEX auth_login_client_idx ON auth_login_attempts(client_hash,attempted_at)",
 )
 
+# auth01_0001 is immutable. Existing installations advance through this separate
+# transactional revision, while new fixture databases apply both in order.
+DDL_0002 = (
+    """CREATE TABLE auth_recovery_codes (
+        token_hash VARCHAR(64) PRIMARY KEY, user_id VARCHAR(32) NOT NULL REFERENCES auth_users(id),
+        issued_by_id VARCHAR(32) NOT NULL REFERENCES auth_users(id), created_at TIMESTAMPTZ NOT NULL,
+        expires_at TIMESTAMPTZ NOT NULL, consumed_at TIMESTAMPTZ, revoked_at TIMESTAMPTZ)""",
+    "CREATE INDEX auth_recovery_user_idx ON auth_recovery_codes(user_id)",
+    "CREATE INDEX auth_recovery_expiry_idx ON auth_recovery_codes(expires_at)",
+    """CREATE TABLE auth_audit_events (
+        id VARCHAR(32) PRIMARY KEY, actor_id VARCHAR(32), target_id VARCHAR(32),
+        action VARCHAR(32) NOT NULL, created_at TIMESTAMPTZ NOT NULL,
+        result VARCHAR(16) NOT NULL, correlation_id VARCHAR(36) NOT NULL,
+        CONSTRAINT auth_audit_result_valid CHECK (result IN ('success','failure')),
+        CONSTRAINT auth_audit_action_valid CHECK (action IN ('user.created','user.deactivated',
+            'recovery.issued','recovery.consumed','password.changed')))""",
+    "CREATE INDEX auth_audit_created_idx ON auth_audit_events(created_at,id)",
+    "CREATE INDEX auth_audit_target_idx ON auth_audit_events(target_id,created_at)",
+    """CREATE TABLE auth_security_attempts (
+        id SERIAL PRIMARY KEY, purpose VARCHAR(32) NOT NULL, identity_hash VARCHAR(64) NOT NULL,
+        client_hash VARCHAR(64) NOT NULL, attempted_at TIMESTAMPTZ NOT NULL,
+        CONSTRAINT auth_security_purpose_valid CHECK (purpose IN (
+            'recovery_issue','recovery_consume','password_change')))""",
+    "CREATE INDEX auth_security_identity_idx ON auth_security_attempts(purpose,identity_hash,attempted_at)",
+    "CREATE INDEX auth_security_client_idx ON auth_security_attempts(purpose,client_hash,attempted_at)",
+)
+MIGRATIONS = ((INITIAL_REVISION, DDL_0001), (REVISION, DDL_0002))
+
 
 class MigrationError(RuntimeError):
     pass
@@ -63,14 +92,16 @@ def upgrade(engine=None) -> dict:
             connection.execute(text("""CREATE TABLE IF NOT EXISTS auth_schema_migrations (
                 revision VARCHAR(32) PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL)"""))
             revisions = connection.execute(text("SELECT revision FROM auth_schema_migrations ORDER BY revision")).scalars().all()
-            if revisions == [REVISION]:
+            expected = [revision for revision, _ in MIGRATIONS]
+            if revisions == expected:
                 return {"status": "current", "revision": REVISION}
-            if revisions:
+            if revisions != expected[:len(revisions)]:
                 raise MigrationError("Unknown schema revision; no migration applied")
-            for statement in DDL_0001:
-                connection.execute(text(statement))
-            connection.execute(text("INSERT INTO auth_schema_migrations(revision,applied_at) VALUES (:revision,:time)"),
-                               {"revision": REVISION, "time": datetime.now(timezone.utc)})
+            for revision, statements in MIGRATIONS[len(revisions):]:
+                for statement in statements:
+                    connection.execute(text(statement))
+                connection.execute(text("INSERT INTO auth_schema_migrations(revision,applied_at) VALUES (:revision,:time)"),
+                                   {"revision": revision, "time": datetime.now(timezone.utc)})
         return {"status": "applied", "revision": REVISION}
     except (SQLAlchemyError, AuthConfigurationError):
         raise MigrationError("Migration failed; transaction rolled back. Check candidate database configuration and schema.") from None
