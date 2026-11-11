@@ -19,6 +19,9 @@
 !requirements-ci.lock
 !requirements-ci-tools.txt
 !requirements-ci-tools.lock
+!Dockerfile.dev
+!Dockerfile.dev.dockerignore
+!compose.dev.yaml
 
 # Defense in depth if somebody supplies a context without the preparation tool.
 **/.env*

@@ -1,6 +1,6 @@
 """ClipForge v0.4.2: a local, single-process video clipping MVP.
 
-Do not add Uvicorn workers or expose this unauthenticated service publicly.
+AUTH-01 adds private local accounts. One worker; publication remains blocked.
 """
 
 import copy
@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from pydantic import ValidationError
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -30,6 +30,7 @@ from .model_source import resolve_model
 from .presentation import Presentation, ExportRequest
 from .render import render_clip, run_ffmpeg
 from .subtitles import SubtitleError, cues_from_segments, validate_cues, to_srt, to_vtt
+from .auth import AuthenticationBoundary, require_access, register_project, unregister_project, router as auth_router
 
 VERSION = "0.4.2"
 ROOT = Path(os.getenv("CLIPFORGE_DATA_DIR", "/data"))
@@ -128,8 +129,12 @@ async def lifespan(application: FastAPI):
         yield
 
 
-app = FastAPI(title="ClipForge MVP", version=VERSION, lifespan=lifespan)
+app = FastAPI(title="ClipForge MVP", version=VERSION, lifespan=lifespan,
+              dependencies=[Depends(require_access)], docs_url=None, redoc_url=None,
+              openapi_url=None)
 app.mount("/static", StaticFiles(directory=str(ASSETS)), name="static")
+app.add_middleware(AuthenticationBoundary)
+app.include_router(auth_router)
 
 
 def ffmpeg(*args: Any) -> None:
@@ -275,6 +280,7 @@ def health():
 
 @app.post("/jobs", status_code=202)
 async def create_job(
+    request: Request,
     file: UploadFile = File(...), framing: str = Form("contain"),
     burn_subtitles: bool = Form(False), crop_x: float = Form(0.5),
     crop_y: float = Form(0.5), crop_zoom: float = Form(1),
@@ -284,6 +290,11 @@ async def create_job(
     subtitle_outline: int = Form(3), subtitle_outline_color: str = Form("#201510"),
     subtitle_shadow: int = Form(1),
 ):
+    # Ownership is created from the authenticated server-side membership only.
+    fields = await request.form()
+    if {"owner_id", "workspace_id", "role", "user_id"} & (set(fields) | set(request.query_params)):
+        await file.close()
+        raise HTTPException(422, "La propiedad y los permisos los asigna el servidor.")
     try:
         options = Presentation(framing=framing, burn_subtitles=burn_subtitles,
                                crop_x=crop_x, crop_y=crop_y, crop_zoom=crop_zoom,
@@ -316,10 +327,14 @@ async def create_job(
         job = {"id": job_id, "status": "queued", "clips": [], "options": options.model_dump(), "version": VERSION,
                "created_at": time.time(), "source_filename": re.sub(r"[\x00-\x1f\x7f]", "", file.filename.replace("\\", "/").rsplit("/", 1)[-1])[:255],
                "processing_mode": processing_mode}
+        register_project(job_id, request.state.principal)
         persist(job_id, job)
     except Exception:
         # This is a newly allocated UUID directory, never an existing user's job.
         shutil.rmtree(folder, ignore_errors=True)
+        with LOCK:
+            JOBS.pop(job_id, None)
+        unregister_project(job_id, request.state.principal)
         raise
     finally:
         await file.close()
@@ -576,4 +591,16 @@ app.include_router(operations_router)
 @app.get("/ops", response_class=HTMLResponse)
 def operations_page():
     return HTMLResponse((ASSETS / "operations.html").read_text(encoding="utf-8"),
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page():
+    return HTMLResponse((ASSETS / "login.html").read_text(encoding="utf-8"),
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.get("/account", response_class=HTMLResponse)
+def account_page():
+    return HTMLResponse((ASSETS / "account.html").read_text(encoding="utf-8"),
                         headers={"Cache-Control": "no-store"})

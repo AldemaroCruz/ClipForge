@@ -14,7 +14,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
-from fastapi.testclient import TestClient
+from auth_support import AuthenticatedTestClient as TestClient
 from pydantic import ValidationError
 from app import main, delivery
 from app.presentation import Presentation
@@ -69,7 +69,7 @@ class DeliveryTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name)
         self.patch=patch.object(main,'ROOT',self.root);self.patch.start()
-        self.client=TestClient(main.app);self.folder=self.root/JOB;self.folder.mkdir()
+        self.client=TestClient(main.app, projects=(JOB,));self.folder=self.root/JOB;self.folder.mkdir()
         write_json_atomic(self.folder/'job.json',{'id':JOB,'status':'completed','clips':[]})
         (self.folder/'input.mp4').write_bytes(b'PRIVATE SOURCE MUST NOT BE INCLUDED')
         write_json_atomic(self.folder/'transcript.json',CUES)
@@ -121,10 +121,10 @@ class DeliveryTests(unittest.TestCase):
     def test_template_extra_data_and_invalid_style_rejected(self):
         for p in [{'name':' ','options':{}},{'name':'x','options':{},'cues':CUES}, {'name':'x','options':{'subtitle_outline':999}}]:
             self.assertEqual(self.client.post('/templates',json=p).status_code,422)
-        self.assertFalse((self.root/'templates').exists())
+        self.assertFalse(delivery.template_directory(self.client.fixture_principal.workspace_id).exists())
 
     def test_template_corruption_reported_preserved(self):
-        path=delivery.template_path(ONE);path.parent.mkdir();path.write_bytes(b'{')
+        path=delivery.template_path(ONE,self.client.fixture_principal.workspace_id);path.parent.mkdir(parents=True);path.write_bytes(b'{')
         r=self.client.get('/templates').json();self.assertEqual(r['unreadable'],1);self.assertEqual(r['templates'],[])
         self.assertEqual(self.client.get('/templates/'+ONE).status_code,503);self.assertEqual(path.read_bytes(),b'{')
 
@@ -253,7 +253,7 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(self.package(revisions=[2]).status_code,409)
 
     def test_list_and_download_after_reload(self):
-        self.review();r=self.package().json();self.client.close();self.client=TestClient(main.app)
+        self.review();r=self.package().json();self.client.close();self.client=TestClient(main.app, projects=(JOB,))
         listing=self.client.get(f'/jobs/{JOB}/deliveries').json()
         self.assertEqual(listing['deliveries'][0]['id'],r['id']);self.assertEqual(listing['deliveries'][0]['clips_count'],1)
         self.assertEqual(self.client.get(r['download_url']).status_code,200)

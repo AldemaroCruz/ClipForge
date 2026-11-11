@@ -1,5 +1,37 @@
 # ClipForge: instrucciones de desarrollo
 
+## Prioridad AUTH-01 (decisión del propietario, 2026-11-10)
+
+La prioridad actual es desarrollo funcional local. Presupuesto de nuevos
+servicios: **cero**. Ubuntu Pro/ESM y la comparación de distribuciones quedan
+aplazados; no se reabre SEC-05 como requisito para desarrollar funciones.
+Se conservan sus archivos y expedientes fuera del patch de AUTH-01.
+
+AUTH-01 autoriza autenticación y usuarios sobre FastAPI, PostgreSQL local,
+Argon2id, sesiones revocables, CSRF, aislamiento por espacio privado, interfaz,
+migraciones y dependencias/locks necesarios. No autoriza actualizar todo el
+stack. El coordinador integra; hasta tres especialistas backend, QA e
+infraestructura pueden editar archivos asignados sin solapamientos ni subagentes.
+
+Las integraciones aplicación/PostgreSQL pueden usar una red Docker **interna
+sin salida externa**, comprobada y descrita como tal. No se las denomina
+`--network none`. Preparación/descargas separadas; recursos, volúmenes y claves
+de desarrollo propios. `compose.dev.yaml` es independiente; acceso host solo
+loopback, puerto disponible distinto de 8080, PostgreSQL sin puerto publicado.
+El HTTP local exige perfil explícito; los demás entornos requieren cookies Secure.
+
+Desarrollo y pruebas locales están permitidos con riesgos documentados,
+**registrados, no aceptados**. Los findings reales y el bloqueo histórico de
+release siguen visibles: no suprimir scanners, bajar severidades, aceptar
+críticos/SAST o atribuir scans históricos a imágenes nuevas. Publicación,
+Internet, release, despliegue, GCP/Terraform, servicios pagos, Pro/ESM y
+commit/push siguen sin autorización en AUTH-01. No se modifica la instalación
+operativa ni se migran datos reales; futuras migraciones se prueban con fixtures.
+OAuth social, correo externo, MFA y worker multimedia quedan fuera del incremento.
+
+Las restricciones históricas siguientes permanecen salvo las ampliaciones
+explícitas de AUTH-01 anteriores; autorizaciones Git previas no se reutilizan.
+
 La carpeta de trabajo autorizada es `C:\Users\itres\Desktop\clipforge-mvp`.
 También contiene una instalación v0.4.2 operativa: autorizar cambios de código
 no autoriza actualizar, reconstruir o reemplazar su servicio.

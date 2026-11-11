@@ -2,6 +2,22 @@
 
 # ClipForge AI — Roadmap de producto y nube
 
+## Prioridad vigente: AUTH-01 local (2026-11-10)
+
+El propietario prioriza funciones sin nuevas suscripciones ni servicios de pago:
+presupuesto **cero**. El hito actual es autenticación, usuarios, espacios privados
+y PostgreSQL local en una candidata aislada, con login y pruebas reales.
+No depende de reabrir SEC-05, migrar de distribución ni contratar identidad.
+
+Pro/ESM y los hitos cloud/comerciales de abajo quedan aplazados. El desarrollo
+local continúa con riesgos registrados sin aceptarlos; publicación, release y
+despliegue mantienen sus bloqueos. No se actualiza ni migra la instalación
+operativa. OAuth social, correo externo, MFA y worker multimedia quedan en
+backlog. Entrega y resultados: [AUTH-01.md](AUTH-01.md).
+
+El roadmap restante se conserva como historia/propuesta futura, no como orden
+vigente de ejecución ni autorización para crear infraestructura facturable.
+
 **Revisión del plan:** 1.0 · **Fecha:** 2026-10-30 · **Base de la aplicación:** v0.4.1.
 **Responsable de producto:** Aldemaro. **Estado:** propuesta de ejecución; ninguna fase futura está implementada por este documento.
 

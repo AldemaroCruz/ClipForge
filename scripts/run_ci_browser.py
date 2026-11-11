@@ -1,7 +1,8 @@
 """Run six existing browser scenarios in copied sources and fresh fixture data.
 
-This command belongs in the separate browser CI image with --network none,
---init and no published ports. Provider/ASR content remains explicit fixtures.
+This command belongs in the separate browser CI image with --init and no
+published ports. AUTH-01 uses an explicitly verified internal Docker network
+for isolated PostgreSQL, not --network none. Provider/ASR remain fixtures.
 Five scenarios use actual loopback HTTP; browser_smoke mocks API responses.
 No bridge fallback is accepted. Nothing executes when this module is imported.
 """

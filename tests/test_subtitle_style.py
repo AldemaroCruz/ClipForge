@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fastapi.testclient import TestClient
+from auth_support import AuthenticatedTestClient as TestClient
 from pydantic import ValidationError
 from app.presentation import Presentation
 from app.subtitles import to_ass, to_srt, to_vtt
@@ -102,7 +102,7 @@ class StyleApiTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         patch = mock.patch.object(main, "ROOT", self.root)
         patch.start(); self.addCleanup(patch.stop)
-        self.client = TestClient(main.app)
+        self.client = TestClient(main.app, projects=(ID,))
         self.client.__enter__()
         self.addCleanup(lambda: self.client.__exit__(None, None, None))
 

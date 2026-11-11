@@ -1,5 +1,16 @@
 # ClipForge AI — Backlog trazable
 
+Prioridad del propietario, 2026-11-10: **AUTH-01 local**, presupuesto de nuevos
+servicios cero. Implementar login, usuarios, PostgreSQL y autorización por recurso
+con candidata aislada. Pro/ESM, GCP, servicios pagos y comparación de distros
+aplazados; bloqueos de release no impiden desarrollar/probar localmente.
+OAuth social, correo externo, MFA, recuperación de contraseña y administración
+de pertenencias compartidas quedan para incrementos posteriores. No hay registro
+público, migración de datos reales ni worker multimedia en AUTH-01.
+Véanse [AUTH-01.md](AUTH-01.md) y [registro de riesgos](RISK-REGISTER.md).
+
+Las prioridades cloud que siguen son históricas, no autorizaciones vigentes.
+
 Fecha: 2026-10-30. Base: v0.4.1. Actualizado para el código v0.4.2. Los criterios originales se conservan; ningún test simulado cierra la aceptación real.
 
 Prioridad P0: bloqueante para su hito. P1: mejora necesaria/próxima. P2: optimización posterior. P3: diferida.

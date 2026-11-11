@@ -18,6 +18,7 @@ import urllib.error
 import urllib.request
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 from app.state import write_json_atomic
+from auth_support import prepare_browser_fixture, browser_login
 from app.telemetry import Recorder
 from playwright.sync_api import sync_playwright, expect
 OUTPUT=ROOT/'test-output';OUTPUT.mkdir(exist_ok=True)
@@ -37,6 +38,7 @@ with tempfile.TemporaryDirectory(prefix='clipforge-ops-browser-') as temp:
     write_json_atomic(folder/'selections'/ANALYSIS/'selection.json',{'mode':'llm','request_started_at':1,'usage':{'input_tokens':1012,'output_tokens':230},'elapsed_seconds':1})
     with socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
     url=f'http://127.0.0.1:{port}'
+    auth_fixture = prepare_browser_fixture(url, str(data), (ID, SECOND))
     logfile=(OUTPUT/'operations-server.log').open('w')
     def start():
         proc=subprocess.Popen([sys.executable,'-m','uvicorn','app.main:app','--host','127.0.0.1','--port',str(port)],
@@ -52,6 +54,7 @@ with tempfile.TemporaryDirectory(prefix='clipforge-ops-browser-') as temp:
         with sync_playwright() as p:
             browser=p.chromium.launch(executable_path=os.getenv('CHROMIUM_EXECUTABLE') or shutil.which('chromium'),headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
             context=browser.new_context(viewport={'width':1440,'height':1100})
+            fixture_csrf = browser_login(context, url, auth_fixture)
             page=context.new_page();errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
             if BRIDGE:
                 def backend(source, req):

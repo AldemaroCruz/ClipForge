@@ -11,7 +11,7 @@ import time
 import unittest
 import uuid
 from unittest.mock import patch
-from fastapi.testclient import TestClient
+from auth_support import AuthenticatedTestClient as TestClient, auth_environment
 from app import main, ai_selection as ai
 from app.acceptance import inspect_project
 from app.backup import create_backup, restore_backup
@@ -31,8 +31,8 @@ class RecoveryFlow(unittest.TestCase):
             write_json_atomic(folder/'transcript.json',f.SEGMENTS)
             original_hash=hashlib.sha256((folder/'input.mp4').read_bytes()).hexdigest()
             spec={'mode':'llm','brief':f.BRIEF,'max_clips':3,'min_seconds':20,'max_seconds':60,'window_start':0,'window_end':60}
-            with patch.object(main,'ROOT',root),patch.dict(os.environ,f.ENV,clear=True):
-                with TestClient(main.app) as client:
+            with patch.object(main,'ROOT',root),patch.dict(os.environ,{**f.ENV,**auth_environment()},clear=True):
+                with TestClient(main.app, projects=(f.JOB,)) as client:
                     preview=client.post(f'/jobs/{f.JOB}/selections/preview',json=spec)
                     self.assertEqual(preview.status_code,200,preview.text)
                     consent={**spec,'preview_token':preview.json()['preview_token'],'consent':True,'request_id':uuid.uuid4().hex}
@@ -73,7 +73,7 @@ class RecoveryFlow(unittest.TestCase):
                 self.assertEqual(proof2['source_sha256'],original_hash)
                 # Accept a previously UNACCEPTED candidate after restore. mtime identity matters.
                 with patch.object(main,'ROOT',restored):
-                    with TestClient(main.app) as recovered:
+                    with TestClient(main.app, projects=(f.JOB,), fixture_identity=str(root)) as recovered:
                         candidate2=run['candidates'][1]['id']
                         r=recovered.post(f'/jobs/{f.JOB}/selections/{rid}/candidates/{candidate2}/draft')
                         self.assertEqual(r.status_code,201,r.text)

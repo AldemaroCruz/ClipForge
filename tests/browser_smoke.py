@@ -21,6 +21,7 @@ output.mkdir(exist_ok=True)
 html=(project/'app/static/index.html').read_text()
 html=re.sub(r'<script src="[^"]+" defer></script>', '', html)
 script=(project/'app/static/app.js').read_text()
+auth_script=(project/'app/static/auth.js').read_text()
 job_id='c'*32
 results=[]
 with sync_playwright() as p:
@@ -37,6 +38,7 @@ with sync_playwright() as p:
           window.fetch=async (url, options={}) => {
             const id='cccccccccccccccccccccccccccccccc';
             const headers={'Content-Type':'application/json','Retry-After':'1'};
+            if(url==='/auth/me') return new Response(JSON.stringify({user:{id:'fixture-user',username:'UI fixture',is_admin:false,permissions:[]},csrf_token:'authored-ui-fixture-no-real-session'}),{status:200,headers});
             if(url.endsWith('/exports')) return new Response(JSON.stringify({exports:[],has_more:false}),{status:200,headers});
             if(url==='/jobs') {window.lastUploadOptions=Object.fromEntries(Array.from(options.body.entries()).filter(([key])=>key!=='file'));return new Response(JSON.stringify({id,status:'queued',clips:[]}),{status:202,headers});}
             if(url.startsWith('/projects')) return new Response(JSON.stringify({projects:[],total:0,has_more:false,unreadable:0}),{status:200,headers});
@@ -55,6 +57,7 @@ with sync_playwright() as p:
             return new Response(JSON.stringify({id,status:'completed',clips:[{file:'clip_01.mp4',start:0,end:22}]}),{status:200,headers});
           };
         }''',scenario)
+        page.add_script_tag(content=auth_script)
         page.add_script_tag(content=script)
         return ctx,page,errors
     def upload(page):

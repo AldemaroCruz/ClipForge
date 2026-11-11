@@ -14,7 +14,8 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
+from auth_support import AuthenticatedTestClient as TestClient
+from fastapi.testclient import TestClient as RawTestClient
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
@@ -57,7 +58,7 @@ class SEC01HTTPContracts(unittest.TestCase):
         process = patch.object(main, "process", side_effect=lambda job_id: self.processed.set())
         self.process = process.start()
         self.addCleanup(process.stop)
-        self.client = TestClient(main.app)
+        self.client = TestClient(main.app, projects=(JOB,))
         self.addCleanup(self.client.close)
         self.addCleanup(main.JOBS.clear)
 
@@ -295,7 +296,7 @@ class SEC01FormLimitContracts(unittest.TestCase):
         async def parse_fixture(request):
             form = await request.form(max_fields=2, max_part_size=4)
             return JSONResponse({"items": list(form.multi_items())})
-        self.client = TestClient(Starlette(routes=[Route("/fixture-form", parse_fixture, methods=["POST"])]))
+        self.client = RawTestClient(Starlette(routes=[Route("/fixture-form", parse_fixture, methods=["POST"])]))
         self.addCleanup(self.client.close)
 
     def submit(self, body):

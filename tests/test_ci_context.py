@@ -85,6 +85,19 @@ class CIContextTests(unittest.TestCase):
         self.prepare()
         self.assertFalse((self.destination / "app/unlisted").exists())
 
+    def test_auth01_context_contains_exact_dev_recipes_without_dev_storage(self):
+        for name in ('Dockerfile.dev', 'Dockerfile.dev.dockerignore', 'compose.dev.yaml'):
+            self.assertIn(name, ci.ROOT_FILES)
+        for name in ('dev-data', 'dev-postgres', 'dev-secrets'):
+            (self.source / name).mkdir()
+            (self.source / name / 'private.py').write_text('# synthetic private fixture')
+        (self.source / 'compose.dev.local.yaml').write_text('# unlisted fixture')
+        self.prepare()
+        for name in ('Dockerfile.dev', 'Dockerfile.dev.dockerignore', 'compose.dev.yaml'):
+            self.assertTrue((self.destination / name).is_file())
+        for name in ('dev-data', 'dev-postgres', 'dev-secrets', 'compose.dev.local.yaml'):
+            self.assertFalse((self.destination / name).exists())
+
     def test_existing_destination_is_not_overwritten(self):
         self.destination.mkdir()
         marker = self.destination / "keep"

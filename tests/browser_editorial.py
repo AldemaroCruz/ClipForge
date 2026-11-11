@@ -28,6 +28,7 @@ from app.check_presentation import make_source
 from app.presentation import Presentation
 from app.render import render_clip
 from app.state import write_json_atomic
+from auth_support import prepare_browser_fixture, browser_login
 from playwright.sync_api import sync_playwright, expect
 
 OUTPUT = ROOT / "test-output"
@@ -60,6 +61,7 @@ with tempfile.TemporaryDirectory(prefix="clipforge-browser-") as temporary:
         sock.bind(("127.0.0.1",0))
         port = sock.getsockname()[1]
     url = f"http://127.0.0.1:{port}"
+    auth_fixture = prepare_browser_fixture(url, str(data), (ID,))
     with (OUTPUT / "browser-editorial-server.log").open("w") as server_log:
         process = subprocess.Popen([sys.executable,"-m","uvicorn","app.main:app","--host","127.0.0.1","--port",str(port)],
                                    cwd=ROOT, env={**os.environ,"CLIPFORGE_DATA_DIR":str(data)},
@@ -80,6 +82,7 @@ with tempfile.TemporaryDirectory(prefix="clipforge-browser-") as temporary:
                 browser = p.chromium.launch(executable_path=os.getenv("CHROMIUM_EXECUTABLE") or shutil.which("chromium"),
                                            headless=True,args=["--no-sandbox","--disable-dev-shm-usage"])
                 context = browser.new_context(viewport={"width":1440,"height":1100},accept_downloads=True)
+                fixture_csrf = browser_login(context, url, auth_fixture)
                 page = context.new_page()
                 errors=[]
                 page.on("pageerror",lambda e:errors.append(str(e)))
@@ -225,8 +228,8 @@ with tempfile.TemporaryDirectory(prefix="clipforge-browser-") as temporary:
                 current=json.loads(draft_path.read_text())
                 payload={k:current[k] for k in ('title','clip_file','start','end','options','cues','revision')}
                 payload['title']='Cambio desde otra pestaña'
-                req=urllib.request.Request(url+f'/jobs/{ID}/drafts/{current["id"]}',data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'},method='PUT')
-                with urllib.request.urlopen(req) as response:assert response.status==200
+                response=context.request.put(url+f'/jobs/{ID}/drafts/{current["id"]}',data=payload,headers={'Origin':url,'X-CSRF-Token':fixture_csrf})
+                assert response.status==200
                 page.locator('#editor-name').fill('Mi edición protegida')
                 page.locator('#save-draft').click()
                 expect(page.locator('#export-status')).to_contain_text('otra pestaña')

@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fastapi.testclient import TestClient
+from auth_support import AuthenticatedTestClient as TestClient
 from pydantic import ValidationError
 from app.presentation import Presentation, ExportRequest
 from app.subtitles import SubtitleError, cues_from_segments, validate_cues, timestamp, to_ass, to_srt, to_vtt
@@ -144,7 +144,7 @@ class EditingApiTests(unittest.TestCase):
         write_json_atomic(folder / "transcript.json", [
             {"start": 2, "end": 3.5, "text": "Texto guardado"},
             {"start": 3.5, "end": 5, "text": "Segunda frase"}])
-        self.client = TestClient(main.app)
+        self.client = TestClient(main.app, projects=(ID,))
         self.client.__enter__()
         self.addCleanup(lambda: self.client.__exit__(None, None, None))
         self.context = self.client.get(f"/jobs/{ID}/clips/clip_01.mp4/editor").json()

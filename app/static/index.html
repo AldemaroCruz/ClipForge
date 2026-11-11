@@ -25,13 +25,15 @@
 @media(max-width:640px){.ai-grid,.ai-window,.ai-results{grid-template-columns:1fr}.ai-review{padding:12px}.ai-run-list button{width:100%}}
 
 </style>
-<script src="/static/app.js?v=0.4.2" defer></script>
+<script src="/static/auth.js" defer></script>
+<script src="/static/app.js?v=auth01" defer></script>
 </head>
 <body>
-<header><div><h1>ClipForge AI</h1><span class="muted">Tu estudio de clips, en local.</span></div><div class="actions"><a href="/ops">Operación y métricas</a><span class="badge">Local · v0.4.2</span></div></header>
+<header><div><h1>ClipForge AI</h1><span class="muted">Tu estudio de clips, en local.</span></div><div class="actions"><a href="/account">Mi cuenta · <span data-auth-user></span></a><button type="button" class="subtle" data-auth-logout>Cerrar sesión</button><a href="/ops">Operación y métricas</a><span class="badge">Local · v0.4.2</span></div></header>
+<p role="alert" data-auth-error></p>
 <section id="library" class="panel" aria-labelledby="library-title">
 <div class="library-heading"><div><div class="eyebrow">Biblioteca local</div><h2 id="library-title">Mis proyectos</h2></div><span class="pill">Tus archivos, en tu PC</span></div>
-<p class="muted">Abre un video, recupera un borrador o elige un momento nuevo. Los proyectos anteriores aparecen sin migrar ni reemplazar sus archivos.</p>
+<p class="muted">Abre un video, recupera un borrador o elige un momento nuevo. Solo aparecen los proyectos de tu espacio privado. Los archivos antiguos sin propietario no se asignan automáticamente.</p>
 <form id="library-form" class="library-tools"><div class="search-field"><label for="library-query">Buscar por nombre o ID</label><input id="library-query" type="search" maxlength="150" placeholder="Entrevista, gameplay, proyecto…"></div><button type="submit" class="secondary">Buscar</button><button id="library-refresh" type="button" class="subtle">Actualizar</button></form>
 <p id="library-status" class="muted" role="status">Cargando proyectos…</p><div id="project-list" class="project-grid"></div>
 <div class="pager"><button id="library-prev" type="button" class="subtle" disabled>Anterior</button><span id="library-page" class="muted"></span><button id="library-next" type="button" class="subtle" disabled>Siguiente</button></div>

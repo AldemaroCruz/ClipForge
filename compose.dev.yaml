@@ -1,0 +1,95 @@
+# AUTH-01 only. Invoke through scripts/dev_local.py, which supplies an exclusive
+# project name, external verified context and generated development-only files.
+# Every variable is required; there are no production or credential defaults.
+services:
+  postgres:
+    image: postgres:18.6-trixie@sha256:e3d24f6906d0760bf4da0dae872415391ededefad23fd471c47dc53b0ddf3c42
+    platform: linux/amd64
+    pull_policy: never
+    user: "999:999"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      - type: bind
+        source: ${CLIPFORGE_DEV_INIT_SQL:?Use scripts/dev_local.py}
+        target: /docker-entrypoint-initdb.d/10-auth01.sql
+        read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=128m
+      - /var/run/postgresql:rw,nosuid,nodev,uid=999,gid=999,size=16m
+    networks: [private]
+    healthcheck:
+      test: [CMD, pg_isready, -U, postgres, -d, postgres]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: "no"
+  app:
+    image: ${CLIPFORGE_DEV_IMAGE:?Use scripts/dev_local.py}
+    platform: linux/amd64
+    pull_policy: never
+    user: "1001:1001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      CLIPFORGE_DATABASE_HOST: postgres
+      CLIPFORGE_DATABASE_PORT: "5432"
+      CLIPFORGE_DATABASE_NAME: clipforge
+      CLIPFORGE_DATABASE_USER: clipforge
+      CLIPFORGE_DATABASE_PASSWORD_FILE: /run/secrets/database_password
+      CLIPFORGE_AUTH_PROFILE: local-http
+      CLIPFORGE_AUTH_ORIGIN: ${CLIPFORGE_DEV_ORIGIN:?Use scripts/dev_local.py}
+      CLIPFORGE_DATA_DIR: /srv/clipforge
+      CLIPFORGE_AI_PROVIDER: disabled
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    secrets:
+      - database_password
+    volumes:
+      - app_data:/srv/clipforge
+    tmpfs:
+      - /tmp:rw,exec,nosuid,nodev,size=3g
+    ports:
+      - target: 8000
+        published: ${CLIPFORGE_DEV_PORT:?Use scripts/dev_local.py}
+        host_ip: 127.0.0.1
+        protocol: tcp
+    # Docker Desktop does not publish ports on an internal-only network.
+    # This development frontend can have egress; integration test containers
+    # attach only to their separate internal network, never to this frontend.
+    networks: [private, frontend]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).close()"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+    restart: "no"
+networks:
+  private:
+    internal: true
+  frontend:
+    driver: bridge
+    internal: false
+    driver_opts:
+      com.docker.network.bridge.host_binding_ipv4: "127.0.0.1"
+volumes:
+  postgres_data:
+  app_data:
+secrets:
+  postgres_password:
+    file: ${CLIPFORGE_DEV_POSTGRES_PASSWORD_FILE:?Use scripts/dev_local.py}
+  database_password:
+    file: ${CLIPFORGE_DEV_DATABASE_PASSWORD_FILE:?Use scripts/dev_local.py}

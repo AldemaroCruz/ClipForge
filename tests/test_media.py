@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fastapi.testclient import TestClient
+from auth_support import AuthenticatedTestClient as TestClient
 from app import media
 from app.check_media import make_fixture
 from app import check_media as smoke
@@ -213,7 +213,7 @@ class RealMediaTests(unittest.TestCase):
         self.assertEqual(result["clips"], [])
         self.assertEqual(source.read_bytes(), original)
         self.assertFalse((source.parent / "transcript.json").exists())
-        with TestClient(main.app) as client:
+        with TestClient(main.app, projects=(JOB_ID,)) as client:
             response = client.get(f"/jobs/{JOB_ID}")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["error_code"], "NO_AUDIO_STREAM")
@@ -228,7 +228,7 @@ class RealMediaTests(unittest.TestCase):
 
     def test_upload_thread_to_poll_real_no_audio(self):
         cls = mock.Mock(side_effect=AssertionError("Whisper must not be constructed"))
-        with mock.patch.dict(sys.modules, {"faster_whisper": types.SimpleNamespace(WhisperModel=cls)}), TestClient(main.app) as client:
+        with mock.patch.dict(sys.modules, {"faster_whisper": types.SimpleNamespace(WhisperModel=cls)}), TestClient(main.app, projects=(JOB_ID,)) as client:
             response = client.post("/jobs", files={"file": ("no_audio.mp4", self.paths["no_audio"].read_bytes(), "video/mp4")})
             self.assertEqual(response.status_code, 202)
             job_id = response.json()["id"]

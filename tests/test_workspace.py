@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
+from auth_support import AuthenticatedTestClient as TestClient
 from pydantic import ValidationError
 
 from app import main
@@ -97,7 +97,7 @@ class WorkspaceTests(unittest.TestCase):
         self.root=Path(self.tmp.name);self.folder=self.root/ID;self.folder.mkdir()
         self.root_patch=patch.object(main,'ROOT',self.root);self.root_patch.start()
         self.delay=patch.object(main,'READ_DELAY_SECONDS',0);self.delay.start()
-        self.client=TestClient(main.app)
+        self.client=TestClient(main.app, projects=(ID,))
         (self.folder/'input.mp4').write_bytes(self.source_bytes)
         (self.folder/'clip_01.mp4').write_bytes(self.source_bytes)
         write_json_atomic(self.folder/'job.json',{'id':ID,'status':'completed','clips':[{'file':'clip_01.mp4','start':2,'end':12}]})
@@ -146,10 +146,10 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue((self.folder/'drafts'/f'{d["id"]}.json').is_file())
 
     def test_draft_get_list_pagination_and_update(self):
-        d=self.create();p=self.payload(title='Corrección',revision=1)
+        d=self.create();p=self.payload(title='CorrecciÃ³n',revision=1)
         r=self.client.put(f'/jobs/{ID}/drafts/{d["id"]}',json=p)
         self.assertEqual(r.status_code,200,r.text);self.assertEqual(r.json()['revision'],2)
-        self.assertEqual(self.client.get(f'/jobs/{ID}/drafts/{d["id"]}').json()['title'],'Corrección')
+        self.assertEqual(self.client.get(f'/jobs/{ID}/drafts/{d["id"]}').json()['title'],'CorrecciÃ³n')
         self.create(title='Otro');listing=self.client.get(f'/jobs/{ID}/drafts?limit=1').json()
         self.assertEqual(listing['total'],2);self.assertTrue(listing['has_more']);self.assertNotIn('cues',listing['drafts'][0])
         self.assertEqual(len(self.client.get(f'/jobs/{ID}/drafts?offset=1&limit=1').json()['drafts']),1);self.assert_originals()
@@ -258,6 +258,7 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(self.client.get('/projects?q=notfound').json()['total'],0);self.assert_originals()
 
     def test_library_pagination_and_unreadable_entry(self):
+        self.client.own_projects(*[ch*32 for ch in ['b','c','d']])
         for ch in ['b','c','d']:
             folder=self.root/(ch*32);folder.mkdir();(folder/'job.json').write_text('{broken')
         r=self.client.get('/projects?limit=2').json();self.assertEqual(r['total'],4);self.assertEqual(len(r['projects']),2);self.assertTrue(r['has_more']);self.assertEqual(r['unreadable'],3)

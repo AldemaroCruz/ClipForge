@@ -26,6 +26,7 @@ import urllib.request
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT));sys.path.insert(0,str(ROOT/'tests'))
 from app.check_presentation import make_source
 from app.state import write_json_atomic
+from auth_support import prepare_browser_fixture, browser_login
 from test_ai_selection import SEGMENTS, ANSWER
 from playwright.sync_api import sync_playwright,expect
 
@@ -53,6 +54,7 @@ with tempfile.TemporaryDirectory(prefix='clipforge-ai-browser-') as tmp:
     stub=ThreadingHTTPServer(('127.0.0.1',0),Stub);thread=threading.Thread(target=stub.serve_forever,daemon=True);thread.start()
     with socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
     url=f'http://127.0.0.1:{port}'
+    auth_fixture = prepare_browser_fixture(url, str(folder.parent), (JOB,))
     env={**os.environ,'CLIPFORGE_DATA_DIR':str(folder.parent),'CLIPFORGE_AI_PROVIDER':'ollama',
          'CLIPFORGE_AI_MODEL':'fixture-no-real-model','CLIPFORGE_OLLAMA_URL':f'http://127.0.0.1:{stub.server_port}',
          'CLIPFORGE_OLLAMA_NUM_CTX':'16384'}
@@ -76,6 +78,7 @@ with tempfile.TemporaryDirectory(prefix='clipforge-ai-browser-') as tmp:
         with sync_playwright() as p:
             browser=p.chromium.launch(executable_path=os.getenv('CHROMIUM_EXECUTABLE') or shutil.which('chromium'),headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
             context=browser.new_context(viewport={'width':1440,'height':1100},accept_downloads=True)
+            fixture_csrf = browser_login(context, url, auth_fixture)
             page=context.new_page();errors=[];page.on('pageerror',lambda exc:errors.append(str(exc)))
             if BRIDGE:
                 def backend(_source,request):

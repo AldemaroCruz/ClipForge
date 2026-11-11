@@ -11,7 +11,7 @@ import tempfile
 import unittest
 import zipfile
 from unittest import mock
-from fastapi.testclient import TestClient
+from auth_support import AuthenticatedTestClient as TestClient
 from app import main, backup, model_source
 from app.acceptance import inspect_project
 from app.lease import data_lease, LeaseBusy
@@ -174,7 +174,7 @@ class MetricsTests(unittest.TestCase):
         self.root=Path(self.temp.name)
         self.patch=mock.patch.object(main,'ROOT',self.root);self.patch.start();self.addCleanup(self.patch.stop)
         write_json_atomic(self.root/J/'job.json',{'id':J,'status':'completed','clips':[]})
-        self.client=TestClient(main.app)
+        self.client=TestClient(main.app, projects=(J,))
 
     def test_legacy_not_measured_is_null(self):
         r=project_stats(self.root,J);self.assertIsNone(r['stage_seconds']);self.assertIsNone(r['cost_usd'])
@@ -238,7 +238,7 @@ class MetricsTests(unittest.TestCase):
         self.assertGreater(project_stats(self.root,J)['warnings_count'],0)
 
     def test_api_lifespan_blocks_offline_backup(self):
-        with TestClient(main.app):
+        with TestClient(main.app, projects=(J,)):
             with self.assertRaises(LeaseBusy):
                 backup.create_backup(self.root,self.root.parent/('unique-'+J+'.zip'))
 

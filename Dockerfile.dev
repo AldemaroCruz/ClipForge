@@ -1,0 +1,17 @@
+# AUTH-01 local runtime layer. The launcher first builds Dockerfile.ci from a
+# verified source-only context and checks that exclusive parent's image ID.
+# No operational image, production Compose or host source mount is used.
+ARG CI_IMAGE
+FROM ${CI_IMAGE}
+
+USER root
+RUN mkdir -p /srv/clipforge \
+ && chown 1001:1001 /srv/clipforge
+ENV CLIPFORGE_DATA_DIR=/srv/clipforge \
+    CLIPFORGE_AI_PROVIDER=disabled \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    CLIPFORGE_AUTH_PROFILE=https
+USER 1001:1001
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--no-access-log"]

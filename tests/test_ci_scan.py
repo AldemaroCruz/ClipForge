@@ -80,6 +80,21 @@ class CIScanTests(unittest.TestCase):
             with self.assertRaises(scan.ScanError):
                 self.prepare()
 
+    def test_auth01_exact_dev_sources_allowed_but_private_and_unknown_names_rejected(self):
+        names = ['Dockerfile.dev', 'Dockerfile.dev.dockerignore', 'compose.dev.yaml',
+                 'app/auth.py', 'app/auth_models.py', 'app/auth_db.py',
+                 'app/auth_migrations.py', 'scripts/auth_admin.py', 'scripts/auth_migrate.py']
+        self.assertEqual(scan.validate_paths(names), sorted(names))
+        for name in ['compose.dev.local.yaml', '.env.dev', 'dev-data/project/job.json',
+                     'dev-postgres/PG_VERSION', 'dev-secrets/database-password',
+                     'scripts/credentials.dev.py', '.ci-local/auth01-result.json']:
+            with self.subTest(name=name):
+                self.write_paths(['README.md', name])
+                with mock.patch.object(scan.context, '_stream_record') as reader:
+                    with self.assertRaises((scan.ScanError, scan.context.ContextError)):
+                        self.prepare()
+                reader.assert_not_called()
+
     def test_unlisted_secret_is_never_opened_or_enumerated(self):
         (self.source / ".env.ai").write_text("authored synthetic private sentinel", encoding="utf-8")
         private = self.source / "data"

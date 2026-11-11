@@ -20,7 +20,7 @@ import uuid
 from unittest.mock import patch
 
 from fastapi import HTTPException
-from fastapi.testclient import TestClient
+from auth_support import AuthenticatedTestClient as TestClient, auth_environment
 from pydantic import ValidationError
 
 from app import main, ai_provider as provider, ai_selection as ai
@@ -147,8 +147,8 @@ class SelectionTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name);self.folder=self.root/JOB;self.folder.mkdir()
         self.patch_root=patch.object(main,'ROOT',self.root);self.patch_root.start()
-        self.env=patch.dict(os.environ,ENV,clear=True);self.env.start()
-        self.client=TestClient(main.app)
+        self.env=patch.dict(os.environ,{**ENV,**auth_environment()},clear=True);self.env.start()
+        self.client=TestClient(main.app, projects=(JOB,))
         (self.folder/'input.mp4').write_bytes(self.source_bytes)
         (self.folder/'clip_01.mp4').write_bytes(self.source_bytes)
         write_json_atomic(self.folder/'job.json',{'id':JOB,'status':'completed','clips':[{'file':'clip_01.mp4','start':0,'end':60}],'options':Presentation().model_dump()})

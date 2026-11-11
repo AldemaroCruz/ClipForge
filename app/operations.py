@@ -11,9 +11,10 @@ from pathlib import Path
 import re
 import shutil
 import time
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 from .state import write_json_atomic
+from .auth import visible_project_ids
 
 router = APIRouter()
 ID = re.compile('[0-9a-f]{32}')
@@ -118,9 +119,10 @@ def project_stats(root: Path, job_id: str) -> dict:
 
 
 @router.get('/ops/summary')
-def summary(response: Response):
+def summary(request: Request, response: Response):
     service=backend(); response.headers['Cache-Control']='no-store'
-    folders=sorted(p for p in service.ROOT.iterdir() if p.is_dir() and not p.is_symlink() and ID.fullmatch(p.name))
+    folders=sorted(service.ROOT / job_id for job_id in visible_project_ids(request.state.principal)
+                   if (service.ROOT / job_id).is_dir() and not (service.ROOT / job_id).is_symlink())
     rows=[project_stats(service.ROOT,p.name) for p in folders[:500]]
     disk=shutil.disk_usage(service.ROOT)
     rss=None

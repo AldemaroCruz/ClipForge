@@ -28,6 +28,7 @@ from app.check_presentation import make_source
 from app.presentation import Presentation
 from app.render import render_clip
 from app.state import write_json_atomic
+from auth_support import prepare_browser_fixture, browser_login
 import io
 import zipfile
 from playwright.sync_api import sync_playwright, expect
@@ -62,6 +63,7 @@ with tempfile.TemporaryDirectory(prefix="clipforge-browser-") as temporary:
         sock.bind(("127.0.0.1",0))
         port = sock.getsockname()[1]
     url = f"http://127.0.0.1:{port}"
+    auth_fixture = prepare_browser_fixture(url, str(data), (ID,))
     with (OUTPUT / "browser-delivery-server.log").open("w") as server_log:
         process = subprocess.Popen([sys.executable,"-m","uvicorn","app.main:app","--host","127.0.0.1","--port",str(port)],
                                    cwd=ROOT, env={**os.environ,"CLIPFORGE_DATA_DIR":str(data)},
@@ -82,6 +84,7 @@ with tempfile.TemporaryDirectory(prefix="clipforge-browser-") as temporary:
                 browser = p.chromium.launch(executable_path=os.getenv("CHROMIUM_EXECUTABLE") or shutil.which("chromium"),
                                            headless=True,args=["--no-sandbox","--disable-dev-shm-usage"])
                 context = browser.new_context(viewport={"width":1440,"height":1100},accept_downloads=True)
+                fixture_csrf = browser_login(context, url, auth_fixture)
                 page = context.new_page()
                 errors=[]
                 page.on("pageerror",lambda e:errors.append(str(e)))
@@ -165,7 +168,7 @@ with tempfile.TemporaryDirectory(prefix="clipforge-browser-") as temporary:
                 expect(page.locator('#editor-template-status')).to_contain_text('Plantilla guardada')
                 assert not (folder/'exports').exists()
                 assert not (folder/'drafts').exists()
-                template_path=next((data/'templates').glob('*.json'))
+                template_path=next((data/'workspaces'/auth_fixture['principal'].workspace_id/'templates').glob('*.json'))
                 template=json.loads(template_path.read_text())
                 assert 'cues' not in template and 'start' not in template
                 assert template['options']['subtitle_position']=='top'
@@ -207,8 +210,8 @@ with tempfile.TemporaryDirectory(prefix="clipforge-browser-") as temporary:
                 record('Explicit review persisted separately from export.json; approving enables selection without re-rendering.')
                 # Simulate another tab through the real HTTP API; stale UI must reject overwrite.
                 external={'revision':1,'status':'approved','title':'Título de otra pestaña','notes':'Cambio externo'}
-                req=urllib.request.Request(url+f'/jobs/{ID}/exports/{eid}/review',data=json.dumps(external).encode(),headers={'Content-Type':'application/json'},method='PUT')
-                with urllib.request.urlopen(req) as response:assert json.load(response)['revision']==2
+                response=context.request.put(url+f'/jobs/{ID}/exports/{eid}/review',data=external,headers={'Origin':url,'X-CSRF-Token':fixture_csrf})
+                assert response.status==200 and response.json()['revision']==2
                 page.locator(f'#review-{eid}-notes').fill('Mis cambios todavía no guardados')
                 page.locator('#exports-list button').filter(has_text='Guardar revisión').click()
                 expect(page.locator('.review-message')).to_contain_text('otra pestaña')

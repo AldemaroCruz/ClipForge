@@ -19,7 +19,7 @@ function resetPolling() {resetAI();selectedDeliveries.clear();reviewEdits.clear(
 async function requestJSON(url, options = {}, timeout = 15000) {
   const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeout);
   try {
-    const response = await fetch(url, {...options,cache:"no-store",signal:controller.signal});
+    const response = await window.ClipForgeAuth.fetch(url, {...options,cache:"no-store",signal:controller.signal});
     let body;
     try {body = await response.json();} catch (_) {throw new RequestError("El servidor devolvió una respuesta no válida.",response.status);}
     if (!response.ok) {
@@ -33,7 +33,7 @@ async function requestJSON(url, options = {}, timeout = 15000) {
     throw error;
   } finally {clearTimeout(timer);}
 }
-function rememberJob(id) {currentJob = id; jobInput.value = id; jobLink.textContent = `Job: ${id}`; try {localStorage.setItem("clipforge-last-job",id);} catch (_) {}}
+function rememberJob(id) {currentJob = id; jobInput.value = id; jobLink.textContent = `Job: ${id}`; try {const key=window.ClipForgeAuth.storageKey();if(key)localStorage.setItem(key,id);} catch (_) {}}
 function node(tag, text, className) {const n=document.createElement(tag); if(text !== undefined) n.textContent=text; if(className) n.className=className; return n;}
 function downloadLink(url, label, filename) {const link=node("a",label); link.href=url; if(filename) link.download=filename; return link;}
 function renderMedia(media) {
@@ -521,7 +521,7 @@ $("job-form").addEventListener("submit",event=>{
   selectProject(id);
 });
 initDeliveryAndTemplates();
-try {const id=localStorage.getItem("clipforge-last-job");if(/^[0-9a-f]{32}$/.test(id || "")) {rememberJob(id);busy(true);poll(id,session);}} catch (_) {}
+window.ClipForgeAuth.ready.then(user=>{if(!user)return;try {const id=localStorage.getItem(window.ClipForgeAuth.storageKey());if(/^[0-9a-f]{32}$/.test(id || "")) {rememberJob(id);busy(true);poll(id,session);}} catch (_) {}});
 
 refreshProjects();
 

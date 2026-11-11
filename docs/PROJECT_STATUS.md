@@ -1,5 +1,13 @@
 # ClipForge — Estado del proyecto
 
+**Prioridad vigente (2026-11-10): AUTH-01, desarrollo funcional local con
+presupuesto de nuevos servicios cero.** Pro/ESM está aplazado y SEC-05 se conserva
+sin reabrir su evaluación. Se implementan cuentas, sesiones y espacios privados
+sobre PostgreSQL local con recursos aislados. Los riesgos están registrados, no
+aceptados; publicación, CI/release y despliegue siguen sin aprobación.
+Detalle y resultados de la candidata: [AUTH-01.md](AUTH-01.md).
+Los apartados siguientes conservan el historial de decisiones y ejecuciones.
+
 GIT-01: referencia inicial autorizada en `ci/bootstrap-sec03` a partir de la
 selección explícita de 127 fuentes/configuraciones/documentos. Se exige escanear
 los blobs exactos del índice y verificar que el remoto esté vacío antes de enviar.

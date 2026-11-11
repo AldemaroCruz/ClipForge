@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 
 from .editorial import (DraftUpdate, EditorialContent, ProjectName, RangeChange,
@@ -28,6 +28,7 @@ from .media_binaries import resolve_media_binary
 from .presentation import Presentation
 from .state import write_json_atomic
 from .subtitles import SubtitleError, cues_from_segments, validate_cues
+from .auth import visible_project_ids
 
 router = APIRouter()
 THUMB_LOCK = threading.Lock()
@@ -295,11 +296,12 @@ def project_summary(folder: Path) -> dict:
 
 
 @router.get("/projects")
-def list_projects(response: Response, q: str = Query("", max_length=150),
+def list_projects(request: Request, response: Response, q: str = Query("", max_length=150),
                   offset: int = Query(0, ge=0), limit: int = Query(12, ge=1, le=50)):
     response.headers["Cache-Control"] = "no-store"
-    items = [project_summary(p.parent) for p in backend().ROOT.glob("*/job.json")
-             if re.fullmatch(r"[0-9a-f]{32}", p.parent.name)]
+    allowed = visible_project_ids(request.state.principal)
+    items = [project_summary(backend().ROOT / job_id) for job_id in allowed
+             if (backend().ROOT / job_id / "job.json").is_file()]
     query = q.strip().casefold()
     if query:
         items = [item for item in items if query in f"{item['title']} {item['id']} {item.get('source_filename') or ''}".casefold()]

@@ -43,6 +43,8 @@ COPY tests/ ./tests/
 # Packaging regressions inspect the production files as source; they do not
 # replace this CI image's separately locked dependency set.
 COPY Dockerfile requirements.txt requirements-test.txt requirements-ci.lock requirements-ci-tools.txt requirements-ci-tools.lock ./
+# AUTH-01 packaging regressions inspect only these additional, explicit sources.
+COPY Dockerfile.dev Dockerfile.dev.dockerignore compose.dev.yaml ./
 CMD ["python", "scripts/run_ci_tests.py", "--report", "/ci-results/test-summary.json"]
 
 # Separate browser preparation. Every added tool/library remains in the image

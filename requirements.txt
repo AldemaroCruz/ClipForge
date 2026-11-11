@@ -13,3 +13,9 @@ requests==2.34.2
 # faster-whisper 1.1.1 passes metadata_errors to av.open; PyAV 19 removed it.
 # Exact compatibility pin; update only with the functional decoder checks.
 av==18.1.0
+
+# AUTH-01: maintained database access and Argon2id; preserve all other pins.
+SQLAlchemy==2.1.8
+psycopg==3.3.8
+psycopg-binary==3.3.8
+argon2-cffi==25.1.0

@@ -18,7 +18,7 @@ import zipfile
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -54,14 +54,20 @@ class TemplateRequest(BaseModel):
         return value
 
 
-def template_path(template_id: str) -> Path:
+def template_directory(workspace_id: str) -> Path:
+    if not re.fullmatch(ID_PATTERN, workspace_id):
+        raise HTTPException(404, "Espacio no encontrado")
+    return backend().ROOT / "workspaces" / workspace_id / "templates"
+
+
+def template_path(template_id: str, workspace_id: str) -> Path:
     if not re.fullmatch(ID_PATTERN, template_id):
         raise HTTPException(404, "Plantilla no encontrada")
-    return backend().ROOT / "templates" / f"{template_id}.json"
+    return template_directory(workspace_id) / f"{template_id}.json"
 
 
-def read_template(template_id: str) -> dict:
-    path = template_path(template_id)
+def read_template(template_id: str, workspace_id: str) -> dict:
+    path = template_path(template_id, workspace_id)
     try:
         with backend().LOCK:
             item = json.loads(path.read_text(encoding="utf-8"))
@@ -76,14 +82,15 @@ def read_template(template_id: str) -> dict:
 
 
 @router.get("/templates")
-def list_templates(response: Response):
+def list_templates(request: Request, response: Response):
     response.headers["Cache-Control"] = "no-store"
     items, unreadable = [], 0
-    for path in (backend().ROOT / "templates").glob("*.json"):
+    workspace_id = request.state.principal.workspace_id
+    for path in template_directory(workspace_id).glob("*.json"):
         if not re.fullmatch(ID_PATTERN, path.stem):
             continue
         try:
-            items.append(read_template(path.stem))
+            items.append(read_template(path.stem, workspace_id))
         except HTTPException:
             unreadable += 1
     items.sort(key=lambda x: (x["name"].casefold(), x["id"]))
@@ -91,15 +98,16 @@ def list_templates(response: Response):
 
 
 @router.post("/templates", status_code=201)
-def create_template(request: TemplateRequest):
+def create_template(request: TemplateRequest, http_request: Request):
     service = backend()
+    workspace_id = http_request.state.principal.workspace_id
     with service.LOCK:
-        files = list((service.ROOT / "templates").glob("*.json"))
+        files = list(template_directory(workspace_id).glob("*.json"))
         if len(files) >= 200:
             raise HTTPException(409, "Límite local de 200 plantillas alcanzado.")
         for path in files:
             try:
-                previous = read_template(path.stem)
+                previous = read_template(path.stem, workspace_id)
             except HTTPException:
                 continue
             if previous["name"].casefold() == request.name.casefold():
@@ -107,16 +115,16 @@ def create_template(request: TemplateRequest):
         item = {"id": uuid.uuid4().hex, "created_at": time.time(),
                 "version": service.VERSION, **request.model_dump()}
         try:
-            write_json_atomic(template_path(item["id"]), item)
+            write_json_atomic(template_path(item["id"], workspace_id), item)
         except OSError as exc:
             raise HTTPException(503, "No se pudo guardar la plantilla. Revisa espacio y permisos.") from exc
     return copy.deepcopy(item)
 
 
 @router.get("/templates/{template_id}")
-def get_template(template_id: str, response: Response):
+def get_template(template_id: str, request: Request, response: Response):
     response.headers["Cache-Control"] = "no-store"
-    return read_template(template_id)
+    return read_template(template_id, request.state.principal.workspace_id)
 
 
 class ReviewContent(BaseModel):

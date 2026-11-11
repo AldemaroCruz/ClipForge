@@ -1,6 +1,8 @@
 """Strict CI gate over disposable data; never imports the application on import.
 
-Run in the CI image with external networking disabled (``--network none``).
+Run in the CI image with external networking disabled. AUTH-01 integration uses
+an explicitly verified internal Docker network to its isolated PostgreSQL;
+that profile is not ``--network none``. Checks without PostgreSQL may use none.
 Localhost remains available for the suite's explicitly simulated HTTP providers.
 The configured data path must be below the system temporary directory; a fresh,
 separate temporary directory is actually used so existing data is never opened.

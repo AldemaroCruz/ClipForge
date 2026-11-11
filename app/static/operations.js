@@ -5,7 +5,7 @@ const stageNames={queue:"Espera en cola",validation:"Validación de archivo",mod
 const num=n=>Number(n).toLocaleString("es-SV",{maximumFractionDigits:2});
 function bytes(n){if(!Number.isFinite(n))return "No medido";return n>=1024**3?`${num(n/1024**3)} GiB`:`${num(n/1024**2)} MiB`;}
 function node(tag,text){const n=document.createElement(tag);n.textContent=text;return n;}
-async function json(url,options={}){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),30000);try{const response=await fetch(url,{...options,cache:"no-store",signal:controller.signal});const body=await response.json();if(!response.ok)throw new Error(typeof body.detail==="string"?body.detail:`Error HTTP ${response.status}`);return body;}finally{clearTimeout(timer);}}
+async function json(url,options={}){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),30000);try{const response=await window.ClipForgeAuth.fetch(url,{...options,cache:"no-store",signal:controller.signal});const body=await response.json();if(!response.ok)throw new Error(typeof body.detail==="string"?body.detail:`Error HTTP ${response.status}`);return body;}finally{clearTimeout(timer);}}
 function selected(){return rows.find(r=>r.job_id===el("project").value);}
 function draw(){const r=selected();el("stages").replaceChildren();el("details").replaceChildren();el("save-review").disabled=!r||loading;el("detail-note").textContent="";if(!r)return;
   el("detail-note").textContent=`Proyecto ${r.job_id} · ${r.status} · ${bytes(r.data_bytes)} · ${r.timed_runs} ejecución(es) medidas. ${r.warnings_count?"Aviso: hay registros ilegibles; totales parciales.":""}`;

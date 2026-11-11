@@ -22,6 +22,7 @@ ROOT_FILES = (
     "Dockerfile", "Dockerfile.ci", "Dockerfile.ci.dockerignore",
     "requirements.txt", "requirements-test.txt", "requirements-ci.lock",
     "requirements-ci-tools.txt", "requirements-ci-tools.lock",
+    "Dockerfile.dev", "Dockerfile.dev.dockerignore", "compose.dev.yaml",
 )
 DIRECTORIES = {
     "app": frozenset({".py"}),

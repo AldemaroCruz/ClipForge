@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fastapi.testclient import TestClient
+from auth_support import AuthenticatedTestClient as TestClient
 
 with tempfile.TemporaryDirectory() as bootstrap:
     with mock.patch.dict(os.environ, {"CLIPFORGE_DATA_DIR": bootstrap}):
@@ -145,7 +145,7 @@ class ApiTests(unittest.TestCase):
         self.root_patch.start()
         self.delay_patch.start()
         main.JOBS.clear()
-        self.client = TestClient(main.app)
+        self.client = TestClient(main.app, projects=(JOB_ID,))
         self.client.__enter__()
         self.addCleanup(self.temp.cleanup)
         self.addCleanup(self.root_patch.stop)
