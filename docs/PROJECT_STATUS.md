@@ -1,5 +1,13 @@
 # ClipForge — Estado del proyecto
 
+**CI-AUTH-01:** AUTH-01 revisado y versionado; integración de GitHub Actions
+con PostgreSQL efímero real, aceptación AUTH y cierre de recursos obligatorios.
+Validación local: 681 tests, 11 checks, seis escenarios browser y siete pasos AUTH
+aprobados. La autorización comprende commits específicos y push normal únicamente
+a `ci/bootstrap-sec03`; conserva todos los bloqueos de seguridad y de release.
+La ejecución real de Actions se identifica separadamente en el expediente:
+[CI-AUTH-01.md](CI-AUTH-01.md). No se implementa recuperación de cuentas.
+
 **Prioridad vigente (2026-11-10): AUTH-01, desarrollo funcional local con
 presupuesto de nuevos servicios cero.** Pro/ESM está aplazado y SEC-05 se conserva
 sin reabrir su evaluación. Se implementan cuentas, sesiones y espacios privados

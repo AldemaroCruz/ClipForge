@@ -23,11 +23,21 @@ from playwright.sync_api import sync_playwright, expect
 OUTPUT = ROOT / 'test-output'
 OUTPUT.mkdir(exist_ok=True)
 results = []
+STEP_IDS = ('login', 'admin_create_user', 'independent_sessions', 'process_restart',
+            'password_revocation', 'admin_deactivation', 'logout_mobile')
+
+
+def report_failure(error_type, error, traceback):
+    # Playwright errors can include fill() arguments. Never publish their text.
+    print('AUTH browser failed after ' + str(len(results)) + ' steps: ' + error_type.__name__, file=sys.stderr)
+
+
+sys.excepthook = report_failure
 
 
 def record(message):
-    results.append('PASS: ' + message)
-    print(results[-1], flush=True)
+    results.append({'id': STEP_IDS[len(results)], 'status': 'passed', 'detail': message})
+    print('PASS: ' + message, flush=True)
 
 
 def login(page, origin, username, password):
@@ -53,7 +63,7 @@ with tempfile.TemporaryDirectory(prefix='clipforge-browser-auth-') as temporary:
     environment = {**os.environ, 'CLIPFORGE_DATA_DIR': str(data), 'CLIPFORGE_AI_PROVIDER': 'disabled'}
 
     def start():
-        process = subprocess.Popen([sys.executable, '-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', str(port)],
+        process = subprocess.Popen([sys.executable, '-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', str(port), '--no-access-log'],
             cwd=ROOT, env=environment, stdout=server_log, stderr=subprocess.STDOUT)
         for _ in range(100):
             try:
@@ -147,7 +157,8 @@ with tempfile.TemporaryDirectory(prefix='clipforge-browser-auth-') as temporary:
         stop(process)
         server_log.close()
 with (OUTPUT / 'browser-auth-summary.json').open('x', encoding='utf-8') as stream:
-    json.dump({'status': 'passed', 'steps': len(results), 'transport': 'direct_http', 'postgresql': 'real',
+    json.dump({'schema_version': 1, 'status': 'passed', 'exit_code': 0,
+               'script': 'browser_auth.py', 'timed_out': False, 'details': results, 'steps': len(results), 'transport': 'direct_http', 'postgresql': 'real',
                'process_restart': True, 'auth_mocked': False, 'external_network': False,
                'scope': 'Separate AUTH-01 UI acceptance; no real ASR/LLM, no release approval'}, stream, indent=2)
     stream.write('\n')

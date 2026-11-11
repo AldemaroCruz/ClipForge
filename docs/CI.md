@@ -1,5 +1,12 @@
 # CI-01 / SEC-01 / SEC-02: pruebas aisladas desde fuentes
 
+**Integración actual: [CI-AUTH-01](CI-AUTH-01.md).** AUTH-01 está revisado y
+versionado; se adapta CI para PostgreSQL efímero real y aceptación AUTH obligatoria.
+Los comandos y conteos anteriores de este documento son históricos. No ejecutar
+la suite autenticada sin su PostgreSQL aislado ni reutilizar la candidata del
+propietario. La adaptación conserva los gates y no acredita Actions hasta
+observar el run del nuevo SHA; resultados concretos en el expediente CI-AUTH-01.
+
 **Estado actual:** Actions se ejecutó en
 [42866539507](https://github.com/AldemaroCruz/ClipForge/actions/runs/42866539507),
 commit `2c5ea13e4c5935bad84a0ce7ad6c453fe221e52c`: permisos, 541 tests,

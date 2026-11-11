@@ -28,6 +28,7 @@ from scripts import validate_ci_reports as gate
 SYNTHETIC = "SYNTHETIC FIXTURE ONLY: no scanner or real security acceptance"
 IMAGE_ID = "sha256:" + "1" * 64
 BROWSER_IMAGE_ID = "sha256:" + "2" * 64
+POSTGRES_IMAGE_ID = "sha256:" + "3" * 64
 PACKAGES = {
     "debian": [{"Name": name, "Version": "1.0-1"} for name in
                ("ffmpeg", "fonts-dejavu-core", "libxml2", "zlib1g")],
@@ -37,7 +38,20 @@ PACKAGES = {
     )],
     "node-pkg": [{"Name": "playwright-core", "Version": "1.0.0"}],
 }
+POSTGRES_PACKAGES = {"debian": [
+    {"Name": name, "Version": version, "Architecture": "amd64", "Source": name, "SourceVersion": version}
+    for name, version in (("postgresql-18", "18.6-1.pgdg13+2"), ("libc6", "2.41-12"))
+]}
+GOSU_MODULES = [
+    {"Name": "github.com/tianon/gosu", "Version": "v1.19.0", "Checksum": ""},
+    {"Name": "github.com/moby/sys/user", "Version": "v0.1.0", "Checksum": "h1:" + "A" * 43 + "="},
+    {"Name": "golang.org/x/sys", "Version": "v0.1.0", "Checksum": "h1:" + "B" * 43 + "="},
+]
+POSTGRES_PACKAGES["gobinary"] = [{"Name": item["Name"], "Version": item["Version"]} for item in GOSU_MODULES]
+POSTGRES_PACKAGES["gobinary"].append({"Name": "stdlib", "Version": "v1.24.6"})
 SCENARIOS = ("smoke", "workflow", "editorial", "delivery", "ai", "operations")
+AUTH_SCENARIO_STEPS = ("login", "admin_create_user", "independent_sessions", "process_restart",
+                       "password_revocation", "admin_deactivation", "logout_mobile")
 
 
 def write_json(path, value):
@@ -51,7 +65,7 @@ def read_json(path):
 
 
 def purl(kind, package):
-    head = {"debian": "pkg:deb/debian/", "python-pkg": "pkg:pypi/", "node-pkg": "pkg:npm/"}[kind]
+    head = {"debian": "pkg:deb/debian/", "python-pkg": "pkg:pypi/", "node-pkg": "pkg:npm/", "gobinary": "pkg:golang/"}[kind]
     return head + package["Name"] + "@" + quote(package["Version"], safe=".+-")
 
 
@@ -138,6 +152,15 @@ def create_fixture(tmpRoot):
                        "returncode": 0, "timed_out": False, "bridge_detected": False, "reported_steps": 1,
                        "transport": "simulated_fetch" if name == "smoke" else "direct_http"} for name in SCENARIOS],
     })
+    write_json(reports / "browser-auth/browser-auth-summary.json", {
+        "synthetic_fixture": SYNTHETIC, "schema_version": 1, "status": "passed", "exit_code": 0,
+        "timed_out": False, "script": "browser_auth.py", "transport": "direct_http", "postgresql": "real",
+        "auth_mocked": False, "process_restart": True, "external_network": False,
+        "image_id": BROWSER_IMAGE_ID, "postgres_image_id": POSTGRES_IMAGE_ID,
+        "context_manifest_sha256": hashlib.sha256((reports / "context-manifest.json").read_bytes()).hexdigest(),
+        "steps": 7, "details": [{"id": name, "status": "passed", "detail": SYNTHETIC + ": " + name}
+                                 for name in AUTH_SCENARIO_STEPS],
+    })
     write_json(reports / "gitleaks-source.json", [])
     write_json(reports / "actionlint-summary.json", {
         "synthetic_fixture": SYNTHETIC, "schema_version": 1, "version": "1.7.12",
@@ -145,7 +168,7 @@ def create_fixture(tmpRoot):
         "workflow_sha256": workflow_sha,
     })
     (reports / "actionlint-version.txt").write_text("actionlint 1.7.12 — " + SYNTHETIC + "\n", encoding="utf-8")
-    for prefix, image_id in (("", IMAGE_ID), ("browser-", BROWSER_IMAGE_ID)):
+    for prefix, image_id in (("", IMAGE_ID), ("browser-", BROWSER_IMAGE_ID), ("postgres-", POSTGRES_IMAGE_ID)):
         (reports / (prefix + "image-id.txt")).write_text(image_id + "\n", encoding="utf-8")
         (reports / (prefix + "image-archive.sha256")).write_text(("a" if not prefix else "b") * 64 + "\n", encoding="utf-8")
         inventory = {
@@ -154,29 +177,62 @@ def create_fixture(tmpRoot):
             "targets": [{"Class": gate.TARGETS[kind], "Type": kind, "Packages": copy.deepcopy(packages)}
                         for kind, packages in PACKAGES.items()],
         }
+        packages_by_kind = PACKAGES
+        if prefix == "postgres-":
+            packages_by_kind = POSTGRES_PACKAGES
+            (reports / "postgres-image-ref.txt").write_text(gate.POSTGRES_IMAGE + "\n", encoding="utf-8")
+            inventory = {
+                "synthetic_fixture": SYNTHETIC, "schema_version": 1,
+                "schema": "clipforge-postgres-image-inventory-1", "image_id": image_id, "image_config_id": image_id,
+                "image_reference": gate.POSTGRES_IMAGE, "platform": {"os": "linux", "architecture": "amd64"},
+                "os": {"family": "debian", "name": "13.7", "id": "debian", "version_id": "13"},
+                "targets": [{"Class": "os-pkgs", "Type": "debian", "Packages": copy.deepcopy(POSTGRES_PACKAGES["debian"])},
+                            {"Class": "lang-pkgs", "Type": "gobinary", "Target": "usr/local/bin/gosu",
+                             "Packages": copy.deepcopy(POSTGRES_PACKAGES["gobinary"])}],
+                "go_binaries": [{"path": "/usr/local/bin/gosu", "resolved_path": "/usr/local/bin/gosu",
+                    "sha256": "7" * 64, "bytes": 100, "uid": 0, "gid": 0, "mode": "0o755",
+                    "version": "1.19 (go1.24.6 on linux/amd64; gc)", "go_version": "go1.24.6",
+                    "main_path": "github.com/tianon/gosu", "main_module": copy.deepcopy(GOSU_MODULES[0]),
+                    "dependencies": copy.deepcopy(GOSU_MODULES[1:]), "build_settings": {"GOOS": "linux", "GOARCH": "amd64"},
+                    "build_info_sha256": "8" * 64, "module_info_sha256": "9" * 64,
+                    "packages": copy.deepcopy(POSTGRES_PACKAGES["gobinary"])}],
+                "dpkg": {"status_path": "/var/lib/dpkg/status", "status_sha256": "d" * 64,
+                         "status_bytes": 100, "installed_package_count": 2},
+                "postgres": {"version": "postgres (PostgreSQL) 18.6 (Debian 18.6-1.pgdg13+2)",
+                    "version_number": "18.6", "package_owned": True,
+                    "package": {"Name": "postgresql-18", "Version": "18.6-1.pgdg13+2"},
+                    "binary": {"path": "/usr/lib/postgresql/18/bin/postgres", "resolved_path": "/usr/lib/postgresql/18/bin/postgres",
+                               "sha256": "e" * 64, "bytes": 100, "uid": 0, "gid": 0, "mode": "0o755"},
+                    "package_file_list": {"path": "/var/lib/dpkg/info/postgresql-18.list", "sha256": "f" * 64, "bytes": 100}},
+            }
         write_json(reports / (prefix + "image-inventory.json"), inventory)
-        artifact = "synthetic-" + ("browser" if prefix else "ci") + "-fixture"
+        artifact = "synthetic-" + (prefix.rstrip("-") if prefix else "ci") + "-fixture"
         targets = []
         components = []
-        for kind, packages in PACKAGES.items():
+        for kind, packages in packages_by_kind.items():
             trivy_packages = []
             for package in packages:
                 package_purl = purl(kind, package)
                 item = {**package, "Identifier": {"PURL": package_purl}}
                 if kind == "debian":
-                    item.update(Version="1.0", Release="1", Epoch=0)
+                    version, release = package["Version"].rsplit("-", 1)
+                    item.update(Version=version, Release=release, Epoch=0)
                 trivy_packages.append(item)
                 components.append({"type": "library", "name": package["Name"],
                                    "version": package["Version"], "purl": package_purl})
-            targets.append({"Class": gate.TARGETS[kind], "Type": kind,
+            targets.append({"Class": gate.SCANNER_TARGETS[kind], "Type": kind,
                             "Target": {"debian": artifact + " (debian 13.7)",
-                                       "python-pkg": "Python", "node-pkg": "Node.js"}[kind],
+                                       "python-pkg": "Python", "node-pkg": "Node.js", "gobinary": "usr/local/bin/gosu"}[kind],
                             "Packages": trivy_packages, "Vulnerabilities": []})
-        write_json(reports / (prefix + "trivy-high-critical.json"), {
+        write_json(reports / ("trivy-postgres.json" if prefix == "postgres-" else prefix + "trivy-high-critical.json"), {
             "synthetic_fixture": SYNTHETIC, "SchemaVersion": 2, "ArtifactType": "container_image",
             "ArtifactName": artifact, "Metadata": {"ImageID": image_id, "OS": {"Family": "debian", "Name": "13.7"}},
             "Results": targets,
         })
+        if prefix == "postgres-":
+            components.append({"type": "application", "name": "usr/local/bin/gosu", "bom-ref": "synthetic-gosu-target",
+                               "properties": [{"name": "aquasecurity:trivy:Class", "value": "lang-pkgs"},
+                                              {"name": "aquasecurity:trivy:Type", "value": "gobinary"}]})
         write_json(reports / (prefix + "sbom.cdx.json"), {
             "synthetic_fixture": SYNTHETIC, "bomFormat": "CycloneDX", "specVersion": "1.7", "version": 1,
             "metadata": {"component": {"type": "container", "name": artifact, "properties": [
@@ -188,6 +244,33 @@ def create_fixture(tmpRoot):
         "DownloadedAt": "2026-11-10T01:00:00Z", "NextUpdate": "2026-11-11T00:00:00Z",
     })
     (reports / "trivy-db.sha256").write_text("c" * 64 + "\n", encoding="utf-8")
+    write_json(reports / "trivy-postgres-execution.json", {
+        "synthetic_fixture": SYNTHETIC, "schema_version": 1, "image_id": POSTGRES_IMAGE_ID,
+        "exit_code": 0, "sbom_exit_code": 0, "status": "passed",
+    })
+    run_key, nonce = "synthetic-workflow-run", "9" * 32
+    prefix = "clipforge-ci-auth-" + hashlib.sha256(run_key.encode()).hexdigest()[:12] + "-" + nonce[:12]
+    write_json(reports / "postgres-isolation.json", {
+        "synthetic_fixture": SYNTHETIC, "schema": "clipforge-ci-postgres-isolation-1", "status": "passed",
+        "run_key": run_key, "nonce": nonce, "prefix": prefix, "postgres_image_ref": gate.POSTGRES_IMAGE,
+        "postgres_image_id": POSTGRES_IMAGE_ID, "ci_image_id": IMAGE_ID,
+        "postgres": {"id": "4" * 64, "name": prefix + "-postgres", "published_ports": False},
+        "network": {"id": "5" * 64, "name": prefix + "-network", "internal": True, "ipv6": False},
+        "probe": {"status": "passed", "database": "reachable", "database_role": "clipforge_ci",
+                  "superuser": False, "createdb": False, "uid_gid": "10001:10001",
+                  "external_tcp_probes": [{"endpoint": ["1.1.1.1", 443], "connection": "blocked"},
+                                          {"endpoint": ["8.8.8.8", 53], "connection": "blocked"}],
+                  "default_ipv4_route": False, "no_new_privileges": True, "capabilities": "zero"},
+        "checked_utc": "2026-11-10T00:00:00Z", "report": "synthetic-attempt/check",
+    })
+    write_json(reports / "postgres-cleanup.json", {
+        "synthetic_fixture": SYNTHETIC, "schema": "clipforge-ci-postgres-cleanup-1", "status": "clean",
+        "run_key": run_key, "nonce": nonce, "prefix": prefix, "ownership_verified": True,
+        "containers_removed": [prefix + "-postgres", prefix + "-browser-auth-1234abcd"], "networks_removed": [prefix + "-network"],
+        "private_files_removed": ["postgres-password", "database-password", "initialize.sql"],
+        "remaining_container_ids": [], "remaining_network_ids": [], "private_files_remaining": [],
+        "checked_utc": "2026-11-10T00:01:00Z", "report": "synthetic-attempt/cleanup",
+    })
     return reports, prepared
 
 
@@ -423,6 +506,293 @@ class CIReportContractTests(unittest.TestCase):
                 report["targets"][index]["Packages"].pop()
                 self.rejects_report("image-inventory.json", report, "image_inventory")
 
+    def test_postgres_inventory_accepts_its_own_complete_os_scope_without_application_packages(self):
+        inventory = read_json(self.reports / "postgres-image-inventory.json")
+        targets, os_info = gate.validate_postgres_inventory(inventory, POSTGRES_IMAGE_ID, gate.POSTGRES_IMAGE)
+        self.assertEqual(set(targets), {"debian", "gobinary"})
+        self.assertNotIn("ffmpeg", {name for name, _ in targets["debian"]})
+        self.assertIsNone(gate.validate_trivy(read_json(self.reports / "trivy-postgres.json"),
+                                             POSTGRES_IMAGE_ID, targets, os_info))
+        self.assertIsNone(gate.validate_sbom(read_json(self.reports / "postgres-sbom.cdx.json"),
+                                            POSTGRES_IMAGE_ID, targets))
+
+    def test_postgres_reports_and_identity_files_are_mandatory(self):
+        for relative, control in [("postgres-image-id.txt", "postgres_image_inventory"),
+                                  ("postgres-image-ref.txt", "postgres_image_inventory"),
+                                  ("postgres-image-archive.sha256", "postgres_image_inventory"),
+                                  ("postgres-image-inventory.json", "postgres_image_inventory"),
+                                  ("trivy-postgres-execution.json", "postgres_trivy_execution"),
+                                  ("trivy-postgres.json", "postgres_trivy"),
+                                  ("postgres-sbom.cdx.json", "postgres_sbom")]:
+            path = self.reports / relative
+            original = path.read_bytes()
+            try:
+                with self.subTest(report=relative):
+                    path.unlink()
+                    result = gate.validate_reports(self.reports, self.context)
+                    self.assertEqual(result["status"], "failed")
+                    self.assertTrue(any(error["control"] == control for error in result["errors"]), result)
+            finally:
+                path.write_bytes(original)
+
+    def test_postgres_inventory_requires_pinned_identity_platform_and_complete_package_count(self):
+        original = read_json(self.reports / "postgres-image-inventory.json")
+        mutations = [("schema_version", True), ("schema", "unrelated"), ("image_id", IMAGE_ID),
+                     ("image_config_id", IMAGE_ID), ("image_reference", "postgres:latest"),
+                     ("platform", {"os": "linux", "architecture": "arm64"}),
+                     ("os", {"family": "ubuntu", "id": "ubuntu", "version_id": "13", "name": "13.7"})]
+        for field, value in mutations:
+            with self.subTest(field=field):
+                report = copy.deepcopy(original)
+                report[field] = value
+                self.rejects_report("postgres-image-inventory.json", report, "postgres_image_inventory")
+        for field, value in [("installed_package_count", 1), ("installed_package_count", True),
+                             ("status_bytes", 0), ("status_sha256", "missing"), ("status_path", "/other")]:
+            with self.subTest(dpkg_field=field):
+                report = copy.deepcopy(original)
+                report["dpkg"][field] = value
+                self.rejects_report("postgres-image-inventory.json", report, "postgres_image_inventory")
+
+    def test_postgres_inventory_cannot_hide_unowned_or_changed_runtime(self):
+        original = read_json(self.reports / "postgres-image-inventory.json")
+        for field, value in [("package_owned", False), ("package_owned", 1), ("version_number", "18.5"),
+                             ("version", "postgres (PostgreSQL) 18.5"),
+                             ("package", {"Name": "source-built-postgres", "Version": "18.6"})]:
+            with self.subTest(field=field):
+                report = copy.deepcopy(original)
+                report["postgres"][field] = value
+                self.rejects_report("postgres-image-inventory.json", report, "postgres_image_inventory")
+        for field, value in [("path", "/tmp/postgres"), ("resolved_path", "/tmp/postgres"), ("sha256", None),
+                             ("bytes", 0), ("uid", 1000), ("gid", True), ("mode", "0o777")]:
+            with self.subTest(binary_field=field):
+                report = copy.deepcopy(original)
+                report["postgres"]["binary"][field] = value
+                self.rejects_report("postgres-image-inventory.json", report, "postgres_image_inventory")
+        report = copy.deepcopy(original)
+        report["postgres"]["package_file_list"] = {}
+        self.rejects_report("postgres-image-inventory.json", report, "postgres_image_inventory")
+
+    def test_postgres_inventory_targets_cannot_omit_packages_or_invent_application_targets(self):
+        original = read_json(self.reports / "postgres-image-inventory.json")
+        for mutation in ("no-target", "duplicate-target", "python-target", "no-postgres-package", "partial-package"):
+            with self.subTest(mutation=mutation):
+                report = copy.deepcopy(original)
+                if mutation == "no-target":
+                    report["targets"] = []
+                elif mutation == "duplicate-target":
+                    report["targets"].append(copy.deepcopy(report["targets"][0]))
+                elif mutation == "python-target":
+                    report["targets"][0]["Type"] = "python-pkg"
+                elif mutation == "no-postgres-package":
+                    report["targets"][0]["Packages"].pop(0)
+                    report["dpkg"]["installed_package_count"] = 1
+                else:
+                    del report["targets"][0]["Packages"][0]["SourceVersion"]
+                self.rejects_report("postgres-image-inventory.json", report, "postgres_image_inventory")
+
+    def test_postgres_inventory_cannot_hide_bundled_gosu_main_dependencies_or_toolchain(self):
+        original = read_json(self.reports / "postgres-image-inventory.json")
+        for mutation in ("no-binary", "no-target", "no-dependency", "no-stdlib", "wrong-target"):
+            with self.subTest(mutation=mutation):
+                report = copy.deepcopy(original)
+                if mutation == "no-binary":
+                    report["go_binaries"] = []
+                elif mutation == "no-target":
+                    report["targets"].pop()
+                elif mutation == "no-dependency":
+                    report["go_binaries"][0]["dependencies"].pop()
+                elif mutation == "no-stdlib":
+                    report["targets"][1]["Packages"].pop()
+                else:
+                    report["targets"][1]["Target"] = "unknown-gobinary"
+                self.rejects_report("postgres-image-inventory.json", report, "postgres_image_inventory")
+
+    def test_postgres_gosu_build_metadata_and_binary_identity_cannot_be_changed(self):
+        original = read_json(self.reports / "postgres-image-inventory.json")
+        for field, value in [("path", "/tmp/gosu"), ("resolved_path", "/tmp/gosu"), ("sha256", None),
+                             ("uid", 1000), ("gid", True), ("mode", "0o777"), ("bytes", 0),
+                             ("version", "1.18"), ("go_version", "go1.24.7"), ("build_info_sha256", None),
+                             ("module_info_sha256", "invalid"), ("main_path", "unknown/module"),
+                             ("build_settings", {"GOOS": "linux", "GOARCH": "arm64"})]:
+            with self.subTest(field=field):
+                report = copy.deepcopy(original)
+                report["go_binaries"][0][field] = value
+                self.rejects_report("postgres-image-inventory.json", report, "postgres_image_inventory")
+        report = copy.deepcopy(original)
+        report["go_binaries"][0]["dependencies"][0]["Checksum"] = ""
+        self.rejects_report("postgres-image-inventory.json", report, "postgres_image_inventory")
+
+    def test_postgres_trivy_must_cover_bundled_gosu_and_exact_go_versions(self):
+        original = read_json(self.reports / "trivy-postgres.json")
+        for mutation in ("no-target", "no-module", "version", "purl", "unexpected-target"):
+            with self.subTest(mutation=mutation):
+                report = copy.deepcopy(original)
+                if mutation == "no-target":
+                    report["Results"].pop()
+                elif mutation == "no-module":
+                    report["Results"][1]["Packages"].pop()
+                elif mutation == "version":
+                    report["Results"][1]["Packages"][0]["Version"] = "v0.0.0"
+                elif mutation == "purl":
+                    report["Results"][1]["Packages"][0]["Identifier"]["PURL"] = "pkg:golang/other@v1.19.0"
+                else:
+                    report["Results"][1]["Target"] = "usr/local/bin/another-binary"
+                self.rejects_report("trivy-postgres.json", report, "postgres_trivy")
+
+    def test_postgres_sbom_must_cover_bundled_go_modules_and_toolchain(self):
+        report = read_json(self.reports / "postgres-sbom.cdx.json")
+        report["components"] = [item for item in report["components"] if not item.get("purl", "").startswith("pkg:golang/")]
+        self.rejects_report("postgres-sbom.cdx.json", report, "postgres_sbom")
+
+    def test_postgres_sbom_requires_unique_known_go_binary_target_and_all_module_libraries(self):
+        original = read_json(self.reports / "postgres-sbom.cdx.json")
+        for mutation in ("missing", "duplicate", "unknown", "invalid-class", "package-as-target"):
+            with self.subTest(mutation=mutation):
+                report = copy.deepcopy(original)
+                aggregate = report["components"][-1]
+                if mutation == "missing":
+                    report["components"].pop()
+                elif mutation == "duplicate":
+                    report["components"].append(copy.deepcopy(aggregate))
+                elif mutation == "unknown":
+                    aggregate["name"] = "usr/local/bin/uninventoried"
+                elif mutation == "invalid-class":
+                    aggregate["properties"][0]["value"] = "os-pkgs"
+                else:
+                    report["components"][0]["type"] = "application"
+                self.rejects_report("postgres-sbom.cdx.json", report, "postgres_sbom")
+
+    def test_postgres_trivy_requires_full_independent_scope_and_matching_image(self):
+        original = read_json(self.reports / "trivy-postgres.json")
+        for mutation in ("no-results", "missing-package", "duplicate-target", "wrong-image", "scanner-error"):
+            with self.subTest(mutation=mutation):
+                report = copy.deepcopy(original)
+                if mutation == "no-results":
+                    report["Results"] = []
+                elif mutation == "missing-package":
+                    report["Results"][0]["Packages"].pop()
+                elif mutation == "duplicate-target":
+                    report["Results"].append(copy.deepcopy(report["Results"][0]))
+                elif mutation == "wrong-image":
+                    report["Metadata"]["ImageID"] = IMAGE_ID
+                else:
+                    report["Error"] = None
+                self.rejects_report("trivy-postgres.json", report, "postgres_trivy")
+
+    def test_postgres_sbom_and_high_critical_findings_remain_blocking(self):
+        sbom = read_json(self.reports / "postgres-sbom.cdx.json")
+        sbom["components"].pop()
+        self.rejects_report("postgres-sbom.cdx.json", sbom, "postgres_sbom")
+        original = read_json(self.reports / "trivy-postgres.json")
+        for severity in ("HIGH", "CRITICAL"):
+            with self.subTest(severity=severity):
+                report = copy.deepcopy(original)
+                report["Results"][0]["Vulnerabilities"] = [{"VulnerabilityID": "CVE-2099-0001-SYNTHETIC",
+                                                          "PkgName": "postgresql-18", "Severity": severity}]
+                self.rejects_report("trivy-postgres.json", report, "postgres_trivy")
+
+    def test_postgres_scanner_execution_cannot_be_failed_or_contradict_its_report(self):
+        original = read_json(self.reports / "trivy-postgres-execution.json")
+        for field, value in [("schema_version", True), ("image_id", IMAGE_ID), ("exit_code", False),
+                             ("exit_code", 2), ("exit_code", 1), ("status", "execution_failed"),
+                             ("sbom_exit_code", 1), ("sbom_exit_code", False), ("errors", [])]:
+            with self.subTest(field=field, value=value):
+                report = copy.deepcopy(original)
+                report[field] = value
+                self.rejects_report("trivy-postgres-execution.json", report, "postgres_trivy_execution")
+        report = copy.deepcopy(original)
+        report.update(exit_code=1, status="security_findings")
+        self.rejects_report("trivy-postgres-execution.json", report, "postgres_trivy_execution")
+
+    def test_postgres_security_findings_and_execution_failures_have_distinct_categories(self):
+        trivy = read_json(self.reports / "trivy-postgres.json")
+        changed = copy.deepcopy(trivy)
+        changed["Results"][0]["Vulnerabilities"] = [{"VulnerabilityID": "CVE-2099-0001-SYNTHETIC",
+                                                    "PkgName": "postgresql-18", "Severity": "HIGH"}]
+        write_json(self.reports / "trivy-postgres.json", changed)
+        execution = read_json(self.reports / "trivy-postgres-execution.json")
+        execution.update(exit_code=1, status="security_findings")
+        write_json(self.reports / "trivy-postgres-execution.json", execution)
+        result = gate.validate_reports(self.reports, self.context)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual([(item["control"], item["category"]) for item in result["errors"]],
+                         [("postgres_trivy", "security_finding")])
+        write_json(self.reports / "trivy-postgres.json", trivy)
+        execution.update(exit_code=2, status="execution_failed")
+        write_json(self.reports / "trivy-postgres-execution.json", execution)
+        result = gate.validate_reports(self.reports, self.context)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual([(item["control"], item["category"]) for item in result["errors"]],
+                         [("postgres_trivy_execution", "evidence_error")])
+
+    def test_postgres_isolation_and_cleanup_evidence_are_mandatory(self):
+        for relative, control in [("postgres-isolation.json", "postgres_isolation"),
+                                  ("postgres-cleanup.json", "postgres_cleanup")]:
+            path = self.reports / relative
+            original = path.read_bytes()
+            try:
+                with self.subTest(report=relative):
+                    path.unlink()
+                    result = gate.validate_reports(self.reports, self.context)
+                    self.assertEqual(result["status"], "failed")
+                    self.assertTrue(any(error["control"] == control for error in result["errors"]), result)
+            finally:
+                path.write_bytes(original)
+
+    def test_postgres_isolation_binds_own_resources_to_both_images_and_run(self):
+        original = read_json(self.reports / "postgres-isolation.json")
+        for field, value in [("status", "failed"), ("schema", "other"), ("run_key", "other-run"),
+                             ("nonce", "7" * 32), ("prefix", "operational-service"),
+                             ("postgres_image_ref", "postgres:latest"), ("ci_image_id", BROWSER_IMAGE_ID),
+                             ("postgres_image_id", IMAGE_ID), ("checked_utc", "2026-11-10T00:00:00"), ("errors", [])]:
+            with self.subTest(field=field):
+                report = copy.deepcopy(original)
+                report[field] = value
+                self.rejects_report("postgres-isolation.json", report, "postgres_isolation")
+        for resource, field, value in [("postgres", "id", "unknown"), ("postgres", "name", "operational"),
+                                       ("postgres", "published_ports", True), ("network", "internal", False),
+                                       ("network", "internal", 1), ("network", "ipv6", True),
+                                       ("network", "name", "other-network")]:
+            with self.subTest(resource=resource, field=field):
+                report = copy.deepcopy(original)
+                report[resource][field] = value
+                self.rejects_report("postgres-isolation.json", report, "postgres_isolation")
+
+    def test_postgres_probe_requires_real_db_least_privilege_and_both_blocked_egress_checks(self):
+        original = read_json(self.reports / "postgres-isolation.json")
+        for field, value in [("status", "failed"), ("database", "unreachable"), ("database_role", "postgres"),
+                             ("superuser", True), ("createdb", True), ("uid_gid", "0:0"),
+                             ("default_ipv4_route", True), ("no_new_privileges", False), ("capabilities", "nonzero"),
+                             ("external_tcp_probes", []), ("errors", [])]:
+            with self.subTest(field=field):
+                report = copy.deepcopy(original)
+                report["probe"][field] = value
+                self.rejects_report("postgres-isolation.json", report, "postgres_isolation")
+        for mutation in ("reachable", "duplicate", "missing"):
+            with self.subTest(mutation=mutation):
+                report = copy.deepcopy(original)
+                probes = report["probe"]["external_tcp_probes"]
+                if mutation == "reachable":
+                    probes[0]["connection"] = "connected"
+                elif mutation == "duplicate":
+                    probes[1] = copy.deepcopy(probes[0])
+                else:
+                    probes.pop()
+                self.rejects_report("postgres-isolation.json", report, "postgres_isolation")
+
+    def test_postgres_cleanup_requires_same_run_subsequent_timestamp_and_no_remaining_resources(self):
+        original = read_json(self.reports / "postgres-cleanup.json")
+        for field, value in [("status", "failed"), ("ownership_verified", False), ("ownership_verified", 1),
+                             ("run_key", "another-run"), ("checked_utc", "2026-11-09T00:00:00Z"),
+                             ("remaining_container_ids", ["a" * 64]), ("remaining_network_ids", ["b" * 64]),
+                             ("private_files_remaining", ["database-password"]),
+                             ("containers_removed", ["operational-service"]), ("networks_removed", ["default"]),
+                             ("private_files_removed", ["unrelated-file"]), ("errors", [])]:
+            with self.subTest(field=field):
+                report = copy.deepcopy(original)
+                report[field] = value
+                self.rejects_report("postgres-cleanup.json", report, "postgres_cleanup")
+
     def test_sbom_package_inventory_cannot_be_omitted_or_duplicated(self):
         for prefix in ("", "browser-"):
             original = read_json(self.reports / (prefix + "sbom.cdx.json"))
@@ -576,6 +946,66 @@ class CIReportContractTests(unittest.TestCase):
     def test_browser_scenario_must_identify_the_expected_script(self):
         report = read_json(self.reports / "browser/browser-summary.json")
         report["scenarios"][0]["script"] = "different_synthetic_script.py"
+        self.rejects_report("browser/browser-summary.json", report, "browser")
+
+    def test_auth_browser_report_is_mandatory(self):
+        (self.reports / "browser-auth/browser-auth-summary.json").unlink()
+        result = gate.validate_reports(self.reports, self.context)
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(any(error["control"] == "browser_auth" for error in result["errors"]))
+
+    def test_auth_browser_rejects_failed_simulated_or_external_execution(self):
+        original = read_json(self.reports / "browser-auth/browser-auth-summary.json")
+        mutations = [("schema_version", True), ("status", "failed"), ("exit_code", 1), ("exit_code", False),
+                     ("timed_out", True), ("script", "browser_smoke.py"), ("transport", "simulated_fetch"),
+                     ("postgresql", "mocked"), ("auth_mocked", True), ("auth_mocked", 0),
+                     ("process_restart", False), ("external_network", True), ("external_network", 0),
+                     ("errors", [])]
+        for field, value in mutations:
+            with self.subTest(field=field, value=value):
+                report = copy.deepcopy(original)
+                report[field] = value
+                self.rejects_report("browser-auth/browser-auth-summary.json", report, "browser_auth")
+
+    def test_auth_browser_requires_seven_unique_completed_detailed_steps(self):
+        original = read_json(self.reports / "browser-auth/browser-auth-summary.json")
+        for field, value in [("steps", 6), ("steps", True), ("details", []), ("details", None)]:
+            with self.subTest(field=field, value=value):
+                report = copy.deepcopy(original)
+                report[field] = value
+                self.rejects_report("browser-auth/browser-auth-summary.json", report, "browser_auth")
+        for mutation in ("missing", "duplicate", "wrong", "failed", "empty", "repeated-detail", "error"):
+            with self.subTest(mutation=mutation):
+                report = copy.deepcopy(original)
+                steps = report["details"]
+                if mutation == "missing":
+                    steps.pop()
+                elif mutation == "duplicate":
+                    steps.append(copy.deepcopy(steps[0]))
+                elif mutation == "wrong":
+                    steps[0]["id"] = "unrelated"
+                elif mutation == "failed":
+                    steps[0]["status"] = "failed"
+                elif mutation == "empty":
+                    steps[0]["detail"] = " "
+                elif mutation == "repeated-detail":
+                    steps[0]["detail"] = steps[1]["detail"]
+                else:
+                    steps[0]["error"] = None
+                self.rejects_report("browser-auth/browser-auth-summary.json", report, "browser_auth")
+
+    def test_auth_browser_binds_both_images_and_exact_context_manifest(self):
+        original = read_json(self.reports / "browser-auth/browser-auth-summary.json")
+        for field, value in [("image_id", IMAGE_ID), ("postgres_image_id", IMAGE_ID),
+                             ("context_manifest_sha256", "f" * 64), ("context_manifest_sha256", None)]:
+            with self.subTest(field=field):
+                report = copy.deepcopy(original)
+                report[field] = value
+                self.rejects_report("browser-auth/browser-auth-summary.json", report, "browser_auth")
+
+    def test_auth_browser_does_not_replace_historical_scenarios(self):
+        report = read_json(self.reports / "browser/browser-summary.json")
+        report["scenarios"] = report["scenarios"][:-1]
         self.rejects_report("browser/browser-summary.json", report, "browser")
 
     def test_gitleaks_findings_and_non_array_results_are_rejected(self):

@@ -31,7 +31,8 @@ RUN printf '%s\n' \
  && rm -rf /var/lib/apt/lists/*
 
 # Preparation downloads only public, hash-locked wheels. Installation then has
-# no network. Native/functional checks run later in docker run --network none.
+# no network. Checks run later on an isolated internal PostgreSQL network;
+# inventory and scanners continue to use --network none.
 COPY requirements-ci.lock requirements.txt requirements-test.txt requirements-ci-tools.txt requirements-ci-tools.lock /tmp/
 RUN python -m pip download --require-hashes --only-binary=:all: --dest /opt/ci-wheels -r /tmp/requirements-ci.lock -r /tmp/requirements-ci-tools.lock -c /tmp/requirements.txt -c /tmp/requirements-test.txt -c /tmp/requirements-ci-tools.txt
 RUN --network=none python -m pip install --no-index --find-links=/opt/ci-wheels --require-hashes --only-binary=:all: -r /tmp/requirements-ci.lock -r /tmp/requirements-ci-tools.lock -c /tmp/requirements.txt -c /tmp/requirements-test.txt -c /tmp/requirements-ci-tools.txt \

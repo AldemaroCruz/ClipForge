@@ -1,5 +1,33 @@
 # ClipForge: instrucciones de desarrollo
 
+## Integración CI-AUTH-01 autorizada
+
+El propietario revisó AUTH-01 (patch SHA-256
+`ad0bdbc752e60e2a17bd16646ddeb85057619e79ab56ab07c8336e5726d42ec7`, 61 archivos)
+y autoriza commits específicos de AUTH y su integración, selección explícita,
+escaneo de los blobs exactos del índice y push normal únicamente a
+`ci/bootstrap-sec03` en `AldemaroCruz/ClipForge`. Conservar cualquier diferencia
+posterior hasta revisarla. Sin force-push, merge, tags, release o despliegue.
+
+CI usa PostgreSQL efímero exclusivo, imagen fijada, migraciones reales, rol de
+aplicación propio y red Docker interna sin salida externa. No reutiliza la
+candidata del propietario, sus usuarios, secretos, volúmenes o estado externo.
+La limpieza se limita a los recursos identificados de la ejecución, también
+ante fallo/cancelación. Se conserva UID/GID explícito de CI-FIX-01.
+
+Son obligatorios suite completa con discovery real, checks nativos, los seis
+escenarios browser previos y AUTH real adicional. El validador exige resultados
+AUTH, aislamiento/limpieza e inventario/SBOM/SCA propios de PostgreSQL; no inventa
+targets Python/Node para esa imagen ni omite otros componentes presentes.
+No publicar secretos, dumps, estado privado del lanzador o inspect con variables.
+
+No reabrir SEC-05, cambiar distribución, implementar recuperación de cuentas ni
+contratar servicios/Pro/ESM/cloud. La candidata de desarrollo y la instalación
+operativa se preservan. No declarar Actions validado antes de observar el run
+del SHA nuevo. Un fallo nuevo exige conservar evidencia y presentar causa y
+corrección mínima; no encadenar reintentos. Estas autorizaciones reemplazan solo
+las restricciones de commit/push de AUTH-01 para el alcance revisado.
+
 ## Prioridad AUTH-01 (decisión del propietario, 2026-11-10)
 
 La prioridad actual es desarrollo funcional local. Presupuesto de nuevos
