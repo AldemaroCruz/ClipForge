@@ -73,7 +73,10 @@ def main(argv=None):
         require(len(candidates) == 1 and re.fullmatch(allow["regexes"][0], candidates[0]), "Approved assignment changed; review classification")
         approved = candidates[0]
         # These values are generated locally and never issued by any provider.
-        canary = secrets.token_urlsafe(32)
+        # Random URL-safe text can hit native generic-rule stopwords or its
+        # all-letter allowlist. Use a reproducible public synthetic value, still
+        # required to be detected by the real scanner with both configurations.
+        canary = hashlib.sha256(b"clipforge-gitleaks-precision-generic-canary-v1").hexdigest()
         github_canary = "ghp_" + "".join(secrets.choice("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz") for _ in range(36))
         digest = approved.split("'")[1]
         changed = ("0" if digest[0] != "0" else "1") + digest[1:]

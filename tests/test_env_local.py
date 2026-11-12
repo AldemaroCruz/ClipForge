@@ -6,6 +6,7 @@ acceptance runner. These tests protect refusal and ownership boundaries in CI.
 import http.cookiejar
 import io
 import json
+import os
 from pathlib import Path
 import secrets
 import tarfile
@@ -31,6 +32,18 @@ class EnvironmentOwnershipTests(unittest.TestCase):
                 "image": "sha256:" + "b" * 64, "revision": "c" * 40,
                 "source_manifest_sha256": "d" * 64,
                 "context": "context", "manifest": "context-manifest.json"}
+
+    def test_private_directory_is_new_and_never_reprotects_existing_state(self):
+        with tempfile.TemporaryDirectory(prefix="clipforge-env01-private-fixture-") as temporary:
+            destination = Path(temporary) / "new-state"
+            dev.private_directory(destination)
+            if os.name == "posix":
+                self.assertEqual(destination.stat().st_mode & 0o777, 0o700)
+            marker = destination / "keep.txt"
+            marker.write_text("synthetic private state", encoding="utf-8")
+            with self.assertRaises(dev.DevelopmentError):
+                dev.private_directory(destination)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "synthetic private state")
 
     def test_foreign_name_collision_is_rejected_before_compose_down(self):
         for labels in ({}, {dev.OWNER_LABEL: "e" * 32, dev.MANAGER_LABEL: dev.MANAGER,

@@ -116,7 +116,7 @@ def backup(state: Path, value: dict, directory: Path, destination: Path):
     dev.require(value.get("schema") == dev.ENV_SCHEMA, "Backup requires an ENV-01 environment.")
     destination = new_external(destination)
     dev.require(not dev.context._inside(destination, state) and not dev.context._inside(state, destination), "Backup and environment state must not overlap.")
-    destination.mkdir(mode=0o700, parents=True)
+    dev.private_directory(destination, parents=True)
     dev.require_image(state, value, directory)
     dev.verify_active_image(state, value, directory, require_running=False)
     command = dev.compose(state, value)

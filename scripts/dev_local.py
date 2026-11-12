@@ -91,6 +91,55 @@ def save(path: Path, value):
     write_new(path, json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
+def private_directory(path: Path, *, parents: bool = False):
+    """Create a new private directory; never change an existing directory's ACL.
+
+    Windows ignores POSIX 0700. A protected, inheritable DACL instead grants
+    full access only to Owner Rights, SYSTEM and Builtin Administrators. Apply
+    it before writing any credentials, account data or backup streams.
+    """
+    context._check_components(path)
+    require(not os.path.lexists(path), "A private directory must be new; existing permissions are never changed.")
+    path.mkdir(mode=0o700, parents=parents)
+    if os.name != "nt":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    # Microsoft Learn: SetNamedSecurityInfoW, GetSecurityDescriptorDacl and
+    # ConvertStringSecurityDescriptorToSecurityDescriptorW. OW is the Owner
+    # Rights SID, not an account name or a locale-dependent principal lookup.
+    security = ctypes.WinDLL("advapi32.dll", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32.dll", use_last_error=True)
+    pointer = ctypes.c_void_p
+    convert = security.ConvertStringSecurityDescriptorToSecurityDescriptorW
+    convert.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(pointer), ctypes.POINTER(wintypes.ULONG)]
+    convert.restype = wintypes.BOOL
+    get_dacl = security.GetSecurityDescriptorDacl
+    get_dacl.argtypes = [pointer, ctypes.POINTER(wintypes.BOOL), ctypes.POINTER(pointer), ctypes.POINTER(wintypes.BOOL)]
+    get_dacl.restype = wintypes.BOOL
+    set_security = security.SetNamedSecurityInfoW
+    set_security.argtypes = [wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD, pointer, pointer, pointer, pointer]
+    set_security.restype = wintypes.DWORD
+    free = kernel.LocalFree
+    free.argtypes = [pointer]
+    free.restype = pointer
+    descriptor = pointer()
+    if not convert("D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)", 1, ctypes.byref(descriptor), None):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        present, defaulted, dacl = wintypes.BOOL(), wintypes.BOOL(), pointer()
+        if not get_dacl(descriptor, ctypes.byref(present), ctypes.byref(dacl), ctypes.byref(defaulted)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        require(bool(present.value) and bool(dacl.value), "Private Windows DACL is unavailable; no secret is written.")
+        # SE_FILE_OBJECT; DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION.
+        result = set_security(str(path), 1, 0x80000004, None, None, dacl, None)
+        if result:
+            raise ctypes.WinError(result)
+    finally:
+        free(descriptor)
+
+
 def replace(path: Path, value: str):
     """Atomic publication; previous build/state records live in release history."""
     context._check_components(path)
@@ -202,23 +251,28 @@ def runtime_values(state: Path, value: dict) -> str:
 
 def prepare(state: Path | None, port: int, local_http: bool, environment: str | None = None) -> Path:
     require(local_http, "Explicit --local-http is required; this launcher is only for local development.")
-    tracked = subprocess.check_output([host_executable("git"), "ls-files", "-z"], cwd=ROOT, timeout=30).decode("utf-8").rstrip("\0").split("\0")
-    scan.validate_paths(tracked)  # Complete tracked-name validation before copying source.
     require(environment is None or environment in {"dev", "int", "restore"}, "Unknown local environment.")
-    if environment:
-        require_committed_names([name for name, _ in context._files(ROOT, strict=False)])
-    selected_port = choose_port(port)  # Fail a collision before creating state or credentials.
     if state is None and environment in {"dev", "int"}:
         state = default_state(environment)
     require(environment != "restore" or state is not None, "A new disposable restore destination is required.")
-    if state is None:
-        state = Path(tempfile.mkdtemp(prefix="clipforge-auth01-dev-"))
-    else:
+    if state is not None:
         state = Path(os.path.abspath(state))
         context._check_components(state)
-        require(not state.exists(), "Development state must be a new directory; existing state is never overwritten.")
+        require(not os.path.lexists(state), "Development state must be a new directory; existing state is never overwritten.")
         require(not context._inside(state, ROOT) and not context._inside(ROOT, state), "Development state must be outside the checkout.")
-        state.mkdir(mode=0o700, parents=True)
+    tracked = subprocess.check_output([host_executable("git"), "ls-files", "-z"], cwd=ROOT, timeout=30).decode("utf-8").rstrip("\0").split("\0")
+    scan.validate_paths(tracked)  # Complete tracked-name validation before copying source.
+    if environment:
+        require_committed_names([name for name, _ in context._files(ROOT, strict=False)])
+    selected_port = choose_port(port)  # Fail a collision before creating state or credentials.
+    if state is None:
+        state = Path(tempfile.mkdtemp(prefix="clipforge-auth01-dev-"))
+        # Legacy disposable candidates also receive a protected child before
+        # any secret is written; their temporary parent contains no secrets.
+        state = state / "private-state"
+        private_directory(state)
+    else:
+        private_directory(state, parents=True)
     context._check_components(state)
     require(not context._inside(state, ROOT), "Development state must be outside the checkout.")
     suffix = uuid.uuid4().hex[:12]
