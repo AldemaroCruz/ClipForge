@@ -32,7 +32,7 @@ class DevelopmentBoundaryTests(unittest.TestCase):
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0))
             listener.listen(1)
-            with self.assertRaises(OSError):
+            with self.assertRaisesRegex(dev.DevelopmentError, "unavailable; no service was stopped"):
                 dev.choose_port(listener.getsockname()[1])
 
     def test_variables_reject_newlines_and_quotes(self):

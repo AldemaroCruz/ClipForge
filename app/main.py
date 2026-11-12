@@ -31,6 +31,7 @@ from .presentation import Presentation, ExportRequest
 from .render import render_clip, run_ffmpeg
 from .subtitles import SubtitleError, cues_from_segments, validate_cues, to_srt, to_vtt
 from .auth import AuthenticationBoundary, require_access, register_project, unregister_project, router as auth_router
+from .environment import identity as environment_identity
 
 VERSION = "0.4.2"
 ROOT = Path(os.getenv("CLIPFORGE_DATA_DIR", "/data"))
@@ -276,6 +277,11 @@ def favicon():
 @app.get("/health")
 def health():
     return {"status": "ok", "version": VERSION}
+
+
+@app.get("/environment")
+def environment():
+    return environment_identity()
 
 
 @app.post("/jobs", status_code=202)

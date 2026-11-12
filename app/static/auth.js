@@ -57,6 +57,23 @@ window.ClipForgeAuth = (() => {
     clearLocal(); location.replace("/login");
   }
   document.addEventListener("DOMContentLoaded", () => {
+    fetch("/environment", {credentials:"same-origin", cache:"no-store"}).then(async response => {
+      if (!response.ok) throw new Error("Ambiente sin identificar");
+      const value = await response.json();
+      if (!value.environment) return;
+      const badge = document.createElement("div");
+      badge.id = "environment-badge";
+      badge.setAttribute("role", "status");
+      badge.style.cssText = "padding:8px 16px;background:#212d3d;color:#fff;font:14px system-ui;text-align:center";
+      badge.textContent = `${value.environment} · revisión ${value.revision.slice(0, 12)}`;
+      badge.title = value.revision;
+      document.body.prepend(badge);
+    }).catch(() => {
+      const badge = document.createElement("div");
+      badge.setAttribute("role", "alert");
+      badge.textContent = "No se pudo comprobar la identificación del ambiente.";
+      document.body.prepend(badge);
+    });
     document.querySelectorAll("[data-auth-logout]").forEach(button => button.addEventListener("click", async () => {
       button.disabled = true;
       try {await logout();} catch (error) {button.disabled=false;document.querySelectorAll("[data-auth-error]").forEach(n=>n.textContent=error.message);}

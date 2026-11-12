@@ -49,7 +49,7 @@ SECURITY_CLIENT_LIMIT = 30
 AUDIT_ACTIONS = frozenset({"user.created", "user.deactivated", "recovery.issued",
                            "recovery.consumed", "password.changed"})
 SHELL_PATHS = frozenset({"/", "/ops", "/account", "/admin/users"})
-PUBLIC_PATHS = frozenset({"/health", "/login", "/recover", "/favicon.ico", "/auth/csrf"})
+PUBLIC_PATHS = frozenset({"/health", "/environment", "/login", "/recover", "/favicon.ico", "/auth/csrf"})
 
 
 @dataclass(frozen=True)
@@ -75,6 +75,7 @@ class Settings:
     origin: str
     secure: bool
     ttl_seconds: int
+    cookie_namespace: str = ""
 
 
 def settings() -> Settings:
@@ -98,7 +99,11 @@ def settings() -> Settings:
         ttl = int(os.getenv("CLIPFORGE_SESSION_TTL_SECONDS", "43200"))
         if not 60 <= ttl <= 86400:
             raise ValueError("Invalid session lifetime")
-        return Settings(origin=origin, secure=profile == "https", ttl_seconds=ttl)
+        namespace = os.getenv("CLIPFORGE_AUTH_COOKIE_NAMESPACE", "")
+        if namespace and not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", namespace):
+            raise ValueError("Invalid cookie namespace")
+        return Settings(origin=origin, secure=profile == "https", ttl_seconds=ttl,
+                        cookie_namespace=namespace)
     except (ValueError, TypeError):
         raise HTTPException(503, "La configuración de autenticación no está disponible.") from None
 
@@ -173,14 +178,22 @@ def _session(database, raw_token, *, lock_user=False):
     return row[0], row[1], _principal(database, row[1])
 
 
+def cookie_name(name, config=None):
+    """Ports do not isolate cookies; namespace all four tokens for local labs."""
+    config = config or settings()
+    if config.cookie_namespace:
+        return name.replace("clipforge_", "clipforge_" + config.cookie_namespace + "_", 1)
+    return name
+
+
 def _cookie(response, name, value, config, age):
-    response.set_cookie(name, value, max_age=age, path="/", secure=config.secure,
+    response.set_cookie(cookie_name(name, config), value, max_age=age, path="/", secure=config.secure,
                         httponly=True, samesite="strict")
 
 
 def _clear_cookies(response, config):
     for name in (SESSION_COOKIE, CSRF_COOKIE, PREAUTH_COOKIE, PRECSRF_COOKIE):
-        response.delete_cookie(name, path="/", secure=config.secure,
+        response.delete_cookie(cookie_name(name, config), path="/", secure=config.secure,
                                httponly=True, samesite="strict")
 
 
@@ -200,7 +213,7 @@ def require_access(request: Request):
     mutation = request.method not in {"GET", "HEAD", "OPTIONS"}
     _context(request, config, mutation=mutation)
     with _http_storage() as database:
-        result = _session(database, request.cookies.get(SESSION_COOKIE))
+        result = _session(database, request.cookies.get(cookie_name(SESSION_COOKIE)))
         if result is None:
             if request.method in {"GET", "HEAD"} and path in SHELL_PATHS:
                 raise HTTPException(303, headers={"Location": "/login", "Cache-Control": "no-store"})
@@ -457,7 +470,7 @@ def _audit_failed_action(request, action, target_id=None):
     if getattr(request.state, "auth_audit_recorded", False):
         return
     with _http_storage() as database:
-        authenticated = _session(database, request.cookies.get(SESSION_COOKIE))
+        authenticated = _session(database, request.cookies.get(cookie_name(SESSION_COOKIE)))
         actor_id = authenticated[1].id if authenticated else None
         if action == "password.changed":
             target_id = actor_id
@@ -527,10 +540,10 @@ def csrf(request: Request, response: Response):
     _context(request, config)
     response.headers["Cache-Control"] = "no-store"
     with _http_storage() as database:
-        result = _session(database, request.cookies.get(SESSION_COOKIE))
+        result = _session(database, request.cookies.get(cookie_name(SESSION_COOKIE)))
         if result:
             session, _, _ = result
-            supplied = _token(request.cookies.get(CSRF_COOKIE))
+            supplied = _token(request.cookies.get(cookie_name(CSRF_COOKIE)))
             if not supplied or not secrets.compare_digest(token_hash(supplied), session.csrf_hash):
                 supplied = secrets.token_urlsafe(32)
                 session.csrf_hash = token_hash(supplied)
@@ -538,8 +551,8 @@ def csrf(request: Request, response: Response):
             return {"csrf_token": supplied}
         timestamp = now_utc()
         database.execute(delete(AuthChallenge).where(AuthChallenge.expires_at <= timestamp))
-        challenge_token = _token(request.cookies.get(PREAUTH_COOKIE))
-        supplied = _token(request.cookies.get(PRECSRF_COOKIE))
+        challenge_token = _token(request.cookies.get(cookie_name(PREAUTH_COOKIE)))
+        supplied = _token(request.cookies.get(cookie_name(PRECSRF_COOKIE)))
         challenge = database.get(AuthChallenge, token_hash(challenge_token)) if challenge_token else None
         if challenge and supplied and secrets.compare_digest(token_hash(supplied), challenge.csrf_hash):
             return {"csrf_token": supplied}
@@ -561,8 +574,8 @@ def csrf(request: Request, response: Response):
 def _login(request, response, body):
     config = settings()
     _context(request, config, mutation=True)
-    raw_challenge = _token(request.cookies.get(PREAUTH_COOKIE))
-    supplied_session = _token(request.cookies.get(SESSION_COOKIE))
+    raw_challenge = _token(request.cookies.get(cookie_name(PREAUTH_COOKIE)))
+    supplied_session = _token(request.cookies.get(cookie_name(SESSION_COOKIE)))
     username = body.username.strip().lower()
     identity_hash = token_hash("identity:" + username)
     client_hash = _client_hash(request)
@@ -623,11 +636,11 @@ async def login(request: Request, response: Response):
 def me(request: Request, response: Response):
     config = settings()
     with _http_storage() as database:
-        result = _session(database, request.cookies.get(SESSION_COOKIE))
+        result = _session(database, request.cookies.get(cookie_name(SESSION_COOKIE)))
         if result is None:
             raise HTTPException(401, "Inicia sesión para continuar.")
         session, _, principal = result
-        raw_csrf = _token(request.cookies.get(CSRF_COOKIE))
+        raw_csrf = _token(request.cookies.get(cookie_name(CSRF_COOKIE)))
         if not raw_csrf or not secrets.compare_digest(token_hash(raw_csrf), session.csrf_hash):
             raw_csrf = secrets.token_urlsafe(32)
             session.csrf_hash = token_hash(raw_csrf)
@@ -639,7 +652,7 @@ def me(request: Request, response: Response):
 @router.post("/logout")
 def logout(request: Request, response: Response):
     config = settings()
-    token = _token(request.cookies.get(SESSION_COOKIE))
+    token = _token(request.cookies.get(cookie_name(SESSION_COOKIE)))
     with _http_storage() as database:
         if token:
             database.execute(update(AuthSession).where(AuthSession.token_hash == token_hash(token),
@@ -653,7 +666,7 @@ def _change_password(request, response, body):
     config = settings()
     failure = None
     with _http_storage() as database:
-        result = _session(database, request.cookies.get(SESSION_COOKIE), lock_user=True)
+        result = _session(database, request.cookies.get(cookie_name(SESSION_COOKIE)), lock_user=True)
         if result is None:
             raise HTTPException(401, "Inicia sesión para continuar.")
         _, user, _ = result
@@ -687,7 +700,7 @@ async def change_password(request: Request, response: Response):
 
 
 def _administrator(database, request, *, lock_user=True):
-    result = _session(database, request.cookies.get(SESSION_COOKIE), lock_user=lock_user)
+    result = _session(database, request.cookies.get(cookie_name(SESSION_COOKIE)), lock_user=lock_user)
     if result is None:
         raise HTTPException(401, "Inicia sesión para continuar.")
     if not result[2].is_admin:
@@ -807,8 +820,8 @@ def _recover(request, response, body):
     except ValueError:
         raise HTTPException(422, "La contraseña nueva debe tener entre 12 y 128 caracteres.") from None
     code = _token(body.code.get_secret_value())
-    raw_challenge = _token(request.cookies.get(PREAUTH_COOKIE))
-    raw_session = _token(request.cookies.get(SESSION_COOKIE))
+    raw_challenge = _token(request.cookies.get(cookie_name(PREAUTH_COOKIE)))
+    raw_session = _token(request.cookies.get(cookie_name(SESSION_COOKIE)))
     client_hash = _client_hash(request)
     failure = None
     target_id = None

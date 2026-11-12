@@ -1,8 +1,11 @@
-# AUTH-01 only. Invoke through scripts/dev_local.py, which supplies an exclusive
+# AUTH-01 candidates / ENV-01 local environments. Invoke through scripts/dev_local.py, which supplies an exclusive
 # project name, external verified context and generated development-only files.
 # Every variable is required; there are no production or credential defaults.
 services:
   postgres:
+    labels:
+      clipforge.managed-by: env01-local
+      clipforge.environment.owner: ${CLIPFORGE_DEV_OWNER:-legacy-candidate}
     image: postgres:18.6-trixie@sha256:e3d24f6906d0760bf4da0dae872415391ededefad23fd471c47dc53b0ddf3c42
     platform: linux/amd64
     pull_policy: never
@@ -10,6 +13,9 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 128
     environment:
       POSTGRES_USER: postgres
       POSTGRES_DB: postgres
@@ -34,6 +40,9 @@ services:
       retries: 30
     restart: "no"
   app:
+    labels:
+      clipforge.managed-by: env01-local
+      clipforge.environment.owner: ${CLIPFORGE_DEV_OWNER:-legacy-candidate}
     image: ${CLIPFORGE_DEV_IMAGE:?Use scripts/dev_local.py}
     platform: linux/amd64
     pull_policy: never
@@ -41,6 +50,9 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    mem_limit: 4g
+    cpus: 2.0
+    pids_limit: 256
     environment:
       CLIPFORGE_DATABASE_HOST: postgres
       CLIPFORGE_DATABASE_PORT: "5432"
@@ -49,6 +61,10 @@ services:
       CLIPFORGE_DATABASE_PASSWORD_FILE: /run/secrets/database_password
       CLIPFORGE_AUTH_PROFILE: local-http
       CLIPFORGE_AUTH_ORIGIN: ${CLIPFORGE_DEV_ORIGIN:?Use scripts/dev_local.py}
+      CLIPFORGE_AUTH_COOKIE_NAMESPACE: ${CLIPFORGE_DEV_COOKIE_NAMESPACE:-}
+      CLIPFORGE_ENVIRONMENT: ${CLIPFORGE_DEV_ENVIRONMENT:-}
+      CLIPFORGE_REVISION: ${CLIPFORGE_DEV_REVISION:-}
+      CLIPFORGE_SOURCE_MANIFEST_SHA256: ${CLIPFORGE_DEV_MANIFEST_SHA256:-}
       CLIPFORGE_DATA_DIR: /srv/clipforge
       CLIPFORGE_AI_PROVIDER: disabled
       HF_HUB_OFFLINE: "1"
@@ -80,14 +96,26 @@ services:
 networks:
   private:
     internal: true
+    labels:
+      clipforge.managed-by: env01-local
+      clipforge.environment.owner: ${CLIPFORGE_DEV_OWNER:-legacy-candidate}
   frontend:
     driver: bridge
     internal: false
+    labels:
+      clipforge.managed-by: env01-local
+      clipforge.environment.owner: ${CLIPFORGE_DEV_OWNER:-legacy-candidate}
     driver_opts:
       com.docker.network.bridge.host_binding_ipv4: "127.0.0.1"
 volumes:
   postgres_data:
+    labels:
+      clipforge.managed-by: env01-local
+      clipforge.environment.owner: ${CLIPFORGE_DEV_OWNER:-legacy-candidate}
   app_data:
+    labels:
+      clipforge.managed-by: env01-local
+      clipforge.environment.owner: ${CLIPFORGE_DEV_OWNER:-legacy-candidate}
 secrets:
   postgres_password:
     file: ${CLIPFORGE_DEV_POSTGRES_PASSWORD_FILE:?Use scripts/dev_local.py}
