@@ -40,6 +40,7 @@ PRIVATE_NAMES = frozenset({
     ".git", ".aws", ".codex", ".venv", "venv", "__pycache__",
 })
 PRIVATE_PATTERNS = (
+    "gha-creds-*.json",
     ".env*", "restore-check-*", "credentials*", "credential.*", "secrets*",
     "secret.*", "tokens*", "token.*", "auth.json", "id_rsa*", "id_ed25519*",
     "*.pem", "*.key", "*.p12", "*.pfx", "*.tfstate*",

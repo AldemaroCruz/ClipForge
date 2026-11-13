@@ -25,6 +25,7 @@
 
 # Defense in depth if somebody supplies a context without the preparation tool.
 **/.env*
+**/gha-creds-*.json
 **/credentials*
 **/credential.*
 **/secrets*

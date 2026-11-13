@@ -41,6 +41,9 @@ application_default_credentials.json
 *.p12
 *.pfx
 
+# Short-lived GitHub OIDC/WIF files are never source or public artifacts.
+gha-creds-*.json
+
 # Private media and generated archives outside the operational directories.
 *.mp4
 *.mov

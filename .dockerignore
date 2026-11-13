@@ -8,6 +8,7 @@ __pycache__/
 *.zip
 *.mp4
 *.log
+**/gha-creds-*.json
 backups/
 test-output/
 .env

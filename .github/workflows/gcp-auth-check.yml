@@ -1,0 +1,117 @@
+name: ClipForge GCP authentication check
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: clipforge-int-auth-check
+  cancel-in-progress: false
+
+jobs:
+  auth-check:
+    name: Authenticate ${{ matrix.identity }} and read project metadata
+    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: int
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - identity: terraform
+            sa_variable: GCP_TERRAFORM_SA
+            expected_sa: clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com
+          - identity: deploy
+            sa_variable: GCP_DEPLOY_SA
+            expected_sa: clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+    steps:
+      - name: Check out the triggering commit without retained credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Validate nonsecret configuration and credential boundaries
+        id: configuration
+        env:
+          WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+          SERVICE_ACCOUNT: ${{ vars[matrix.sa_variable] }}
+          EXPECTED_SA: ${{ matrix.expected_sa }}
+          REGION: ${{ vars.GCP_REGION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$PROJECT_ID" = clipforgebeta2
+          test "$PROJECT_NUMBER" = 816643438938
+          test "$REGION" = us-central1
+          test "$WIF_PROVIDER" = projects/816643438938/locations/global/workloadIdentityPools/clipforge-gh-int/providers/github
+          test "$SERVICE_ACCOUNT" = "$EXPECTED_SA"
+          git check-ignore --no-index --quiet gha-creds-gcp-auth01.json
+          test -z "$(git ls-files -- ':(glob)**/gha-creds-*.json')"
+          umask 077
+          sdk_config="$(mktemp -d "$RUNNER_TEMP/clipforge-auth-gcloud.XXXXXXXX")"
+          printf 'CLOUDSDK_CONFIG=%s\n' "$sdk_config" >> "$GITHUB_ENV"
+          printf 'CLOUDSDK_CORE_DISABLE_PROMPTS=1\n' >> "$GITHUB_ENV"
+
+      - name: Federate and impersonate the selected service account
+        id: federation
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars[matrix.sa_variable] }}
+          token_format: access_token
+          access_token_lifetime: 300s
+          access_token_scopes: https://www.googleapis.com/auth/cloud-platform.read-only
+          create_credentials_file: true
+          export_environment_variables: true
+          cleanup_credentials: true
+
+      - name: Set up the Google Cloud CLI with federated credentials
+        id: sdk
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Read and verify the target project ID and number only
+        id: project
+        env:
+          CREDENTIALS_FILE: ${{ steps.federation.outputs.credentials_file_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$CREDENTIALS_FILE"
+          git check-ignore --quiet -- "$CREDENTIALS_FILE"
+          metadata="$(gcloud projects describe "$PROJECT_ID" --project="$PROJECT_ID" \
+            --quiet --format='value(projectId,projectNumber)')"
+          IFS=$'\t' read -r actual_id actual_number <<< "$metadata"
+          test "$actual_id" = "$PROJECT_ID"
+          test "$actual_number" = "$PROJECT_NUMBER"
+          printf 'Verified project ID: %s; project number: %s\n' "$actual_id" "$actual_number"
+
+      - name: Record independent authentication and metadata outcomes
+        if: ${{ always() }}
+        env:
+          IDENTITY: ${{ matrix.identity }}
+          CONFIGURATION_RESULT: ${{ steps.configuration.outcome }}
+          FEDERATION_RESULT: ${{ steps.federation.outcome }}
+          SDK_RESULT: ${{ steps.sdk.outcome }}
+          PROJECT_RESULT: ${{ steps.project.outcome }}
+        shell: bash
+        run: |
+          {
+            printf '### GCP-AUTH-01: %s\n\n' "$IDENTITY"
+            printf '| Check | Result |\n| --- | --- |\n'
+            printf '| GitHub configuration | %s |\n' "$CONFIGURATION_RESULT"
+            printf '| WIF and service account impersonation | %s |\n' "$FEDERATION_RESULT"
+            printf '| Federated Cloud SDK setup | %s |\n' "$SDK_RESULT"
+            printf '| Project metadata ID and number | %s |\n\n' "$PROJECT_RESULT"
+            printf 'Deployment permissions have not been tested.\n'
+          } >> "$GITHUB_STEP_SUMMARY"

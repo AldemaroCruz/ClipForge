@@ -56,6 +56,8 @@ class CIContextTests(unittest.TestCase):
         (self.source / ".env.ai").write_text("SYNTHETIC_ONLY=never-copy", encoding="utf-8")
         (self.source / "scripts/.env.py").write_text("synthetic private sentinel", encoding="utf-8")
         (self.source / "scripts/credentials.py").write_text("synthetic private sentinel", encoding="utf-8")
+        (self.source / "gha-creds-synthetic.json").write_text("synthetic OIDC sentinel", encoding="utf-8")
+        (self.source / "scripts/gha-creds-synthetic.json").write_text("synthetic OIDC sentinel", encoding="utf-8")
         (self.source / "app/private.mp4").write_bytes(b"synthetic non-video bytes")
         nested = self.source / "scripts/data"
         nested.mkdir()
@@ -73,6 +75,8 @@ class CIContextTests(unittest.TestCase):
         self.assertNotIn(self.source, visited)  # Root private entries are never enumerated.
         actual = {path.relative_to(self.destination).as_posix() for path in self.destination.rglob("*")}
         self.assertNotIn("scripts/credentials.py", actual)
+        self.assertNotIn("gha-creds-synthetic.json", actual)
+        self.assertNotIn("scripts/gha-creds-synthetic.json", actual)
         self.assertNotIn("scripts/.env.py", actual)
         self.assertNotIn("scripts/data", actual)
         self.assertNotIn("app/private.mp4", actual)
