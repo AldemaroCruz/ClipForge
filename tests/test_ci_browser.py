@@ -22,6 +22,14 @@ class CIBrowserGateTests(unittest.TestCase):
         for directory, _ in browser.SOURCE_DIRECTORIES:
             (self.source / directory).mkdir(parents=True, exist_ok=True)
         (self.source / "app" / "__init__.py").write_text("", encoding="utf-8")
+        self.cloud_files = ("__init__.py", "config.py", "repository.py", "router.py", "storage.py", "dispatch.py",
+                            "migrate.py", "bootstrap_admin.py", "worker.py")
+        # Independent of SOURCE_DIRECTORIES: omitting the package from that
+        # selector must fail these fixtures rather than silently changing them.
+        (self.source / "app/cloud").mkdir(parents=True, exist_ok=True)
+        for filename in self.cloud_files:
+            (self.source / "app/cloud" / filename).write_text("CLOUD_SOURCE_FIXTURE = True\n", encoding="utf-8")
+        (self.source / "app/media_child.py").write_text("MEDIA_CHILD_FIXTURE = True\n", encoding="utf-8")
         (self.source / "app" / "static" / "index.html").write_text("<p>fixture</p>", encoding="utf-8")
         for _, filename, _ in browser.SCENARIOS:
             (self.source / "tests" / filename).write_text("# Authored dummy script; not a browser test.\n", encoding="utf-8")
@@ -38,6 +46,8 @@ class CIBrowserGateTests(unittest.TestCase):
         self.executed.append(script.name)
         self.assertNotEqual(source, self.source)
         self.assertTrue(script.is_file())
+        self.assertEqual({path.name for path in (source / "app/cloud").iterdir()}, set(self.cloud_files))
+        self.assertEqual((source / "app/media_child.py").read_text(), "MEDIA_CHILD_FIXTURE = True\n")
         self.assertFalse((source / "data").exists())
         self.assertFalse((source / ".env").exists())
         self.assertEqual(environment["CLIPFORGE_AI_PROVIDER"], "disabled")
@@ -65,6 +75,26 @@ class CIBrowserGateTests(unittest.TestCase):
         self.assertFalse(report["bridge_allowed"])
         self.assertFalse(report["real_asr_inference_tested"])
         self.assertFalse(report["real_llm_inference_tested"])
+
+    def test_cloud_package_is_required_and_only_explicit_direct_sources_are_copied(self):
+        nested = self.source / "app/cloud/unlisted"
+        nested.mkdir()
+        (nested / "excluded.py").write_text("UNLISTED_FIXTURE = True\n")
+        (self.source / "app/cloud/excluded.json").write_text('{"fixture": true}')
+        destination = self.root / "copied-sources"
+        browser.copy_browser_sources(self.source, destination)
+        self.assertEqual({path.name for path in (destination / "app/cloud").iterdir()}, set(self.cloud_files))
+        for filename in self.cloud_files:
+            self.assertEqual((destination / "app/cloud" / filename).read_bytes(), (self.source / "app/cloud" / filename).read_bytes())
+        self.assertTrue((destination / "app/media_child.py").is_file())
+
+    def test_missing_cloud_package_blocks_before_attempting_browser_execution(self):
+        for filename in self.cloud_files:
+            (self.source / "app/cloud" / filename).unlink()
+        (self.source / "app/cloud").rmdir()
+        report = self.gate()
+        self.assertEqual(report["exit_code"], 1)
+        self.assertEqual(self.executed, [])
 
     def test_nonzero_scenario_fails_but_remaining_scenarios_are_attempted(self):
         def execute(*args):

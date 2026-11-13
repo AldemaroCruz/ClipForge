@@ -25,8 +25,13 @@ class BrowserRunnerFixtures:
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.source = self.root / "source"
-        for part in ("app/static", "scripts", "tests"):
+        for part in ("app/static", "app/cloud", "scripts", "tests"):
             (self.source / part).mkdir(parents=True)
+        self.cloud_files = ("__init__.py", "config.py", "repository.py", "router.py", "storage.py", "dispatch.py",
+                            "migrate.py", "bootstrap_admin.py", "worker.py")
+        for filename in self.cloud_files:
+            (self.source / "app/cloud" / filename).write_text("CLOUD_SOURCE_FIXTURE = True\n")
+        (self.source / "app/media_child.py").write_text("MEDIA_CHILD_FIXTURE = True\n")
         (self.source / "tests" / self.script_name).write_text("# Authored contract fixture\n")
         self.fixture_runs = 0
         self.raw = {"schema_version": 1, "status": "passed", "exit_code": 0,
@@ -42,6 +47,8 @@ class BrowserRunnerFixtures:
         self.assertNotEqual(source, self.source)
         self.assertEqual(script.name, self.script_name)
         self.assertTrue(script.is_file())
+        self.assertEqual({path.name for path in (source / "app/cloud").iterdir()}, set(self.cloud_files))
+        self.assertEqual((source / "app/media_child.py").read_text(), "MEDIA_CHILD_FIXTURE = True\n")
         self.assertEqual(env["CLIPFORGE_AI_PROVIDER"], "disabled")
         self.assertEqual(env["CLIPFORGE_AUTH_TEST_DATABASE"], "1")
         self.assertEqual(env["CLIPFORGE_BROWSER_BRIDGE"], "0")
@@ -62,6 +69,16 @@ class BrowserRunnerFixtures:
                                "chromium_version": "156.0.8078.4", "chromium_revision": "1248",
                                "system": "Linux", "machine": "x86_64"},
             executor=kwargs.pop("executor", self.execute), **kwargs)
+
+    def test_missing_cloud_package_blocks_auth_or_recovery_before_execution(self):
+        for filename in self.cloud_files:
+            (self.source / "app/cloud" / filename).unlink()
+        (self.source / "app/cloud").rmdir()
+        def forbidden(*args):
+            self.fail("Execution must not start without its authored application package")
+        report = self.run_fixture(executor=forbidden)
+        self.assertEqual(report["exit_code"], 1)
+        self.assertEqual(report["details"], [])
 
 class AuthBrowserRunnerTests(BrowserRunnerFixtures, unittest.TestCase):
     def test_success_requires_complete_real_auth_contract_in_copied_sources(self):

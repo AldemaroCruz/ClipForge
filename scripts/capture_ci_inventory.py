@@ -44,7 +44,7 @@ def capture(image_id: str, *, root: Path = Path("/app"),
         "playwright/driver/package/package.json"))
     node = json.loads(driver.read_text(encoding="utf-8"))
     sources = []
-    for directory in ("app", "scripts"):
+    for directory in ("app", "app/cloud", "scripts"):
         for path in sorted((root / directory).glob("*.py")):
             if path.is_symlink() or not path.is_file():
                 raise ValueError("Candidate sources must be regular files.")

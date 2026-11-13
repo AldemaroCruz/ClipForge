@@ -40,7 +40,10 @@ MP4 renderizado de 8.892.559 bytes, reproducción/descarga, API sustituida dos
 veces, máximo activo observado de uno y lease renovada, interrupción recuperada
 con fencing, nueva variante y recuperación de cuentas. La limpieza terminó con
 cero contenedores y redes propios. La suite completa del contexto curado local
-pasó **880/880**, sin errores ni skips, y sus checks nativos pasaron. Se conservan
+pasó **886/886**, sin errores ni skips, y sus checks nativos pasaron. También
+pasaron los seis escenarios browser anteriores, AUTH y recuperación con PostgreSQL
+de CI exclusivo. Los selectores e inventarios incluyen explícitamente `app/cloud`.
+Se conservan
 las regresiones unitarias con mocks como tales. Los dos contratos con PostgreSQL
 real y llamada a Jobs simulada se ejecutan
 obligatoriamente por `tests/cloud_dispatch_contract.py` desde el harness, fuera

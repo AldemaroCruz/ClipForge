@@ -1343,6 +1343,40 @@ class CIReportContractTests(unittest.TestCase):
                 capture.capture("invalid-id", root=self.context, status=status, release=release)
             packages.assert_not_called()
 
+    def test_capture_keeps_cloud_package_and_media_child_hashes_for_both_images(self):
+        cloud = self.context / "app/cloud"
+        cloud.mkdir(parents=True, exist_ok=True)
+        cloud_files = ("__init__.py", "config.py", "repository.py", "router.py", "storage.py", "dispatch.py",
+                       "migrate.py", "bootstrap_admin.py", "worker.py")
+        expected = dict(self.sources)
+        for relative in ["app/cloud/" + name for name in cloud_files] + ["app/media_child.py"]:
+            path = self.context / relative
+            data = ("CAPTURE_SOURCE_FIXTURE = " + repr(relative) + "\n").encode()
+            path.write_bytes(data)
+            expected[relative] = {"path": relative, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+        nested = cloud / "unlisted"
+        nested.mkdir()
+        (nested / "excluded.py").write_text("UNLISTED_FIXTURE = True\n")
+        (cloud / "excluded.json").write_text('{"fixture": true}')
+        status, release, node = (self.root / name for name in ("capture-dpkg.txt", "capture-debian.txt", "capture-playwright.json"))
+        status.write_text("\n\n".join("Package: " + package["Name"] + "\nStatus: install ok installed\nVersion: " + package["Version"]
+                                     for package in PACKAGES["debian"]) + "\n")
+        release.write_text("13.7\n")
+        write_json(node, {"name": "playwright-core", "version": "1.0.0"})
+        distributions = [SimpleNamespace(metadata={"Name": package["Name"]}, version=package["Version"])
+                         for package in PACKAGES["python-pkg"]]
+        driver = SimpleNamespace(locate_file=lambda name: node)
+        for image_id in (IMAGE_ID, BROWSER_IMAGE_ID):
+            with self.subTest(image_id=image_id), patch.object(capture.importlib.metadata, "distributions", return_value=distributions), \
+                    patch.object(capture.importlib.metadata, "distribution", return_value=driver):
+                inventory = capture.capture(image_id, root=self.context, status=status, release=release)
+            self.assertEqual({row["path"]: row for row in inventory["python_sources"]}, expected)
+            gate.validate_inventory(inventory, image_id, expected)
+            incomplete = copy.deepcopy(inventory)
+            incomplete["python_sources"] = [row for row in incomplete["python_sources"] if row["path"] != "app/cloud/__init__.py"]
+            with self.assertRaises(gate.ValidationError):
+                gate.validate_inventory(incomplete, image_id, expected)
+
 
 if __name__ == "__main__":
     unittest.main()

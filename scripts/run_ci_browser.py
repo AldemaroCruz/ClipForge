@@ -32,7 +32,7 @@ SCENARIOS = (
     ("operations", "browser_operations.py", "direct_http"),
 )
 SOURCE_DIRECTORIES = (
-    ("app", {".py"}), ("app/static", {".html", ".js", ".css"}),
+    ("app", {".py"}), ("app/cloud", {".py"}), ("app/static", {".html", ".js", ".css"}),
     ("scripts", {".py"}), ("tests", {".py"}),
 )
 BRIDGE_MARKERS = ("bridge in use", "http bridge", "python-to-http test bridge")
