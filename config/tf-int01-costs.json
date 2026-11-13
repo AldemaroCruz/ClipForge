@@ -1,0 +1,33 @@
+{
+  "currency": "USD",
+  "region": "us-central1",
+  "hours_per_month": 730,
+  "rates": {
+    "e2-micro_hour": 0.008376428,
+    "e2-small_hour": 0.016752855,
+    "pd_standard_gib_month": 0.04,
+    "nat_vm_hour": 0.0014,
+    "nat_external_ip_hour": 0.005,
+    "nat_processed_gib": 0.045,
+    "gcs_standard_gib_month": 0.02
+  },
+  "example_usage": {
+    "boot_disk_gib": 10,
+    "data_disk_gib": 20,
+    "media_gib_including_versions": 10,
+    "backup_gib_including_versions": 10,
+    "nat_processed_gib": 1
+  },
+  "sources": [
+    "https://cloud.google.com/products/compute/pricing/general-purpose",
+    "https://cloud.google.com/compute/disks-image-pricing",
+    "https://cloud.google.com/nat/pricing",
+    "https://cloud.google.com/storage/pricing"
+  ],
+  "assumptions": [
+    "Public list prices, Linux on-demand, one VM, one NAT IPv4 address, no commitment or free-tier credits assumed.",
+    "No resources are created by this task. Actual GCS capacity includes retained versions and soft-deleted objects.",
+    "Excludes taxes, Cloud Run/Jobs, Artifact Registry usage, Secret Manager usage, operation charges, logging beyond allowances and Internet/inter-region egress.",
+    "Free-tier eligibility is shared across the billing account and is not guaranteed. NAT and its public IPv4 are charged independently."
+  ]
+}

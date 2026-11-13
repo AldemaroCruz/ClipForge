@@ -25,6 +25,8 @@ class CIScanTests(unittest.TestCase):
         self.destination = self.base / "snapshot"
         self.names = ["README.md", "docs/CI.md", ".github/workflows/ci.yml",
                       ".github/workflows/gcp-auth-check.yml",
+                      ".github/workflows/tf-int-plan.yml", "infra/gcp/int-base/main.tf",
+                      "infra/gcp/int-base/.terraform.lock.hcl", "infra/gcp/int-base/postgres-install.sh",
                       ".env.ai.example", "app/main.py", "compose.ai.yaml"]
         for name in self.names:
             output = self.source / name
@@ -62,6 +64,8 @@ class CIScanTests(unittest.TestCase):
                    "compose.rollback.yaml", "docs/model-lock.json",
                    "gha-creds-synthetic.json", "docs/gha-creds-synthetic.json",
                    ".github/workflows/gha-creds-synthetic.json"]
+        private += ["infra/gcp/int-base/terraform.tfstate", "infra/gcp/int-base/private.tfplan",
+                    "infra/gcp/int-base/.terraform/terraform.tfstate"]
         for name in private:
             with self.subTest(name=name):
                 self.write_paths(["README.md", name])

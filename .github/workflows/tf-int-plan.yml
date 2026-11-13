@@ -1,0 +1,106 @@
+name: ClipForge TF-INT-01 plan only
+
+on:
+  workflow_dispatch:
+    inputs:
+      machine_type:
+        description: PostgreSQL capacity profile to evaluate; no resources are created
+        type: choice
+        default: e2-micro
+        options: [e2-micro, e2-small]
+
+permissions: {}
+concurrency:
+  group: clipforge-int-terraform-state
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: int
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+      GCP_TERRAFORM_SA: ${{ vars.GCP_TERRAFORM_SA }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
+      MACHINE_TYPE: ${{ inputs.machine_type }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out the exact source commit without retained credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Allocate private scratch and validate nonsecret bootstrap identifiers
+        id: scratch
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          python -B -c 'import os; from scripts.check_tf_int import validate_variables; validate_variables(os.environ)'
+          git check-ignore --no-index --quiet gha-creds-tf-int01.json
+          test -z "$(git ls-files -- ':(glob)**/gha-creds-*.json')"
+          printf 'TF_INT_WORK_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/clipforge-tf-int01.XXXXXXXX")" >> "$GITHUB_ENV"
+          printf 'TF_INT_REPORT_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/clipforge-tf-report.XXXXXXXX")" >> "$GITHUB_ENV"
+
+      - name: Prepare the exact Terraform release
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.15.8
+          terraform_wrapper: false
+
+      - name: Prepare the pinned IaC scanner separately with network
+        shell: bash
+        run: |
+          docker pull ghcr.io/aquasecurity/trivy:0.76.2@sha256:6fa071ef8daa2e58b90cbf1710bedca91adbb3bf98693533226f442035b836a6
+          docker pull hashicorp/terraform:1.15.8@sha256:7ae513256f7ce67879e218ae8593d6fbe216ec9e123abe6c94e4e10704857963
+          docker pull python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df
+
+      - name: Check formatting, provider lock, validation, mock plans and IaC security
+        shell: bash
+        run: python -B scripts/tf_int_plan.py checks
+
+      - name: Authenticate the Terraform account through the existing WIF provider
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_TERRAFORM_SA }}
+          token_format: access_token
+          access_token_lifetime: 1800s
+          create_credentials_file: true
+          export_environment_variables: true
+          cleanup_credentials: true
+
+      - name: Verify the unused private backend prefix, initialize and plan once
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        shell: bash
+        run: python -B scripts/tf_int_plan.py plan
+
+      - name: Preserve only the explicitly permitted summary
+        if: ${{ always() && steps.scratch.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tf-int01-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.TF_INT_REPORT_DIR }}/summary.json
+            ${{ env.TF_INT_REPORT_DIR }}/summary.md
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false
+
+      - name: Remove only this run's private full plan and Terraform scratch
+        if: ${{ always() && steps.scratch.outcome == 'success' }}
+        shell: bash
+        run: python -B scripts/tf_int_plan.py cleanup
