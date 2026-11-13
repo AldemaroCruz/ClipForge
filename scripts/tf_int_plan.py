@@ -14,9 +14,16 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+
+# Actions invokes this file directly. Its import path otherwise contains only
+# scripts/, while private custody and phase-two provenance use package imports.
+ROOT = Path(__file__).resolve().parents[1]
+if __package__ in (None, ""):
+    sys.path.insert(0, str(ROOT))
 
 try:
     from scripts import check_tf_int as contract
@@ -24,7 +31,6 @@ except ModuleNotFoundError:
     import check_tf_int as contract
 
 
-ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / "infra/gcp/int-base"
 TRIVY = "ghcr.io/aquasecurity/trivy:0.76.2@sha256:6fa071ef8daa2e58b90cbf1710bedca91adbb3bf98693533226f442035b836a6"
 TERRAFORM_IMAGE = "hashicorp/terraform:1.15.8@sha256:7ae513256f7ce67879e218ae8593d6fbe216ec9e123abe6c94e4e10704857963"

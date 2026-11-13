@@ -7,6 +7,8 @@ import io
 import json
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 import tempfile
 import unittest
@@ -83,6 +85,29 @@ def fixture():
 
 
 class TFIntContracts(unittest.TestCase):
+    def test_direct_cli_can_import_custody_from_an_unrelated_directory(self):
+        # Reproduce Actions' scripts-only import path without PYTHONPATH or cwd
+        # assistance. Importing these helpers must never make a cloud request.
+        program = """
+import importlib,json,os,runpy,socket,sys
+def no_network(*args, **kwargs):
+    raise AssertionError('CLI import attempted a network operation')
+socket.socket.connect=no_network
+script=sys.argv[1]
+sys.path.insert(0,os.path.dirname(script))
+runpy.run_path(script,run_name='tf_int_cli_fixture')
+for name in ('scripts.int_release','scripts.int_release_state'):
+    importlib.import_module(name)
+print(json.dumps({'cli_imports':True}))
+"""
+        with tempfile.TemporaryDirectory(prefix="clipforge-cli-contract-") as directory:
+            env = {name: os.environ[name] for name in ("SYSTEMROOT",) if name in os.environ}
+            result = subprocess.run([sys.executable, "-I", "-B", "-c", program,
+                                     str(driver.ROOT / "scripts/tf_int_plan.py")],
+                                    cwd=directory, env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"cli_imports": True})
+
     def setUp(self):
         self.plan = fixture()
 
