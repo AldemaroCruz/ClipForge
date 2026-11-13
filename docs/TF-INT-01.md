@@ -33,9 +33,29 @@ Proyecto fijo `clipforgebeta2`, número comprobado `816643438938`, región
 El prefijo independiente es `terraform/int/tf-int-01`, bajo el prefijo base
 `terraform/int` del bootstrap. Antes de init se consulta solo metadata del
 bucket: proyecto, acceso uniforme, prevención pública y versionado. Se lista
-el prefijo propio con `versions=true`, máximo un resultado, sin descargar
-objetos. Cualquier objeto o versión preexistente bloquea esta primera adopción.
-No se listan otros prefijos. No hay desbloqueo forzado ni borrado de objetos.
+la base autorizada `terraform/int/` separando vivos, versiones y soft delete,
+con paginación completa y metadata de nombre, generación, fechas y tamaño.
+El backend efectivo se conserva en `terraform/int/tf-int-01`, workspace `default`;
+no se cambia al prefijo padre ni se crea uno por ejecución.
+
+La reejecución reconoce exclusivamente la foto inicial inspeccionada en privado:
+`default.tfstate`, generación `1794599421671184`, 181 bytes, serial 1, Terraform
+1.15.8, cero recursos y cero outputs. El helper fija su lineage y SHA-256 y
+verifica los bytes por generación; no incorpora JSON de estado en el repo.
+La ruta se contrastó con el bucket/proyecto y configuración versionada. Las
+versiones históricas del lock incluyen init y plan, con la ruta exacta y fechas
+coherentes con la inicialización. No se atribuye escritor concreto: la consulta
+de auditoría no devolvió eventos. La aceptación depende de la identidad exacta
+inspeccionada, no de atribuirla al primer intento ni de una fecha aproximada.
+
+Un `.tflock` vivo siempre bloquea, sin presumir que es huérfano por su edad.
+Sus generaciones históricas no son bloqueos activos. Estado distinto, otra
+lineage, historia de estado adicional, otro workspace u objeto desconocido bajo
+el backend efectivo bloquean antes del plan. Sin estado actual pero con historia
+de estado también se detiene: no se crea un reemplazo. Sin estado ni historia
+se distingue backend no inicializado; cualquier snapshot nuevo no reconocido
+requiere revisión antes de planificar. No hay desbloqueo forzado ni borrado de
+objetos. Las fotos privadas se eliminan y solo metadata permitida llega al resumen.
 
 El backend GCS conserva locking nativo. El único plan real usa
 `-lock=true -lock-timeout=120s -detailed-exitcode`, sin target ni refresh falso.

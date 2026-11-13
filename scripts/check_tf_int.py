@@ -53,7 +53,7 @@ def source_contract(root):
     return sources
 
 
-def backend_contract(bucket, listing):
+def backend_contract(bucket):
     require(bucket.get("name") == BUCKET and str(bucket.get("projectNumber")) == NUMBER,
             "State bucket project identity differs from bootstrap")
     iam = bucket.get("iamConfiguration", {})
@@ -61,8 +61,6 @@ def backend_contract(bucket, listing):
             and iam.get("publicAccessPrevention") == "enforced"
             and bucket.get("versioning", {}).get("enabled") is True,
             "Backend requires uniform access, public access prevention and versioning")
-    require(not listing.get("items") and not listing.get("nextPageToken"),
-            "The TF-INT-01 prefix is occupied; no state adoption, deletion or force-unlock is allowed")
 
 
 def detailed_exit(code):

@@ -82,7 +82,7 @@ jobs:
           export_environment_variables: true
           cleanup_credentials: true
 
-      - name: Verify the unused private backend prefix, initialize and plan once
+      - name: Verify the existing private backend and workspace, initialize and plan once
         env:
           GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
         shell: bash

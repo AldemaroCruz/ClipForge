@@ -7,13 +7,15 @@ Only an explicit summary schema is permitted in logs and artifacts.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 from urllib.error import HTTPError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 try:
@@ -27,6 +29,16 @@ MODULE = ROOT / "infra/gcp/int-base"
 TRIVY = "ghcr.io/aquasecurity/trivy:0.76.2@sha256:6fa071ef8daa2e58b90cbf1710bedca91adbb3bf98693533226f442035b836a6"
 TERRAFORM_IMAGE = "hashicorp/terraform:1.15.8@sha256:7ae513256f7ce67879e218ae8593d6fbe216ec9e123abe6c94e4e10704857963"
 PYTHON_IMAGE = "python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df"
+BASE_PREFIX = "terraform/int/"
+STATE_NAME = contract.PREFIX + "/default.tfstate"
+LOCK_NAME = contract.PREFIX + "/default.tflock"
+# Read-only inspected empty initial snapshot in this exact backend/workspace.
+# This is an identity pin, never a copy of state or permission to adopt resources.
+INITIAL_STATE = {
+    "name": STATE_NAME, "generation": "1794599421671184", "size": "181",
+    "lineage": "813c84a2-2ef1-ceb3-177e-3a2c3b815066",
+    "sha256": "648a329bdee385b59be64b598a2cbce07653e42edfcf5deb12f0d14133c4c223",
+}
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -60,6 +72,17 @@ def save_summary(reports, value):
              "Full plan/JSON/credentials are temporary, never uploaded, and removed by final cleanup.", ""]
     if "checks" in value:
         lines.extend(["Checks: " + ", ".join(k + "=" + str(v) for k, v in value["checks"].items()), ""])
+    if "backend" in value:
+        backend = value["backend"]
+        lines.extend(["Backend/workspace: " + backend["bucket"] + "/" + backend["prefix"] + "/default",
+                      "Classification: " + backend["classification"], "",
+                      "| Object | Generation | Category | Created UTC | Deleted UTC | Bytes |",
+                      "| --- | --- | --- | --- | --- | --- |"])
+        for category in ("live", "historical", "soft_deleted"):
+            for obj in backend[category]:
+                lines.append("| " + " | ".join(str(v) for v in [obj["name"], obj["generation"], category,
+                             obj.get("timeCreated", ""), obj.get("timeDeleted", obj.get("softDeleteTime", "")), obj["size"]]) + " |")
+        lines.append("")
     if "plan" in value:
         lines.extend(["Detailed exit code: " + str(value["plan_exit_code"]),
                       "Actions: " + json.dumps(value["plan"]["counts"], sort_keys=True),
@@ -143,6 +166,128 @@ def metadata(path, params=None):
         raise FailedOperation("backend metadata " + path, text, error.code) from None
 
 
+def backend_inventory(bucket):
+    """List the authorized base completely, keeping live and historical separate."""
+    contract.backend_contract(bucket)
+    inventory = {}
+    fields = "nextPageToken,items(name,generation,size,timeCreated,updated,timeDeleted,softDeleteTime,hardDeleteTime)"
+    for category, options in (("live", {}), ("versions", {"versions": "true"}),
+                              ("soft_deleted", {"softDeleted": "true"})):
+        if category == "soft_deleted" and int(bucket.get("softDeletePolicy", {}).get("retentionDurationSeconds", 0)) == 0:
+            inventory[category] = []
+            continue
+        items, seen_pages, page = [], set(), None
+        for _ in range(20):
+            params = {"prefix": BASE_PREFIX, "maxResults": "1000", "fields": fields, **options}
+            if page:
+                params["pageToken"] = page
+            result = metadata("/b/" + contract.BUCKET + "/o", params)
+            items.extend(result.get("items", []))
+            page = result.get("nextPageToken")
+            if not page:
+                break
+            contract.require(page not in seen_pages, "Repeated backend inventory page; incomplete diagnosis")
+            seen_pages.add(page)
+        else:
+            raise ValueError("Backend inventory exceeds its bound; no truncated result is accepted")
+        contract.require(all(o.get("name", "").startswith(BASE_PREFIX)
+                             and re.fullmatch(r"[1-9][0-9]*", str(o.get("generation", "")))
+                             and re.fullmatch(r"[0-9]+", str(o.get("size", ""))) for o in items),
+                         "Invalid or out-of-scope backend inventory")
+        contract.require(len({(o["name"], o["generation"]) for o in items}) == len(items), "Duplicate backend object generation")
+        inventory[category] = items
+    return inventory
+
+
+def classify_backend(inventory):
+    """Only metadata classification; a recognized candidate still needs byte checks."""
+    live_ids = {(o["name"], o["generation"]) for o in inventory["live"]}
+    historical = [o for o in inventory["versions"] if (o["name"], o["generation"]) not in live_ids]
+    result = {"bucket": contract.BUCKET, "prefix": contract.PREFIX, "workspace": "default",
+              "live": inventory["live"], "historical": historical, "soft_deleted": inventory["soft_deleted"]}
+    scoped = lambda rows: [o for o in rows if o["name"].startswith(contract.PREFIX + "/")]
+    current = scoped(inventory["live"])
+    all_versions = scoped(inventory["versions"]) + scoped(inventory["soft_deleted"])
+    if any(o["name"].endswith(".tflock") for o in current):
+        result["classification"] = "blocked_current_lock"
+    elif any(o["name"] not in {STATE_NAME, LOCK_NAME} for o in current + all_versions):
+        result["classification"] = "blocked_unknown_object_or_workspace"
+    else:
+        states = [o for o in all_versions if o["name"] == STATE_NAME]
+        current_states = [o for o in current if o["name"] == STATE_NAME]
+        if not states and not current_states:
+            result["classification"] = "uninitialized"
+        elif (len(current_states) == 1 and len(states) == 1
+              and all(current_states[0].get(k) == INITIAL_STATE[k] for k in ("name", "generation", "size"))
+              and (STATE_NAME, INITIAL_STATE["generation"]) in {(o["name"], o["generation"]) for o in inventory["versions"]}):
+            result["classification"] = "initial_state_pending_private_verification"
+        else:
+            result["classification"] = "blocked_state_provenance_unconfirmed"
+    return result
+
+
+def verify_initial_state(raw):
+    """An exact inspected empty snapshot; no resource, output or new lineage adoption."""
+    contract.require(len(raw) == int(INITIAL_STATE["size"])
+                     and hashlib.sha256(raw).hexdigest() == INITIAL_STATE["sha256"],
+                     "Existing state bytes differ from the inspected initial snapshot")
+    state = json.loads(raw)
+    contract.require(set(state) == {"version", "terraform_version", "serial", "lineage", "outputs", "resources", "check_results"}
+                     and state["version"] == 4 and type(state["version"]) is int
+                     and state["terraform_version"] == "1.15.8" and type(state["serial"]) is int and state["serial"] == 1
+                     and state["lineage"] == INITIAL_STATE["lineage"]
+                     and state["outputs"] == {} and state["resources"] == [] and state["check_results"] is None,
+                     "State is not the recognized empty initial state; resources or uncertain provenance block planning")
+
+
+def read_initial_state(work):
+    """Generation-pinned read of this one state, never a generic object downloader."""
+    params = {"alt": "media", "generation": INITIAL_STATE["generation"], "ifGenerationMatch": INITIAL_STATE["generation"]}
+    url = ("https://storage.googleapis.com/storage/v1/b/" + contract.BUCKET + "/o/"
+           + quote(STATE_NAME, safe="") + "?" + urlencode(params))
+    request = Request(url, headers={"Authorization": "Bearer " + os.environ["GCP_ACCESS_TOKEN"]})
+    target = work / "initial-state-private.json"
+    created = False
+    try:
+        try:
+            with build_opener(ProxyHandler({}), NoRedirect()).open(request, timeout=60) as response:
+                raw = response.read(65537)
+        except HTTPError as error:
+            raise FailedOperation("read pinned initial state " + STATE_NAME,
+                                  error.read(16384).decode("utf-8", errors="replace"), error.code) from None
+        contract.require(len(raw) <= 65536, "Initial state exceeds the private inspection bound")
+        with target.open("xb") as stream:
+            created = True
+            stream.write(raw)
+        target.chmod(0o600)
+        verify_initial_state(raw)
+    finally:
+        if created and target.exists():
+            target.unlink()
+
+
+def inspect_backend(bucket, work, reports, receipt):
+    result = classify_backend(backend_inventory(bucket))
+    receipt["backend"] = result
+    # Metadata survives failures, but state contents never enter the summary.
+    save_summary(reports, receipt)
+    contract.require(result["classification"] in {"uninitialized", "initial_state_pending_private_verification"},
+                     "Backend stopped: " + result["classification"] + "; no adoption, deletion or force-unlock is allowed")
+    if result["classification"] == "initial_state_pending_private_verification":
+        read_initial_state(work)
+        # Detect a new live lock or changed generation before invoking Terraform.
+        confirmed = classify_backend(backend_inventory(bucket))
+        contract.require(confirmed["classification"] == result["classification"],
+                         "Backend changed during private state verification; stop before Terraform")
+        result = confirmed
+        result["classification"] = "recognized_initial_state"
+        result["initial_lineage"] = INITIAL_STATE["lineage"]
+        result["initial_state_sha256"] = INITIAL_STATE["sha256"]
+        receipt["backend"] = result
+    save_summary(reports, receipt)
+    return result
+
+
 def checks(work, reports, receipt):
     sources = contract.source_contract(MODULE)
     module = work / "module"
@@ -207,22 +352,26 @@ def real_plan(work, reports, receipt):
     adc = Path(os.environ["GOOGLE_APPLICATION_CREDENTIALS"])
     contract.require(adc.is_file() and adc.name.startswith("gha-creds-") and adc.suffix == ".json",
                      "Only the current Actions federated credential file may be used")
+    contract.require(os.environ.get("TF_WORKSPACE", "default") == "default", "Only the existing default workspace is authorized")
+    backend = (work / "module/backend-int.hcl").read_text(encoding="utf-8")
+    contract.require(dict(re.findall(r'^\s*(bucket|prefix)\s*=\s*"([^"]+)"\s*$', backend, re.M))
+                     == {"bucket": contract.BUCKET, "prefix": contract.PREFIX}, "Backend configuration differs from the authorized existing backend")
     bucket = metadata("/b/" + contract.BUCKET, {"fields": "name,projectNumber,iamConfiguration,versioning,softDeletePolicy"})
-    listing = metadata("/b/" + contract.BUCKET + "/o", {"prefix": contract.PREFIX + "/", "versions": "true", "maxResults": "1", "fields": "items(name,generation),nextPageToken"})
-    contract.backend_contract(bucket, listing)
-    if int(bucket.get("softDeletePolicy", {}).get("retentionDurationSeconds", 0)) > 0:
-        soft_deleted = metadata("/b/" + contract.BUCKET + "/o", {"prefix": contract.PREFIX + "/", "softDeleted": "true", "maxResults": "1", "fields": "items(name,generation),nextPageToken"})
-        contract.backend_contract(bucket, soft_deleted)
-    receipt["checks"]["backend_private_versioned_prefix_unused"] = "passed"
+    inspected = inspect_backend(bucket, work, reports, receipt)
+    receipt["checks"]["backend_private_versioned_state_recognized"] = inspected["classification"]
     binary = terraform_binary()
     run([binary, "init", "-input=false", "-lockfile=readonly", "-reconfigure", "-no-color", "-backend-config=backend-int.hcl"], "init", work)
     receipt["checks"]["init"] = "passed"
     run([binary, "validate", "-no-color"], "validate_backend", work)
     receipt["checks"]["validate_backend"] = "passed"
+    # Re-check after native init. A recognized snapshot must remain identical;
+    # an existing state with resources is never adopted by this first-plan path.
+    inspect_backend(bucket, work, reports, receipt)
     plan = work / "int.tfplan"
     code, _ = run([binary, "plan", "-input=false", "-no-color", "-lock=true", "-lock-timeout=120s", "-detailed-exitcode",
                    "-var=machine_type=" + os.environ.get("MACHINE_TYPE", "e2-micro"), "-out=" + str(plan)],
                   "plan", work, accepted=(0, 1, 2))
+    inspect_backend(bucket, work, reports, receipt)
     contract.require(contract.detailed_exit(code) != "error", "Plan returned exit code 1")
     _, raw = run([binary, "show", "-json", str(plan)], "private_plan_json", work)
     receipt.update(status="planned", plan_exit_code=code, plan=contract.plan_contract(json.loads(raw), (work / "module/postgres-install.sh").read_text()))
