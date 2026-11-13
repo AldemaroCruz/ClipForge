@@ -1,0 +1,222 @@
+name: ClipForge INT runtime build test scan and exact digest publication
+on:
+  workflow_dispatch:
+    inputs:
+      approved_commit:
+        description: Exact owner-approved source commit for this separate publication
+        type: string
+        required: true
+permissions: {}
+concurrency:
+  group: clipforge-int-protected-operations
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: int
+    permissions:
+      contents: read
+    env:
+      INT_APPROVED_COMMIT: ${{ inputs.approved_commit }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    outputs:
+      runtime_image: ${{ steps.identity.outputs.runtime_image }}
+      archive_sha256: ${{ steps.identity.outputs.archive_sha256 }}
+      archive_size: ${{ steps.identity.outputs.archive_size }}
+      artifact_id: ${{ steps.candidate.outputs.artifact-id }}
+    steps:
+      - name: Checkout exact source without retained credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Prepare private runtime-only context and identified offline weights
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test "$INT_APPROVED_COMMIT" = "$GITHUB_SHA"
+          scratch=$(mktemp -d "$RUNNER_TEMP/clipforge-int-runtime.XXXXXXXX")
+          printf 'INT_RUNTIME_SCRATCH=%s\nINT_RUNTIME_ARCHIVE=%s/runtime.oci.tar\n' "$scratch" "$scratch" >> "$GITHUB_ENV"
+          python -B scripts/prepare_int_runtime.py fetch --source "$GITHUB_WORKSPACE" --weights "$scratch/weights"
+          python -B scripts/prepare_int_runtime.py prepare --source "$GITHUB_WORKSPACE" --weights "$scratch/weights" --context "$scratch/context" --manifest "$scratch/runtime-context.json"
+          python -B scripts/prepare_int_runtime.py verify --context "$scratch/context" --manifest "$scratch/runtime-context.json"
+          docker pull ghcr.io/aquasecurity/trivy:0.76.2@sha256:6fa071ef8daa2e58b90cbf1710bedca91adbb3bf98693533226f442035b836a6
+          docker pull quay.io/skopeo/stable:v1.20.0@sha256:47853bb9fb24202af9110531ebd6e43c5f97701254ca290596640290d17942f4
+      - name: Build only the allowlisted real runtime as a single-platform OCI archive
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          builder="clipforge-int-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker buildx create --name "$builder" --driver docker-container
+          docker buildx build --builder "$builder" --platform linux/amd64 --provenance=false --output "type=oci,dest=$INT_RUNTIME_ARCHIVE" --metadata-file "$INT_RUNTIME_SCRATCH/build-metadata.json" -f "$INT_RUNTIME_SCRATCH/context/Dockerfile.int" "$INT_RUNTIME_SCRATCH/context"
+          python -B - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          from scripts.int_release_image import archive_digest
+          path=Path(os.environ["INT_RUNTIME_ARCHIVE"])
+          image="us-central1-docker.pkg.dev/clipforgebeta2/clipforge-int/runtime@"+archive_digest(path)
+          with path.open("rb") as stream:
+              archive_sha=hashlib.file_digest(stream,"sha256").hexdigest()
+          values={"runtime_image":image,"archive_sha256":archive_sha,"archive_size":str(path.stat().st_size)}
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as out:
+              for key,value in values.items(): out.write(key+"="+value+"\n")
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as out:
+              out.write("Exact candidate for a NEW publication approval (no publish performed by build):\n```json\n"+json.dumps({"commit":os.environ["GITHUB_SHA"],**values},indent=2)+"\n```\n")
+          PY
+      - name: Test exact runtime layers without external network or operator mounts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -m 700 "$INT_RUNTIME_SCRATCH/skopeo-temp"
+          docker run --rm --pull=never --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --user "$(id -u):$(id -g)" --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m --mount "type=bind,source=$INT_RUNTIME_SCRATCH,target=/private" quay.io/skopeo/stable:v1.20.0@sha256:47853bb9fb24202af9110531ebd6e43c5f97701254ca290596640290d17942f4 --tmpdir /private/skopeo-temp copy "oci-archive:/private/runtime.oci.tar" "docker-archive:/private/runtime-tests.tar"
+          docker load --input "$INT_RUNTIME_SCRATCH/runtime-tests.tar" > /dev/null
+          test_id=$(python -B - <<'PY'
+          import hashlib,json,os,tarfile
+          from pathlib import Path
+          with tarfile.open(Path(os.environ["INT_RUNTIME_SCRATCH"])/"runtime-tests.tar") as stream:
+              manifest=json.load(stream.extractfile("manifest.json"))
+              raw=stream.extractfile(manifest[0]["Config"]).read()
+          print("sha256:"+hashlib.sha256(raw).hexdigest())
+          PY
+          )
+          printf 'INT_RUNTIME_TEST_ID=%s\n' "$test_id" >> "$GITHUB_ENV"
+          for smoke in model_source check_media check_presentation; do
+            if [ "$smoke" = model_source ]; then extra=verify; else extra=; fi
+            docker run --rm --pull=never --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --user "$(id -u):$(id -g)" --tmpfs /tmp:rw,nosuid,nodev,size=512m --env PYTHONDONTWRITEBYTECODE=1 --workdir /app "$test_id" python -B -m "app.$smoke" $extra
+          done
+          docker run --rm --pull=never --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --user "$(id -u):$(id -g)" --tmpfs /tmp:rw,nosuid,nodev,size=128m --workdir /app "$test_id" python -m pip check
+      - name: Analyze the actual OCI runtime without suppressions or threshold changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --pull=never --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --user "$(id -u):$(id -g)" --mount "type=bind,source=$INT_RUNTIME_SCRATCH,target=/private" quay.io/skopeo/stable:v1.20.0@sha256:47853bb9fb24202af9110531ebd6e43c5f97701254ca290596640290d17942f4 --tmpdir /private/skopeo-temp copy --preserve-digests "oci-archive:/private/runtime.oci.tar" "oci:/private/oci-layout"
+          docker run --rm --pull=never --cap-drop=ALL --security-opt=no-new-privileges --user "$(id -u):$(id -g)" --mount "type=bind,source=$INT_RUNTIME_SCRATCH,target=/private" ghcr.io/aquasecurity/trivy:0.76.2@sha256:6fa071ef8daa2e58b90cbf1710bedca91adbb3bf98693533226f442035b836a6 image --cache-dir /private/trivy-cache --scanners vuln --format json --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL --input /private/oci-layout --output /private/runtime-trivy.json
+          docker run --rm --pull=never --network=none --cap-drop=ALL --security-opt=no-new-privileges --user "$(id -u):$(id -g)" --mount "type=bind,source=$INT_RUNTIME_SCRATCH,target=/private" ghcr.io/aquasecurity/trivy:0.76.2@sha256:6fa071ef8daa2e58b90cbf1710bedca91adbb3bf98693533226f442035b836a6 image --cache-dir /private/trivy-cache --skip-db-update --skip-java-db-update --scanners vuln --format cyclonedx --input /private/oci-layout --output /private/runtime-sbom.cdx.json
+          python -B - <<'PY'
+          import json,os
+          from pathlib import Path
+          report=json.loads((Path(os.environ["INT_RUNTIME_SCRATCH"])/"runtime-trivy.json").read_text())
+          results=report.get("Results",[])
+          if not results or any(v["Severity"] in {"HIGH","CRITICAL"} for r in results for v in r.get("Vulnerabilities",[])):
+              raise SystemExit("Runtime findings block publication; no exceptions are applied.")
+          PY
+      - name: Retain only this exact scanned OCI archive for the next approval
+        id: candidate
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: int-runtime-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.INT_RUNTIME_ARCHIVE }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Preserve runtime reports only
+        if: ${{ always() && env.INT_RUNTIME_SCRATCH != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: int-runtime-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.INT_RUNTIME_SCRATCH }}/runtime-context.json
+            ${{ env.INT_RUNTIME_SCRATCH }}/runtime-trivy.json
+            ${{ env.INT_RUNTIME_SCRATCH }}/runtime-sbom.cdx.json
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Remove only the owned builder and private scratch
+        if: ${{ always() && env.INT_RUNTIME_SCRATCH != '' }}
+        shell: bash
+        run: |
+          docker buildx rm "clipforge-int-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" || test "$?" -eq 1
+          python -B - <<'PY'
+          import os,shutil
+          from pathlib import Path
+          path=Path(os.environ["INT_RUNTIME_SCRATCH"]).resolve()
+          if path.parent != Path(os.environ["RUNNER_TEMP"]).resolve() or not path.name.startswith("clipforge-int-runtime."):
+              raise SystemExit("Unsafe cleanup refused")
+          shutil.rmtree(path)
+          PY
+
+  publish:
+    needs: build
+    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: int
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      INT_APPROVED_COMMIT: ${{ inputs.approved_commit }}
+      RUNTIME_IMAGE: ${{ needs.build.outputs.runtime_image }}
+      INT_STAGE: foundation
+      SECRET_VERSIONS_JSON: "null"
+      EXPECTED_ARCHIVE_SHA256: ${{ needs.build.outputs.archive_sha256 }}
+      EXPECTED_ARCHIVE_SIZE: ${{ needs.build.outputs.archive_size }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Checkout the exact same source after the NEW INT publication approval
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Allocate private download scratch
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          scratch=$(mktemp -d "$RUNNER_TEMP/clipforge-int-publish.XXXXXXXX")
+          printf 'INT_PUBLISH_SCRATCH=%s\nINT_RUNTIME_ARCHIVE=%s/runtime.oci.tar\n' "$scratch" "$scratch" >> "$GITHUB_ENV"
+      - name: Download the exact candidate artifact from the successful build job
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 verified official tag
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: ${{ env.INT_PUBLISH_SCRATCH }}
+          merge-multiple: true
+      - name: Verify archive bytes and the OCI manifest before any registry write
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B - <<'PY'
+          import hashlib,os
+          from pathlib import Path
+          from scripts.int_release_image import archive_digest
+          path=Path(os.environ["INT_RUNTIME_ARCHIVE"])
+          with path.open("rb") as stream: digest=hashlib.file_digest(stream,"sha256").hexdigest()
+          if (digest != os.environ["EXPECTED_ARCHIVE_SHA256"] or str(path.stat().st_size) != os.environ["EXPECTED_ARCHIVE_SIZE"]
+              or archive_digest(path) != os.environ["RUNTIME_IMAGE"].rsplit("@",1)[1]):
+              raise SystemExit("Candidate archive/manifest changed; publication refused.")
+          PY
+          docker pull quay.io/skopeo/stable:v1.20.0@sha256:47853bb9fb24202af9110531ebd6e43c5f97701254ca290596640290d17942f4
+      - name: Authenticate existing deployment WIF only after artifact verification
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+          token_format: access_token
+          access_token_lifetime: 1800s
+          create_credentials_file: true
+          export_environment_variables: true
+          cleanup_credentials: true
+      - name: Require existing application CI success and publish only this saved OCI archive
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          GH_TOKEN: ${{ github.token }}
+          INT_RUNTIME_SCANS_PASSED: "true"
+        run: python -B -m scripts.int_release_image
+      - name: Remove only this publish job private scratch
+        if: ${{ always() && env.INT_PUBLISH_SCRATCH != '' }}
+        shell: bash
+        run: |
+          python -B - <<'PY'
+          import os,shutil
+          from pathlib import Path
+          path=Path(os.environ["INT_PUBLISH_SCRATCH"]).resolve()
+          if path.parent != Path(os.environ["RUNNER_TEMP"]).resolve() or not path.name.startswith("clipforge-int-publish."):
+              raise SystemExit("Unsafe private cleanup refused")
+          shutil.rmtree(path)
+          PY

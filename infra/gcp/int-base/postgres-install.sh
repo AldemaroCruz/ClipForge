@@ -32,7 +32,8 @@ DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" install --no-install-
 printf 'create_main_cluster = false\n' > /etc/postgresql-common/createcluster.conf
 systemctl mask postgresql.service postgresql@.service
 DEBIAN_FRONTEND=noninteractive apt-get "${apt_options[@]}" install --no-install-recommends -y \
-  postgresql-17=17.12-0+deb13u1 postgresql-client-17=17.12-0+deb13u1
+  postgresql-17=17.12-0+deb13u1 postgresql-client-17=17.12-0+deb13u1 \
+  openssl python3 e2fsprogs util-linux
 systemctl mask postgresql.service postgresql@.service
 install -d -m 0700 /var/lib/clipforge-postgres
 dpkg-query -W postgresql-17 postgresql-client-17 > /var/lib/clipforge-postgres/package-provenance.txt

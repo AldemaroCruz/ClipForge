@@ -1,0 +1,68 @@
+name: ClipForge INT explicit new-disk database initialization
+on:
+  workflow_dispatch:
+    inputs:
+      approved_commit:
+        description: Exact owner-approved commit; this operation remains separate from plan approval
+        type: string
+        required: true
+      new_disk_id:
+        description: Numeric ID verified after approved foundation apply; existing disks are refused
+        type: string
+        required: true
+      confirmation:
+        description: Type INITIALIZE_NEW_DISK_ followed by that numeric disk ID
+        type: string
+        required: true
+permissions: {}
+concurrency:
+  group: clipforge-int-protected-operations
+  cancel-in-progress: false
+jobs:
+  protected-operation:
+    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: int
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      INT_APPROVED_COMMIT: ${{ inputs.approved_commit }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Checkout the exact dispatch source before WIF
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Authenticate deployment identity using existing WIF
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+          token_format: access_token
+          access_token_lifetime: 1800s
+          create_credentials_file: true
+          export_environment_variables: true
+          cleanup_credentials: true
+      - name: Prepare a fixed SDK using the official pinned action
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1 verified tag commit
+        with:
+          version: 592.0.0
+      - name: Verify exact new disk, pinned SSH host and initialize once through IAP
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          INT_NEW_DISK_ID: ${{ inputs.new_disk_id }}
+          INT_DISK_CONFIRMATION: ${{ inputs.confirmation }}
+          INT_VM_SSH_HOST_KEY: ${{ vars.INT_VM_SSH_HOST_KEY }}
+          INT_PG_APP_PASSWORD: ${{ secrets.INT_APP_PASSWORD }}
+          INT_PG_MIGRATOR_PASSWORD: ${{ secrets.INT_MIGRATOR_PASSWORD }}
+          INT_PG_CA_CERT: ${{ secrets.INT_POSTGRES_CA }}
+          INT_PG_SERVER_CERT: ${{ secrets.INT_PG_SERVER_CERT }}
+          INT_PG_SERVER_KEY: ${{ secrets.INT_PG_SERVER_KEY }}
+        run: python -B -m scripts.int_bootstrap_db

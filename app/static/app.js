@@ -5,6 +5,8 @@ const mediaInfo = $("media-info"), clipsList = $("clips"), jobInput = $("job-id"
 const labels = {validating:"Validando que el MP4 tenga video, audio y duración suficiente.",queued:"En cola: esperando el turno de procesamiento.",transcribing:"Transcribiendo. En el primer uso también se descarga el modelo Whisper.",rendering:"Generando clips verticales con FFmpeg.",completed:"Procesamiento completado.",failed:"El procesamiento falló."};
 const modeNames = {contain:"Imagen completa",blur:"Fondo desenfocado",crop:"Recorte vertical"};
 const MAX_RETRIES = 5;
+const cloudBackend = document.documentElement.dataset.storageBackend === "gcs";
+if(cloudBackend) labels.transcribing="Transcribiendo con Whisper.";
 let pollTimer = null, session = 0, currentJob = null, clipSignature = "", exportSignature = "";
 let editorData = null, dirty = false, exporting = false, exportTimer = null, uploadURL = null, editorRequest = 0;
 
@@ -273,7 +275,7 @@ async function refreshExports(id,currentSession) {
       const item=items.find(e=>e.id===selected);
       if(!item || item.review?.status!=="approved" || item.review?.revision!==selectedDeliveries.get(selected)) selectedDeliveries.delete(selected);
     }
-    updateDeliverySelection();refreshDeliveries(id,currentSession);
+    updateDeliverySelection();if(!cloudBackend) refreshDeliveries(id,currentSession);
     if(signature===exportSignature) return;exportSignature=signature; const list=$("exports-list");list.replaceChildren();
     for(const item of items) {
       const card=node("article",undefined,"clip-card"), base=`/jobs/${id}/exports/${item.id}/files`;
@@ -284,7 +286,7 @@ async function refreshExports(id,currentSession) {
         card.append(makePlayer(`${base}/clip.mp4?inline=true`));
         const links=node("div",undefined,"actions");links.append(downloadLink(`${base}/clip.mp4`,"MP4"),downloadLink(`${base}/clip.srt`,"SRT"));card.append(links);
       } else {card.append(node("p",item.status==="failed" ? `Error: ${item.error}` : item.status==="rendering" ? "Renderizando…" : "En cola…","export-summary"));}
-      const button=node("button","Usar estos ajustes","subtle");button.type="button";button.addEventListener("click",()=>openEditor(id,item.clip_file,item));const actions=node("div",undefined,"actions");actions.append(button);card.append(actions);if(item.status==="completed") card.append(makeReviewPanel(id,item));list.append(card);
+      const button=node("button","Usar estos ajustes","subtle");button.type="button";button.addEventListener("click",()=>openEditor(id,item.clip_file,item));const actions=node("div",undefined,"actions");actions.append(button);card.append(actions);if(item.status==="completed" && !cloudBackend) card.append(makeReviewPanel(id,item));list.append(card);
     }
     // When reopening a job after a browser reload, recover an in-progress export.
     if(!exporting && items.some(e=>["queued","rendering"].includes(e.status))) {
@@ -459,10 +461,10 @@ async function refreshProjects() {
     const list=$('project-list');list.replaceChildren();
     for(const item of result.projects) {
       const card=node('article',undefined,'project-card'),thumb=node('div',undefined,'project-thumb');
-      if(item.source_available && ["completed","failed"].includes(item.status)) {
+      if(item.thumbnail_url && item.source_available && ["completed","failed"].includes(item.status)) {
         const img=node('img');img.src=item.thumbnail_url;img.loading='lazy';img.alt='Miniatura del video original';
         img.addEventListener('error',()=>{thumb.replaceChildren(node('span','Vista no disponible'));},{once:true});thumb.append(img);
-      } else thumb.append(node('span',item.source_available ? 'Procesando…' : 'Original no disponible'));
+      } else thumb.append(node('span',item.source_available ? (["completed","failed"].includes(item.status) ? 'Original guardado' : 'Procesando…') : 'Original no disponible'));
       card.append(thumb,node('span',projectStates[item.status] || item.status,'project-status'),node('h3',item.title));
       card.append(node('div',`${Number.isFinite(item.duration) ? `${clock(item.duration)} · ` : ""}${item.clips_count} clips · ${item.drafts_count} borradores · ${item.exports_count} variantes`,'meta'));
       card.append(node('div',`${item.date_kind==='legacy_file' ? 'Fecha de archivo' : 'Cargado'}: ${displayDate(item.created_at)}`,'meta'));
@@ -528,6 +530,7 @@ refreshProjects();
 
 // v0.3.1: snapshots of visual options only, never cue text or editorial ranges.
 async function refreshTemplates(selectedId=null) {
+  if(cloudBackend) return;
   const seq=++templateSequence;
   try {
     const result=await requestJSON('/templates');if(seq!==templateSequence) return;
@@ -662,6 +665,7 @@ function paintAIConfig(config) {
     $('ai-config').textContent=`${config.reason}${config.configured ? `\nProveedor: ${config.provider} · modelo: ${config.model}\nDestino: ${config.destination}\nLímite local: ${config.daily_used_utc}/${config.daily_limit} consultas IA reservadas hoy (UTC). Este panel solo lee configuración; no envía una consulta.` : ''}`;
 }
 async function refreshAI(id,token) {
+  if(cloudBackend) {$('ai-panel').hidden=true;return;}
   const seq=++aiRequestSequence;
   $('ai-panel').hidden=false;
   try {

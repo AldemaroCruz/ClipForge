@@ -15,6 +15,12 @@ from scripts import prepare_ci_scan as scan
 
 
 class CIScanTests(unittest.TestCase):
+    def test_int_sources_are_explicitly_scannable(self):
+        names = ["Dockerfile.int", "Dockerfile.int.dockerignore", "requirements-int.lock",
+                 "config/postgres-ci-security.Dockerfile", "app/cloud/router.py",
+                 ".github/workflows/int-e2e-apply.yml"]
+        self.assertEqual(scan.validate_paths(names), sorted(names))
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="clipforge-ci-scan-")
         self.addCleanup(self.temporary.cleanup)

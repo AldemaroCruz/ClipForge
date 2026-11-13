@@ -338,8 +338,7 @@ class ApiTests(unittest.TestCase):
         self.assertIn("20 y 60 segundos", main.load_job(JOB_ID)["error"])
 
     def test_ffmpeg_error_includes_stderr(self):
-        result = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="invalid video stream")
-        with mock.patch.object(subprocess, "run", return_value=result):
+        with mock.patch("app.render._bounded_ffmpeg", return_value=(1, "invalid video stream")):
             with self.assertRaisesRegex(RuntimeError, "invalid video stream"):
                 main.ffmpeg("-i", "bad.mp4")
 

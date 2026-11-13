@@ -1,8 +1,25 @@
-name: ClipForge TF-INT-01 plan only
+name: ClipForge INT private reviewed plan
 
 on:
   workflow_dispatch:
     inputs:
+      runtime_image:
+        description: Exact locally prepared OCI manifest AR URL (publication remains separately gated)
+        type: string
+        required: true
+      stage:
+        description: Foundation first; runtime requires a separately reviewed phase
+        type: choice
+        default: foundation
+        options: [foundation, runtime]
+      secret_versions_json:
+        description: null for foundation; explicit app_password/migrator_password/postgres_ca/bootstrap_admin version numbers for runtime
+        type: string
+        default: "null"
+      foundation_receipt_json:
+        description: Runtime only - owner reviewed receipt JSON with name, generation, sha256 and size
+        type: string
+        default: "null"
       machine_type:
         description: PostgreSQL capacity profile to evaluate; no resources are created
         type: choice
@@ -22,6 +39,7 @@ jobs:
     environment: int
     permissions:
       contents: read
+      actions: read
       id-token: write
     env:
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -32,6 +50,10 @@ jobs:
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
       TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
       MACHINE_TYPE: ${{ inputs.machine_type }}
+      FOUNDATION_RECEIPT_JSON: ${{ inputs.foundation_receipt_json }}
+      RUNTIME_IMAGE: ${{ inputs.runtime_image }}
+      INT_STAGE: ${{ inputs.stage }}
+      SECRET_VERSIONS_JSON: ${{ inputs.secret_versions_json }}
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - name: Check out the exact source commit without retained credentials
@@ -82,9 +104,10 @@ jobs:
           export_environment_variables: true
           cleanup_credentials: true
 
-      - name: Verify the existing private backend and workspace, initialize and plan once
+      - name: Plan once and retain binary/JSON only as immutable private GCS generations
         env:
           GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: python -B scripts/tf_int_plan.py plan
 

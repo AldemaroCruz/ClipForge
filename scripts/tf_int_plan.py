@@ -1,8 +1,8 @@
 """TF-INT-01: curated validation and one real plan; no mutation command exists.
 
-Only backend locking can write remotely. Complete plans, diagnostics and backend
-files stay in a private runner scratch directory that final cleanup removes.
-Only an explicit summary schema is permitted in logs and artifacts.
+Native backend locking remains enabled. Plans/JSON are retained only in immutable
+private GCS objects; local diagnostics/backend files are removed by cleanup.
+Only an explicit summary schema is permitted in logs and GitHub artifacts.
 """
 from __future__ import annotations
 
@@ -69,7 +69,7 @@ def save_summary(reports, value):
     lines = ["# TF-INT-01", "", "Status: " + value["status"], "",
              "Project: clipforgebeta2 (816643438938); region: us-central1.",
              "", "Plan-only. No application image or deployment permission is approved.",
-             "Full plan/JSON/credentials are temporary, never uploaded, and removed by final cleanup.", ""]
+             "Full plan/JSON stay private in generation-pinned GCS objects. Credentials are never uploaded.", ""]
     if "checks" in value:
         lines.extend(["Checks: " + ", ".join(k + "=" + str(v) for k, v in value["checks"].items()), ""])
     if "backend" in value:
@@ -93,10 +93,19 @@ def save_summary(reports, value):
                       "Separate retained 20 GiB data disk and retained 10 GiB boot disk; VM deletion protection.",
                       "Private media/backups buckets: UBLA, public access prevention, versioning, 7-day soft delete.",
                       "Media retention 7 days; backups retention 30 days, live backups expire after 90 days.",
-                      "Services required (bootstrap-owned, no activation): Compute, Storage, IAM, IAP, OS Login, Artifact Registry, Secret Manager, STS.", ""])
+                      "Cloud Run API: built-in IAP for admin@ixbalam.studio, zero to one instance; three single-task Jobs.",
+                      "DATA_READ/WRITE: project-wide GCS audit enablement; pilot-bucket sink/view, 30-day retention.",
+                      "Google-managed encryption proposed; key findings remain unaccepted. No IAM/service changes executed.", ""])
+    if "private_plan" in value:
+        lines.extend(["Private immutable plan custody (no payloads in this report):", "```json",
+                      json.dumps(value["private_plan"], indent=2), "```", ""])
+    if "foundation_receipt" in value:
+        lines.extend(["Private post-foundation provenance for an explicitly reviewed phase-two dispatch:", "```json",
+                      json.dumps(value["foundation_receipt"], indent=2), "```", ""])
     if "cost" in value:
         cost = value["cost"]
-        lines.extend(["Estimated monthly USD before exclusions: " + str(cost["monthly_usd"]),
+        lines.extend(["Full runtime target estimated monthly USD before exclusions: " + str(cost["monthly_usd"]),
+                      "Foundation estimate with the same example GCS/log volumes USD: " + str(cost["foundation_monthly_usd"]),
                       "e2-small comparison USD: " + str(cost["e2_small_monthly_usd"]), ""])
         lines.extend("- " + text for text in cost["assumptions"])
         lines.extend(["", "Pricing sources:", *["- " + url for url in cost["sources"]], ""])
@@ -121,8 +130,27 @@ def cost_estimate(machine):
             + hours * (rates["nat_vm_hour"] + rates["nat_external_ip_hour"])
             + usage["nat_processed_gib"] * rates["nat_processed_gib"]
             + (usage["media_gib_including_versions"] + usage["backup_gib_including_versions"]) * rates["gcs_standard_gib_month"])
-    return {"monthly_usd": round(base + hours * rates[machine + "_hour"], 2),
-            "e2_small_monthly_usd": round(base + hours * rates["e2-small_hour"], 2),
+    extra = (usage["api_active_seconds"] * (rates["run_api_vcpu_second"] + rates["run_api_gib_second"])
+             + usage["api_requests_million"] * rates["run_requests_million"]
+             + usage["worker_seconds"] * (2 * rates["run_job_vcpu_second"] + 4 * rates["run_job_gib_second"])
+             + usage["administration_job_seconds"] * (rates["run_job_vcpu_second"] + rates["run_job_gib_second"])
+             + usage["artifact_gib_including_model_and_old_revisions"] * rates["artifact_gib_month"]
+             + usage["audit_logging_gib_including_duplicate_default"] * rates["logging_gib"]
+             + usage["network_logging_gib"] * rates["network_logging_gib"]
+             + usage["secret_active_versions"] * rates["secret_version_month"]
+             + usage["secret_access_operations"] / 10000 * rates["secret_access_10000"]
+             + usage["gcs_class_a_operations"] / 1000 * rates["gcs_class_a_1000"]
+             + usage["gcs_class_b_operations"] / 1000 * rates["gcs_class_b_1000"]
+             + usage["internet_egress_gib"] * rates["internet_egress_gib"]
+             + usage["private_plan_storage_gib"] * rates["gcs_standard_gib_month"])
+    return {"monthly_usd": round(base + extra + hours * rates[machine + "_hour"], 2),
+            "foundation_monthly_usd": round(base + hours * rates[machine + "_hour"]
+                + usage["audit_logging_gib_including_duplicate_default"] * rates["logging_gib"]
+                + usage["network_logging_gib"] * rates["network_logging_gib"]
+                + usage["private_plan_storage_gib"] * rates["gcs_standard_gib_month"], 2),
+            "base_infrastructure_monthly_usd": round(base + hours * rates[machine + "_hour"], 2),
+            "pilot_additional_monthly_usd": round(extra, 2),
+            "e2_small_monthly_usd": round(base + extra + hours * rates["e2-small_hour"], 2),
             "profile": machine, "usage": usage, "assumptions": value["assumptions"], "sources": value["sources"]}
 
 
@@ -308,14 +336,16 @@ def checks(work, reports, receipt):
     uid = str(os.getuid()) if hasattr(os, "getuid") else "10001"
     gid = str(os.getgid()) if hasattr(os, "getgid") else "10001"
     authored_tests = work / "contract-tests"
-    for name in ("scripts/check_tf_int.py", "scripts/tf_int_plan.py", "tests/test_tf_int.py"):
+    for name in ("scripts/check_tf_int.py", "scripts/tf_int_plan.py", "scripts/int_release.py", "scripts/int_release_state.py",
+                 "scripts/int_secrets.py", "scripts/int_bootstrap_vm.py", "scripts/int_bootstrap_db.py", "scripts/int_release_image.py",
+                 "tests/test_tf_int.py", "tests/test_int_infra_release.py"):
         target = authored_tests / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / name, target)
     run(["docker", "run", "--rm", "--pull", "never", "--network", "none", "--read-only", "--cap-drop", "ALL",
          "--security-opt", "no-new-privileges", "--user", uid + ":" + gid,
          "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=128m", "--mount", "type=bind,source=" + str(authored_tests) + ",target=/source,readonly",
-         "--workdir", "/source", PYTHON_IMAGE, "python", "-B", "-m", "unittest", "discover", "-s", "tests", "-p", "test_tf_int.py", "-v"],
+         "--workdir", "/source", PYTHON_IMAGE, "python", "-B", "-m", "unittest", "discover", "-s", "tests", "-v"],
         "python_negative_contracts", work)
     receipt["checks"]["python_negative_contracts"] = "passed_without_network"
     isolated = ["docker", "run", "--rm", "--pull", "never", "--network", "none", "--read-only", "--cap-drop", "ALL",
@@ -333,8 +363,13 @@ def checks(work, reports, receipt):
     contract.require(sum(t.get("MisconfSummary", {}).get("Successes", 0) for t in results) > 0, "IaC scan did not execute real checks")
     findings = [m for t in results for m in t.get("Misconfigurations", [])]
     contract.require(code == int(bool(findings)), "IaC scanner exit and report disagree")
-    receipt["iac_findings"] = [{"id": m["ID"], "severity": m["Severity"],
-                                 "resource": m.get("CauseMetadata", {}).get("Resource", "unknown")}
+    receipt["iac_findings"] = [{"id": m["ID"], "severity": m["Severity"], "title": m.get("Title", ""),
+                                 "resource": m.get("CauseMetadata", {}).get("Resource", "unknown"),
+                                 "start_line": m.get("CauseMetadata", {}).get("StartLine"),
+                                 "end_line": m.get("CauseMetadata", {}).get("EndLine"),
+                                 "decision": "pending_owner_decision_not_accepted",
+                                 "control_proposed": "Cloud Audit Logs access records; bucket access-logging rule still reports"
+                                      if m["ID"] == "GCP-0077" else "Google-managed default encryption; no customer key proposed"}
                                 for m in findings]
     # Same HIGH/CRITICAL blocking level as the application scanners; lower
     # findings stay visible and unaccepted. This workflow cannot apply anything.
@@ -345,7 +380,9 @@ def checks(work, reports, receipt):
 
 
 def real_plan(work, reports, receipt):
+    from scripts import int_release
     contract.validate_variables(os.environ)
+    reviewed_inputs = int_release.inputs(os.environ)
     expected = {"GITHUB_REPOSITORY": "AldemaroCruz/ClipForge", "GITHUB_REF": "refs/heads/ci/bootstrap-sec03",
                 "GITHUB_EVENT_NAME": "workflow_dispatch", "RUNNER_ENVIRONMENT": "github-hosted"}
     contract.require(all(os.environ.get(k) == v for k, v in expected.items()), "Real plans are restricted to the approved hosted Actions context")
@@ -357,7 +394,15 @@ def real_plan(work, reports, receipt):
     contract.require(dict(re.findall(r'^\s*(bucket|prefix)\s*=\s*"([^"]+)"\s*$', backend, re.M))
                      == {"bucket": contract.BUCKET, "prefix": contract.PREFIX}, "Backend configuration differs from the authorized existing backend")
     bucket = metadata("/b/" + contract.BUCKET, {"fields": "name,projectNumber,iamConfiguration,versioning,softDeletePolicy"})
-    inspected = inspect_backend(bucket, work, reports, receipt)
+    def inspect():
+        if reviewed_inputs["stage"] == "runtime":
+            from scripts.int_release_state import inspect_approved_foundation
+            inspected = inspect_approved_foundation(bucket, work / "module", os.environ)
+            receipt["backend"] = inspected
+            save_summary(reports, receipt)
+            return inspected
+        return inspect_backend(bucket, work, reports, receipt)
+    inspected = inspect()
     receipt["checks"]["backend_private_versioned_state_recognized"] = inspected["classification"]
     binary = terraform_binary()
     run([binary, "init", "-input=false", "-lockfile=readonly", "-reconfigure", "-no-color", "-backend-config=backend-int.hcl"], "init", work)
@@ -366,15 +411,20 @@ def real_plan(work, reports, receipt):
     receipt["checks"]["validate_backend"] = "passed"
     # Re-check after native init. A recognized snapshot must remain identical;
     # an existing state with resources is never adopted by this first-plan path.
-    inspect_backend(bucket, work, reports, receipt)
+    inspect()
     plan = work / "int.tfplan"
     code, _ = run([binary, "plan", "-input=false", "-no-color", "-lock=true", "-lock-timeout=120s", "-detailed-exitcode",
-                   "-var=machine_type=" + os.environ.get("MACHINE_TYPE", "e2-micro"), "-out=" + str(plan)],
+                   "-var=machine_type=" + reviewed_inputs["machine_type"], "-var=runtime_image=" + reviewed_inputs["runtime_image"],
+                   "-var=stage=" + reviewed_inputs["stage"],
+                   "-var=secret_versions=" + json.dumps(reviewed_inputs["secret_versions"]), "-out=" + str(plan)],
                   "plan", work, accepted=(0, 1, 2))
-    inspect_backend(bucket, work, reports, receipt)
+    inspect()
     contract.require(contract.detailed_exit(code) != "error", "Plan returned exit code 1")
     _, raw = run([binary, "show", "-json", str(plan)], "private_plan_json", work)
     receipt.update(status="planned", plan_exit_code=code, plan=contract.plan_contract(json.loads(raw), (work / "module/postgres-install.sh").read_text()))
+    (work / "private-plan.json").write_bytes(raw)
+    receipt["private_plan"] = int_release.retain_plan(work, receipt["backend"], os.environ)
+    receipt["full_plan_retained"] = True
     save_summary(reports, receipt)
 
 
@@ -387,7 +437,7 @@ def main(argv=None):
     if args.operation == "cleanup":
         if work.exists():
             shutil.rmtree(work)
-        print("Removed only this run's private Terraform scratch; no full plan remains available.")
+        print("Removed only this run's local private scratch; retained GCS plan objects remain private and immutable.")
         return 0
     receipt = {"schema": "clipforge-tf-int01-summary-1", "status": "started", "checks": {},
                "cost": cost_estimate(os.environ.get("MACHINE_TYPE", "e2-micro")),

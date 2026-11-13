@@ -1,7 +1,11 @@
 """Real FFmpeg presentation pipeline. Original inputs are never overwritten."""
 import os
+import selectors
+import signal
 import subprocess
+import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -10,18 +14,64 @@ from .media_binaries import resolve_media_binary
 from .subtitles import to_ass, to_srt, to_vtt, validate_cues
 
 
+FFMPEG_TIMEOUT = 1800
+STDERR_LIMIT = 64 * 1024
+
+
+def _bounded_ffmpeg(command: list[str], timeout: float) -> tuple[int, str]:
+    """Drain diagnostics as they arrive; stdout contains no required media data.
+
+    Linux containers are the supported runtime. A private process group lets a
+    timeout reap FFmpeg and its children even if a child retains the pipe.
+    """
+    tail = bytearray()
+    with subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                          stderr=subprocess.PIPE, bufsize=0, start_new_session=True) as process:
+        if process.stderr is None:
+            raise RuntimeError("FFmpeg diagnostic pipe is unavailable")
+        deadline = time.monotonic() + timeout
+        try:
+            os.set_blocking(process.stderr.fileno(), False)
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stderr, selectors.EVENT_READ)
+                while selector.get_map() or process.poll() is None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(command, timeout)
+                    if not selector.get_map():
+                        process.wait(timeout=remaining)
+                        break
+                    for key, _ in selector.select(min(remaining, 0.1)):
+                        chunk = os.read(key.fd, STDERR_LIMIT)
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                        else:
+                            tail.extend(chunk)
+                            del tail[:-STDERR_LIMIT]
+            return process.wait(timeout=max(0.001, deadline - time.monotonic())), tail.decode("utf-8", errors="replace")
+        finally:
+            # Also kill descendants after an unexpected read/selector failure.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+            process.stderr.close()
+
+
 def run_ffmpeg(*args: Any) -> None:
     try:
-        result = subprocess.run(
-            [resolve_media_binary("ffmpeg"), "-nostdin", "-hide_banner", "-loglevel", "error", "-y", *map(str, args)],
-            capture_output=True, text=True, errors="replace", timeout=1800,
+        code, diagnostic = _bounded_ffmpeg(
+            [sys.executable, "-m", "app.media_child", str(os.getpid()),
+             resolve_media_binary("ffmpeg"), "-nostdin", "-hide_banner", "-loglevel", "error", "-y", *map(str, args)],
+            FFMPEG_TIMEOUT,
         )
     except FileNotFoundError as exc:
         raise RuntimeError("FFmpeg no está instalado; reconstruye la imagen Docker") from exc
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("FFmpeg superó el límite de 1800 segundos por clip") from exc
-    if result.returncode:
-        raise RuntimeError(f"FFmpeg falló ({result.returncode}): {result.stderr[-2000:].strip()}")
+    if code:
+        raise RuntimeError(f"FFmpeg falló ({code}): {diagnostic[-2000:].strip()}")
 
 
 def _filter_path(path: Path) -> str:

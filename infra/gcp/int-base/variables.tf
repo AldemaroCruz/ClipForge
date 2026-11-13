@@ -42,3 +42,37 @@ variable "data_disk_gb" {
     error_message = "Data disk must be an integer from 20 to 200 GiB; shrinking an existing disk is not permitted."
   }
 }
+
+variable "runtime_image" {
+  description = "Real reviewed OCI manifest digest; publication is a separately approved step."
+  type        = string
+  validation {
+    condition     = can(regex("^us-central1-docker\\.pkg\\.dev/clipforgebeta2/clipforge-int/runtime@sha256:[0-9a-f]{64}$", var.runtime_image))
+    error_message = "Use the exact runtime manifest digest in the existing INT repository, never a tag or image config ID."
+  }
+}
+
+variable "secret_versions" {
+  description = "Version numbers only; secret payloads must never enter Terraform."
+  type = object({
+    app_password      = string
+    migrator_password = string
+    postgres_ca       = string
+    bootstrap_admin   = string
+  })
+  default = null
+  validation {
+    condition     = (var.stage == "foundation" && var.secret_versions == null) || try(alltrue([for version in values(var.secret_versions) : can(regex("^[1-9][0-9]*$", version))]), false)
+    error_message = "Pin explicit Secret Manager version numbers; latest and secret values are forbidden."
+  }
+}
+
+variable "stage" {
+  description = "Foundation first; runtime needs published image, protected secret versions and a configured database. Each phase needs its own reviewed saved plan."
+  type        = string
+  default     = "foundation"
+  validation {
+    condition     = contains(["foundation", "runtime"], var.stage)
+    error_message = "Only foundation and runtime phases exist; no targeting."
+  }
+}

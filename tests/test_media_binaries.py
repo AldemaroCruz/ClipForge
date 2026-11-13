@@ -314,12 +314,13 @@ class MediaBinaryCallerTests(unittest.TestCase):
     def test_render_preserves_selected_binary_argv_and_execution_controls(self):
         arguments = ("-i", self.input, "-vf", "scale=16:16;SYNTHETIC", "-t", 1.5, self.output)
         with mock.patch.object(render, "resolve_media_binary", return_value="/usr/bin/ffmpeg") as resolve, \
-                mock.patch.object(render.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+                mock.patch.object(render, "_bounded_ffmpeg", return_value=(0, "")) as run:
             render.run_ffmpeg(*arguments)
         resolve.assert_called_once_with("ffmpeg")
         run.assert_called_once_with([
+            render.sys.executable, "-m", "app.media_child", str(render.os.getpid()),
             "/usr/bin/ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", *map(str, arguments),
-        ], capture_output=True, text=True, errors="replace", timeout=1800)
+        ], 1800)
         self.assertFalse(self.output.exists())
 
     def test_render_preserves_nonzero_timeout_and_trust_failure_contracts(self):
@@ -327,7 +328,7 @@ class MediaBinaryCallerTests(unittest.TestCase):
         for failure in ("nonzero", "timeout", "untrusted"):
             with self.subTest(failure=failure), \
                     mock.patch.object(render, "resolve_media_binary", return_value="/usr/bin/ffmpeg") as resolve, \
-                    mock.patch.object(render.subprocess, "run", return_value=subprocess.CompletedProcess([], 7, "", "SYNTHETIC failure")) as run:
+                    mock.patch.object(render, "_bounded_ffmpeg", return_value=(7, "SYNTHETIC failure")) as run:
                 if failure == "timeout":
                     run.side_effect = timeout
                 elif failure == "untrusted":

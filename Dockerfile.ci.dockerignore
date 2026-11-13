@@ -2,6 +2,8 @@
 **
 !app/
 !app/*.py
+!app/cloud/
+!app/cloud/*.py
 !app/static/
 !app/static/*.html
 !app/static/*.js

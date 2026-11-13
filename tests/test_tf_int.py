@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import re
 from pathlib import Path
 import tempfile
 import unittest
@@ -15,10 +16,19 @@ from urllib.parse import parse_qs, urlsplit
 from scripts import check_tf_int as c, tf_int_plan as driver
 
 
+IMAGE = "us-central1-docker.pkg.dev/clipforgebeta2/clipforge-int/runtime@sha256:" + "a" * 64
+VERSIONS = {key: "1" for key in ("app_password", "migrator_password", "postgres_ca", "bootstrap_admin")}
+
+
+def runtime_template_fixture():
+    return {"containers": [{"image": IMAGE, "env": []}], "vpc_access": [{"egress": "PRIVATE_RANGES_ONLY"}]}
+
+
 def fixture():
     rows = []
     for address in sorted(c.ADDRESSES):
         kind, name = address.split(".", 1)
+        name = re.sub(r"\[.*", "", name)
         values = {}
         if kind == "google_compute_instance":
             values = {"network_interface": [{"access_config": [], "ipv6_access_config": []}],
@@ -50,9 +60,25 @@ def fixture():
                 values.update(direction="EGRESS", allow=[{"protocol": "tcp", "ports": ["443"]}])
             else:
                 values.update(direction="EGRESS", deny=[{"protocol": "all", "ports": []}])
+        elif kind == "google_cloud_run_v2_service":
+            values = {"iap_enabled": True, "template": [{"scaling": [{"min_instance_count": 0, "max_instance_count": 1}], **runtime_template_fixture()}]}
+        elif kind == "google_cloud_run_v2_job":
+            values = {"template": [{"task_count": 1, "parallelism": 1, "template": [{"max_retries": 0, **runtime_template_fixture()}]}]}
+        elif kind == "google_project_iam_audit_config":
+            values = {"service": "storage.googleapis.com", "audit_log_config": [{"log_type": "ADMIN_READ"}, {"log_type": "DATA_READ"}, {"log_type": "DATA_WRITE"}]}
+        elif kind == "google_logging_project_bucket_config":
+            values = {"retention_days": 30}
+        elif kind == "google_project_iam_custom_role":
+            values = {"permissions": ["compute.instances.get", "compute.disks.get", "compute.projects.get", "run.operations.get"]}
+        elif "_iam_member" in kind:
+            values = {"member": c.expected_iam_member(address), "role": c.expected_iam_role(address)}
+            if name in {"pilot_admin", "audit_reader"}:
+                values["member"] = "user:admin@ixbalam.studio"
+            elif name == "iap_invoker":
+                values.update(member="serviceAccount:service-816643438938@gcp-sa-iap.iam.gserviceaccount.com", role="roles/run.invoker")
         rows.append({"address": address, "mode": "managed", "type": kind, "name": name,
                      "change": {"actions": ["create"], "before": None, "after": values}})
-    return {"variables": {v: {"value": "authored input"} for v in c.VARIABLES},
+    return {"variables": {**{v: {"value": "authored input"} for v in c.VARIABLES}, "stage": {"value": "runtime"}, "runtime_image": {"value": IMAGE}, "secret_versions": {"value": VERSIONS}},
             "output_changes": {"reviewed_boundary": {}}, "resource_changes": rows}
 
 
@@ -68,7 +94,7 @@ class TFIntContracts(unittest.TestCase):
 
     def test_complete_safe_plan_produces_only_explicit_addresses_and_counts(self):
         summary = self.check()
-        self.assertEqual(summary["counts"], {"create": 16})
+        self.assertEqual(summary["counts"], {"create": 52})
         self.assertFalse(summary["destructive_actions"])
         self.assertNotIn("authored input", json.dumps(summary))
 
@@ -300,7 +326,8 @@ class TFIntBackendRerun(unittest.TestCase):
             (module / "backend-int.hcl").write_text('bucket = "' + c.BUCKET + '"\nprefix = "' + c.PREFIX + '"\n')
             adc = work / "gha-creds-authored.json"; adc.write_text("authored fixture, no credentials")
             env = {"GOOGLE_APPLICATION_CREDENTIALS": str(adc), "GITHUB_REPOSITORY": "AldemaroCruz/ClipForge",
-                   "GITHUB_REF": "refs/heads/ci/bootstrap-sec03", "GITHUB_EVENT_NAME": "workflow_dispatch", "RUNNER_ENVIRONMENT": "github-hosted"}
+                   "GITHUB_REF": "refs/heads/ci/bootstrap-sec03", "GITHUB_EVENT_NAME": "workflow_dispatch", "RUNNER_ENVIRONMENT": "github-hosted",
+                   "RUNTIME_IMAGE": IMAGE, "SECRET_VERSIONS_JSON": "null", "INT_STAGE": "foundation"}
             runs = []
             def execute(command, operation, *args, **kwargs):
                 runs.append((operation, command))

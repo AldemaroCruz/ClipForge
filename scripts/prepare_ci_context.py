@@ -26,6 +26,7 @@ ROOT_FILES = (
 )
 DIRECTORIES = {
     "app": frozenset({".py"}),
+    "app/cloud": frozenset({".py"}),
     "app/static": frozenset({".html", ".js", ".css"}),
     "scripts": frozenset({".py", ".ps1"}),
     "tests": frozenset({".py"}),

@@ -32,9 +32,10 @@ from .render import render_clip, run_ffmpeg
 from .subtitles import SubtitleError, cues_from_segments, validate_cues, to_srt, to_vtt
 from .auth import AuthenticationBoundary, require_access, register_project, unregister_project, router as auth_router
 from .environment import identity as environment_identity
+from .cloud import enabled as cloud_enabled
 
 VERSION = "0.4.2"
-ROOT = Path(os.getenv("CLIPFORGE_DATA_DIR", "/data"))
+ROOT = Path(os.getenv("CLIPFORGE_DATA_DIR", "/tmp/clipforge-cache" if cloud_enabled() else "/data"))
 ROOT.mkdir(parents=True, exist_ok=True)
 ASSETS = Path(__file__).resolve().parent / "static"
 LOGGER = logging.getLogger("uvicorn.error")
@@ -57,6 +58,10 @@ def validate_job_id(job_id: str) -> None:
 def persist(job_id: str, data: dict[str, Any]) -> None:
     """All job state writers must use this function, never Path.write_text."""
     validate_job_id(job_id)
+    if cloud_enabled():
+        from .cloud.repository import worker_progress
+        worker_progress(job_id, "job", data)
+        return
     snapshot = copy.deepcopy(data)
     with LOCK:
         write_json_atomic(ROOT / job_id / "job.json", snapshot)
@@ -67,6 +72,9 @@ def persist(job_id: str, data: dict[str, Any]) -> None:
 def load_job(job_id: str) -> dict[str, Any]:
     """Read a snapshot, with bounded retries for old/corrupt/inaccessible files."""
     validate_job_id(job_id)
+    if cloud_enabled():
+        from .cloud.repository import document
+        return document(job_id)["payload"]
     path = ROOT / job_id / "job.json"
     for attempt in range(READ_ATTEMPTS):
         try:
@@ -121,6 +129,17 @@ def mark_interrupted_jobs() -> None:
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
+    if cloud_enabled():
+        from .cloud.config import settings as cloud_settings
+        from .cloud.dispatch import reconcile
+        from starlette.concurrency import run_in_threadpool
+        cloud_settings()  # Reject emulator/manual settings in a secure profile.
+        try:
+            await run_in_threadpool(reconcile)
+        except Exception:
+            LOGGER.warning("Cloud dispatch reconciliation unavailable; durable outbox retained")
+        yield
+        return
     # One filesystem owner. Offline backup refuses to run while this lease is held.
     with data_lease(ROOT):
         mark_interrupted_jobs()
@@ -136,6 +155,10 @@ app = FastAPI(title="ClipForge MVP", version=VERSION, lifespan=lifespan,
 app.mount("/static", StaticFiles(directory=str(ASSETS)), name="static")
 app.add_middleware(AuthenticationBoundary)
 app.include_router(auth_router)
+if cloud_enabled():
+    from .cloud.router import router as cloud_router, install_fallbacks
+    app.include_router(cloud_router)
+    install_fallbacks(app)
 
 
 def ffmpeg(*args: Any) -> None:
@@ -263,8 +286,15 @@ def _process(job_id: str, recorder: Recorder | None = None) -> None:
 
 @app.get("/", response_class=HTMLResponse)
 def home():
+    page = (ASSETS / "index.html").read_text(encoding="utf-8")
+    if cloud_enabled():
+        page = page.replace('<html lang="es">', '<html lang="es" data-storage-backend="gcs">')
+        page = page.replace("Tu estudio de clips, en local.", "Tu estudio de clips.")
+        page = page.replace("Local · v0.4.2", "INT · v0.4.2")
+        page = page.replace('<a href="/ops">Operación y métricas</a>', "")
+        page = page.replace("</head>", "<style>.template-box,.delivery-toolbar,#deliveries-panel,#ai-panel{display:none!important}</style></head>")
     return HTMLResponse(
-        (ASSETS / "index.html").read_text(encoding="utf-8"),
+        page,
         headers={"Cache-Control": "no-store"},
     )
 
@@ -276,6 +306,17 @@ def favicon():
 
 @app.get("/health")
 def health():
+    if cloud_enabled():
+        from sqlalchemy import text
+        from .auth_db import get_engine, database_ready
+        from .cloud.migrate import REVISION as cloud_revision
+        try:
+            with get_engine().connect() as connection:
+                revisions = connection.execute(text("SELECT revision FROM cloud_schema_migrations ORDER BY revision")).scalars().all()
+            if revisions != [cloud_revision] or not database_ready():
+                raise ValueError("Cloud schema not ready")
+        except Exception:
+            raise HTTPException(503, "El almacenamiento persistente todavía no está disponible") from None
     return {"status": "ok", "version": VERSION}
 
 
@@ -447,6 +488,11 @@ def export_path(job_id: str, export_id: str) -> Path:
 
 
 def read_export(job_id: str, export_id: str) -> dict:
+    if cloud_enabled():
+        validate_job_id(job_id)
+        validate_job_id(export_id)
+        from .cloud.repository import document
+        return document(job_id, "export", export_id)["payload"]
     path = export_path(job_id, export_id) / "export.json"
     try:
         with LOCK:
@@ -462,6 +508,10 @@ def read_export(job_id: str, export_id: str) -> dict:
 
 
 def persist_export(job_id: str, item: dict) -> None:
+    if cloud_enabled():
+        from .cloud.repository import worker_progress
+        worker_progress(job_id, "export", item)
+        return
     with LOCK:
         write_json_atomic(export_path(job_id, item["id"]) / "export.json", item)
 

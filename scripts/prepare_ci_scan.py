@@ -28,6 +28,8 @@ MAX_FILE_BYTES = 32 * 1024 * 1024
 ROOT_NAMES = frozenset(context.ROOT_FILES) | frozenset({
     ".dockerignore", ".gitignore", ".env.ai.example", "AGENTS.md", "Makefile",
     "Dockerfile.runtime", "Dockerfile.tests", "compose.yaml", "compose.ai.yaml",
+    "Dockerfile.int", "Dockerfile.int.dockerignore", "requirements-int.lock",
+    "config/postgres-ci-security.Dockerfile",
     "pyproject.toml", "pytest.ini", "tox.ini", "mypy.ini", "ruff.toml",
     ".ruff.toml", ".pre-commit-config.yaml", ".gitleaks.toml",
 })

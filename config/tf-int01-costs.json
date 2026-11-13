@@ -9,25 +9,62 @@
     "nat_vm_hour": 0.0014,
     "nat_external_ip_hour": 0.005,
     "nat_processed_gib": 0.045,
-    "gcs_standard_gib_month": 0.02
+    "gcs_standard_gib_month": 0.02,
+    "run_api_vcpu_second": 2.4e-05,
+    "run_api_gib_second": 2.5e-06,
+    "run_job_vcpu_second": 1.8e-05,
+    "run_job_gib_second": 2e-06,
+    "run_requests_million": 0.4,
+    "artifact_gib_month": 0.1,
+    "logging_gib": 0.5,
+    "network_logging_gib": 0.5,
+    "secret_version_month": 0.06,
+    "secret_access_10000": 0.03,
+    "gcs_class_a_1000": 0.005,
+    "gcs_class_b_1000": 0.0004,
+    "internet_egress_gib": 0.12
   },
   "example_usage": {
     "boot_disk_gib": 10,
     "data_disk_gib": 20,
     "media_gib_including_versions": 10,
     "backup_gib_including_versions": 10,
-    "nat_processed_gib": 1
+    "nat_processed_gib": 1,
+    "api_active_seconds": 7200,
+    "api_requests_million": 0.1,
+    "worker_seconds": 36000,
+    "administration_job_seconds": 1200,
+    "artifact_gib_including_model_and_old_revisions": 4,
+    "audit_logging_gib_including_duplicate_default": 2,
+    "network_logging_gib": 1,
+    "secret_active_versions": 4,
+    "secret_access_operations": 10000,
+    "gcs_class_a_operations": 10000,
+    "gcs_class_b_operations": 100000,
+    "internet_egress_gib": 5,
+    "private_plan_storage_gib": 0.1
   },
   "sources": [
     "https://cloud.google.com/products/compute/pricing/general-purpose",
     "https://cloud.google.com/compute/disks-image-pricing",
     "https://cloud.google.com/nat/pricing",
-    "https://cloud.google.com/storage/pricing"
+    "https://cloud.google.com/storage/pricing",
+    "https://cloud.google.com/run/pricing",
+    "https://cloud.google.com/artifact-registry/pricing",
+    "https://cloud.google.com/products/observability/pricing",
+    "https://cloud.google.com/secret-manager/pricing",
+    "https://cloud.google.com/iap/pricing",
+    "https://cloud.google.com/vpc/network-pricing"
   ],
   "assumptions": [
-    "Public list prices, Linux on-demand, one VM, one NAT IPv4 address, no commitment or free-tier credits assumed.",
-    "No resources are created by this task. Actual GCS capacity includes retained versions and soft-deleted objects.",
-    "Excludes taxes, Cloud Run/Jobs, Artifact Registry usage, Secret Manager usage, operation charges, logging beyond allowances and Internet/inter-region egress.",
-    "Free-tier eligibility is shared across the billing account and is not guaranteed. NAT and its public IPv4 are charged independently."
-  ]
+    "Public USD list prices, us-central1, 730 hours, on-demand Linux; no free-tier or commitment discounts assumed.",
+    "Full runtime target: API 1 vCPU/1 GiB active 2 h/month, minimum zero; worker 2 vCPU/4 GiB 10 h/month, three administration Jobs together 20 minutes. Job minimum one-minute billing is included in that allowance. Usage is an example, not a spending cap.",
+    "One VM e2-micro (or e2-small comparison), boot10+data20 GiB retained pd-standard, one NAT IPv4, NAT1 GiB; media10+backups10 GiB including versions/soft deletion and private-plan0.1 GiB.",
+    "Artifact Registry4 GiB includes offline Whisper model and old revisions. No cloud build, external AI, GPU, Redis, Cloud SQL, KMS, new load balancer or paid IAP features.",
+    "Audit Logging example2 GiB includes dedicated pilot bucket plus possible existing _Default copy; 30-day retention has no extended-retention fee. DATA_READ/WRITE is project-wide GCS and can produce additional logs outside the pilot; actual project log volume is not capped.",
+    "Network logs1 GiB (0.25 USD/GiB telemetry generation plus0.25 USD/GiB vended-log storage), four active Secret Manager versions and10000 accesses; GCS classA10000/classB100000 operations and5 GiB internet egress are estimated separately. No free-tier eligibility is guaranteed across the billing account.",
+    "Excludes taxes, regional/inter-region transfers beyond the example, extra retained image/object/secret versions, excess logs and processing time, API abuse, existing bootstrap state-bucket usage, GitHub runner/storage quotas, optional AR vulnerability scanning if enabled, and unavailable-capacity retries. Actual charges require billing monitoring after a separately approved apply.",
+    "Foundation creates no Run resources or secret payloads; the full target total intentionally includes future runtime use. No resources or services are created by this task."
+  ],
+  "verified_on": "2026-11-13"
 }

@@ -1,0 +1,34 @@
+# INT runtime only. Build from the verified prepare_int_runtime context.
+FROM python:3.12-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS dependencies
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+COPY requirements-int.lock /tmp/requirements-int.lock
+RUN python -m pip download --require-hashes --only-binary=:all: --dest /wheels -r /tmp/requirements-int.lock
+
+FROM python:3.12-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    CLIPFORGE_DATA_DIR=/tmp/clipforge-cache CLIPFORGE_AI_PROVIDER=disabled \
+    HF_HOME=/opt/clipforge/models WHISPER_MODEL=tiny CLIPFORGE_MODEL_LOCK=/opt/clipforge/whisper-int.json \
+    HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+RUN printf '%s\n' \
+      'Types: deb' 'URIs: https://snapshot.debian.org/archive/debian/20261109T000000Z/' \
+      'Suites: trixie trixie-updates' 'Components: main' \
+      'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' 'Check-Valid-Until: no' '' \
+      'Types: deb' 'URIs: https://snapshot.debian.org/archive/debian-security/20261109T000000Z/' \
+      'Suites: trixie-security' 'Components: main' \
+      'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' 'Check-Valid-Until: no' > /etc/apt/int-snapshot.sources \
+ && apt-get -o Dir::Etc::sourcelist=/etc/apt/int-snapshot.sources -o Dir::Etc::sourceparts=- update \
+ && apt-get -o Dir::Etc::sourcelist=/etc/apt/int-snapshot.sources -o Dir::Etc::sourceparts=- install -y --no-install-recommends ffmpeg fonts-dejavu-core zlib1g=1:1.3.dfsg+really1.3.1-1+deb13u1 \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd --gid 10001 clipforge && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin clipforge
+COPY requirements-int.lock /tmp/requirements-int.lock
+RUN --network=none --mount=type=bind,from=dependencies,source=/wheels,target=/wheels \
+    python -m pip install --no-index --find-links=/wheels --require-hashes --only-binary=:all: -r /tmp/requirements-int.lock \
+ && rm /tmp/requirements-int.lock
+WORKDIR /app
+COPY app/ ./app/
+COPY config/whisper-int.json /opt/clipforge/whisper-int.json
+COPY weights/ /opt/clipforge/models/
+RUN --network=none python -m app.model_source verify
+USER 10001:10001
+EXPOSE 8080
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log", "--workers", "1"]

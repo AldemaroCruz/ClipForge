@@ -30,12 +30,15 @@ def _configuration() -> tuple:
     return tuple(os.getenv(name, "") for name in (
         "CLIPFORGE_DATABASE_URL", "CLIPFORGE_DATABASE_HOST", "CLIPFORGE_DATABASE_PORT",
         "CLIPFORGE_DATABASE_NAME", "CLIPFORGE_DATABASE_USER", "CLIPFORGE_DATABASE_PASSWORD_FILE",
-    )) + (database_schema(),)
+    )) + (database_schema(), os.getenv("CLIPFORGE_DATABASE_SSL_MODE", ""),
+          os.getenv("CLIPFORGE_DATABASE_SSL_ROOT_CERT_FILE", ""),
+          os.getenv("CLIPFORGE_DATABASE_POOL_SIZE", "5"),
+          os.getenv("CLIPFORGE_DATABASE_POOL_OVERFLOW", "5"))
 
 
 @lru_cache(maxsize=8)
 def _engine(configuration):
-    raw_url, host, port, name, user, password_file, schema = configuration
+    raw_url, host, port, name, user, password_file, schema, ssl_mode, root_cert, pool_size, overflow = configuration
     try:
         if raw_url:
             if any((host, port, name, user, password_file)):
@@ -54,9 +57,33 @@ def _engine(configuration):
                              host=host, port=int(port or "5432"), database=name)
         if not url.host or not url.database or not url.username:
             raise ValueError("Database identity is required")
-        engine = create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=5,
+        connection_options = {"connect_timeout": 5, "options": "-csearch_path=" + schema}
+        if ssl_mode:
+            if ssl_mode not in {"verify-full", "verify-ca", "require", "disable"}:
+                raise ValueError("Invalid PostgreSQL TLS mode")
+            connection_options["sslmode"] = ssl_mode
+        if root_cert:
+            if ssl_mode not in {"verify-full", "verify-ca"} or not Path(root_cert).is_file():
+                raise ValueError("Invalid PostgreSQL TLS root certificate")
+            connection_options["sslrootcert"] = root_cert
+        if os.getenv("CLIPFORGE_STORAGE_BACKEND") == "gcs":
+            local_test = os.getenv("CLIPFORGE_CLOUD_LOCAL_TEST") == "1"
+            if local_test:
+                profile = os.getenv("CLIPFORGE_AUTH_PROFILE", "https")
+                environment = os.getenv("CLIPFORGE_ENVIRONMENT", "").lower()
+                if profile != "local-http" or environment in {"int", "prod", "production"}:
+                    raise ValueError("Local cloud testing is forbidden in this profile")
+            elif ssl_mode != "verify-full" or not root_cert:
+                raise ValueError("Cloud PostgreSQL requires verified TLS")
+            # Detect a lost lock connection well inside the worker's 60s lease.
+            connection_options.update(keepalives=1, keepalives_idle=5,
+                                      keepalives_interval=3, keepalives_count=3,
+                                      tcp_user_timeout=15000)
+        if not 1 <= int(pool_size) <= 10 or not 0 <= int(overflow) <= 10:
+            raise ValueError("Invalid database pool bounds")
+        engine = create_engine(url, pool_pre_ping=True, pool_size=int(pool_size), max_overflow=int(overflow),
                                pool_timeout=10, echo=False, hide_parameters=True,
-                               connect_args={"connect_timeout": 5, "options": "-csearch_path=" + schema})
+                               connect_args=connection_options)
         _ENGINES.add(engine)
         return engine
     except (ValueError, OSError, TypeError):
