@@ -73,8 +73,15 @@ def verify_parent(receipt, parent, module, environ):
               "state_sha256": driver.INITIAL_STATE["sha256"]}, "Foundation parent does not descend from the reviewed initial snapshot")
     c.require(receipt.get("managed_addresses") == sorted(c.FOUNDATION_ADDRESSES), "Receipt foundation address allowlist differs")
     issuer = receipt.get("issuer", {})
+    control_commit = receipt.get("control_commit", parent["commit"])
+    approval = receipt.get("control_approval")
+    if control_commit != parent["commit"]:
+        c.require(isinstance(approval, dict) and approval.get("plan_commit") == parent["commit"]
+                  and approval.get("control_commit") == control_commit
+                  and all(bool(re.fullmatch(r"[a-f0-9]{64}", approval.get(k, ""))) for k in ("decision_sha256", "evidence_sha256")),
+                  "Cross-commit foundation provenance lacks the exact owner decision/evidence binding")
     c.require(issuer.get("repository") == "AldemaroCruz/ClipForge" and issuer.get("workflow") == ".github/workflows/int-e2e-apply.yml"
-              and issuer.get("commit") == parent["commit"] and bool(re.fullmatch(r"[1-9][0-9]*", issuer.get("run_id", ""))),
+              and issuer.get("commit") == control_commit and bool(re.fullmatch(r"[1-9][0-9]*", issuer.get("run_id", ""))),
               "Unrecognized apply receipt issuer")
 
 
@@ -109,13 +116,14 @@ def inspect_approved_foundation(bucket, module, environ):
     return summary
 
 
-def emit_foundation_receipt(work, parent_manifest, parent_reference, environ):
+def emit_foundation_receipt(work, parent_manifest, parent_reference, environ, *, approval=None):
     # Called only after native apply(saved binary) has returned success.
     c.require(parent_manifest.get("inputs", {}).get("stage") == "foundation", "Only a foundation apply can issue this receipt")
     bucket = driver.metadata("/b/" + c.BUCKET, {"fields": "name,projectNumber,iamConfiguration,versioning,softDeletePolicy"})
     raw, obj, _ = private_current_state(bucket)
     state = state_contract(raw, lineage=parent_manifest["backend"]["lineage"])
     receipt = {"schema": SCHEMA, "foundation_commit": parent_manifest["commit"], "foundation_plan_manifest": parent_reference,
+               "control_commit": environ["GITHUB_SHA"], "control_approval": approval,
                "source_plan_sha256": parent_manifest["binary"]["sha256"], "managed_addresses": state["managed_addresses"],
                "state": {"name": driver.STATE_NAME, "generation": obj["generation"], "size": len(raw), "sha256": r.sha256(raw),
                          "lineage": state["lineage"], "serial": state["serial"]},

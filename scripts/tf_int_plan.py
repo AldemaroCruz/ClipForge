@@ -344,7 +344,9 @@ def checks(work, reports, receipt):
     authored_tests = work / "contract-tests"
     for name in ("scripts/check_tf_int.py", "scripts/tf_int_plan.py", "scripts/int_release.py", "scripts/int_release_state.py",
                  "scripts/int_secrets.py", "scripts/int_bootstrap_vm.py", "scripts/int_bootstrap_db.py", "scripts/int_release_image.py",
-                 "tests/test_tf_int.py", "tests/test_int_infra_release.py"):
+                 "tests/test_tf_int.py", "tests/test_int_infra_release.py", "scripts/check_int_foundation.py",
+                 "scripts/classify_int_foundation_sast.py", "scripts/prepare_ci_scan.py", "scripts/prepare_ci_context.py",
+                 "tests/test_int_foundation.py", "tests/test_int_foundation_sast.py", "config/int-foundation-contract.json"):
         target = authored_tests / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / name, target)

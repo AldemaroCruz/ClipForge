@@ -1,0 +1,72 @@
+name: ClipForge INT foundation evidence and unresolved security readiness
+on:
+  push:
+    branches: [ci/bootstrap-sec03]
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: clipforge-int-foundation-check-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  foundation:
+    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Checkout exact control source without retained credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Allocate private scratch and validate all tracked names before source access
+        id: scratch
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          printf 'TF_INT_WORK_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/clipforge-tf-int01.XXXXXXXX")" >> "$GITHUB_ENV"
+          printf 'TF_INT_REPORT_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/clipforge-tf-report.XXXXXXXX")" >> "$GITHUB_ENV"
+      - name: Prepare complete permitted secret snapshot and explicit foundation execution scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          git ls-files -z > "$TF_INT_WORK_DIR/tracked-paths.nul"
+          python -B -m scripts.check_int_foundation prepare --paths "$TF_INT_WORK_DIR/tracked-paths.nul"
+      - name: Prepare fixed Terraform release without wrapper
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.15.8
+          terraform_wrapper: false
+      - name: Prepare pinned scanner images and hashed Bandit wheels separately with network
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B - <<'PY'
+          from scripts.check_int_foundation import load_contract
+          for key in ('python','terraform','trivy','gitleaks','actionlint','shellcheck'):
+              print(load_contract()['tools'][key])
+          PY
+          while IFS= read -r image; do docker pull "$image"; done < <(python -B -c 'from scripts.check_int_foundation import load_contract; t=load_contract()["tools"]; print("\n".join(t[k] for k in ("python","terraform","trivy","gitleaks","actionlint","shellcheck")))')
+          docker run --rm --pull=never --cap-drop=ALL --security-opt=no-new-privileges --user "$(id -u):$(id -g)" --mount "type=bind,source=$TF_INT_WORK_DIR,target=/private" python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df python -m pip download --disable-pip-version-check --no-cache-dir --only-binary=:all: --no-deps --require-hashes --dest /private/wheels -r /private/bandit.lock
+      - name: Execute all foundation controls and preserve unresolved findings
+        shell: bash
+        run: python -B -m scripts.check_int_foundation checks
+      - name: Retain exact native reports and separate integrity/readiness result
+        if: ${{ always() && steps.scratch.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: int-foundation-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.TF_INT_REPORT_DIR }}/foundation-report.json
+            ${{ env.TF_INT_REPORT_DIR }}/bandit-native.json
+            ${{ env.TF_INT_REPORT_DIR }}/iac-native.json
+            ${{ env.TF_INT_REPORT_DIR }}/gitleaks-native.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Remove only this run private scratch
+        if: ${{ always() && steps.scratch.outcome == 'success' }}
+        run: python -B scripts/tf_int_plan.py cleanup

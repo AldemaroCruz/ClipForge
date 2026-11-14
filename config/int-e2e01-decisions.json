@@ -1,6 +1,6 @@
 {
   "schema": "clipforge-int-e2e01-proposals-1",
-  "status": "pending_owner_decision_not_accepted",
+  "status": "design_choices_approved_apply_and_security_risks_pending",
   "project": "clipforgebeta2",
   "region": "us-central1",
   "backend": {
@@ -20,46 +20,46 @@
       "jobs": 3
     }
   },
-  "binding": "Exact final commit, runtime manifest digest and configuration hashes are recorded in each immutable private plan manifest; this file is a proposal, not an approval.",
-  "pilot_expiry_proposed_utc": "2026-11-27T00:00:00Z",
+  "binding": "The immutable plan manifest binds the original plan commit, inputs, configuration/provider/backend and original 24-hour lifetime. A separately reviewed foundation control commit must be approved explicitly; this file authorizes no apply.",
+  "pilot_expiry_proposed_utc": "2026-11-28T05:59:59Z",
   "key_findings": [
     {
       "rule": "GCP-0033",
       "severity": "LOW",
       "resource": "google_compute_instance.postgres",
       "scope": "boot_disk",
-      "decision": "Google-managed encryption proposed; no customer-supplied boot key; pending owner approval"
+      "decision": "Google-managed encryption approved as a design choice by the owner on 2026-11-13; scanner finding retained. No apply or additional customer-key controls authorized."
     },
     {
       "rule": "GCP-0033",
       "severity": "LOW",
       "resource": "google_compute_instance.postgres",
       "scope": "attached_disk device clipforge-pg-data",
-      "decision": "Google-managed encryption proposed; no customer-supplied attached-disk key; pending owner approval"
+      "decision": "Google-managed encryption approved as a design choice by the owner on 2026-11-13; scanner finding retained. No apply or additional customer-key controls authorized."
     },
     {
       "rule": "GCP-0034",
       "severity": "LOW",
       "resource": "google_compute_disk.postgres",
       "scope": "clipforge-int-base-postgres-data",
-      "decision": "Google-managed encryption proposed; no customer-managed data-disk key; pending owner approval"
+      "decision": "Google-managed encryption approved as a design choice by the owner on 2026-11-13; scanner finding retained. No apply or additional customer-key controls authorized."
     },
     {
       "rule": "GCP-0066",
       "severity": "LOW",
       "resource": "google_storage_bucket.private[\"media\"]",
       "scope": "clipforgebeta2-int-media",
-      "decision": "Google-managed encryption proposed; no customer-managed bucket key; pending owner approval"
+      "decision": "Google-managed encryption approved as a design choice by the owner on 2026-11-13; scanner finding retained. No apply or additional customer-key controls authorized."
     },
     {
       "rule": "GCP-0066",
       "severity": "LOW",
       "resource": "google_storage_bucket.private[\"backups\"]",
       "scope": "clipforgebeta2-int-backups",
-      "decision": "Google-managed encryption proposed; no customer-managed bucket key; pending owner approval"
+      "decision": "Google-managed encryption approved as a design choice by the owner on 2026-11-13; scanner finding retained. No apply or additional customer-key controls authorized."
     }
   ],
-  "additional_control_not_implemented": "Independent customer key custody, revocation and key-access separation offered by CSEK/CMEK. Default Google-managed encryption remains at rest; the five findings are neither false positives nor accepted.",
+  "additional_control_not_implemented": "CSEK/CMEK independent customer key custody, revocation and key-access separation remain absent from this design. Google-managed encryption is approved as a design choice only; the five detections remain visible and are not false positives or proof of deployment.",
   "audit_proposal": {
     "source": "storage.googleapis.com project audit config: ADMIN_READ, DATA_READ, DATA_WRITE, no exempted members",
     "scope_notice": "GCP enablement is project/service-wide, including other GCS buckets. Existing inherited/project policies require individual review before any apply; this resource controls the storage service audit config.",
@@ -69,8 +69,9 @@
     "reader": "user:admin@ixbalam.studio via roles/logging.viewAccessor on pilot-access view only",
     "writer": "same-project Logging bucket routing needs no writer SA/grant",
     "sensitive_data": "No application payloads or signed URLs are intentionally logged; application GCS proxy uses opaque object keys. Audit identities/object metadata remain private. No logging-reader permission is granted to API, worker or pipeline.",
-    "scanner_result": "GCP-0077 MEDIUM still reported on both GCS buckets: Cloud Audit Logs do not populate bucket access-logging configuration. No scanner suppression or alternate-control acceptance.",
-    "cost": "0.50 USD/GiB regular Logging ingestion including 30-day retention; example 2 GiB/month includes possible duplicate _Default copy. No free allowance assumed. Project-wide additional access logs may increase cost."
+    "scanner_result": "GCP-0077 MEDIUM remains on both buckets. Cloud Audit Logs do not populate GCS bucket server access logging. Coverage equivalence, exclusions and real read/write events must be verified individually; no scanner suppression or alternate-control acceptance.",
+    "cost": "0.50 USD/GiB regular Logging ingestion including 30-day retention; example 2 GiB/month includes possible duplicate _Default copy. No free allowance assumed. Project-wide additional access logs may increase cost.",
+    "status": "30-day retention approved as design only; audit config, destination, view, routing and permissions remain proposed until applied and verified"
   },
   "additional_pipeline_iam_proposed_not_granted": [
     "deployment SA: secretVersionAdder on exactly four INT secret containers",
@@ -80,7 +81,7 @@
     "deployment SA: run.invoker on exactly worker/migrate/bootstrap jobs in runtime phase"
   ],
   "prerequisites": [
-    "Current application CI for exact commit must succeed before any mutating workflow; existing Bandit/Trivy gates are preserved.",
+    "Foundation apply requires its explicit independent control contract and exact control/plan commitments, own apply/VM/startup/IAM/network/secrets/IaC/cost evidence, and a NEW manual int approval. Application/image/Jobs and later mutations retain the existing exact-commit application CI gate; its current failures remain failures.",
     "Each apply needs a separately reviewed private binary plan, exact source/input/provider/backend bindings and a NEW int approval within 24 hours. No -target, state adoption, replacement prefix, force-unlock or silent replan.",
     "Foundation requires no secret payloads or published image. The mandatory prepared image digest is bound for review only.",
     "After a separately approved foundation apply: owner verifies disk ID and SSH host key, supplies protected GitHub secrets and valid PG server certificate with SAN IP10.80.1.2, performs one explicit blank-disk initialization, and publishes pinned Secret Manager versions.",
@@ -88,5 +89,14 @@
     "Existing initial-state identity pin remains separate. Runtime dispatch must explicitly supply the owner-reviewed post-foundation receipt name/generation/SHA/size; exact42 managed addresses, current state bytes/generation/lineage/serial, exact parent plan and successful protected apply run are checked. Missing or changed provenance stops planning.",
     "Backup bucket retention and creator IAM are proposed. Automated PG backups and a real restore must be reviewed and demonstrated before data-protection acceptance; no backup success is claimed.",
     "IAP service agent must exist when enabling built-in IAP. No service-identity data source, API activation or key is used during planning. Failures remain explicit; no automatic IAM expansion."
-  ]
+  ],
+  "design_approvals": {
+    "source": "Owner instruction, 2026-11-13 (America/Guatemala)",
+    "google_managed_encryption_at_rest": "approved_design_only",
+    "access_audit_retention_days": 30,
+    "access_audit_retention": "approved_design_only_not_operational",
+    "apply_authorized": false,
+    "runtime_critical_high_or_sast_risks_accepted": false
+  },
+  "pilot_expiry_proposed_local": "2026-11-27T23:59:59-06:00; proposal only, no risk acceptance"
 }

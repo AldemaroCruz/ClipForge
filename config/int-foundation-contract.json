@@ -1,0 +1,247 @@
+{
+  "schema": "clipforge-int-foundation-contract-1",
+  "repository": "AldemaroCruz/ClipForge",
+  "branch": "ci/bootstrap-sec03",
+  "environment": "int",
+  "plan": {
+    "commit": "aa68d4a3228bf6a1092703285f05022c8727d99c",
+    "run_id": "43528573812",
+    "manifest": {
+      "name": "private-plans/int/aa68d4a3228bf6a1092703285f05022c8727d99c/43528573812-1/manifest.json",
+      "generation": "1794613158433064",
+      "sha256": "6f5dd879f288fdca587d30adbf54ad98db5ce4733b39d7c50a2516a1f7f8494a",
+      "size": 1504
+    },
+    "binary": {
+      "name": "private-plans/int/aa68d4a3228bf6a1092703285f05022c8727d99c/43528573812-1/int.tfplan",
+      "generation": "1794613158020437",
+      "sha256": "41826c9951c2123d21c5afad87a567ffa5608aea6cf288178aa5626dc61cb3ea",
+      "size": 22008
+    },
+    "json": {
+      "name": "private-plans/int/aa68d4a3228bf6a1092703285f05022c8727d99c/43528573812-1/int.json",
+      "generation": "1794613158258874",
+      "sha256": "9ac8469de52170333edd868a3a14997b736774b6eb67b16b80ee99f3cf52604d",
+      "size": 135002
+    },
+    "created_utc": "2026-11-13T23:39:17.873727+00:00",
+    "maximum_age_seconds": 86400,
+    "configuration_sha256": "4d23ddc3e8b22ea58e5e998e8b381291876f79ab562e3d15dd95ff5556476f31",
+    "provider_lock_sha256": "89e2189a1b882ac5ad3ce74ad17a304e95cf7fa072b9ced86fce09e78b88b5fa",
+    "terraform_version": "1.15.8",
+    "inputs": {
+      "stage": "foundation",
+      "machine_type": "e2-micro",
+      "secret_versions": null,
+      "runtime_image": "us-central1-docker.pkg.dev/clipforgebeta2/clipforge-int/runtime@sha256:d4b65631b30c26785ae18898cd826990fa20b4dce45015fb241ba108ddba7d49"
+    },
+    "backend": {
+      "bucket": "clipforgebeta2-tfstate-int",
+      "prefix": "terraform/int/tf-int-01",
+      "workspace": "default",
+      "lineage": "813c84a2-2ef1-ceb3-177e-3a2c3b815066",
+      "serial": 1,
+      "state_generation": "1794599421671184",
+      "state_sha256": "648a329bdee385b59be64b598a2cbce07653e42edfcf5deb12f0d14133c4c223"
+    },
+    "managed_addresses": [
+      "google_compute_address.postgres",
+      "google_compute_disk.postgres",
+      "google_compute_firewall.deny_egress",
+      "google_compute_firewall.https",
+      "google_compute_firewall.iap",
+      "google_compute_firewall.postgres",
+      "google_compute_instance.postgres",
+      "google_compute_instance_iam_member.protected_bootstrap",
+      "google_compute_network.int",
+      "google_compute_route.egress",
+      "google_compute_router.egress",
+      "google_compute_router_nat.maintenance",
+      "google_compute_subnetwork.private[\"postgres\"]",
+      "google_compute_subnetwork.private[\"run\"]",
+      "google_iap_tunnel_instance_iam_member.protected_bootstrap",
+      "google_logging_log_view.access",
+      "google_logging_log_view_iam_member.audit_reader",
+      "google_logging_project_bucket_config.access",
+      "google_logging_project_sink.access",
+      "google_project_iam_audit_config.storage_access",
+      "google_project_iam_custom_role.bootstrap_reader",
+      "google_project_iam_member.bootstrap_reader",
+      "google_secret_manager_secret.runtime[\"bootstrap-admin\"]",
+      "google_secret_manager_secret.runtime[\"postgres-ca\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"api_ca\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"api_password\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"bootstrap_admin\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"migrate_ca\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"migrate_password\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"worker_ca\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"worker_password\"]",
+      "google_secret_manager_secret_iam_member.version_publisher[\"app_password\"]",
+      "google_secret_manager_secret_iam_member.version_publisher[\"bootstrap_admin\"]",
+      "google_secret_manager_secret_iam_member.version_publisher[\"migrator_password\"]",
+      "google_secret_manager_secret_iam_member.version_publisher[\"postgres_ca\"]",
+      "google_service_account_iam_member.protected_bootstrap",
+      "google_storage_bucket.private[\"backups\"]",
+      "google_storage_bucket.private[\"media\"]",
+      "google_storage_bucket_iam_member.backup_writer",
+      "google_storage_bucket_iam_member.media[\"api\"]",
+      "google_storage_bucket_iam_member.media[\"worker\"]",
+      "terraform_data.boundary"
+    ],
+    "actions": {
+      "create": 42
+    }
+  },
+  "scope": {
+    "module_files": [
+      "versions.tf",
+      "variables.tf",
+      "main.tf",
+      "outputs.tf",
+      "backend-int.hcl",
+      "runtime.tf",
+      "audit.tf",
+      ".terraform.lock.hcl",
+      "postgres-install.sh",
+      "tests/contracts.tftest.hcl"
+    ],
+    "executed_python": [
+      "scripts/check_tf_int.py",
+      "scripts/tf_int_plan.py",
+      "scripts/int_release.py",
+      "scripts/int_release_state.py",
+      "scripts/check_int_foundation.py",
+      "scripts/classify_int_foundation_sast.py",
+      "scripts/prepare_ci_scan.py",
+      "scripts/prepare_ci_context.py"
+    ],
+    "test_support_python": [
+      "scripts/int_bootstrap_db.py",
+      "scripts/int_bootstrap_vm.py",
+      "scripts/int_secrets.py",
+      "scripts/int_release_image.py"
+    ],
+    "tests": [
+      "tests/test_tf_int.py",
+      "tests/test_int_infra_release.py",
+      "tests/test_int_foundation.py",
+      "tests/test_int_foundation_sast.py"
+    ],
+    "workflows": [
+      ".github/workflows/int-foundation-check.yml",
+      ".github/workflows/int-e2e-apply.yml"
+    ],
+    "config": [
+      "config/int-foundation-contract.json",
+      "config/tf-int01-costs.json",
+      ".gitleaks.toml",
+      "requirements-ci-tools.lock"
+    ],
+    "deferred_procedures": [
+      "protected database initialization",
+      "secret payload publication",
+      "application image publication",
+      "migrations and application Jobs"
+    ],
+    "global_secret_scan": "Complete permitted tracked-source snapshot, never the live installation root"
+  },
+  "tools": {
+    "python": "python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df",
+    "terraform": "hashicorp/terraform:1.15.8@sha256:7ae513256f7ce67879e218ae8593d6fbe216ec9e123abe6c94e4e10704857963",
+    "trivy": "ghcr.io/aquasecurity/trivy:0.76.2@sha256:6fa071ef8daa2e58b90cbf1710bedca91adbb3bf98693533226f442035b836a6",
+    "gitleaks": "ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:b109bc5f8f76a38196a3e413704fc5b9e3c32360bce4e4b603bd6f45b3721dbb",
+    "actionlint": "docker.io/rhysd/actionlint:1.7.12@sha256:9d36088643581e728c969f35141f88139fec77280b2be23c1f66f8e40e1025e7",
+    "shellcheck": "koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d",
+    "bandit_version": "1.9.4",
+    "bandit_wheels": [
+      "bandit",
+      "pyyaml",
+      "rich",
+      "stevedore",
+      "markdown-it-py",
+      "mdurl",
+      "pygments"
+    ]
+  },
+  "unchanged_gitleaks_policy_sha256": "877be9355eee66e958e1b453bb59c20302a8cd8bdcd8a7eadb791575483dd054",
+  "design_decisions": {
+    "google_managed_encryption": "owner_approved_design_only",
+    "gcs_access_audit_30_days": "owner_approved_design_only",
+    "apply": "not_authorized",
+    "foundation_sast_execution": "pending_F-SAST-EXEC"
+  },
+  "iac_findings_preserved": [
+    {
+      "id": "GCP-0033",
+      "resource": "google_compute_instance.postgres",
+      "severity": "LOW"
+    },
+    {
+      "id": "GCP-0033",
+      "resource": "google_compute_instance.postgres",
+      "severity": "LOW"
+    },
+    {
+      "id": "GCP-0034",
+      "resource": "google_compute_disk.postgres",
+      "severity": "LOW"
+    },
+    {
+      "id": "GCP-0066",
+      "resource": "google_storage_bucket.private[\"media\"]",
+      "severity": "LOW"
+    },
+    {
+      "id": "GCP-0066",
+      "resource": "google_storage_bucket.private[\"backups\"]",
+      "severity": "LOW"
+    },
+    {
+      "id": "GCP-0077",
+      "resource": "google_storage_bucket.private[\"media\"]",
+      "severity": "MEDIUM"
+    },
+    {
+      "id": "GCP-0077",
+      "resource": "google_storage_bucket.private[\"backups\"]",
+      "severity": "MEDIUM"
+    }
+  ],
+  "cost_usd_month": {
+    "foundation_example": 13.93,
+    "full_runtime_example": 17.13,
+    "same_usage_and_exclusions": "config/tf-int01-costs.json"
+  },
+  "limitations": [
+    "VM image inventory/SCA, TLS and restore are not proven before VM creation; post-create gates remain mandatory before application acceptance.",
+    "No application, browser or PostgreSQL CI image findings are relabeled as VM results.",
+    "No general SAST acceptance; unresolved exact execution warnings require a future owner decision bound to this plan and the reviewed control commit."
+  ],
+  "residual_controls": [
+    {
+      "id": "F-AUDIT-0077",
+      "status": "pending_not_accepted",
+      "resources": [
+        "google_storage_bucket.private[\"media\"]",
+        "google_storage_bucket.private[\"backups\"]"
+      ],
+      "native_rule": "GCP-0077",
+      "severity": "MEDIUM",
+      "proposed_alternative": "Cloud Audit Logs ADMIN_READ/DATA_READ/DATA_WRITE, private pilot sink/view, retention30d",
+      "operational_validation": "not_proven_before_apply; validate actual Data Access coverage and permissions after any approved apply"
+    },
+    {
+      "id": "F-VM-XML",
+      "status": "pending_not_accepted",
+      "resource": "google_compute_instance.postgres",
+      "advisory": "CVE-2026-6653",
+      "expected_package": "libxml2",
+      "dependency_of": "postgresql-17=17.12-0+deb13u1",
+      "vm_created": false,
+      "vm_inventory_sca": "not_measured",
+      "startup_control": "PostgreSQL remains masked; no cluster, SQL or upload parser is activated",
+      "activation_block": "No database bootstrap until actual VM inventory and individual security review",
+      "decision_scope": "Expected dependency installation inactive only; no acceptance of runtime, image or arbitrary HIGH findings"
+    }
+  ]
+}

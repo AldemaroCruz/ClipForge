@@ -149,9 +149,15 @@ def backend_binding(backend):
             "state_sha256": backend.get("initial_state_sha256", backend.get("state_sha256"))}
 
 
-def verify_manifest(manifest, module, environ, backend):
+def verify_manifest(manifest, module, environ, backend, *, foundation_bridge=False):
     c.require(manifest.get("schema") == SCHEMA, "Unexpected private plan manifest")
+    if foundation_bridge:
+        from scripts import check_int_foundation
+        check_int_foundation.verify_plan_bridge(manifest, module, environ, check_int_foundation.load_contract()["plan"]["manifest"])
     for key, value in source_binding(module, environ).items():
+        if foundation_bridge and key == "commit":
+            c.require(manifest.get("inputs", {}).get("stage") == "foundation", "Runtime cannot use a cross-commit bridge")
+            continue
         c.require(manifest.get(key) == value, "Stale or incompatible plan binding: " + key)
     expected_class = "recognized_initial_state" if manifest["inputs"]["stage"] == "foundation" else "recognized_approved_foundation_state"
     c.require(backend.get("classification") == expected_class and manifest.get("backend") == backend_binding(backend),
@@ -216,8 +222,23 @@ def apply_saved(work, reports, manifest_reference, environ):
     from scripts import tf_int_plan as driver
     hosted_context(environ)
     c.require(environ.get("INT_APPROVED_COMMIT") == environ.get("GITHUB_SHA"), "Explicit owner confirmation must name this exact commit")
-    require_application_ci(environ)
+    foundation = environ.get("INT_STAGE") == "foundation"
+    approval = None
+    if foundation:
+        from scripts import check_int_foundation
+        approval = check_int_foundation.require_foundation_ci(environ)
+    else:
+        c.require(environ.get("INT_APPROVED_PLAN_COMMIT", environ.get("GITHUB_SHA")) == environ.get("GITHUB_SHA"),
+                  "Runtime requires the same plan and control commit")
+        require_application_ci(environ)
     manifest = json.loads(fetch_verified(manifest_reference))
+    if foundation:
+        check_int_foundation.verify_plan_bridge(manifest, work / "module", environ, manifest_reference)
+        raw_json = fetch_verified(manifest["json"])
+        source_plan = json.loads(raw_json)
+        c.require(source_plan.get("terraform_version") == manifest["terraform_version"], "Saved plan Terraform version differs")
+        reviewed = c.plan_contract(source_plan, (work / "module/postgres-install.sh").read_text())
+        c.require(reviewed["counts"] == {"create": 42}, "This foundation approval is restricted to the original42 creations")
     bucket = driver.metadata("/b/" + c.BUCKET, {"fields": "name,projectNumber,iamConfiguration,versioning,softDeletePolicy"})
     receipt = {"status": "apply_preflight", "checks": {}}
     from scripts import int_release_state
@@ -226,7 +247,7 @@ def apply_saved(work, reports, manifest_reference, environ):
             return int_release_state.inspect_approved_foundation(bucket, work / "module", environ)
         return driver.inspect_backend(bucket, work, reports, receipt)
     backend = inspect()
-    verify_manifest(manifest, work / "module", environ, backend)
+    verify_manifest(manifest, work / "module", environ, backend, foundation_bridge=foundation)
     # Publication is checked against the registry manifest itself, never an image ID.
     if manifest["inputs"]["stage"] == "runtime":
         verify_published_runtime(manifest["inputs"]["runtime_image"], environ)
@@ -237,10 +258,10 @@ def apply_saved(work, reports, manifest_reference, environ):
     binary = driver.terraform_binary()
     driver.run([binary, "init", "-input=false", "-lockfile=readonly", "-reconfigure", "-no-color", "-backend-config=backend-int.hcl"], "apply_init", work)
     # Detect changes during init; Terraform also checks stale state under its native lock.
-    verify_manifest(manifest, work / "module", environ, inspect())
+    verify_manifest(manifest, work / "module", environ, inspect(), foundation_bridge=foundation)
     driver.run([binary, "apply", "-input=false", "-no-color", "-lock=true", "-lock-timeout=120s", str(target)], "approved_same_plan_apply", work)
     if manifest["inputs"]["stage"] == "foundation":
-        receipt["foundation_receipt"] = int_release_state.emit_foundation_receipt(work, manifest, manifest_reference, environ)
+        receipt["foundation_receipt"] = int_release_state.emit_foundation_receipt(work, manifest, manifest_reference, environ, approval=approval)
         receipt["status"] = "foundation_applied_runtime_not_approved"
         driver.save_summary(reports, receipt)
     print("Applied only the exact approved immutable binary plan; cloud acceptance remains separate.")

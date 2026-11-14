@@ -3,10 +3,21 @@ name: ClipForge INT apply exact reviewed private plan
 on:
   workflow_dispatch:
     inputs:
-      approved_commit:
-        description: Exact owner approved source commit; must equal this dispatch SHA
+      approved_control_commit:
+        description: Exact reviewed control commit; must equal this dispatch SHA
         type: string
         required: true
+      approved_plan_commit:
+        description: Exact source-plan commit; aa68d4a3228bf6a1092703285f05022c8727d99c for the foundation bridge
+        type: string
+        required: true
+      foundation_decision_json:
+        description: Reviewed single-plan owner decision JSON; pending/null is refused
+        type: string
+        default: "null"
+      foundation_decision_sha256:
+        description: SHA256 of canonical reviewed decision JSON; int approval alone grants no acceptance
+        type: string
       manifest_reference_json:
         description: Exact reviewed private plan reference JSON with name, generation, sha256 and size
         type: string
@@ -29,7 +40,7 @@ on:
         type: string
         default: "null"
       machine_type:
-        description: PostgreSQL capacity profile to evaluate; no resources are created
+        description: Bound capacity profile for the reviewed saved plan
         type: choice
         default: e2-micro
         options: [e2-micro, e2-small]
@@ -62,7 +73,10 @@ jobs:
       RUNTIME_IMAGE: ${{ inputs.runtime_image }}
       INT_STAGE: ${{ inputs.stage }}
       SECRET_VERSIONS_JSON: ${{ inputs.secret_versions_json }}
-      INT_APPROVED_COMMIT: ${{ inputs.approved_commit }}
+      INT_APPROVED_COMMIT: ${{ inputs.approved_control_commit }}
+      INT_APPROVED_PLAN_COMMIT: ${{ inputs.approved_plan_commit }}
+      FOUNDATION_DECISION_JSON: ${{ inputs.foundation_decision_json }}
+      FOUNDATION_DECISION_SHA256: ${{ inputs.foundation_decision_sha256 }}
       PLAN_MANIFEST_JSON: ${{ inputs.manifest_reference_json }}
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
@@ -114,7 +128,7 @@ jobs:
           export_environment_variables: true
           cleanup_credentials: true
 
-      - name: Enforce current application CI, immutable bindings and native lock; apply only saved binary
+      - name: Require the phase-specific evidence and reviewed decision; apply only the exact saved binary
         env:
           GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           GH_TOKEN: ${{ github.token }}

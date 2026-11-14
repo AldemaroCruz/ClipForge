@@ -90,7 +90,7 @@ class Custody(unittest.TestCase):
         self.assertNotIn("private-state-sentinel", json.dumps(report))
 
     def test_no_apply_when_application_ci_blocked(self):
-        env = {**self.env, "INT_APPROVED_COMMIT": self.env["GITHUB_SHA"]}
+        env = {**self.env, "INT_APPROVED_COMMIT": self.env["GITHUB_SHA"], "INT_STAGE": "runtime"}
         with mock.patch.object(r, "require_application_ci", side_effect=ValueError("Existing application CI blocks INT mutation")), \
                 mock.patch.object(r, "fetch_verified") as fetch:
             with self.assertRaises(ValueError): r.apply_saved(self.work, self.work, {}, env)
