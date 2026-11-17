@@ -20,6 +20,22 @@ from scripts import check_tf_int as c, tf_int_plan as driver
 
 IMAGE = "us-central1-docker.pkg.dev/clipforgebeta2/clipforge-int/runtime@sha256:" + "a" * 64
 VERSIONS = {key: "1" for key in ("app_password", "migrator_password", "postgres_ca", "bootstrap_admin")}
+IMAGE_SOURCE_FIXTURE = '''
+data "google_compute_image" "debian" {
+  project = "debian-cloud"
+  name    = "debian-13-trixie-v20261116"
+  lifecycle {
+    postcondition {
+      condition     = self.image_id == "5913446147369107523"
+      error_message = "Synthetic image identity check."
+    }
+    postcondition {
+      condition     = self.status == "READY"
+      error_message = "Synthetic image readiness check."
+    }
+  }
+}
+'''
 
 
 def runtime_template_fixture():
@@ -86,17 +102,36 @@ def fixture():
 
 class TFIntContracts(unittest.TestCase):
     def test_base_image_is_pinned_by_name_numeric_identity_and_ready_status(self):
-        source = c.source_contract(driver.MODULE)["main.tf"]
-        declaration = source.split('data "google_compute_image" "debian" {', 1)[1].split('\nresource ', 1)[0]
-        self.assertRegex(declaration, r'project\s*=\s*"debian-cloud"')
-        self.assertRegex(declaration, r'name\s*=\s*"debian-13-trixie-v20261116"')
-        self.assertNotRegex(declaration, r'\b(?:family|filter|most_recent)\s*=')
-        self.assertIn('self.image_id == "5913446147369107523"', declaration)
-        self.assertIn('self.status == "READY"', declaration)
-        self.assertEqual(declaration.count("postcondition {"), 2)
-        self.assertNotIn("deprecation_status", declaration)
-        self.assertNotIn("self.deprecated", declaration)
-        self.assertIn("image = data.google_compute_image.debian.self_link", source)
+        self.assertEqual(c.image_source_contract(IMAGE_SOURCE_FIXTURE), {
+            "project": "debian-cloud", "name": "debian-13-trixie-v20261116", "image_id": "5913446147369107523", "status": "READY"})
+        for before, after in (
+                ('name    = "debian-13-trixie-v20261116"', 'family = "debian-13"'),
+                ('name    = "debian-13-trixie-v20261116"', 'filter = "name=debian-*"'),
+                ('name    = "debian-13-trixie-v20261116"', 'most_recent = true'),
+                ('name    = "debian-13-trixie-v20261116"', 'name = "debian-13-trixie-v20261109"'),
+                ('project = "debian-cloud"', 'project = "other-project"'),
+                ('5913446147369107523', '5913446147369107524'),
+                ('self.status == "READY"', 'self.status == "PENDING"'),
+                ('self.status == "READY"', 'self.status == "FAILED"'),
+                ('self.status == "READY"', 'self.status == "READY" || true'),
+                ('self.image_id == "5913446147369107523"', 'true # self.image_id == "5913446147369107523"'),
+                ('self.status == "READY"', 'self.image_id == "5913446147369107523"'),
+                ('lifecycle {', '# lifecycle {'),
+                ('postcondition {', 'precondition {'),
+                ('name    = "debian-13-trixie-v20261116"', 'name = "debian-13-trixie-v20261116"\n family = "debian-13"')):
+            with self.subTest(after=after), self.assertRaises(ValueError):
+                c.image_source_contract(IMAGE_SOURCE_FIXTURE.replace(before, after, 1))
+        for source in ("", IMAGE_SOURCE_FIXTURE + IMAGE_SOURCE_FIXTURE, '# ' + IMAGE_SOURCE_FIXTURE.replace('\n', '\n# ')):
+            with self.subTest(source=source), self.assertRaises(ValueError):
+                c.image_source_contract(source)
+        decorated = '# synthetic comment\n' + IMAGE_SOURCE_FIXTURE.replace('lifecycle {', '/* synthetic } brace */ lifecycle {')
+        self.assertEqual(c.image_source_contract(decorated), c.image_source_contract(IMAGE_SOURCE_FIXTURE))
+        synthetic_root = mock.MagicMock()
+        synthetic_root.__truediv__.return_value.read_text.return_value = IMAGE_SOURCE_FIXTURE
+        with mock.patch.object(c, "image_source_contract", side_effect=ValueError("Synthetic image rejection")) as validate:
+            with self.assertRaisesRegex(ValueError, "Synthetic image rejection"):
+                c.source_contract(synthetic_root)
+        validate.assert_called_once_with(IMAGE_SOURCE_FIXTURE)
 
     def test_direct_cli_can_import_custody_from_an_unrelated_directory(self):
         # Reproduce Actions' scripts-only import path without PYTHONPATH or cwd

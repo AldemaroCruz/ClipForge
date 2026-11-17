@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlsplit
 from scripts import check_tf_int as c, int_release as r, int_secrets as secrets
 from scripts import int_bootstrap_vm as vm, int_bootstrap_db as db, int_release_image as image_release
 from scripts import int_release_state as provenance
-from tests.test_tf_int import fixture, IMAGE, VERSIONS
+from tests.test_tf_int import fixture, IMAGE, VERSIONS, IMAGE_SOURCE_FIXTURE
 
 
 class Custody(unittest.TestCase):
@@ -54,7 +54,7 @@ class Custody(unittest.TestCase):
         with self.assertRaises(ValueError): r.verify_manifest(self.manifest, self.module, self.env, changed)
 
     def test_changed_vm_image_pin_invalidates_saved_configuration_without_changing_startup(self):
-        source = (Path(__file__).resolve().parents[1] / "infra/gcp/int-base/main.tf").read_text()
+        source = IMAGE_SOURCE_FIXTURE
         target = self.module / "main.tf"
         target.write_text(source)
         binding = r.source_binding(self.module, self.env)

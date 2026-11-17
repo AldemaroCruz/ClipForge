@@ -56,9 +56,63 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def image_source_contract(text):
+    """Validate the reviewed image declaration from text, without file access.
+
+    This intentionally accepts only literal selectors and the two exact
+    postconditions. Terraform remains responsible for general HCL validation.
+    Comments/quoted error messages cannot stand in for executable conditions.
+    """
+    pattern = r'"(?:[^"\\]|\\.)*"|/\*[\s\S]*?\*/|//[^\n]*|\#[^\n]*|==|[A-Za-z_][A-Za-z0-9_-]*|[^\s]'
+    tokens = [token for token in re.findall(pattern, text) if not token.startswith(("/*", "//", "#"))]
+    starts = [index for index in range(len(tokens) - 1) if tokens[index:index + 2] == ["data", '"google_compute_image"']]
+    require(len(starts) == 1, "Exactly one reviewed compute image data source is required")
+    start = starts[0]
+    require(tokens[start:start + 4] == ["data", '"google_compute_image"', '"debian"', "{"], "Unexpected image data source")
+
+    def block(index):
+        require(index < len(tokens) and tokens[index] == "{", "Image contract requires a literal block")
+        depth, cursor = 1, index + 1
+        while cursor < len(tokens) and depth:
+            depth += (tokens[cursor] == "{") - (tokens[cursor] == "}")
+            cursor += 1
+        require(depth == 0, "Incomplete image declaration")
+        return tokens[index + 1:cursor - 1], cursor
+
+    declaration, end = block(start + 3)
+    attributes, lifecycle, cursor = {}, None, start + 4
+    while cursor < end - 1:
+        key = tokens[cursor]
+        if key in {"project", "name"}:
+            require(key not in attributes and cursor + 2 < end - 1 and tokens[cursor + 1:cursor + 2] == ["="],
+                    "Duplicate or invalid image selector")
+            attributes[key] = tokens[cursor + 2]
+            cursor += 3
+        else:
+            require(key == "lifecycle" and lifecycle is None, "Unreviewed or moving image selector")
+            lifecycle, cursor = block(cursor + 1)
+    require(attributes == {"project": '"debian-cloud"', "name": '"debian-13-trixie-v20261116"'}, "Reviewed image name/project changed")
+    require(lifecycle is not None, "Image identity/readiness postconditions are required")
+    expected = {"image_id": '"5913446147369107523"', "status": '"READY"'}
+    conditions, cursor = set(), start + 4 + declaration.index("lifecycle") + 2
+    lifecycle_end = cursor + len(lifecycle)
+    while cursor < lifecycle_end:
+        require(tokens[cursor] == "postcondition", "Only reviewed image postconditions are allowed")
+        statement, cursor = block(cursor + 1)
+        require(len(statement) == 10 and statement[:4] == ["condition", "=", "self", "."]
+                and statement[4] in expected and statement[4] not in conditions
+                and statement[5:7] == ["==", expected[statement[4]]]
+                and statement[7:9] == ["error_message", "="] and statement[9].startswith('"'),
+                "Image identity/readiness condition changed or weakened")
+        conditions.add(statement[4])
+    require(conditions == set(expected), "Both image identity and READY must be checked")
+    return {"project": "debian-cloud", "name": "debian-13-trixie-v20261116", "image_id": "5913446147369107523", "status": "READY"}
+
+
 def source_contract(root):
     """Read only the small explicit module inventory; never traverse sibling drafts."""
     sources = {name: (root / name).read_text(encoding="utf-8") for name in FILES}
+    image_source_contract(sources["main.tf"])
     hcl = "\n".join(sources[name] for name in ("main.tf", "runtime.tf", "audit.tf", "variables.tf", "outputs.tf", "versions.tf"))
     require(set(re.findall(r'variable\s+"([^"]+)"', hcl)) == VARIABLES, "Unexpected Terraform inputs")
     resources = re.findall(r'resource\s+"([^"]+)"\s+"([^"]+)"', hcl)
