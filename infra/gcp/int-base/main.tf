@@ -37,7 +37,17 @@ data "google_secret_manager_secret" "existing" {
 }
 data "google_compute_image" "debian" {
   project = "debian-cloud"
-  family  = "debian-13"
+  name    = "debian-13-trixie-v20261116"
+  lifecycle {
+    postcondition {
+      condition     = self.image_id == "5913446147369107523"
+      error_message = "The reviewed Debian image's immutable numeric identity changed."
+    }
+    postcondition {
+      condition     = self.status == "READY"
+      error_message = "The reviewed Debian image must remain READY."
+    }
+  }
 }
 
 resource "terraform_data" "boundary" {

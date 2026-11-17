@@ -113,7 +113,9 @@
       "scripts/check_int_foundation.py",
       "scripts/classify_int_foundation_sast.py",
       "scripts/prepare_ci_scan.py",
-      "scripts/prepare_ci_context.py"
+      "scripts/prepare_ci_context.py",
+      "scripts/compare_int_foundation_plans.py",
+      "scripts/review_int_foundation_plan.py"
     ],
     "test_support_python": [
       "scripts/int_bootstrap_db.py",
@@ -125,11 +127,15 @@
       "tests/test_tf_int.py",
       "tests/test_int_infra_release.py",
       "tests/test_int_foundation.py",
-      "tests/test_int_foundation_sast.py"
+      "tests/test_int_foundation_sast.py",
+      "tests/test_int_foundation_comparison.py",
+      "tests/test_int_foundation_plan_review.py",
+      "tests/test_int_foundation_candidate.py"
     ],
     "workflows": [
       ".github/workflows/int-foundation-check.yml",
-      ".github/workflows/int-e2e-apply.yml"
+      ".github/workflows/int-e2e-apply.yml",
+      ".github/workflows/tf-int-plan.yml"
     ],
     "config": [
       "config/int-foundation-contract.json",
@@ -243,5 +249,28 @@
       "activation_block": "No database bootstrap until actual VM inventory and individual security review",
       "decision_scope": "Expected dependency installation inactive only; no acceptance of runtime, image or arbitrary HIGH findings"
     }
-  ]
+  ],
+  "planning_candidate": {
+    "purpose": "comparative_plan_only",
+    "apply_authorized": false,
+    "configuration_sha256": "1cf09b8ebd357761a217b7cae3d46e37397eadff39deeaa79500aac5276a7a7c",
+    "baseline_configuration_sha256": "4d23ddc3e8b22ea58e5e998e8b381291876f79ab562e3d15dd95ff5556476f31",
+    "baseline_manifest": {
+      "name": "private-plans/int/aa68d4a3228bf6a1092703285f05022c8727d99c/43528573812-1/manifest.json",
+      "generation": "1794613158433064",
+      "sha256": "6f5dd879f288fdca587d30adbf54ad98db5ce4733b39d7c50a2516a1f7f8494a",
+      "size": 1504
+    },
+    "configuration_baseline_commit": "aa68d4a3228bf6a1092703285f05022c8727d99c",
+    "controls_origin_commit": "d93e21224f15886762f1f87bbcf917f51d801a42",
+    "image": {
+      "project": "debian-cloud",
+      "name": "debian-13-trixie-v20261116",
+      "image_id": "5913446147369107523",
+      "status": "READY"
+    },
+    "F-VM-XML": "Not accepted for this new image identity; requires its own inventory and individual review",
+    "risk_acceptance": "No previous risk acceptance is extended by this candidate plan",
+    "baseline_status": "Historical expired plan kept intact for comparison only; cannot be activated by this candidate"
+  }
 }

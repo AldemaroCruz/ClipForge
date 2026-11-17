@@ -53,6 +53,22 @@ class Custody(unittest.TestCase):
         changed = copy.deepcopy(self.backend); changed["live"][0]["generation"] = "12"
         with self.assertRaises(ValueError): r.verify_manifest(self.manifest, self.module, self.env, changed)
 
+    def test_changed_vm_image_pin_invalidates_saved_configuration_without_changing_startup(self):
+        source = (Path(__file__).resolve().parents[1] / "infra/gcp/int-base/main.tf").read_text()
+        target = self.module / "main.tf"
+        target.write_text(source)
+        binding = r.source_binding(self.module, self.env)
+        saved = {**self.manifest, **binding}
+        startup = (self.module / "postgres-install.sh").read_bytes()
+        r.verify_manifest(saved, self.module, self.env, self.backend)
+        target.write_text(source.replace('name    = "debian-13-trixie-v20261116"', 'family  = "debian-13"', 1))
+        changed = r.source_binding(self.module, self.env)
+        self.assertNotEqual(binding["configuration_sha256"], changed["configuration_sha256"])
+        self.assertEqual(binding["provider_lock_sha256"], changed["provider_lock_sha256"])
+        self.assertEqual((self.module / "postgres-install.sh").read_bytes(), startup)
+        with self.assertRaisesRegex(ValueError, "configuration_sha256"):
+            r.verify_manifest(saved, self.module, self.env, self.backend)
+
     def test_custody_only_creates_immutable_objects_outside_backend(self):
         opener = mock.Mock()
         response = mock.MagicMock()

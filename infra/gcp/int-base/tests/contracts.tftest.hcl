@@ -4,6 +4,13 @@ variables {
   secret_versions = { app_password = "1", migrator_password = "1", postgres_ca = "1", bootstrap_admin = "1" }
 }
 mock_provider "google" {
+  mock_data "google_compute_image" {
+    defaults = {
+      image_id  = "5913446147369107523"
+      status    = "READY"
+      self_link = "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/debian-13-trixie-v20261116"
+    }
+  }
   mock_data "google_service_account" {
     defaults = {
       email = "clipforge-postgres-int@clipforgebeta2.iam.gserviceaccount.com"
@@ -17,6 +24,10 @@ override_data {
 }
 run "economical_defaults" {
   command = plan
+  assert {
+    condition     = data.google_compute_image.debian.name == "debian-13-trixie-v20261116" && data.google_compute_image.debian.image_id == "5913446147369107523" && data.google_compute_image.debian.status == "READY"
+    error_message = "The candidate must use the reviewed immutable Debian image, never a moving family."
+  }
   assert {
     condition     = google_compute_instance.postgres.machine_type == "e2-micro" && google_compute_disk.postgres.size == 20
     error_message = "Default cost profile changed."
@@ -96,4 +107,40 @@ run "reject_latest_secret" {
   command = plan
   variables { secret_versions = { app_password = "latest", migrator_password = "1", postgres_ca = "1", bootstrap_admin = "1" } }
   expect_failures = [var.secret_versions]
+}
+run "reject_replaced_debian_image_identity" {
+  command = plan
+  override_data {
+    target = data.google_compute_image.debian
+    values = {
+      image_id  = "5913446147369107524"
+      status    = "READY"
+      self_link = "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/debian-13-trixie-v20261116"
+    }
+  }
+  expect_failures = [data.google_compute_image.debian]
+}
+run "reject_pending_debian_image" {
+  command = plan
+  override_data {
+    target = data.google_compute_image.debian
+    values = {
+      image_id  = "5913446147369107523"
+      status    = "PENDING"
+      self_link = "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/debian-13-trixie-v20261116"
+    }
+  }
+  expect_failures = [data.google_compute_image.debian]
+}
+run "reject_failed_debian_image" {
+  command = plan
+  override_data {
+    target = data.google_compute_image.debian
+    values = {
+      image_id  = "5913446147369107523"
+      status    = "FAILED"
+      self_link = "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/images/debian-13-trixie-v20261116"
+    }
+  }
+  expect_failures = [data.google_compute_image.debian]
 }

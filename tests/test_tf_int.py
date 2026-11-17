@@ -85,6 +85,19 @@ def fixture():
 
 
 class TFIntContracts(unittest.TestCase):
+    def test_base_image_is_pinned_by_name_numeric_identity_and_ready_status(self):
+        source = c.source_contract(driver.MODULE)["main.tf"]
+        declaration = source.split('data "google_compute_image" "debian" {', 1)[1].split('\nresource ', 1)[0]
+        self.assertRegex(declaration, r'project\s*=\s*"debian-cloud"')
+        self.assertRegex(declaration, r'name\s*=\s*"debian-13-trixie-v20261116"')
+        self.assertNotRegex(declaration, r'\b(?:family|filter|most_recent)\s*=')
+        self.assertIn('self.image_id == "5913446147369107523"', declaration)
+        self.assertIn('self.status == "READY"', declaration)
+        self.assertEqual(declaration.count("postcondition {"), 2)
+        self.assertNotIn("deprecation_status", declaration)
+        self.assertNotIn("self.deprecated", declaration)
+        self.assertIn("image = data.google_compute_image.debian.self_link", source)
+
     def test_direct_cli_can_import_custody_from_an_unrelated_directory(self):
         # Reproduce Actions' scripts-only import path without PYTHONPATH or cwd
         # assistance. Importing these helpers must never make a cloud request.

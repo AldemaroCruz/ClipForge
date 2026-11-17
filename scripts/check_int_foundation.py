@@ -62,8 +62,23 @@ def check_static(root, module, contract):
     c.source_contract(module)
     binding = release.source_binding(module, {"GITHUB_SHA": contract["plan"]["commit"],
                                             "RUNTIME_IMAGE": contract["plan"]["inputs"]["runtime_image"]})
-    for key in ("configuration_sha256", "provider_lock_sha256", "terraform_version", "inputs"):
+    candidate = contract.get("planning_candidate")
+    if candidate is not None:
+        c.require(candidate.get("purpose") == "comparative_plan_only" and candidate.get("apply_authorized") is False,
+                  "An image candidate cannot activate a foundation apply")
+        c.require(candidate.get("baseline_configuration_sha256") == contract["plan"]["configuration_sha256"]
+                  and candidate.get("baseline_manifest") == contract["plan"]["manifest"],
+                  "The immutable historical comparison baseline changed")
+        c.require(candidate.get("image") == {"project": "debian-cloud", "name": "debian-13-trixie-v20261116",
+                  "image_id": "5913446147369107523", "status": "READY"}, "Unreviewed image candidate")
+        c.require(binding["configuration_sha256"] == candidate.get("configuration_sha256")
+                  and binding["configuration_sha256"] != contract["plan"]["configuration_sha256"],
+                  "The candidate configuration must expose its change from the historical plan")
+    for key in ("provider_lock_sha256", "terraform_version", "inputs"):
         c.require(binding[key] == contract["plan"][key], "Original foundation plan binding changed: " + key)
+    if candidate is None:
+        c.require(binding["configuration_sha256"] == contract["plan"]["configuration_sha256"],
+                  "Original foundation plan binding changed: configuration_sha256")
     c.require(sorted(c.FOUNDATION_ADDRESSES) == contract["plan"]["managed_addresses"], "Foundation resource scope changed")
     c.require(release.sha256((root / ".gitleaks.toml").read_bytes()) == contract["unchanged_gitleaks_policy_sha256"],
               "Secret policy changed; fresh precision evidence and review are required")
@@ -131,7 +146,8 @@ def checks(work, reports):
     report = {"schema": REPORT_SCHEMA, "phase": "foundation", "control_commit": os.environ.get("GITHUB_SHA", "local_uncommitted_snapshot"),
               "contract_sha256": release.sha256((source / CONTRACT).read_bytes()), "control_sources_sha256": source_hash,
               "source_files": source_files, "plan": contract["plan"], "integrity": {}, "readiness": "blocked",
-              "application_ci": "separate_contract_not_reclassified", "vm_inventory_sca_tls_restore": "not_proven_before_creation"}
+              "application_ci": "separate_contract_not_reclassified", "vm_inventory_sca_tls_restore": "not_proven_before_creation",
+              "planning_candidate": contract.get("planning_candidate"), "apply_authorized": False}
     uid = str(os.getuid()) if hasattr(os, "getuid") else "10001"
     gid = str(os.getgid()) if hasattr(os, "getgid") else "10001"
     base = ["docker", "run", "--rm", "--pull=never", "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
@@ -224,6 +240,8 @@ def decision_template(report, contract):
 
 def verify_plan_bridge(manifest, module, environ, reference, contract=None):
     contract = contract or load_contract()
+    c.require(contract.get("planning_candidate") is None,
+              "Comparative image candidate planning cannot authorize any saved-plan apply")
     plan = contract["plan"]
     c.require(environ.get("INT_STAGE") == "foundation" and isinstance(manifest.get("inputs"), dict)
               and manifest["inputs"].get("stage") == "foundation", "The control bridge is foundation-only")
@@ -238,6 +256,8 @@ def verify_plan_bridge(manifest, module, environ, reference, contract=None):
 
 
 def verify_owner_decision(decision, expected_sha, report, contract):
+    c.require(contract.get("planning_candidate") is None,
+              "Image candidate risks and apply require a separate explicit review")
     c.require(release.sha256(release.canonical(decision)) == expected_sha, "Owner decision hash differs from the reviewed canonical JSON")
     expected = decision_template(report, contract)
     c.require(set(decision) == set(expected) and all(decision[key] == expected[key] for key in expected
