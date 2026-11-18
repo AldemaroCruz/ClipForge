@@ -1,7 +1,8 @@
-# GUEST-01: propuesta operativa pendiente de host key
+# GUEST-01: host key verificada e inventario protegido
 
-La fundación cerrada permanece conservada. No se ejecutaron SSH, registro de
-claves, operaciones de VM, IAM, APT o SQL. El inventario vivo sigue pendiente.
+La fundación cerrada permanece conservada. La intervención de host key fue
+autorizada y completada; las consultas dentro del guest se ejecutan por una ruta
+separada de inventario protegido. No se autorizan APT, SQL ni activación de PostgreSQL.
 
 Destino: `clipforgebeta2`, zona `us-central1-a`, VM `clipforge-int-base-postgres`,
 instance ID `1670495097211408131`, IP privada `10.80.1.2`, imagen ID
@@ -9,7 +10,37 @@ instance ID `1670495097211408131`, IP privada `10.80.1.2`, imagen ID
 `1795030868572779`, correspondiente al serial 7 y 42 direcciones del recibo de
 cierre. No se volvió a descargar ni publicar el estado completo.
 
-## Observaciones actuales
+## Intervención autorizada y comprobada
+
+La autorización específica de la propuesta `62d8a104…cbed5e` se registró a las
+21:22:08 UTC del 18/11/2026, con vencimiento 22:22:08 UTC. SHA-256 de sus bytes:
+`956984c5fd9aa7b0ea0c128b0f46e24a8f1e55643edc69ff5b5895db92763ee6`.
+Sólo comprende los dos LOW del operador revisado para esa intervención.
+
+Las cuatro operaciones terminaron DONE: instalación del publicador, un STOP,
+un START y restauración. El mapa completo de metadata coincide con el inicial,
+el startup conserva `a93bd662…af255`, y VM/discos/imagen/IP privada/OS Login
+mantienen sus identidades y controles. Nuevo arranque:
+`2026-11-18T13:25:45.148-08:00`. La generación del backend no cambió.
+
+Clave de host Ed25519, obtenida del registro serial completo y único ligado al
+nonce y al hash del publicador, con comprobaciones de VM antes/después:
+`SHA256:xR7of9ZrB4YEThQT8mrnc7qkRY+Xt0pyhaMKPUJxA2U`.
+Sólo se leyó la clave pública existente. Evidencia portátil sanitizada SHA-256:
+`1963b5e52a4606a6f0b6560dcd0ab1356e36f4ec0764b4c4fc05ee99d12229a4`.
+El journal, autorización, propuesta y recibo originales permanecen en evidencia
+privada. La preparación revisada se conserva con su decisión pendiente original;
+la autorización y el resultado son registros nuevos.
+
+La ruta `.github/workflows/int-guest-inventory.yml` usa exclusivamente Deploy
+mediante WIF, environment `int`, aprobación manual, SDK 582.0.0, clave cliente
+propia de 15 minutos y comprobación estricta del pin. El UID de Deploy comprobado
+por IAM es `101402373862758071342`. Sus únicas escrituras cloud permitidas son
+registrar y retirar esa clave pública propia de OS Login. El payload de consulta
+fijo está separado del transporte y ambos tienen pruebas dirigidas; la ruta
+carece de operaciones de VM, IAM, Terraform o bootstrap de base de datos.
+
+## Lecturas previas a la intervención
 
 A las 20:56:41–20:56:44 UTC del 18/11/2026, `hostkeys/` devolvió HTTP 404.
 El serial port 1 completo (`start=0`, 226588 bytes) no contiene clave Ed25519,

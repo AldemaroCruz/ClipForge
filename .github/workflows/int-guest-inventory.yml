@@ -1,0 +1,149 @@
+name: ClipForge INT GUEST-01 access and read-only inventory
+
+on:
+  workflow_dispatch:
+    inputs:
+      approved_control_commit:
+        description: Full reviewed inventory controls SHA
+        type: string
+        required: true
+      host_evidence_json:
+        description: Sanitized nonce-bound result of the completed authorized host-key operation
+        type: string
+        required: true
+      host_evidence_sha256:
+        description: SHA256 of the exact verified host evidence bytes
+        type: string
+        required: true
+      payload_sha256:
+        description: SHA256 of the fixed reviewed read-only guest payload
+        type: string
+        required: true
+
+permissions: {}
+concurrency:
+  group: clipforge-int-guest-inventory
+  cancel-in-progress: false
+
+jobs:
+  inventory:
+    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    environment: int
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      GUEST_APPROVED_COMMIT: ${{ inputs.approved_control_commit }}
+      GUEST_ENVIRONMENT: int
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+      GCP_DEPLOY_SA: ${{ vars.GCP_DEPLOY_SA }}
+    steps:
+      - name: Check out the exact inventory controls without retained credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Allocate private scratch and verify the exact host record and payload
+        id: scratch
+        env:
+          HOST_EVIDENCE_JSON: ${{ inputs.host_evidence_json }}
+          HOST_EVIDENCE_SHA256: ${{ inputs.host_evidence_sha256 }}
+          PAYLOAD_SHA256: ${{ inputs.payload_sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$GUEST_APPROVED_COMMIT" = "$GITHUB_SHA"
+          test "$GCP_PROJECT_ID" = clipforgebeta2
+          test "$GCP_PROJECT_NUMBER" = 816643438938
+          test "$GCP_REGION" = us-central1
+          test "$GCP_DEPLOY_SA" = clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com
+          test "$GCP_WIF_PROVIDER" = projects/816643438938/locations/global/workloadIdentityPools/clipforge-gh-int/providers/github
+          git check-ignore --no-index --quiet gha-creds-guest01.json
+          test -z "$(git ls-files -- ':(glob)**/gha-creds-*.json')"
+          GUEST_WORK="$(mktemp -d "$RUNNER_TEMP/clipforge-guest-inventory.XXXXXXXX")"
+          GUEST_REPORTS="$(mktemp -d "$RUNNER_TEMP/clipforge-guest-report.XXXXXXXX")"
+          export GUEST_WORK GUEST_REPORTS
+          git ls-files -z > "$GUEST_WORK/tracked-paths.nul"
+          python -B - <<'PY'
+          import hashlib, os
+          from pathlib import Path
+          from scripts.prepare_ci_scan import validate_paths
+          work = Path(os.environ['GUEST_WORK'])
+          names = (work / 'tracked-paths.nul').read_bytes().decode().split('\0')
+          validate_paths([name for name in names if name])
+          (work / 'tracked-paths.nul').unlink()
+          raw = os.environ['HOST_EVIDENCE_JSON'].encode('ascii')
+          expected = '1963b5e52a4606a6f0b6560dcd0ab1356e36f4ec0764b4c4fc05ee99d12229a4'
+          if os.environ['HOST_EVIDENCE_SHA256'] != expected or hashlib.sha256(raw).hexdigest() != expected:
+              raise SystemExit('Unreviewed host evidence; no authentication or key registration attempted')
+          payload = Path('scripts/int_guest_inventory_guest.py').read_bytes()
+          if os.environ['PAYLOAD_SHA256'] != 'f7a8d29292fb122bab3763c30b62d686b353600bd8b74f9e94c96fa393d981d0' or hashlib.sha256(payload).hexdigest() != os.environ['PAYLOAD_SHA256']:
+              raise SystemExit('Unreviewed guest inventory payload; no authentication attempted')
+          with (work / 'host.json').open('xb') as stream:
+              stream.write(raw)
+          with Path(os.environ['GITHUB_ENV']).open('a') as stream:
+              stream.write('GUEST_WORK=' + str(work) + '\nGUEST_REPORTS=' + os.environ['GUEST_REPORTS'] + '\n')
+              stream.write('CLOUDSDK_CONFIG=' + str(work / 'gcloud') + '\nCLOUDSDK_CORE_DISABLE_PROMPTS=1\n')
+          PY
+          python -B -m unittest tests.test_int_guest_inventory tests.test_int_guest_inventory_guest -v
+
+      - name: Federate solely as the Deploy service account
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+          token_format: access_token
+          access_token_lifetime: 900s
+          access_token_scopes: https://www.googleapis.com/auth/cloud-platform
+          create_credentials_file: true
+          export_environment_variables: true
+          cleanup_credentials: true
+
+      - name: Prepare the explicitly reviewed Cloud SDK version
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          version: 582.0.0
+
+      - name: Verify Deploy and the server key, then query the guest
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          HOST_EVIDENCE_SHA256: ${{ inputs.host_evidence_sha256 }}
+          PAYLOAD_SHA256: ${{ inputs.payload_sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test -f "$GOOGLE_APPLICATION_CREDENTIALS"
+          git check-ignore --quiet -- "$GOOGLE_APPLICATION_CREDENTIALS"
+          python -B -m scripts.int_guest_inventory check --host-evidence "$GUEST_WORK/host.json" --host-evidence-sha "$HOST_EVIDENCE_SHA256" --payload-sha "$PAYLOAD_SHA256" --workdir "$GUEST_WORK" --reports "$GUEST_REPORTS"
+          python -B -m scripts.int_guest_inventory run --host-evidence "$GUEST_WORK/host.json" --host-evidence-sha "$HOST_EVIDENCE_SHA256" --payload-sha "$PAYLOAD_SHA256" --workdir "$GUEST_WORK" --reports "$GUEST_REPORTS"
+
+      - name: Verify removal of only this run's expiring OS Login key
+        if: ${{ always() && steps.scratch.outcome == 'success' }}
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: python -B -m scripts.int_guest_inventory cleanup --workdir "$GUEST_WORK" --reports "$GUEST_REPORTS"
+
+      - name: Retain only the sanitized inventory and summary
+        if: ${{ always() && steps.scratch.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: int-guest01-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.GUEST_REPORTS }}/guest-summary.json
+            ${{ env.GUEST_REPORTS }}/guest-summary.md
+            ${{ env.GUEST_REPORTS }}/inventory.json
+          include-hidden-files: false
+          if-no-files-found: warn
+          retention-days: 7
