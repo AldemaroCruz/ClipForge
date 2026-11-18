@@ -400,6 +400,7 @@ class IapReadDiagnosticContract(unittest.TestCase):
                 mock.patch.object(diagnostic.states,'private_current_state',return_value=(self.raw,self.obj,self.inventory)), \
                 mock.patch.object(diagnostic.driver,'backend_inventory',return_value=self.inventory) as inventory, \
                 mock.patch.object(diagnostic,'direct_identity_anchor',side_effect=anchor), \
+                mock.patch.object(diagnostic,'required_reads',return_value=[]), \
                 mock.patch.object(diagnostic,'direct_probe',side_effect=explicit),mock.patch.object(native,'run_native',side_effect=provider), \
                 mock.patch.object(custody,'upload') as upload:
             result=diagnostic.run_diagnostic(self.work,self.reports,self.env,root=self.source)
@@ -432,6 +433,7 @@ class IapReadDiagnosticContract(unittest.TestCase):
                     mock.patch.object(diagnostic.states,'private_current_state',return_value=(self.raw,self.obj,self.inventory)), \
                     mock.patch.object(diagnostic.driver,'backend_inventory',return_value=self.inventory), \
                     mock.patch.object(diagnostic,'direct_identity_anchor',return_value={'http_status':200,'effective_identity':None}), \
+                    mock.patch.object(diagnostic,'required_reads',return_value=[]), \
                     mock.patch.object(diagnostic,'direct_probe',side_effect=lambda *_args:{'http_status':200,'private_policy':deepcopy(self.policy)}), \
                     mock.patch.object(native,'run_native',side_effect=provider),self.subTest(permission=permission):
                 if permission=='unreviewed-private-field':
@@ -480,6 +482,66 @@ class IapReadDiagnosticContract(unittest.TestCase):
         self.assertNotIn(SENTINEL,public)
         summary=json.loads((self.reports/'iap-diagnostic.json').read_text())
         self.assertFalse(summary['new_apply_authorized']);self.assertFalse(summary['new_grants_authorized'])
+
+    def test_required_reads_use_only_exact_metadata_and_policy_methods_without_publishing_payloads(self):
+        for status in (200,403):
+            opener=mock.Mock();response=mock.MagicMock();body=mock.Mock()
+            response.__enter__.return_value.read.return_value=custody.canonical({'private':SENTINEL})
+            if status==200:opener.open.return_value=response
+            else:
+                body.read.side_effect=AssertionError('Error payload must not be read or published')
+                opener.open.side_effect=diagnostic.HTTPError('https://logging.googleapis.com/v2/synthetic',403,SENTINEL,{},body)
+            with mock.patch.object(diagnostic,'build_opener',return_value=opener):
+                rows=diagnostic.required_reads('synthetic-private-token',REASON)
+            self.assertEqual(len(rows),10);self.assertEqual(opener.open.call_count,10)
+            for target,call,row in zip(diagnostic.READ_TARGETS,opener.open.call_args_list,rows):
+                key,method,url,payload,permission,resource=target;request=call.args[0]
+                self.assertEqual(request.full_url,url);self.assertEqual(request.get_method(),method)
+                self.assertEqual(request.data,custody.canonical(payload) if payload is not None else None)
+                self.assertEqual(row['http_status'],status);self.assertEqual(row['required_permission_for_operation'],permission)
+                self.assertEqual(row['resource'],resource);self.assertEqual(row['key'],key)
+                self.assertNotIn(':access',url);self.assertNotIn('/versions/',url)
+            for key in ('grant_postgres_policy','secret_bootstrap_policy','secret_ca_policy'):
+                target=next(x for x in diagnostic.READ_TARGETS if x[0]==key)
+                self.assertTrue(target[2].endswith('?options.requestedPolicyVersion=3'));self.assertIsNone(target[3])
+                self.assertEqual(target[1],'POST' if key=='grant_postgres_policy' else 'GET')
+            self.assertNotIn(SENTINEL,json.dumps(rows));self.assertNotIn('synthetic-private-token',json.dumps(rows))
+            if status==403:body.read.assert_not_called()
+        with mock.patch.object(diagnostic,'build_opener') as network,self.assertRaises(ValueError):
+            diagnostic.required_reads('synthetic','bad\nreason')
+        network.assert_not_called()
+
+    def test_plan_requires_complete_successful_required_reads_and_same_four_iap_combinations(self):
+        result={'required_reads':[{'key':x[0],'http_status':200} for x in diagnostic.READ_TARGETS],
+                'probes':[{'route':route,'mode':mode,'http_status':200} for route in diagnostic.ROUTES
+                          for mode in ('explicit_http','provider_ADC')]}
+        self.assertTrue(diagnostic.reads_allow_plan(result))
+        for field in ('required_reads','probes'):
+            for scenario in ('missing','duplicate','denied','unknown'):
+                value=deepcopy(result)
+                if scenario=='missing':value[field].pop()
+                elif scenario=='duplicate':value[field][-1]=deepcopy(value[field][0])
+                else:value[field][0]['http_status']=403 if scenario=='denied' else None
+                with self.subTest(field=field,scenario=scenario):self.assertFalse(diagnostic.reads_allow_plan(value))
+        self.assertFalse(diagnostic.reads_allow_plan({}))
+
+    def test_cli_preserves_grouped_missing_reads_and_never_starts_plan(self):
+        from scripts import int_foundation_recovery as recovery
+        result={'status':'read_comparison_completed_no_grants_no_apply','comparisons':[],
+                'required_reads':[{'key':x[0],'resource':x[5],'required_permission_for_operation':x[4],
+                                  'http_status':403 if 'policy' in x[0] else 200} for x in diagnostic.READ_TARGETS],
+                'probes':[]}
+        with mock.patch('sys.argv',['int_iap_diagnostic','diagnose']),mock.patch.object(diagnostic.os,'umask'), \
+                mock.patch.object(diagnostic.driver,'private_paths',return_value=(self.work,self.reports)), \
+                mock.patch.object(diagnostic,'run_diagnostic',return_value=result), \
+                mock.patch.dict(diagnostic.os.environ,{'IAP_ATTEMPT_RECOVERY_PLAN':'true'},clear=True), \
+                mock.patch.object(recovery,'load_contract',return_value={'recovery_phase':'serial6_no_imports'}), \
+                mock.patch.object(recovery,'plan_recovery') as plan,mock.patch('builtins.print'):
+            self.assertEqual(diagnostic.main(),1)
+        plan.assert_not_called();self.assertFalse((self.work/'module').exists())
+        saved=json.loads((self.reports/'recovery-summary.json').read_bytes())
+        self.assertEqual(saved['status'],'blocked_required_reads_no_plan_no_apply')
+        self.assertEqual(saved['required_reads'],result['required_reads']);self.assertFalse(saved['apply_authorized'])
 
 
 if __name__=='__main__':

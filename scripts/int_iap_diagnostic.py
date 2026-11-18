@@ -25,6 +25,28 @@ SELECTION_VARS = ("GOOGLE_CREDENTIALS", "GOOGLE_CLOUD_KEYFILE_JSON", "GCLOUD_KEY
                   "GOOGLE_IMPERSONATE_SERVICE_ACCOUNT_DELEGATES", "GOOGLE_APPLICATION_CREDENTIALS",
                   "GOOGLE_GHA_CREDS_PATH", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE", "GCP_ACCESS_TOKEN")
 OVERRIDES = SELECTION_VARS[:6]
+LOG_BUCKET = "projects/clipforgebeta2/locations/us-central1/buckets/clipforge-int-access"
+LOG_VIEW = LOG_BUCKET + "/views/pilot-access"
+POSTGRES_SA = "projects/clipforgebeta2/serviceAccounts/clipforge-postgres-int@clipforgebeta2.iam.gserviceaccount.com"
+READ_TARGETS = (
+    ("grant_logging_bucket", "GET", "https://logging.googleapis.com/v2/" + LOG_BUCKET, None, "logging.buckets.get", LOG_BUCKET),
+    *(("grant_secret_" + key, "GET", "https://secretmanager.googleapis.com/v1/projects/clipforgebeta2/secrets/" + name,
+       None, "secretmanager.secrets.get", "projects/clipforgebeta2/secrets/" + name)
+      for key, name in (("bootstrap", "clipforge-int-bootstrap-admin"), ("ca", "clipforge-int-postgres-ca"))),
+    ("grant_postgres_policy", "POST", "https://iam.googleapis.com/v1/" + POSTGRES_SA + ":getIamPolicy?options.requestedPolicyVersion=3",
+     None, "iam.serviceAccounts.getIamPolicy", POSTGRES_SA),
+    ("grant_custom_role", "GET", "https://iam.googleapis.com/v1/projects/clipforgebeta2/roles/clipforgeIntBootstrapReader",
+     None, "iam.roles.get", "projects/clipforgebeta2/roles/clipforgeIntBootstrapReader"),
+    *(("secret_" + key + "_policy", "GET", "https://secretmanager.googleapis.com/v1/projects/clipforgebeta2/secrets/" + name
+       + ":getIamPolicy?options.requestedPolicyVersion=3", None, "secretmanager.secrets.getIamPolicy",
+       "projects/clipforgebeta2/secrets/" + name)
+      for key, name in (("bootstrap", "clipforge-int-bootstrap-admin"), ("ca", "clipforge-int-postgres-ca"))),
+    ("logging_sink", "GET", "https://logging.googleapis.com/v2/projects/clipforgebeta2/sinks/clipforge-int-access", None,
+     "logging.sinks.get", "projects/clipforgebeta2/sinks/clipforge-int-access"),
+    ("logging_view", "GET", "https://logging.googleapis.com/v2/" + LOG_VIEW, None, "logging.views.get", LOG_VIEW),
+    ("logging_view_policy", "POST", "https://logging.googleapis.com/v2/" + LOG_VIEW + ":getIamPolicy",
+     {"options": {"requestedPolicyVersion": 3}}, "logging.views.getIamPolicy", LOG_VIEW),
+)
 
 
 class ReferenceDifference(ValueError):
@@ -198,6 +220,42 @@ def direct_identity_anchor(token, reason):
             "reason": reason, "effective_identity": None, "proof": "requires_authenticated_server_audit_event"}
 
 
+def required_reads(token, reason):
+    """Read only ten fixed metadata/policy endpoints; publish no response values."""
+    c.require(bool(re.fullmatch(r"[A-Za-z0-9 ]{1,150}", reason)), "Invalid read correlation reason")
+    rows = []
+    for key, method, url, body, permission, resource in READ_TARGETS:
+        started = datetime.now(timezone.utc).isoformat()
+        request = Request(url, method=method, data=custody.canonical(body) if body is not None else None,
+                          headers={"Authorization": "Bearer " + token, "Content-Type": "application/json",
+                                   "X-Goog-Request-Reason": reason})
+        row = {"key": key, "category": "grant_verification" if key.startswith("grant_") else "dependent_read",
+               "method": method, "resource": resource, "required_permission_for_operation": permission,
+               "started_utc": started, "authentication": "same_explicit_WIF_token_as_IAP_matrix"}
+        try:
+            with build_opener(ProxyHandler({}), driver.NoRedirect()).open(request, timeout=45) as response:
+                raw = response.read(1024 * 1024 + 1)
+            c.require(len(raw) <= 1024 * 1024 and isinstance(json.loads(raw), dict), "Bounded metadata JSON required")
+            row.update(http_status=200, private_response_sha256=custody.sha256(raw), private_response_bytes=len(raw))
+        except HTTPError as error:
+            row.update(http_status=error.code, response_payload_withheld=True)
+        except (OSError, ValueError):
+            row.update(http_status=None, error="transport_or_invalid_private_response", response_payload_withheld=True)
+        row["completed_utc"] = datetime.now(timezone.utc).isoformat()
+        rows.append(row)
+    return rows
+
+
+def reads_allow_plan(result):
+    rows = result.get("required_reads", [])
+    return (len(rows) == len(READ_TARGETS) and {row.get("key") for row in rows} == {row[0] for row in READ_TARGETS}
+            and all(row.get("http_status") == 200 for row in rows)
+            and len(result.get("probes", [])) == 4
+            and {(row.get("route"), row.get("mode")) for row in result["probes"]}
+            == {(route, mode) for route in ROUTES for mode in ("explicit_http", "provider_ADC")}
+            and all(row.get("http_status") == 200 for row in result["probes"]))
+
+
 def run_diagnostic(work, reports, environ, root=ROOT):
     custody.hosted_context(environ)
     c.validate_variables(environ)
@@ -237,10 +295,11 @@ def run_diagnostic(work, reports, environ, root=ROOT):
         if policy is not None:
             row["policy"] = policy_metadata(policy, contract["expired_binding"])
         rows.append(row)
+    dependencies = required_reads(environ["GCP_ACCESS_TOKEN"], "ClipForge IAP diagnostic required reads run " + run_id)
     state_reference(raw, obj, driver.backend_inventory(bucket), contract)
     return {"schema": "clipforge-int-iap-diagnostic-result-1", "status": "read_comparison_completed_no_grants_no_apply",
             "controls_commit": environ["GITHUB_SHA"], "credentials": metadata, "provider_source": source_proof,
-            "state_reference": proof, "comparisons": compare_matrix(rows), "probes": rows,
+            "state_reference": proof, "comparisons": compare_matrix(rows), "probes": rows, "required_reads": dependencies,
             "historical_403_before_original_expiry": instant(contract["historical_failure_utc"]) < instant(contract["expired_binding"]["expires_utc"]),
             "original_binding_expired_now": datetime.now(timezone.utc) >= instant(contract["expired_binding"]["expires_utc"]),
             "historical_cause": "not_inferred_from_current_expired_grant_or_administrator_reads",
@@ -276,6 +335,10 @@ def main():
             plan_result = {"status": "plan_not_run_serial6_guard_not_activated", "apply_authorized": False,
                            "reason": "Current reference must be verified before the active guard is changed"}
             recovery.save_summary(reports, plan_result)
+        elif not reads_allow_plan(result):
+            recovery.save_summary(reports, {"status": "blocked_required_reads_no_plan_no_apply", "apply_authorized": False,
+                                  "required_reads": result["required_reads"], "IAP_comparisons": result["comparisons"]})
+            code = 1
         else:
             # All original HCL is pinned. No import file is copied: the five
             # completed imports are already registered in the serial6 state.
