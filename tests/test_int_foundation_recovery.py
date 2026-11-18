@@ -44,10 +44,10 @@ def authored_imports():
     return rows
 
 
-def authored_partial():
+def authored_partial(*, serial6=False):
     imports = authored_imports()
     imported = {row["address"] for row in imports}
-    current = sorted(c.FOUNDATION_ADDRESSES - imported)[:20]
+    current = sorted(c.FOUNDATION_ADDRESSES - {recovery.PENDING_IAP}) if serial6 else sorted(c.FOUNDATION_ADDRESSES - imported)[:20]
     groups = {}
     for address in current:
         kind, rest = address.split(".", 1)
@@ -60,13 +60,13 @@ def authored_partial():
         if index is not None:
             instance["index_key"] = index
         group["instances"].append(instance)
-    state = {"version": 4, "terraform_version": "1.15.8", "serial": 5,
+    state = {"version": 4, "terraform_version": "1.15.8", "serial": 6 if serial6 else 5,
              "lineage": "813c84a2-2ef1-ceb3-177e-3a2c3b815066", "resources": list(groups.values()),
              "outputs": {"reviewed_boundary": {"sensitive": True, "value": PRIVATE_SENTINEL, "type": "string"}}}
     raw = json.dumps(state, sort_keys=True, separators=(",", ":")).encode()
     backend = {"bucket": c.BUCKET, "prefix": c.PREFIX, "workspace": "default", "name": c.PREFIX + "/default.tfstate",
-               "generation": "1794961942265923", "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
-               "lineage": state["lineage"], "serial": 5, "terraform_version": "1.15.8", "version": 4, "managed_addresses": current}
+               "generation": "1794975925421249" if serial6 else "1794961942265923", "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+               "lineage": state["lineage"], "serial": state["serial"], "terraform_version": "1.15.8", "version": 4, "managed_addresses": current}
     previous = "private-plans/int/" + "b" * 40 + "/44194990499-1/"
     reference = lambda name, generation, digest: {"name": previous + name, "generation": generation, "sha256": digest, "size": 100}
     contract = {"schema": "clipforge-int-foundation-recovery-1", "mode": "plan_only_no_apply", "repository": "AldemaroCruz/ClipForge",
@@ -78,6 +78,10 @@ def authored_partial():
                 "original_plan_forbidden": {"run_id": "44194990499", "binary": reference("int.tfplan", "901", "a" * 64),
                                             "manifest": reference("manifest.json", "902", "b" * 64)},
                 "risk_acceptance": {"new_plan_approved": False, "maximum_expiry_utc": "2026-11-28T05:59:59+00:00"}}
+    if serial6:
+        contract.update(recovery_phase=recovery.SERIAL6_PHASE, imports=[], completed_imports=imports,
+                        pending_addresses=[recovery.PENDING_IAP], expected_plan={"no-op": 41, "create": 1},
+                        source_bindings={}, additional_retired_plans=[deepcopy(recovery.SERIAL5_RETIRED)])
     live = {"name": backend["name"], "generation": backend["generation"], "size": str(len(raw)), "timeCreated": "2026-11-18T00:00:00Z"}
     inventory = {"live": [live], "versions": [deepcopy(live)], "soft_deleted": []}
     return raw, inventory, contract
@@ -119,9 +123,11 @@ def authored_manifest(contract):
     now = datetime(2026, 11, 19, 0, 0, tzinfo=timezone.utc)
     files = {name: hashlib.sha256(("synthetic source bytes " + name).encode()).hexdigest() for name in c.FILES}
     base = custody.sha256(custody.canonical(files))
-    files["recovery-imports.tf"] = hashlib.sha256(b"synthetic exact import source").hexdigest()
+    serial6 = recovery.serial6_mode(contract)
+    if not serial6:
+        files["recovery-imports.tf"] = hashlib.sha256(b"synthetic exact import source").hexdigest()
     contract["source_bindings"] = {"base_configuration_sha256": base, "provider_lock_sha256": files[".terraform.lock.hcl"],
-                                   "imports_sha256": files["recovery-imports.tf"]}
+                                   **({} if serial6 else {"imports_sha256": files["recovery-imports.tf"]})}
     contract["baseline"] = {"configuration_commit": "b" * 40}
     prefix = "private-plans/int/" + "c" * 40 + "/50000000000-1/"
     manifest = {"schema": "clipforge-int-foundation-recovery-private-plan-1", "configuration_commit": "c" * 40,
@@ -136,6 +142,9 @@ def authored_manifest(contract):
                 "run_id": "50000000000", "run_attempt": "1",
                 "binary": {"name": prefix + "int.tfplan", "generation": "1001", "sha256": "d" * 64, "size": 100},
                 "json": {"name": prefix + "int.json", "generation": "1002", "sha256": "e" * 64, "size": 200}}
+    if serial6:
+        manifest.update(recovery_phase=recovery.SERIAL6_PHASE, completed_imports=deepcopy(contract["completed_imports"]),
+                        import_policies_sha256=None)
     return manifest, now
 
 
@@ -434,8 +443,10 @@ class FoundationRecovery(unittest.TestCase):
             changed[key][field] = value
             with self.subTest(reference=key, field=field), self.assertRaises(ValueError): recovery.verify_new_manifest(changed, self.contract, now=now)
 
-    def trace_recovery(self, root, *, race=None, native_exit=2, reviewed_controls="c" * 40, material_update=False):
+    def trace_recovery(self, root, *, race=None, native_exit=2, reviewed_controls="c" * 40, material_update=False,
+                       serial6=False, material_drift=False):
         """Real validation, simulated HTTP/source preconditions/native execution."""
+        raw_state, initial_inventory, initial_contract = authored_partial(serial6=True) if serial6 else (self.raw, self.inventory, self.contract)
         work, reports = root / "work", root / "reports"
         module = work / "module"
         module.mkdir(parents=True)
@@ -459,16 +470,16 @@ class FoundationRecovery(unittest.TestCase):
         if reviewed_controls is None:
             del env["INT_REVIEWED_CONTROLS_COMMIT"]
         binding = custody.source_binding(module, env)
-        contract = deepcopy(self.contract)
+        contract = deepcopy(initial_contract)
         contract["baseline"] = {"configuration_commit": "b" * 40}
         contract["source_bindings"] = {"base_configuration_sha256": binding["configuration_sha256"],
                                        "provider_lock_sha256": binding["provider_lock_sha256"],
-                                       "imports_sha256": custody.sha256(recovery.import_source(contract))}
+                                       **({} if serial6 else {"imports_sha256": custody.sha256(recovery.import_source(contract))})}
         (root / "config").mkdir()
         (root / "config/int-foundation-recovery.json").write_bytes(custody.canonical(contract))
         observations, calls, uploads = authored_observations(contract), [], []
         def current(_bucket):
-            inventory = deepcopy(self.inventory)
+            inventory = deepcopy(initial_inventory)
             operations = [operation for _, operation in calls]
             if race == "after-init" and "recovery_init" in operations:
                 inventory["live"][0]["generation"] = "1794961942265924"
@@ -478,7 +489,7 @@ class FoundationRecovery(unittest.TestCase):
                 query = parse_qs(urlsplit(url).query)
                 self.assertEqual(query["generation"], [contract["backend"]["generation"]])
                 self.assertEqual(query["ifGenerationMatch"], query["generation"])
-                return self.raw
+                return raw_state
             self.assertIn(resource, observations)
             self.assertTrue(url.endswith(":getIamPolicy"))
             return custody.canonical(observations[resource]["policy"])
@@ -493,6 +504,10 @@ class FoundationRecovery(unittest.TestCase):
                     row = next(row for row in plan["resource_changes"] if row["address"] in contract["backend"]["managed_addresses"])
                     row["change"]["actions"] = ["update"]
                     row["change"]["after"]["synthetic_private_attribute"] = PRIVATE_SENTINEL
+                if material_drift:
+                    plan["resource_drift"] = [{"address": "google_compute_instance.postgres", "type": "google_compute_instance",
+                                               "change": {"actions": ["update"], "before": {"etag": PRIVATE_SENTINEL + "-old"},
+                                                          "after": {"etag": PRIVATE_SENTINEL + "-new"}}}]
                 return 0, custody.canonical(plan)
             return 0, b""
         def upload(name, raw):
@@ -595,6 +610,173 @@ class FoundationRecovery(unittest.TestCase):
             with mock.patch.object(sys, "argv", ["int_foundation_recovery", operation]), redirect_stderr(io.StringIO()), self.subTest(operation=operation):
                 with self.assertRaises(SystemExit) as result: recovery.main()
             self.assertEqual(result.exception.code, 2)
+
+
+class FoundationRecoverySerial6(unittest.TestCase):
+    def setUp(self):
+        self.raw, self.inventory, self.contract = authored_partial(serial6=True)
+
+    def test_authored_serial6_has_41_addresses_without_claiming_real_state_preimage(self):
+        proof = recovery.verify_partial_bytes(self.raw, self.inventory, self.contract)
+        self.assertEqual(proof["classification"], "recognized_serial6_foundation_state")
+        self.assertEqual(len(proof["managed_addresses"]), 41)
+        self.assertNotIn(recovery.PENDING_IAP, proof["managed_addresses"])
+        self.assertNotEqual(proof["state"]["sha256"], recovery.SERIAL6_PIN["sha256"])
+        self.assertNotIn(PRIVATE_SENTINEL, json.dumps(proof))
+
+    def test_historical_contract_copy_remains_exact_without_becoming_active(self):
+        path = recovery.ROOT / "config/int-foundation-history/79ecadb-recovery-contract.json"
+        raw = path.read_bytes()
+        self.assertEqual(custody.sha256(raw), "b9be41bc3608e8ea4704cb99379dc337d3775382c32af942155a78c7f84f4a8d")
+        historical = json.loads(raw)
+        self.assertEqual(historical["backend"]["serial"], 5)
+        self.assertEqual(len(historical["imports"]), 5)
+        self.assertNotIn("recovery_phase", historical)
+
+    def test_current_contract_is_exact_confirmed_serial6_with_completed_imports_and_no_apply(self):
+        contract = recovery.load_contract()
+        self.assertTrue(recovery.serial6_mode(contract))
+        self.assertEqual({key: contract["backend"][key] for key in recovery.SERIAL6_PIN}, recovery.SERIAL6_PIN)
+        self.assertEqual(contract["state_confirmation"]["observed_utc"], "2026-11-18T12:56:44Z")
+        self.assertFalse(contract["state_confirmation"]["current_lock_present"])
+        self.assertEqual(contract["baseline"]["configuration_commit"], "264d1cfad6500e1abd60d3e7f966a3614a3a5831")
+        self.assertEqual(contract["baseline"]["controls_reference"], "79ecadb")
+        self.assertEqual(contract["imports"], [])
+        self.assertEqual(len(contract["completed_imports"]), 5)
+        self.assertFalse(contract["apply_authorized"])
+        self.assertFalse(contract["risk_acceptance"]["new_plan_approved"])
+        self.assertTrue(contract["risk_acceptance"]["historical_reference_only"])
+
+    def test_serial6_static_pin_checks_original_ten_sources_without_reading_import_file(self):
+        historical = json.loads((recovery.ROOT / "config/int-foundation-history/79ecadb-recovery-contract.json").read_bytes())
+        contract = deepcopy(historical)
+        contract.update(recovery_phase=recovery.SERIAL6_PHASE, completed_imports=deepcopy(historical["imports"]),
+                        imports=[], pending_addresses=[recovery.PENDING_IAP], expected_plan={"no-op": 41, "create": 1},
+                        additional_retired_plans=[deepcopy(recovery.SERIAL5_RETIRED)])
+        contract["backend"].update(recovery.SERIAL6_PIN)
+        contract["backend"]["managed_addresses"] = sorted(c.FOUNDATION_ADDRESSES - {recovery.PENDING_IAP})
+        del contract["source_bindings"]["imports_source"]
+        del contract["source_bindings"]["imports_sha256"]
+        native_read = Path.read_bytes
+        def read(path):
+            self.assertNotIn(path.name, {"int-foundation-recovery-imports.tf", "recovery-imports.tf"})
+            return native_read(path)
+        with mock.patch.object(Path, "read_bytes", read):
+            binding = recovery.static_contract(recovery.ROOT, contract)
+        self.assertEqual(binding["configuration_sha256"], "1cf09b8ebd357761a217b7cae3d46e37397eadff39deeaa79500aac5276a7a7c")
+        for key, value in (("serial", 5), ("generation", "1794975925421250"), ("sha256", "0" * 64), ("size", 109543)):
+            changed = deepcopy(contract)
+            changed["backend"][key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                recovery.static_contract(recovery.ROOT, changed)
+
+    def test_serial1_and_serial5_state_or_incomplete_41_set_are_rejected(self):
+        for mutation in ("serial1", "serial5", "missing", "substituted", "imports", "preview-source", "phase"):
+            contract = deepcopy(self.contract)
+            if mutation.startswith("serial"):
+                contract["backend"]["serial"] = int(mutation[-1])
+            elif mutation == "missing":
+                contract["backend"]["managed_addresses"].pop()
+            elif mutation == "substituted":
+                contract["backend"]["managed_addresses"] = sorted(contract["backend"]["managed_addresses"][1:] + [recovery.PENDING_IAP])
+            elif mutation == "imports":
+                contract["imports"] = authored_imports()
+            elif mutation == "preview-source":
+                contract["source_bindings"]["imports_source"] = "config/int-foundation-recovery-imports.tf"
+            else:
+                contract["recovery_phase"] = "unreviewed"
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                recovery.verify_partial_bytes(self.raw, self.inventory, contract)
+
+    def test_serial6_only_accepts_actual_41_noops_one_iap_create_and_no_imports(self):
+        plan = authored_plan(self.contract)
+        before = deepcopy(plan)
+        result = recovery.verify_recovery_plan(plan, self.contract)
+        self.assertEqual(result["counts"], {"no-op": 41, "create": 1})
+        self.assertEqual(result["imports"], [])
+        self.assertFalse(result["apply_authorized"])
+        self.assertEqual(plan, before)
+        self.assertEqual([row["address"] for row in plan["resource_changes"] if row["change"]["actions"] == ["create"]], [recovery.PENDING_IAP])
+
+    def test_serial6_drift_replacement_incomplete_and_hidden_noop_change_block(self):
+        for mutation in ("update", "replacement", "drift", "deferred", "incomplete", "hidden-noop", "import", "iap-noop", "member", "role"):
+            plan = authored_plan(self.contract)
+            prior = next(row for row in plan["resource_changes"] if row["address"] in self.contract["backend"]["managed_addresses"])
+            iap = next(row for row in plan["resource_changes"] if row["address"] == recovery.PENDING_IAP)
+            if mutation == "update": prior["change"]["actions"] = ["update"]
+            elif mutation == "replacement": prior["change"]["actions"] = ["delete", "create"]
+            elif mutation == "drift": plan["resource_drift"] = [{"address": prior["address"], "change": {"actions": ["update"]}}]
+            elif mutation == "deferred": plan["deferred_changes"] = [{"reason": "synthetic"}]
+            elif mutation == "incomplete": plan["complete"] = False
+            elif mutation == "hidden-noop": prior["change"]["after"]["private_change"] = PRIVATE_SENTINEL
+            elif mutation == "import": prior["change"]["importing"] = {"id": "synthetic-new-import"}
+            elif mutation == "iap-noop": iap["change"]["actions"] = ["no-op"]
+            elif mutation == "member": iap["change"]["after"]["member"] = "serviceAccount:other@example.invalid"
+            else: iap["change"]["after"]["role"] = "roles/owner"
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                recovery.verify_recovery_plan(plan, self.contract)
+
+    def test_serial6_manifest_has_only_ten_original_files_and_rejects_retired_backend(self):
+        manifest, now = authored_manifest(self.contract)
+        recovery.verify_new_manifest(manifest, self.contract, now)
+        self.assertEqual(set(manifest["configuration_files"]), set(c.FILES))
+        for mutation in ("import-file", "import-preview", "backend1", "backend5", "phase", "completed-imports", "old-binary"):
+            changed = deepcopy(manifest)
+            if mutation == "import-file": changed["configuration_files"]["recovery-imports.tf"] = "a" * 64
+            elif mutation == "import-preview": changed["imports"] = authored_imports()
+            elif mutation.startswith("backend"): changed["backend"]["serial"] = int(mutation[-1])
+            elif mutation == "phase": changed["recovery_phase"] = None
+            elif mutation == "completed-imports": changed["completed_imports"] = []
+            else: changed["binary"]["sha256"] = "c75860660cee6f3ac1c929963bac70f660e08d40767610e1895cd115f2462469"
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                recovery.verify_new_manifest(changed, self.contract, now)
+
+    def test_retired_serial5_binary_manifest_and_run_are_rejected_even_if_renamed(self):
+        for key in ("binary", "manifest"):
+            retired = recovery.SERIAL5_RETIRED[key]
+            for field in ("generation", "sha256"):
+                reference = {"name": "private-plans/int/" + "c" * 40 + "/50000000000-1/int.tfplan",
+                             "generation": "999999", "sha256": "f" * 64}
+                reference[field] = retired[field]
+                with self.subTest(key=key, field=field), self.assertRaises(ValueError):
+                    recovery.reject_original_plan(reference, self.contract)
+        with self.assertRaises(ValueError):
+            recovery.reject_original_plan({"name": "private-plans/int/" + "c" * 40 + "/44219757502-1/int.tfplan"}, self.contract)
+
+    def test_serial6_never_generates_import_source_or_observes_import_policies(self):
+        with self.assertRaises(ValueError): recovery.import_source(self.contract)
+        with mock.patch.object(recovery, "read_private", side_effect=AssertionError("no IAM observation")):
+            with self.assertRaises(ValueError): recovery.inspect_imports(self.contract)
+
+    def test_serial6_trace_uses_no_import_file_or_policy_reads_and_keeps_native_locking(self):
+        with tempfile.TemporaryDirectory(prefix="clipforge-serial6-fixture-") as temporary:
+            root = Path(temporary)
+            summary, calls, uploads = FoundationRecovery.trace_recovery(self, root, serial6=True)
+            self.assertIsNotNone(summary)
+            self.assertFalse((root / "work/module/recovery-imports.tf").exists())
+            self.assertEqual(summary["review"]["counts"], {"no-op": 41, "create": 1})
+            self.assertEqual(summary["review"]["imports"], [])
+            manifest = json.loads(uploads[-1][1])
+            self.assertEqual(set(manifest["configuration_files"]), set(c.FILES))
+            self.assertIsNone(manifest["import_policies_sha256"])
+            self.assertIn("-lock=true", calls[2][0])
+            self.assertNotIn("-refresh=false", calls[2][0])
+
+    def test_serial6_real_drift_fixture_is_preserved_privately_and_public_summary_blocks(self):
+        with tempfile.TemporaryDirectory(prefix="clipforge-serial6-drift-fixture-") as temporary:
+            summary, calls, uploads = FoundationRecovery.trace_recovery(self, Path(temporary), serial6=True, material_drift=True)
+            self.assertEqual(summary["status"], "blocked_recovery_plan_material_difference")
+            self.assertFalse(summary["apply_authorized"])
+            self.assertEqual(summary["review"]["drift"][0]["address"], "google_compute_instance.postgres")
+            self.assertEqual(summary["review"]["observed_drift"], [{"address": "google_compute_instance.postgres",
+                "type": "google_compute_instance", "actions": ["update"], "changed_attribute_keys": ["etag"]}])
+            private_plan = json.loads(uploads[1][1])
+            self.assertEqual(sum(row["change"]["actions"] == ["no-op"] for row in private_plan["resource_changes"]), 41)
+            self.assertEqual(sum(row["change"]["actions"] == ["create"] for row in private_plan["resource_changes"]), 1)
+            self.assertNotIn(PRIVATE_SENTINEL, json.dumps(summary))
+            self.assertIn(PRIVATE_SENTINEL, uploads[1][1].decode())
+            self.assertEqual(len(uploads), 3)
+            self.assertEqual(sum(operation == "recovery_plan" for _, operation in calls), 1)
 
 
 if __name__ == "__main__":

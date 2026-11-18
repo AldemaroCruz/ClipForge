@@ -274,7 +274,7 @@ def checks(work, reports):
           contract["tools"]["shellcheck"], "--external-sources", "--severity=style", "/source/infra/gcp/int-base/postgres-install.sh"])
     report["integrity"]["vm_startup_shellcheck"]["scope"] = "Static script plus explicit ID/VERSION_CODENAME schema fixture; not a VM or package scan"
     check("python_contracts", [*base, *source_mount, "--workdir=/source", contract["tools"]["python"], "python", "-B", "-m", "unittest",
-          "tests.test_tf_int", "tests.test_int_infra_release", "tests.test_int_foundation", "tests.test_int_foundation_sast", "tests.test_int_foundation_recovery", "tests.test_int_foundation_recovery_apply", "-v"])
+          "tests.test_tf_int", "tests.test_int_infra_release", "tests.test_int_foundation", "tests.test_int_foundation_sast", "tests.test_int_foundation_recovery", "tests.test_int_foundation_recovery_apply", "tests.test_int_iap_diagnostic", "-v"])
     check("native_mock_contracts", [*base, "--mount", "type=bind,source=" + str(work / "module") + ",target=/source,readonly",
           "--mount", "type=bind,source=" + str(work / "terraform-data") + ",target=/tfdata,readonly", "--workdir=/source",
           "--env=TF_DATA_DIR=/tfdata", "--env=TF_CLI_CONFIG_FILE=/dev/null", contract["tools"]["terraform"], "test", "-no-color"])

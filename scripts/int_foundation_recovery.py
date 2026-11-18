@@ -1,7 +1,8 @@
 """One private foundation recovery plan from an exact inspected partial state.
 
 No apply, import CLI, IAM grant, state write or backend migration entry point.
-Import blocks preview five owner-confirmed manual bootstrap bindings only.
+Historical fixtures preview five owner-confirmed manual bootstrap bindings.
+The opt-in serial6 phase contains no import source or new import observations.
 New callers/argv are reviewed planning controls, not inherited F-SAST acceptance.
 """
 from __future__ import annotations
@@ -29,6 +30,16 @@ IMPORT_ROWS = (
     ('runtime["migrate_password"]', "pg-migrator-password", "secretAccessor", "migrate"),
     ('version_publisher["app_password"]', "pg-app-password", "secretVersionAdder", "deploy"),
     ('version_publisher["migrator_password"]', "pg-migrator-password", "secretVersionAdder", "deploy"))
+SERIAL6_PHASE = "serial6_no_imports"
+PENDING_IAP = "google_iap_tunnel_instance_iam_member.protected_bootstrap"
+SERIAL6_PIN = {"generation": "1794975925421249", "serial": 6,
+               "lineage": "813c84a2-2ef1-ceb3-177e-3a2c3b815066",
+               "sha256": "360a728e0e3dcb37050389b5bf936a4359107eeeb579794b96d35743a59a1f43", "size": 109542}
+SERIAL5_RETIRED = {"run_id": "44219757502", "state_serial": 5,
+                   "manifest": {"name": "private-plans/int/264d1cfad6500e1abd60d3e7f966a3614a3a5831/44219757502-1/manifest.json",
+                                "generation": "1794967145187552", "sha256": "a6cd844f31900ab7d1c6012fa3a7b936a86698218551b2582a63266d88f4189e", "size": 6593},
+                   "binary": {"name": "private-plans/int/264d1cfad6500e1abd60d3e7f966a3614a3a5831/44219757502-1/int.tfplan",
+                              "generation": "1794967144807369", "sha256": "c75860660cee6f3ac1c929963bac70f660e08d40767610e1895cd115f2462469", "size": 44420}}
 
 
 def expected_imports():
@@ -43,6 +54,32 @@ def expected_imports():
     return rows
 
 
+def serial6_mode(contract):
+    """Opt-in pure shape; absent phase preserves authored historical fixtures."""
+    phase = contract.get("recovery_phase")
+    c.require(phase in {None, SERIAL6_PHASE}, "Unknown recovery phase")
+    if phase is None:
+        return False
+    c.require(contract.get("imports") == [] and contract.get("completed_imports") == expected_imports()
+              and contract.get("pending_addresses") == [PENDING_IAP]
+              and contract.get("expected_plan") == {"no-op": 41, "create": 1}
+              and contract.get("additional_retired_plans") == [SERIAL5_RETIRED]
+              and contract.get("apply_authorized") is False,
+              "Serial6 permits no imports, added targets or inherited apply authority")
+    pin = contract["backend"]
+    c.require(pin["serial"] == 6 and type(pin["serial"]) is int
+              and pin["lineage"] == SERIAL6_PIN["lineage"] and pin["terraform_version"] == "1.15.8"
+              and pin["managed_addresses"] == sorted(c.FOUNDATION_ADDRESSES - {PENDING_IAP}),
+              "Serial6 requires all 41 recorded foundation addresses and exact lineage/version")
+    c.require("imports_source" not in contract["source_bindings"] and "imports_sha256" not in contract["source_bindings"],
+              "Completed imports cannot introduce another import file")
+    return True
+
+
+def configuration_names(contract):
+    return tuple(c.FILES) if serial6_mode(contract) else (*c.FILES, "recovery-imports.tf")
+
+
 def load_contract(root=ROOT):
     value = json.loads((root / CONTRACT).read_bytes())
     c.require(value.get("schema") == SCHEMA and value.get("mode") == "plan_only_no_apply"
@@ -51,6 +88,7 @@ def load_contract(root=ROOT):
 
 
 def import_source(contract):
+    c.require(not serial6_mode(contract), "Serial6 has no new import source or preview")
     c.require(contract["imports"] == expected_imports(), "Only the five reviewed member imports are permitted")
     result = "# Reviewed recovery import proposals only. Planning previews imports; only a separately authorized apply could persist them.\n\n"
     for row in contract["imports"]:
@@ -72,6 +110,10 @@ def static_contract(root, contract=None):
               and binding["inputs"] == contract["inputs"], "Original HCL, inputs, provider or startup changed")
     c.require(custody.sha256((root / "scripts/tf_int_plan.py").read_bytes()) == contract["source_bindings"]["execution_driver_sha256"],
               "Original execution driver changed; prior source evidence cannot transfer")
+    if serial6_mode(contract):
+        c.require(all(contract["backend"].get(key) == value for key, value in SERIAL6_PIN.items()),
+                  "Serial6 production generation/serial/hash/size/lineage differs")
+        return binding
     c.require(contract["source_bindings"]["imports_source"] == "config/int-foundation-recovery-imports.tf",
               "Unreviewed import source")
     raw = (root / contract["source_bindings"]["imports_source"]).read_bytes()
@@ -121,10 +163,10 @@ def verify_partial_bytes(raw, inventory, contract):
               and type(state.get("serial")) is int and type(state.get("version")) is int,
               "Partial state lineage, serial or Terraform version changed")
     addresses = managed_addresses(state)
-    c.require(addresses == pin["managed_addresses"] and len(addresses) == 20
+    c.require(addresses == pin["managed_addresses"] and len(addresses) == (41 if serial6_mode(contract) else 20)
               and set(addresses) <= c.FOUNDATION_ADDRESSES and set(state.get("outputs", {})) <= {"reviewed_boundary"},
               "Partial resource provenance or outputs changed")
-    return {"classification": "recognized_partial_foundation_state", "state":
+    return {"classification": "recognized_serial6_foundation_state" if serial6_mode(contract) else "recognized_partial_foundation_state", "state":
             {key: pin[key] for key in ("bucket", "prefix", "workspace", "name", "generation", "size", "sha256", "lineage", "serial", "terraform_version")},
             "managed_addresses": addresses, "historical_locks_are_not_active": True, "apply_authorized": False}
 
@@ -142,17 +184,22 @@ def verify_import_observations(observations, contract):
 
 
 def reject_original_plan(reference, contract):
-    forbidden = contract["original_plan_forbidden"]
-    c.require(isinstance(reference, dict) and not any(reference.get("sha256") == forbidden[key]["sha256"]
-              or reference.get("name") == forbidden[key]["name"]
-              or reference.get("generation") == forbidden[key]["generation"] for key in ("binary", "manifest"))
-              and ("/" + forbidden["run_id"] + "-") not in reference.get("name", ""),
-              "Original 42-create plan is retired after partial apply and cannot be reused")
+    retired = [contract["original_plan_forbidden"], *contract.get("additional_retired_plans", [])]
+    c.require(isinstance(reference, dict), "Private plan reference required")
+    for forbidden in retired:
+        c.require(not any(reference.get(field) == forbidden[key][field]
+                  for key in ("binary", "manifest") for field in ("sha256", "name", "generation") if field in forbidden[key])
+                  and ("/" + forbidden["run_id"] + "-") not in reference.get("name", ""),
+                  "Retired serial1/serial5 plan cannot be reused after state progression")
 
 
 def verify_recovery_plan(plan, contract):
+    serial6 = serial6_mode(contract)
     c.require(plan.get("terraform_version") == "1.15.8" and plan.get("errored") is not True,
               "Wrong or failed native Terraform recovery plan")
+    if serial6:
+        c.require(plan.get("complete") is True and not plan.get("resource_drift") and not plan.get("deferred_changes"),
+                  "Serial6 drift, deferred work or incomplete evaluation requires private review")
     c.require(set(plan.get("variables", {})) == c.VARIABLES, "Unreviewed recovery variables or secret input")
     for key, value in {"project_id": c.PROJECT, "run_subnet_cidr": "10.80.0.0/26",
                        "postgres_subnet_cidr": "10.80.1.0/28", "data_disk_gb": 20}.items():
@@ -184,6 +231,10 @@ def verify_recovery_plan(plan, contract):
         actions = change["actions"]
         c.require(actions in (["create"], ["no-op"]), "Updates, deletion, replacement or unknown actions require review")
         c.require(address not in prior or actions == ["no-op"], "Existing foundation resources cannot be changed")
+        if serial6:
+            c.require((address in prior and actions == ["no-op"] and change.get("before") == change.get("after"))
+                      or (address == PENDING_IAP and actions == ["create"] and change.get("before") is None),
+                      "Serial6 allows exactly the existing 41 NOOPs and one absent IAP create")
         c.require(address in prior or address in imports or actions == ["create"],
                   "A pending resource cannot become a no-op without explicit state/import provenance")
         importing = change.get("importing")
@@ -217,12 +268,16 @@ def verify_recovery_plan(plan, contract):
         counts[actions[0]] += 1
     c.require(seen == targets and set(imported) == set(imports)
               and set(plan.get("output_changes", {})) <= {"reviewed_boundary"}, "Recovery plan or outputs are incomplete")
+    if serial6:
+        c.require(dict(counts) == contract["expected_plan"] and not imported,
+                  "Serial6 real plan counts/imports differ; do not force expected counts")
     return {"counts": dict(counts), "imports": sorted(imported), "addresses": sorted(targets), "computed_iam_roles": computed_roles,
             "existing_state_addresses": sorted(prior), "apply_authorized": False,
             "risk_acceptance": "Existing risk conditions/expiry preserved; this new plan is not approved"}
 
 
 def verify_new_manifest(manifest, contract, now=None):
+    serial6 = serial6_mode(contract)
     c.require(manifest.get("schema") == MANIFEST_SCHEMA and manifest.get("apply_authorized") is False
               and manifest.get("risk_acceptance") == contract["risk_acceptance"], "Recovery manifest grants new authority or changes risk limits")
     commit = manifest.get("configuration_commit", "")
@@ -235,13 +290,18 @@ def verify_new_manifest(manifest, contract, now=None):
               and manifest.get("terraform_version") == "1.15.8" and manifest.get("provider_version") == "8.11.0",
               "Recovery backend, imports, versions or inputs differ")
     files = manifest.get("configuration_files", {})
-    c.require(set(files) == set(c.FILES) | {"recovery-imports.tf"}
+    c.require(set(files) == set(configuration_names(contract))
               and all(isinstance(v, str) and re.fullmatch(r"[a-f0-9]{64}", v) for v in files.values())
               and custody.sha256(custody.canonical({name: files[name] for name in c.FILES})) == contract["source_bindings"]["base_configuration_sha256"]
-              and files["recovery-imports.tf"] == contract["source_bindings"]["imports_sha256"]
+              and (serial6 or files["recovery-imports.tf"] == contract["source_bindings"]["imports_sha256"])
               and files[".terraform.lock.hcl"] == manifest.get("provider_lock_sha256") == contract["source_bindings"]["provider_lock_sha256"]
               and custody.sha256(custody.canonical(files)) == manifest.get("configuration_sha256"),
               "Recovery source hashes or provider lock differ")
+    if serial6:
+        c.require(manifest.get("recovery_phase") == SERIAL6_PHASE
+                  and manifest.get("completed_imports") == contract["completed_imports"]
+                  and manifest.get("import_policies_sha256") is None,
+                  "Serial6 manifest cannot preview imports or inherit a retired phase")
     c.require(manifest.get("base_configuration_sha256") == contract["source_bindings"]["base_configuration_sha256"]
               and bool(re.fullmatch(r"[a-f0-9]{64}", manifest.get("control_sources_sha256", ""))), "Missing control/configuration integrity")
     c.require(bool(re.fullmatch(r"[1-9][0-9]*", manifest.get("run_id", "")))
@@ -296,12 +356,30 @@ def inspect_partial(bucket, contract):
 
 
 def inspect_imports(contract):
+    c.require(not serial6_mode(contract), "Serial6 has completed imports; no new import observations")
     observations = {}
     for sid in sorted({row["secret_id"] for row in contract["imports"]}):
         url = "https://secretmanager.googleapis.com/v1/projects/clipforgebeta2/secrets/" + sid + ":getIamPolicy"
         observations[sid] = {"http": 200, "policy": json.loads(read_private(url, "read bootstrap IAM member", sid))}
     verify_import_observations(observations, contract)
     return custody.sha256(custody.canonical(observations))
+
+
+def observed_drift(plan):
+    """Attribute names only: never emit drift values, etags or IAM policies."""
+    result = []
+    for row in plan.get("resource_drift", []):
+        change = row.get("change", {})
+        before, after = change.get("before") or {}, change.get("after") or {}
+        if isinstance(before, dict) and isinstance(after, dict):
+            keys = {key for key in set(before) | set(after) if before.get(key) != after.get(key) or (key in before) != (key in after)}
+            keys = sorted({key if isinstance(key, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", key)
+                           else "<noncanonical_attribute>" for key in keys})
+        else:
+            keys = ["<root>"]
+        result.append({"address": row.get("address"), "type": row.get("type"),
+                       "actions": change.get("actions"), "changed_attribute_keys": keys})
+    return result
 
 
 def plan_recovery(work, reports, environ):
@@ -315,20 +393,22 @@ def plan_recovery(work, reports, environ):
     c.require(adc.is_file() and adc.name.startswith("gha-creds-") and adc.suffix == ".json", "Only fresh Actions WIF credentials may plan")
     contract = load_contract()
     static_contract(ROOT, contract)
+    serial6 = serial6_mode(contract)
     c.require(custody.inputs(environ) == contract["inputs"], "Recovery dispatch inputs differ")
     module = work / "module"
-    # The unchanged driver checks prepare the base module. Verify every byte
-    # before adding the one explicit import file, without changing the checkout.
+    # The unchanged driver checks prepare the base module. Verify every byte;
+    # only the historical phase adds its reviewed import file in private scratch.
     binding = custody.source_binding(module, environ)
     c.require(binding["configuration_sha256"] == contract["source_bindings"]["base_configuration_sha256"], "Prepared module drift")
     c.require({p.name for p in module.glob("*.tf")} == {name for name in c.FILES if name.endswith(".tf")}
               and not list(module.glob("*.tf.json")) and not list(module.glob("*.tfvars*")), "Unexpected Terraform module input")
-    with (module / "recovery-imports.tf").open("xb") as stream:
-        stream.write(import_source(contract))
-    files = {name: custody.sha256((module / name).read_bytes()) for name in (*c.FILES, "recovery-imports.tf")}
+    if not serial6:
+        with (module / "recovery-imports.tf").open("xb") as stream:
+            stream.write(import_source(contract))
+    files = {name: custody.sha256((module / name).read_bytes()) for name in configuration_names(contract)}
     bucket = driver.metadata("/b/" + c.BUCKET, {"fields": "name,projectNumber,iamConfiguration,versioning,softDeletePolicy"})
     proof = inspect_partial(bucket, contract)
-    observations_sha = inspect_imports(contract)
+    observations_sha = None if serial6 else inspect_imports(contract)
     from scripts import review_int_foundation_plan as image_review
     image = image_review.image_metadata()
     binary = driver.terraform_binary()
@@ -340,7 +420,7 @@ def plan_recovery(work, reports, environ):
     code, _ = driver.run([binary, "plan", "-input=false", "-no-color", "-lock=true", "-lock-timeout=120s", "-detailed-exitcode",
                            "-var=machine_type=" + inputs["machine_type"], "-var=runtime_image=" + inputs["runtime_image"],
                            "-var=stage=foundation", "-var=secret_versions=null", "-out=" + str(target)], "recovery_plan", work, accepted=(0, 1, 2))
-    c.require(inspect_partial(bucket, contract) == proof and inspect_imports(contract) == observations_sha,
+    c.require(inspect_partial(bucket, contract) == proof and (serial6 or inspect_imports(contract) == observations_sha),
               "Backend or exact import policies changed while planning")
     c.require({name: custody.sha256((module / name).read_bytes()) for name in files} == files,
               "Terraform/import/provider sources changed during planning")
@@ -357,7 +437,12 @@ def plan_recovery(work, reports, environ):
                   "changes": [{"address": row.get("address"), "type": row.get("type"),
                                "actions": row.get("change", {}).get("actions"),
                                "importing": bool(row.get("change", {}).get("importing"))}
-                              for row in source_plan.get("resource_changes", []) if row.get("mode") == "managed"]}
+                              for row in source_plan.get("resource_changes", []) if row.get("mode") == "managed"],
+                  "drift": [{"address": row.get("address"), "type": row.get("type"),
+                             "actions": row.get("change", {}).get("actions")}
+                            for row in source_plan.get("resource_drift", [])],
+                  "observed_drift": observed_drift(source_plan),
+                  "deferred_changes_present": bool(source_plan.get("deferred_changes"))}
         review_status = "blocked_recovery_plan_material_difference"
     (work / "private-plan.json").write_bytes(raw)
     from scripts import check_int_foundation as foundation
@@ -375,6 +460,8 @@ def plan_recovery(work, reports, environ):
                 "run_id": environ["GITHUB_RUN_ID"], "run_attempt": environ["GITHUB_RUN_ATTEMPT"], "apply_authorized": False,
                 "risk_acceptance": contract["risk_acceptance"], "original_plan_rejected": contract["original_plan_forbidden"],
                 "plan_review_status": review_status}
+    if serial6:
+        manifest.update(recovery_phase=SERIAL6_PHASE, completed_imports=contract["completed_imports"])
     manifest["binary"] = custody.upload(prefix + "int.tfplan", target.read_bytes())
     manifest["json"] = custody.upload(prefix + "int.json", raw)
     verify_new_manifest(manifest, contract)
