@@ -1,0 +1,135 @@
+name: ClipForge INT close one exact serial-6 foundation plan
+
+on:
+  workflow_dispatch:
+    inputs:
+      approved_control_commit:
+        description: Full reviewed dispatch controls SHA D; producer configuration P stays immutable
+        type: string
+        required: true
+      close_decision_json:
+        description: Exact external owner decision; pending proposals are rejected
+        type: string
+        default: "null"
+      close_decision_sha256:
+        description: SHA256 of the canonical owner decision
+        type: string
+        required: true
+      iam_receipts_gzip_b64:
+        description: Bounded gzip/base64 of the sanitized raw administrative receipt index and files
+        type: string
+        default: ""
+
+permissions: {}
+concurrency:
+  group: clipforge-int-terraform-state
+  cancel-in-progress: false
+
+jobs:
+  close-reviewed-foundation:
+    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    environment: int
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+      GCP_TERRAFORM_SA: ${{ vars.GCP_TERRAFORM_SA }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
+      INT_STAGE: foundation
+      TF_WORKSPACE: default
+      MACHINE_TYPE: e2-micro
+      SECRET_VERSIONS_JSON: "null"
+      RUNTIME_IMAGE: us-central1-docker.pkg.dev/clipforgebeta2/clipforge-int/runtime@sha256:d4b65631b30c26785ae18898cd826990fa20b4dce45015fb241ba108ddba7d49
+      INT_APPROVED_COMMIT: ${{ inputs.approved_control_commit }}
+      CLOSE_DECISION_JSON: ${{ inputs.close_decision_json }}
+      CLOSE_DECISION_SHA256: ${{ inputs.close_decision_sha256 }}
+      CLOSE_IAM_RECEIPTS_GZIP_B64: ${{ inputs.iam_receipts_gzip_b64 }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out exact dispatch controls D
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify the proposed exact producer and allocate private scratch
+        id: proposal
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test "$INT_APPROVED_COMMIT" = "$GITHUB_SHA"
+          python -B -m scripts.int_foundation_close producer
+          python -B -m unittest tests.test_int_foundation_close -v
+          git check-ignore --no-index --quiet gha-creds-tf-int01.json
+          test -z "$(git ls-files -- ':(glob)**/gha-creds-*.json')"
+          printf 'TF_INT_WORK_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/clipforge-tf-int01.XXXXXXXX")" >> "$GITHUB_ENV"
+          printf 'TF_INT_REPORT_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/clipforge-tf-report.XXXXXXXX")" >> "$GITHUB_ENV"
+
+      - name: Check out immutable plan producer P separately
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AldemaroCruz/ClipForge
+          ref: ${{ steps.proposal.outputs.producer_commit }}
+          path: plan-source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify the immutable producer checkout
+        env:
+          EXPECTED_PRODUCER: ${{ steps.proposal.outputs.producer_commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C plan-source rev-parse HEAD)" = "$EXPECTED_PRODUCER"
+
+      - name: Prepare pinned Terraform without a wrapper
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.15.8
+          terraform_wrapper: false
+
+      - name: Authenticate Terraform through the existing WIF provider
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_TERRAFORM_SA }}
+          token_format: access_token
+          access_token_lifetime: 1800s
+          create_credentials_file: true
+          export_environment_variables: true
+          cleanup_credentials: true
+
+      - name: Require fresh evidence and owner decision, then apply only the reviewed saved binary
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: python -B -m scripts.int_foundation_close apply
+
+      - name: Preserve only allowlisted closure evidence
+        if: ${{ always() && steps.proposal.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: int-foundation-close-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.TF_INT_REPORT_DIR }}/close-summary.json
+            ${{ env.TF_INT_REPORT_DIR }}/close-summary.md
+          retention-days: 7
+          if-no-files-found: warn
+          include-hidden-files: false
+
+      - name: Remove only this run's private scratch
+        if: ${{ always() && steps.proposal.outcome == 'success' }}
+        shell: bash
+        run: python -B scripts/tf_int_plan.py cleanup

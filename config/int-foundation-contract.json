@@ -119,7 +119,8 @@
       "scripts/int_foundation_recovery.py",
       "scripts/int_foundation_recovery_apply.py",
       "scripts/int_iap_diagnostic.py",
-      "scripts/int_iap_provider_probe.py"
+      "scripts/int_iap_provider_probe.py",
+      "scripts/int_foundation_close.py"
     ],
     "test_support_python": [
       "scripts/int_bootstrap_db.py",
@@ -137,7 +138,8 @@
       "tests/test_int_foundation_candidate.py",
       "tests/test_int_foundation_recovery.py",
       "tests/test_int_foundation_recovery_apply.py",
-      "tests/test_int_iap_diagnostic.py"
+      "tests/test_int_iap_diagnostic.py",
+      "tests/test_int_foundation_close.py"
     ],
     "workflows": [
       ".github/workflows/int-foundation-check.yml",
@@ -145,7 +147,8 @@
       ".github/workflows/tf-int-plan.yml",
       ".github/workflows/int-foundation-recovery-plan.yml",
       ".github/workflows/int-foundation-recovery-apply.yml",
-      ".github/workflows/int-iap-diagnostic.yml"
+      ".github/workflows/int-iap-diagnostic.yml",
+      ".github/workflows/int-foundation-close.yml"
     ],
     "config": [
       "config/int-foundation-contract.json",
@@ -165,7 +168,8 @@
       "config/int-foundation-history/5800b4c-foundation-contract.json",
       "config/int-foundation-history/bbf7573-foundation-contract.json",
       "config/int-foundation-history/bbf7573-iap-diagnostic.json",
-      "config/int-foundation-history/bbf7573-recovery-contract.json"
+      "config/int-foundation-history/bbf7573-recovery-contract.json",
+      "config/int-foundation-close.json"
     ],
     "deferred_procedures": [
       "protected database initialization",
@@ -184,7 +188,8 @@
       "scripts/int_vm_hostkey.py",
       "scripts/int_vm_hostkey_guest.py",
       "tests/test_int_vm_hostkey.py",
-      "tests/test_int_foundation_iam.ps1"
+      "tests/test_int_foundation_iam.ps1",
+      "docs/INT-FOUNDATION-CLOSE.md"
     ]
   },
   "tools": {

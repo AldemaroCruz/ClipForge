@@ -1,0 +1,604 @@
+{
+  "schema": "clipforge-int-foundation-close-proposal-1",
+  "status": "proposed_not_authorized",
+  "repository": "AldemaroCruz/ClipForge",
+  "branch": "ci/bootstrap-sec03",
+  "environment": "int",
+  "apply_authorized": false,
+  "runtime_authorized": false,
+  "administrative_iam_performed_by_workflow": false,
+  "configuration_sha256": "bf2a20357afc9ccd86edf34efd4a069ba7f43eb14b2853022ec031a9850fe0e1",
+  "backend": {
+    "bucket": "clipforgebeta2-tfstate-int",
+    "generation": "1794975925421249",
+    "lineage": "813c84a2-2ef1-ceb3-177e-3a2c3b815066",
+    "name": "terraform/int/tf-int-01/default.tfstate",
+    "prefix": "terraform/int/tf-int-01",
+    "serial": 6,
+    "sha256": "360a728e0e3dcb37050389b5bf936a4359107eeeb579794b96d35743a59a1f43",
+    "size": 109542,
+    "terraform_version": "1.15.8",
+    "workspace": "default"
+  },
+  "plan": {
+    "configuration_commit": "24c753bd04cd3e530f08acee3768cb10545d1977",
+    "controls_commit": "24c753bd04cd3e530f08acee3768cb10545d1977",
+    "baseline_configuration_commit": "264d1cfad6500e1abd60d3e7f966a3614a3a5831",
+    "run_id": "44360231461",
+    "run_attempt": "1",
+    "created_utc": "2026-11-18T17:36:02.149542+00:00",
+    "expires_utc": "2026-11-19T17:36:02.149542+00:00",
+    "configuration_sha256": "bf2a20357afc9ccd86edf34efd4a069ba7f43eb14b2853022ec031a9850fe0e1",
+    "provider_lock_sha256": "89e2189a1b882ac5ad3ce74ad17a304e95cf7fa072b9ced86fce09e78b88b5fa",
+    "terraform_version": "1.15.8",
+    "provider_version": "8.11.0",
+    "backend": {
+      "bucket": "clipforgebeta2-tfstate-int",
+      "generation": "1794975925421249",
+      "lineage": "813c84a2-2ef1-ceb3-177e-3a2c3b815066",
+      "name": "terraform/int/tf-int-01/default.tfstate",
+      "prefix": "terraform/int/tf-int-01",
+      "serial": 6,
+      "sha256": "360a728e0e3dcb37050389b5bf936a4359107eeeb579794b96d35743a59a1f43",
+      "size": 109542,
+      "terraform_version": "1.15.8",
+      "workspace": "default"
+    },
+    "inputs": {
+      "machine_type": "e2-micro",
+      "runtime_image": "us-central1-docker.pkg.dev/clipforgebeta2/clipforge-int/runtime@sha256:d4b65631b30c26785ae18898cd826990fa20b4dce45015fb241ba108ddba7d49",
+      "secret_versions": null,
+      "stage": "foundation"
+    },
+    "image": {
+      "architecture": "X86_64",
+      "deprecation": "not_deprecated_no_schedule",
+      "id": "5913446147369107523",
+      "name": "debian-13-trixie-v20261116",
+      "project": "debian-cloud",
+      "status": "READY"
+    },
+    "risk_acceptance": {
+      "F-AUDIT-0077": "Alternative still not operational",
+      "F-SAST-EXEC": "Prior exact-binary acceptance is not transferred: recovery adds a planning caller and reviewed import argv/source. Native sites remain visible.",
+      "F-VM-XML": "Exact image identity acceptance preserved, no new scan/remediation/runtime approval",
+      "canonical_sha256": "096306c845df142f4be69a8b34a8e5ed89b5d153713a6fddcaf10ae9a47b3857",
+      "historical_reference_only": true,
+      "maximum_expiry_utc": "2026-11-28T05:59:59+00:00",
+      "new_plan_approved": false
+    },
+    "binary": {
+      "generation": "1795023362274596",
+      "name": "private-plans/int/24c753bd04cd3e530f08acee3768cb10545d1977/44360231461-1/int.tfplan",
+      "sha256": "9e6c6452ee4085533223e1adf0ce4c90d6319e1ceea131fa0af032df4dddac8e",
+      "size": 45971
+    },
+    "json": {
+      "generation": "1795023362527278",
+      "name": "private-plans/int/24c753bd04cd3e530f08acee3768cb10545d1977/44360231461-1/int.json",
+      "sha256": "0210d33b8289afd301d9e226a2f1380ca3b2b02399f23d8d01d6c1f1fef1ac85",
+      "size": 294833
+    },
+    "recovery_phase": "serial6_no_imports",
+    "completed_imports": [
+      {
+        "address": "google_secret_manager_secret_iam_member.runtime[\"api_password\"]",
+        "condition": null,
+        "id": "projects/clipforgebeta2/secrets/clipforge-int-pg-app-password roles/secretmanager.secretAccessor serviceAccount:clipforge-api-int@clipforgebeta2.iam.gserviceaccount.com",
+        "member": "serviceAccount:clipforge-api-int@clipforgebeta2.iam.gserviceaccount.com",
+        "role": "roles/secretmanager.secretAccessor",
+        "secret_id": "clipforge-int-pg-app-password"
+      },
+      {
+        "address": "google_secret_manager_secret_iam_member.runtime[\"worker_password\"]",
+        "condition": null,
+        "id": "projects/clipforgebeta2/secrets/clipforge-int-pg-app-password roles/secretmanager.secretAccessor serviceAccount:clipforge-worker-int@clipforgebeta2.iam.gserviceaccount.com",
+        "member": "serviceAccount:clipforge-worker-int@clipforgebeta2.iam.gserviceaccount.com",
+        "role": "roles/secretmanager.secretAccessor",
+        "secret_id": "clipforge-int-pg-app-password"
+      },
+      {
+        "address": "google_secret_manager_secret_iam_member.runtime[\"migrate_password\"]",
+        "condition": null,
+        "id": "projects/clipforgebeta2/secrets/clipforge-int-pg-migrator-password roles/secretmanager.secretAccessor serviceAccount:clipforge-migrate-int@clipforgebeta2.iam.gserviceaccount.com",
+        "member": "serviceAccount:clipforge-migrate-int@clipforgebeta2.iam.gserviceaccount.com",
+        "role": "roles/secretmanager.secretAccessor",
+        "secret_id": "clipforge-int-pg-migrator-password"
+      },
+      {
+        "address": "google_secret_manager_secret_iam_member.version_publisher[\"app_password\"]",
+        "condition": null,
+        "id": "projects/clipforgebeta2/secrets/clipforge-int-pg-app-password roles/secretmanager.secretVersionAdder serviceAccount:clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com",
+        "member": "serviceAccount:clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com",
+        "role": "roles/secretmanager.secretVersionAdder",
+        "secret_id": "clipforge-int-pg-app-password"
+      },
+      {
+        "address": "google_secret_manager_secret_iam_member.version_publisher[\"migrator_password\"]",
+        "condition": null,
+        "id": "projects/clipforgebeta2/secrets/clipforge-int-pg-migrator-password roles/secretmanager.secretVersionAdder serviceAccount:clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com",
+        "member": "serviceAccount:clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com",
+        "role": "roles/secretmanager.secretVersionAdder",
+        "secret_id": "clipforge-int-pg-migrator-password"
+      }
+    ],
+    "recovery_contract_sha256": "85953b2fbe27b480757fb24fe26cf4b88312a0cec704515be109f25e79ffc2fd",
+    "control_sources_sha256": "a716ab9e74d66afcfcebaa14f6956b44d616b69425a72dbfb5bc6f468e7fdafd",
+    "manifest": {
+      "name": "private-plans/int/24c753bd04cd3e530f08acee3768cb10545d1977/44360231461-1/manifest.json",
+      "generation": "1795023362682797",
+      "sha256": "ad7efc6f06ca2e7c9bad6e828f86bc184864585ddf7d6db0db5d8574ba733e38",
+      "size": 13211
+    }
+  },
+  "expected_review": {
+    "counts": {
+      "no-op": 41,
+      "create": 1
+    },
+    "imports": [],
+    "addresses": [
+      "google_compute_address.postgres",
+      "google_compute_disk.postgres",
+      "google_compute_firewall.deny_egress",
+      "google_compute_firewall.https",
+      "google_compute_firewall.iap",
+      "google_compute_firewall.postgres",
+      "google_compute_instance.postgres",
+      "google_compute_instance_iam_member.protected_bootstrap",
+      "google_compute_network.int",
+      "google_compute_route.egress",
+      "google_compute_router.egress",
+      "google_compute_router_nat.maintenance",
+      "google_compute_subnetwork.private[\"postgres\"]",
+      "google_compute_subnetwork.private[\"run\"]",
+      "google_iap_tunnel_instance_iam_member.protected_bootstrap",
+      "google_logging_log_view.access",
+      "google_logging_log_view_iam_member.audit_reader",
+      "google_logging_project_bucket_config.access",
+      "google_logging_project_sink.access",
+      "google_project_iam_audit_config.storage_access",
+      "google_project_iam_custom_role.bootstrap_reader",
+      "google_project_iam_member.bootstrap_reader",
+      "google_secret_manager_secret.runtime[\"bootstrap-admin\"]",
+      "google_secret_manager_secret.runtime[\"postgres-ca\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"api_ca\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"api_password\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"bootstrap_admin\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"migrate_ca\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"migrate_password\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"worker_ca\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"worker_password\"]",
+      "google_secret_manager_secret_iam_member.version_publisher[\"app_password\"]",
+      "google_secret_manager_secret_iam_member.version_publisher[\"bootstrap_admin\"]",
+      "google_secret_manager_secret_iam_member.version_publisher[\"migrator_password\"]",
+      "google_secret_manager_secret_iam_member.version_publisher[\"postgres_ca\"]",
+      "google_service_account_iam_member.protected_bootstrap",
+      "google_storage_bucket.private[\"backups\"]",
+      "google_storage_bucket.private[\"media\"]",
+      "google_storage_bucket_iam_member.backup_writer",
+      "google_storage_bucket_iam_member.media[\"api\"]",
+      "google_storage_bucket_iam_member.media[\"worker\"]",
+      "terraform_data.boundary"
+    ],
+    "computed_iam_roles": [],
+    "existing_state_addresses": [
+      "google_compute_address.postgres",
+      "google_compute_disk.postgres",
+      "google_compute_firewall.deny_egress",
+      "google_compute_firewall.https",
+      "google_compute_firewall.iap",
+      "google_compute_firewall.postgres",
+      "google_compute_instance.postgres",
+      "google_compute_instance_iam_member.protected_bootstrap",
+      "google_compute_network.int",
+      "google_compute_route.egress",
+      "google_compute_router.egress",
+      "google_compute_router_nat.maintenance",
+      "google_compute_subnetwork.private[\"postgres\"]",
+      "google_compute_subnetwork.private[\"run\"]",
+      "google_logging_log_view.access",
+      "google_logging_log_view_iam_member.audit_reader",
+      "google_logging_project_bucket_config.access",
+      "google_logging_project_sink.access",
+      "google_project_iam_audit_config.storage_access",
+      "google_project_iam_custom_role.bootstrap_reader",
+      "google_project_iam_member.bootstrap_reader",
+      "google_secret_manager_secret.runtime[\"bootstrap-admin\"]",
+      "google_secret_manager_secret.runtime[\"postgres-ca\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"api_ca\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"api_password\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"bootstrap_admin\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"migrate_ca\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"migrate_password\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"worker_ca\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"worker_password\"]",
+      "google_secret_manager_secret_iam_member.version_publisher[\"app_password\"]",
+      "google_secret_manager_secret_iam_member.version_publisher[\"bootstrap_admin\"]",
+      "google_secret_manager_secret_iam_member.version_publisher[\"migrator_password\"]",
+      "google_secret_manager_secret_iam_member.version_publisher[\"postgres_ca\"]",
+      "google_service_account_iam_member.protected_bootstrap",
+      "google_storage_bucket.private[\"backups\"]",
+      "google_storage_bucket.private[\"media\"]",
+      "google_storage_bucket_iam_member.backup_writer",
+      "google_storage_bucket_iam_member.media[\"api\"]",
+      "google_storage_bucket_iam_member.media[\"worker\"]",
+      "terraform_data.boundary"
+    ],
+    "apply_authorized": false,
+    "risk_acceptance": "Existing risk conditions/expiry preserved; this new plan is not approved",
+    "refresh_metadata": {
+      "schema": "clipforge-int-reviewed-refresh-metadata-1",
+      "source_run": "44354702837",
+      "source_private_plan_sha256": "bc70a91ec3ea9bb16eaaf0a8a0446d1282775fb2765766b3b5ee68e48e96a0ac",
+      "status": "recognized_refresh_only",
+      "classifications": [
+        {
+          "address": "google_logging_log_view_iam_member.audit_reader",
+          "type": "google_logging_log_view_iam_member",
+          "classification": "etag_only",
+          "changed_attribute_keys": [
+            "etag"
+          ],
+          "resource_actions": [
+            "no-op"
+          ],
+          "full_other_attributes_equal": true,
+          "refreshed_values_match_noop": true
+        },
+        {
+          "address": "google_project_iam_audit_config.storage_access",
+          "type": "google_project_iam_audit_config",
+          "classification": "etag_only",
+          "changed_attribute_keys": [
+            "etag"
+          ],
+          "resource_actions": [
+            "no-op"
+          ],
+          "full_other_attributes_equal": true,
+          "refreshed_values_match_noop": true
+        },
+        {
+          "address": "google_project_iam_member.bootstrap_reader",
+          "type": "google_project_iam_member",
+          "classification": "etag_only",
+          "changed_attribute_keys": [
+            "etag"
+          ],
+          "resource_actions": [
+            "no-op"
+          ],
+          "full_other_attributes_equal": true,
+          "refreshed_values_match_noop": true
+        },
+        {
+          "address": "google_secret_manager_secret.runtime[\"bootstrap-admin\"]",
+          "type": "google_secret_manager_secret",
+          "classification": "null_to_empty_map",
+          "changed_attribute_keys": [
+            "annotations",
+            "version_aliases"
+          ],
+          "resource_actions": [
+            "no-op"
+          ],
+          "full_other_attributes_equal": true,
+          "refreshed_values_match_noop": true
+        },
+        {
+          "address": "google_secret_manager_secret.runtime[\"postgres-ca\"]",
+          "type": "google_secret_manager_secret",
+          "classification": "null_to_empty_map",
+          "changed_attribute_keys": [
+            "annotations",
+            "version_aliases"
+          ],
+          "resource_actions": [
+            "no-op"
+          ],
+          "full_other_attributes_equal": true,
+          "refreshed_values_match_noop": true
+        },
+        {
+          "address": "google_secret_manager_secret_iam_member.runtime[\"api_ca\"]",
+          "type": "google_secret_manager_secret_iam_member",
+          "classification": "etag_only",
+          "changed_attribute_keys": [
+            "etag"
+          ],
+          "resource_actions": [
+            "no-op"
+          ],
+          "full_other_attributes_equal": true,
+          "refreshed_values_match_noop": true
+        },
+        {
+          "address": "google_secret_manager_secret_iam_member.runtime[\"bootstrap_admin\"]",
+          "type": "google_secret_manager_secret_iam_member",
+          "classification": "etag_only",
+          "changed_attribute_keys": [
+            "etag"
+          ],
+          "resource_actions": [
+            "no-op"
+          ],
+          "full_other_attributes_equal": true,
+          "refreshed_values_match_noop": true
+        },
+        {
+          "address": "google_secret_manager_secret_iam_member.runtime[\"migrate_ca\"]",
+          "type": "google_secret_manager_secret_iam_member",
+          "classification": "etag_only",
+          "changed_attribute_keys": [
+            "etag"
+          ],
+          "resource_actions": [
+            "no-op"
+          ],
+          "full_other_attributes_equal": true,
+          "refreshed_values_match_noop": true
+        },
+        {
+          "address": "google_secret_manager_secret_iam_member.runtime[\"worker_ca\"]",
+          "type": "google_secret_manager_secret_iam_member",
+          "classification": "etag_only",
+          "changed_attribute_keys": [
+            "etag"
+          ],
+          "resource_actions": [
+            "no-op"
+          ],
+          "full_other_attributes_equal": true,
+          "refreshed_values_match_noop": true
+        },
+        {
+          "address": "google_secret_manager_secret_iam_member.version_publisher[\"bootstrap_admin\"]",
+          "type": "google_secret_manager_secret_iam_member",
+          "classification": "etag_only",
+          "changed_attribute_keys": [
+            "etag"
+          ],
+          "resource_actions": [
+            "no-op"
+          ],
+          "full_other_attributes_equal": true,
+          "refreshed_values_match_noop": true
+        },
+        {
+          "address": "google_secret_manager_secret_iam_member.version_publisher[\"postgres_ca\"]",
+          "type": "google_secret_manager_secret_iam_member",
+          "classification": "etag_only",
+          "changed_attribute_keys": [
+            "etag"
+          ],
+          "resource_actions": [
+            "no-op"
+          ],
+          "full_other_attributes_equal": true,
+          "refreshed_values_match_noop": true
+        },
+        {
+          "address": "google_service_account_iam_member.protected_bootstrap",
+          "type": "google_service_account_iam_member",
+          "classification": "etag_only",
+          "changed_attribute_keys": [
+            "etag"
+          ],
+          "resource_actions": [
+            "no-op"
+          ],
+          "full_other_attributes_equal": true,
+          "refreshed_values_match_noop": true
+        }
+      ]
+    }
+  },
+  "iam_package": {
+    "manifest_sha256": "2b26ef420a8534211f5760f45a20eeaad23b2ec79e44b25a2176bd3a1520589d",
+    "source_proposal_sha256": "13aa4f5ae778237b890dd02ae8f5c3f5364bfa13f857a5f0386d22d3744e67a1",
+    "window": {
+      "not_before_utc": "2026-11-18T18:15:00Z",
+      "expires_utc": "2026-11-18T20:15:00Z"
+    },
+    "bindings": [
+      {
+        "binding_id": "logging_bucket_read",
+        "condition": {
+          "description": "Proposed exact foundation close window 2026-11-18T18:15:00Z through 2026-11-18T20:15:00Z",
+          "expression": "(request.time >= timestamp(\"2026-11-18T18:15:00Z\") && request.time < timestamp(\"2026-11-18T20:15:00Z\")) && resource.type == \"logging.googleapis.com/LogBucket\" && resource.name == \"projects/clipforgebeta2/locations/us-central1/buckets/clipforge-int-access\"",
+          "title": "clipforge-int-foundation-close-logbucket-20261118T201500Z"
+        },
+        "condition_file": "condition-logging-bucket.json",
+        "condition_sha256": "a83b418362543eaa7da781814e22b77d4b1773113f075e75502e05d8e5a5f9d4",
+        "key": "logging_bucket_read",
+        "member": "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com",
+        "permissions": [
+          "logging.buckets.get"
+        ],
+        "resource": "projects/clipforgebeta2",
+        "role": "projects/clipforgebeta2/roles/clipforgeIntReadLogBucket_20261118T180000Z"
+      },
+      {
+        "binding_id": "secret_metadata_read_bootstrap_admin",
+        "condition": {
+          "description": "Proposed exact foundation close window 2026-11-18T18:15:00Z through 2026-11-18T20:15:00Z",
+          "expression": "request.time >= timestamp(\"2026-11-18T18:15:00Z\") && request.time < timestamp(\"2026-11-18T20:15:00Z\")",
+          "title": "clipforge-int-foundation-close-20261118T201500Z"
+        },
+        "condition_file": "condition-time.json",
+        "condition_sha256": "38b2fa34f67f6203382a384b7c3793699c7a8ca88c1ac180d26e1927842f0193",
+        "key": "secret_metadata_read",
+        "member": "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com",
+        "permissions": [
+          "secretmanager.secrets.get"
+        ],
+        "resource": "projects/clipforgebeta2/secrets/clipforge-int-bootstrap-admin",
+        "role": "projects/clipforgebeta2/roles/clipforgeIntReadSecretMetadata_20261118T180000Z"
+      },
+      {
+        "binding_id": "secret_metadata_read_postgres_ca",
+        "condition": {
+          "description": "Proposed exact foundation close window 2026-11-18T18:15:00Z through 2026-11-18T20:15:00Z",
+          "expression": "request.time >= timestamp(\"2026-11-18T18:15:00Z\") && request.time < timestamp(\"2026-11-18T20:15:00Z\")",
+          "title": "clipforge-int-foundation-close-20261118T201500Z"
+        },
+        "condition_file": "condition-time.json",
+        "condition_sha256": "38b2fa34f67f6203382a384b7c3793699c7a8ca88c1ac180d26e1927842f0193",
+        "key": "secret_metadata_read",
+        "member": "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com",
+        "permissions": [
+          "secretmanager.secrets.get"
+        ],
+        "resource": "projects/clipforgebeta2/secrets/clipforge-int-postgres-ca",
+        "role": "projects/clipforgebeta2/roles/clipforgeIntReadSecretMetadata_20261118T180000Z"
+      },
+      {
+        "binding_id": "postgres_sa_policy_read",
+        "condition": {
+          "description": "Proposed exact foundation close window 2026-11-18T18:15:00Z through 2026-11-18T20:15:00Z",
+          "expression": "request.time >= timestamp(\"2026-11-18T18:15:00Z\") && request.time < timestamp(\"2026-11-18T20:15:00Z\")",
+          "title": "clipforge-int-foundation-close-20261118T201500Z"
+        },
+        "condition_file": "condition-time.json",
+        "condition_sha256": "38b2fa34f67f6203382a384b7c3793699c7a8ca88c1ac180d26e1927842f0193",
+        "key": "postgres_sa_policy_read",
+        "member": "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com",
+        "permissions": [
+          "iam.serviceAccounts.getIamPolicy"
+        ],
+        "resource": "projects/clipforgebeta2/serviceAccounts/clipforge-postgres-int@clipforgebeta2.iam.gserviceaccount.com",
+        "role": "projects/clipforgebeta2/roles/clipforgeIntReadPostgresPolicy_20261118T180000Z"
+      },
+      {
+        "binding_id": "custom_role_metadata_read",
+        "condition": {
+          "description": "Proposed exact foundation close window 2026-11-18T18:15:00Z through 2026-11-18T20:15:00Z",
+          "expression": "request.time >= timestamp(\"2026-11-18T18:15:00Z\") && request.time < timestamp(\"2026-11-18T20:15:00Z\")",
+          "title": "clipforge-int-foundation-close-20261118T201500Z"
+        },
+        "condition_file": "condition-time.json",
+        "condition_sha256": "38b2fa34f67f6203382a384b7c3793699c7a8ca88c1ac180d26e1927842f0193",
+        "key": "custom_role_metadata_read",
+        "member": "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com",
+        "permissions": [
+          "iam.roles.get"
+        ],
+        "resource": "projects/clipforgebeta2",
+        "role": "projects/clipforgebeta2/roles/clipforgeIntReadRoleMetadata_20261118T180000Z"
+      },
+      {
+        "binding_id": "secret_policy_read_bootstrap_admin",
+        "condition": {
+          "description": "Proposed exact foundation close window 2026-11-18T18:15:00Z through 2026-11-18T20:15:00Z",
+          "expression": "request.time >= timestamp(\"2026-11-18T18:15:00Z\") && request.time < timestamp(\"2026-11-18T20:15:00Z\")",
+          "title": "clipforge-int-foundation-close-20261118T201500Z"
+        },
+        "condition_file": "condition-time.json",
+        "condition_sha256": "38b2fa34f67f6203382a384b7c3793699c7a8ca88c1ac180d26e1927842f0193",
+        "key": "secret_policy_read",
+        "member": "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com",
+        "permissions": [
+          "secretmanager.secrets.getIamPolicy"
+        ],
+        "resource": "projects/clipforgebeta2/secrets/clipforge-int-bootstrap-admin",
+        "role": "projects/clipforgebeta2/roles/clipforgeIntReadSecretPolicy_20261118T180000Z"
+      },
+      {
+        "binding_id": "secret_policy_read_postgres_ca",
+        "condition": {
+          "description": "Proposed exact foundation close window 2026-11-18T18:15:00Z through 2026-11-18T20:15:00Z",
+          "expression": "request.time >= timestamp(\"2026-11-18T18:15:00Z\") && request.time < timestamp(\"2026-11-18T20:15:00Z\")",
+          "title": "clipforge-int-foundation-close-20261118T201500Z"
+        },
+        "condition_file": "condition-time.json",
+        "condition_sha256": "38b2fa34f67f6203382a384b7c3793699c7a8ca88c1ac180d26e1927842f0193",
+        "key": "secret_policy_read",
+        "member": "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com",
+        "permissions": [
+          "secretmanager.secrets.getIamPolicy"
+        ],
+        "resource": "projects/clipforgebeta2/secrets/clipforge-int-postgres-ca",
+        "role": "projects/clipforgebeta2/roles/clipforgeIntReadSecretPolicy_20261118T180000Z"
+      },
+      {
+        "binding_id": "logging_sink_read",
+        "condition": {
+          "description": "Proposed exact foundation close window 2026-11-18T18:15:00Z through 2026-11-18T20:15:00Z",
+          "expression": "request.time >= timestamp(\"2026-11-18T18:15:00Z\") && request.time < timestamp(\"2026-11-18T20:15:00Z\")",
+          "title": "clipforge-int-foundation-close-20261118T201500Z"
+        },
+        "condition_file": "condition-time.json",
+        "condition_sha256": "38b2fa34f67f6203382a384b7c3793699c7a8ca88c1ac180d26e1927842f0193",
+        "key": "logging_sink_read",
+        "member": "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com",
+        "permissions": [
+          "logging.sinks.get"
+        ],
+        "resource": "projects/clipforgebeta2",
+        "role": "projects/clipforgebeta2/roles/clipforgeIntReadLogSink_20261118T180000Z"
+      },
+      {
+        "binding_id": "logging_view_read",
+        "condition": {
+          "description": "Proposed exact foundation close window 2026-11-18T18:15:00Z through 2026-11-18T20:15:00Z",
+          "expression": "(request.time >= timestamp(\"2026-11-18T18:15:00Z\") && request.time < timestamp(\"2026-11-18T20:15:00Z\")) && resource.type == \"logging.googleapis.com/LogView\" && resource.name == \"projects/clipforgebeta2/locations/us-central1/buckets/clipforge-int-access/views/pilot-access\"",
+          "title": "clipforge-int-foundation-close-logview-20261118T201500Z"
+        },
+        "condition_file": "condition-logging-view.json",
+        "condition_sha256": "56adfc5639ac5e9a32936ef7bf966614f514d2a58e09f311cc376f3ddabd7c6e",
+        "key": "logging_view_read",
+        "member": "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com",
+        "permissions": [
+          "logging.views.get"
+        ],
+        "resource": "projects/clipforgebeta2",
+        "role": "projects/clipforgebeta2/roles/clipforgeIntReadLogView_20261118T180000Z"
+      },
+      {
+        "binding_id": "logging_view_policy_read",
+        "condition": {
+          "description": "Proposed exact foundation close window 2026-11-18T18:15:00Z through 2026-11-18T20:15:00Z",
+          "expression": "request.time >= timestamp(\"2026-11-18T18:15:00Z\") && request.time < timestamp(\"2026-11-18T20:15:00Z\")",
+          "title": "clipforge-int-foundation-close-20261118T201500Z"
+        },
+        "condition_file": "condition-time.json",
+        "condition_sha256": "38b2fa34f67f6203382a384b7c3793699c7a8ca88c1ac180d26e1927842f0193",
+        "key": "logging_view_policy_read",
+        "member": "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com",
+        "permissions": [
+          "logging.views.getIamPolicy"
+        ],
+        "resource": "projects/clipforgebeta2/locations/us-central1/buckets/clipforge-int-access/views/pilot-access",
+        "role": "projects/clipforgebeta2/roles/clipforgeIntReadLogViewPolicy_20261118T180000Z"
+      },
+      {
+        "binding_id": "iap_management",
+        "condition": {
+          "description": "Proposed exact foundation close window 2026-11-18T18:15:00Z through 2026-11-18T20:15:00Z",
+          "expression": "request.time >= timestamp(\"2026-11-18T18:15:00Z\") && request.time < timestamp(\"2026-11-18T20:15:00Z\")",
+          "title": "clipforge-int-foundation-close-20261118T201500Z"
+        },
+        "condition_file": "condition-time.json",
+        "condition_sha256": "38b2fa34f67f6203382a384b7c3793699c7a8ca88c1ac180d26e1927842f0193",
+        "key": "iap_management",
+        "member": "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com",
+        "permissions": [
+          "iap.tunnelInstances.getIamPolicy",
+          "iap.tunnelInstances.setIamPolicy"
+        ],
+        "resource": "projects/816643438938/iap_tunnel/zones/us-central1-a/instances/1670495097211408131",
+        "role": "projects/clipforgebeta2/roles/clipforgeIntRecoveryIapPolicy_20261118T044838Z"
+      }
+    ]
+  },
+  "requires": [
+    "new_exact_owner_decision_and_manual_int_approval",
+    "fresh_foundation_evidence_of_dispatch_controls",
+    "administrator_exact_11_binding_package_and_raw_receipts",
+    "native_locking_apply_saved_binary_once",
+    "postchecks_42_addresses_functional_IAP_unchanged_VM_sink_read_convergence",
+    "separate_administrator_retirement_of_only_temporary_IAP_management_binding"
+  ],
+  "guest_database_runtime_promotion": false
+}
