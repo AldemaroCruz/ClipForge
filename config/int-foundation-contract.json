@@ -120,7 +120,8 @@
       "scripts/int_foundation_recovery_apply.py",
       "scripts/int_iap_diagnostic.py",
       "scripts/int_iap_provider_probe.py",
-      "scripts/int_foundation_close.py"
+      "scripts/int_foundation_close.py",
+      "scripts/int_foundation_verify.py"
     ],
     "test_support_python": [
       "scripts/int_bootstrap_db.py",
@@ -139,7 +140,8 @@
       "tests/test_int_foundation_recovery.py",
       "tests/test_int_foundation_recovery_apply.py",
       "tests/test_int_iap_diagnostic.py",
-      "tests/test_int_foundation_close.py"
+      "tests/test_int_foundation_close.py",
+      "tests/test_int_foundation_verify.py"
     ],
     "workflows": [
       ".github/workflows/int-foundation-check.yml",
@@ -169,7 +171,8 @@
       "config/int-foundation-history/bbf7573-foundation-contract.json",
       "config/int-foundation-history/bbf7573-iap-diagnostic.json",
       "config/int-foundation-history/bbf7573-recovery-contract.json",
-      "config/int-foundation-close.json"
+      "config/int-foundation-close.json",
+      "config/int-foundation-verification.json"
     ],
     "deferred_procedures": [
       "protected database initialization",
@@ -190,6 +193,7 @@
       "tests/test_int_vm_hostkey.py",
       "tests/test_int_foundation_iam.ps1",
       "docs/INT-FOUNDATION-CLOSE.md",
+      "docs/INT-FOUNDATION-POSTVERIFICATION.md",
       "tests/fixtures/int_foundation_close/d67e581-bandit-native.json",
       "tests/fixtures/int_foundation_close/d67e581-sast-review.json"
     ]

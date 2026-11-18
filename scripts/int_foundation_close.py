@@ -422,9 +422,10 @@ def verify_wif(environ):
     return {**metadata, "WIF_audience_matches_provider": True, "STS_endpoint_verified": True}
 
 
-def vm_proof(planned=None, planned_disk=None):
+def vm_proof(planned=None, planned_disk=None, *, reader=None):
+    read = read_json if reader is None else reader
     base = "https://compute.googleapis.com/compute/v1/projects/clipforgebeta2/zones/us-central1-a/"
-    vm = read_json(base + "instances/clipforge-int-base-postgres", "read_unchanged_foundation_VM", "1670495097211408131")
+    vm = read(base + "instances/clipforge-int-base-postgres", "read_unchanged_foundation_VM", "1670495097211408131")
     metadata = {row["key"]: row.get("value", "") for row in vm.get("metadata", {}).get("items", [])}
     interfaces, disks = vm.get("networkInterfaces", []), vm.get("disks", [])
     c.require(str(vm.get("id")) == "1670495097211408131" and vm.get("name") == "clipforge-int-base-postgres"
@@ -454,7 +455,7 @@ def vm_proof(planned=None, planned_disk=None):
     for attachment in disks:
         name = attachment.get("source", "").rsplit("/", 1)[-1]
         c.require(name in {"clipforge-int-base-postgres", "clipforge-int-base-postgres-data"}, "Unreviewed VM disk attachment")
-        disk = read_json(base + "disks/" + name, "read_unchanged_foundation_disk", name)
+        disk = read(base + "disks/" + name, "read_unchanged_foundation_disk", name)
         if attachment.get("boot"):
             c.require(str(disk.get("id")) == "2158164599035219715" and str(disk.get("sourceImageId")) == "5913446147369107523",
                       "Boot disk or pinned image identity changed")
@@ -469,9 +470,10 @@ def vm_proof(planned=None, planned_disk=None):
             "two_retained_disks": True, "guest_access_performed": False}
 
 
-def sink_proof(planned):
+def sink_proof(planned, *, reader=None):
+    read = read_json if reader is None else reader
     resource = "projects/clipforgebeta2/sinks/clipforge-int-access"
-    value = read_json("https://logging.googleapis.com/v2/" + resource, "read_convergent_foundation_sink", resource)
+    value = read("https://logging.googleapis.com/v2/" + resource, "read_convergent_foundation_sink", resource)
     destination = "logging.googleapis.com/projects/clipforgebeta2/locations/us-central1/buckets/clipforge-int-access"
     c.require(planned.get("unique_writer_identity") is True and planned.get("writer_identity") in {None, ""}
               and value.get("name") == "clipforge-int-access" and value.get("writerIdentity") in {None, ""}
@@ -523,9 +525,11 @@ def state_after_apply(bucket, plan):
     iap = [resource for resource in state["resources"] if resource.get("type") == "google_iap_tunnel_instance_iam_member" and resource.get("name") == "protected_bootstrap"]
     c.require(len(iap) == 1 and len(iap[0].get("instances", [])) == 1, "Exactly one functional IAP state instance required")
     attributes = iap[0]["instances"][0]["attributes"]
-    c.require(attributes.get("project") == "816643438938" and attributes.get("instance") == "1670495097211408131"
+    c.require(attributes.get("project") == "816643438938" and attributes.get("instance") in ("1670495097211408131", IAP_RESOURCE)
               and attributes.get("zone") == "us-central1-a" and attributes.get("role") == FUNCTIONAL_ROLE
-              and attributes.get("member") == DEPLOY_MEMBER and not attributes.get("condition"), "Final IAP state identity/role/member/condition differs")
+              and attributes.get("member") == DEPLOY_MEMBER
+              and (attributes.get("condition") is None or attributes.get("condition") == []),
+              "Final IAP state identity/role/member/condition differs")
     live = [row for row in driver.backend_inventory(bucket)["live"] if row["name"].startswith(c.PREFIX + "/")]
     c.require(len(live) == 1 and live[0]["name"] == driver.STATE_NAME and live[0]["generation"] == obj["generation"],
               "Current state generation or active lock changed after apply")
@@ -606,6 +610,37 @@ def save_summary(reports, summary):
         + encoded + "```\n", encoding="utf-8")
 
 
+def failure_summary(error, work):
+    """A successful native apply log cannot replace a later postcheck failure."""
+    attempted = (work / "apply-attempted.json").exists()
+    completed = (work / "apply-completed.json").exists()
+    operation = "foundation_close_postverification" if completed else (
+        "foundation_close_apply_saved" if attempted else "foundation_close_preflight")
+    diagnostic = dict(getattr(error, "receipt", {"operation": operation, "error_type": type(error).__name__}))
+    native_exit = 0 if completed else None
+    if attempted and not completed and diagnostic.get("operation") == "foundation_close_apply_saved":
+        code = diagnostic.get("native_exit", diagnostic.get("status"))
+        native_exit = code if type(code) is int else None
+        log = work / "foundation_close_apply_saved.log"
+        if native_exit is not None and log.is_file():
+            diagnostic.update(recovery.sanitized_native_errors(log.read_bytes()),
+                              operation="foundation_close_apply_saved", native_exit=native_exit)
+    if completed and str(error) in {
+            "A new untainted complete foundation descendant is required",
+            "Exactly one functional IAP state instance required",
+            "Final IAP state identity/role/member/condition differs",
+            "Current state generation or active lock changed after apply",
+            "Post-apply VM or sink differs; preserve resulting state without retry",
+            "Functional IAP member preexists/missing/conditional/duplicated or another policy binding changed"}:
+        diagnostic["message"] = str(error)
+    return {"status": "native_close_apply_completed_postverification_failed_no_retry" if completed
+            else "blocked_or_partial_foundation_close_preserve_state_no_retry",
+            "runtime_authorized": False, "guest_authorized": False,
+            "failure_phase": "postverification" if completed else ("native_apply" if attempted else "preflight"),
+            "native_apply": {"attempted": attempted, "completed": completed, "native_exit": native_exit},
+            "error": diagnostic}
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
@@ -624,12 +659,7 @@ def main():
         apply_reviewed(work, reports, os.environ)
         return 0
     except Exception as error:
-        summary = {"status": "blocked_or_partial_foundation_close_preserve_state_no_retry", "runtime_authorized": False,
-                   "error": getattr(error, "receipt", {"operation": "foundation_close_preflight", "error_type": type(error).__name__})}
-        if (work / "apply-completed.json").exists():
-            summary["status"] = "native_close_apply_completed_postverification_failed_no_retry"
-        if (work / "foundation_close_apply_saved.log").is_file():
-            summary["error"] = recovery.sanitized_native_errors((work / "foundation_close_apply_saved.log").read_bytes())
+        summary = failure_summary(error, work)
         if (work / "apply-attempted.json").exists():
             try:
                 bucket = driver.metadata("/b/" + c.BUCKET, {"fields": "name,projectNumber,iamConfiguration,versioning,softDeletePolicy"})

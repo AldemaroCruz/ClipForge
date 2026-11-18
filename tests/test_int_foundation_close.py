@@ -22,6 +22,14 @@ NOW = datetime(2026,11,18,18,30,tzinfo=timezone.utc)
 PRIVATE = 'synthetic-private-state-or-policy-sentinel'
 PRODUCER = 'c'*40
 CONTROLS = 'd'*40
+# Exact nonsecret attribute projection from run 44382086626's sanitized serial-7
+# observation. The surrounding state fixtures remain authored synthetic bytes;
+# they do not claim the observed generation/hash or contain the real state.
+OBSERVED_STATE7_IAP_ATTRIBUTES = {
+    'project':'816643438938','zone':'us-central1-a',
+    'instance':'projects/816643438938/iap_tunnel/zones/us-central1-a/instances/1670495097211408131',
+    'role':'roles/iap.tunnelResourceAccessor',
+    'member':'serviceAccount:clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com','condition':[]}
 
 
 def authored_iam():
@@ -166,7 +174,25 @@ class FoundationCloseContract(unittest.TestCase):
         native_raw=(fixtures/'d67e581-bandit-native.json').read_bytes()
         self.assertEqual(custody.sha256(native_raw),projection['origin']['bandit_native_sha256'])
         self.assertEqual(projection['origin']['control_commit'],'d67e5819123b0c05502daff3e402c9adaee74ba1')
-        self.assertEqual(projection['sast'],sast.evaluate(foundation.ROOT,json.loads(native_raw)))
+        # Reproduce this historical native report with its exact source bytes.
+        # The only current checker delta is the new verification test command;
+        # reversal must recover the historical proof hash, never a fabricated
+        # source fingerprint. Current source/scanner coverage remains a separate
+        # foundation gate and this fixture does not claim that newer evidence.
+        historical=self.root/'historical-native-sast'
+        source_names={row['resource'] for row in projection['sast']['findings']}
+        self.assertEqual(source_names,{'scripts/check_int_foundation.py','scripts/check_tf_int.py',
+                                       'scripts/int_release.py','scripts/tf_int_plan.py'})
+        for name in source_names:
+            raw=(foundation.ROOT/name).read_bytes()
+            if name=='scripts/check_int_foundation.py':
+                added=b', "tests.test_int_foundation_verify"'
+                self.assertEqual(raw.count(added),1)
+                raw=raw.replace(added,b'')
+            hashes={row['source_sha256'] for row in projection['sast']['findings'] if row['resource']==name}
+            self.assertEqual(hashes,{custody.sha256(raw)})
+            target=historical/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(raw)
+        self.assertEqual(projection['sast'],sast.evaluate(historical,json.loads(native_raw)))
         report=deepcopy(self.report)
         report['sast']=deepcopy(projection['sast'])
         return report
@@ -413,6 +439,61 @@ class FoundationCloseContract(unittest.TestCase):
                 self.assertEqual(summary['status'],'native_close_apply_completed_postverification_failed_no_retry' if completed else 'blocked_or_partial_foundation_close_preserve_state_no_retry')
                 self.assertEqual(summary['partial_state']['generation'],'2001');self.assertNotIn(PRIVATE,json.dumps(summary))
 
+    def test_main_keeps_successful_apply_distinct_from_postcheck_error_and_preserves_real_native_exit(self):
+        cases=('native-exit-2','native-signal','native-timeout','postcheck-identity','postcheck-read-denied','preflight')
+        for scenario in cases:
+            with tempfile.TemporaryDirectory(prefix='clipforge-close-failure-phase-') as temporary:
+                root=Path(temporary);work=root/'work';reports=root/'reports';work.mkdir();reports.mkdir()
+                completed=scenario.startswith('postcheck-')
+                def fail(*_args):
+                    if scenario!='preflight':(work/'apply-attempted.json').write_bytes(b'{}')
+                    if completed:
+                        (work/'apply-completed.json').write_bytes(b'{}')
+                        (work/'foundation_close_apply_saved.log').write_bytes(b'Apply complete! Resources: 1 added, 0 changed, 0 destroyed.\n')
+                    if scenario in ('native-exit-2','native-signal'):
+                        (work/'foundation_close_apply_saved.log').write_bytes(
+                            b"Error: 403 Permission 'iap.tunnelInstances.setIamPolicy' denied\n"+PRIVATE.encode())
+                        raise close.driver.FailedOperation('foundation_close_apply_saved',
+                            "403 Permission 'iap.tunnelInstances.setIamPolicy' denied",2 if scenario=='native-exit-2' else -9)
+                    if scenario=='native-timeout':raise close.driver.subprocess.TimeoutExpired('synthetic',1200,output=PRIVATE.encode())
+                    if scenario=='postcheck-identity':raise ValueError('Final IAP state identity/role/member/condition differs')
+                    if scenario=='postcheck-read-denied':raise close.driver.FailedOperation('read_unchanged_foundation_VM','HTTP 403 required read failed',403)
+                    raise ValueError(PRIVATE)
+                with mock.patch('sys.argv',['int_foundation_close','apply']),mock.patch.object(close.os,'umask'), \
+                        mock.patch.object(close.driver,'private_paths',return_value=(work,reports)), \
+                        mock.patch.object(close,'apply_reviewed',side_effect=fail) as execute, \
+                        mock.patch.object(close,'load_proposal',return_value=self.proposal), \
+                        mock.patch.object(close.driver,'metadata',return_value={'name':c.BUCKET}), \
+                        mock.patch.object(close.state_reader,'private_current_state',return_value=(self.raw,{'generation':'2001'},{})), \
+                        mock.patch.dict(close.os.environ,{},clear=True):self.assertEqual(close.main(),1)
+                execute.assert_called_once();summary=json.loads((reports/'close-summary.json').read_bytes())
+                self.assertFalse(summary['runtime_authorized']);self.assertFalse(summary['guest_authorized'])
+                self.assertNotIn(PRIVATE,json.dumps(summary));self.assertNotEqual(summary['error']['operation'],'recovery_plan')
+                if completed:
+                    self.assertEqual(summary['status'],'native_close_apply_completed_postverification_failed_no_retry')
+                    self.assertEqual(summary['failure_phase'],'postverification')
+                    self.assertEqual(summary['native_apply'],{'attempted':True,'completed':True,'native_exit':0})
+                    self.assertNotIn('original_private_log_sha256',summary['error'])
+                    if scenario=='postcheck-identity':
+                        self.assertEqual(summary['error']['operation'],'foundation_close_postverification')
+                        self.assertEqual(summary['error']['message'],'Final IAP state identity/role/member/condition differs')
+                    else:
+                        self.assertEqual(summary['error']['operation'],'read_unchanged_foundation_VM')
+                        self.assertEqual(summary['error']['status'],403)
+                elif scenario in ('native-exit-2','native-signal'):
+                    expected=2 if scenario=='native-exit-2' else -9
+                    self.assertEqual(summary['failure_phase'],'native_apply')
+                    self.assertEqual(summary['native_apply']['native_exit'],expected)
+                    self.assertEqual(summary['error']['native_exit'],expected)
+                    self.assertEqual(summary['error']['operation'],'foundation_close_apply_saved')
+                    self.assertFalse(summary['error']['raw_log_published'])
+                elif scenario=='native-timeout':
+                    self.assertIsNone(summary['native_apply']['native_exit'])
+                    self.assertEqual(summary['error']['error_type'],'TimeoutExpired')
+                else:
+                    self.assertEqual(summary['failure_phase'],'preflight')
+                    self.assertEqual(summary['native_apply'],{'attempted':False,'completed':False,'native_exit':None})
+
     def test_live_iam_checks_all_11_bindings_and_nine_existing_definitions(self):
         bindings=self.proposal['iam_package']['bindings'];policies={}
         for row in bindings:policies.setdefault(row['resource'],{'version':3,'bindings':[]})['bindings'].append(
@@ -457,6 +538,14 @@ class FoundationCloseContract(unittest.TestCase):
         value={'name':'clipforge-int-access','destination':destination,'filter':'authored filter'}
         with mock.patch.object(close,'read_json',return_value=value):
             proof=close.sink_proof(planned)
+        with mock.patch.object(close,'read_json',side_effect=AssertionError('Injected reader must supply all metadata')) as default:
+            calls=[]
+            def reader(url,operation,resource):
+                calls.append((url,operation,resource));return value
+            self.assertEqual(close.sink_proof(planned,reader=reader),proof)
+            default.assert_not_called()
+            self.assertEqual(calls,[('https://logging.googleapis.com/v2/projects/clipforgebeta2/sinks/clipforge-int-access',
+                                    'read_convergent_foundation_sink','projects/clipforgebeta2/sinks/clipforge-int-access')])
         self.assertTrue(proof['representation_converged_without_second_plan']);self.assertTrue(proof['exclusive_writer_identity_not_inferred'])
         for key,changed in (('writerIdentity','serviceAccount:unexpected'),('destination','other'),('filter','changed'),('disabled',True),
                             ('description','changed'),('interceptChildren',True),('exclusions',[{'name':'unreviewed'}])):
@@ -479,11 +568,15 @@ class FoundationCloseContract(unittest.TestCase):
             'metadata':{key:value for key,value in metadata.items() if key!='startup-script'},'metadata_startup_script':startup,
             'attached_disk':[{'source':data,'device_name':'clipforge-pg-data'}]}
         planned_disk={'name':'clipforge-int-base-postgres-data','size':20,'type':'pd-standard'}
-        def call(value,current_disks,current_plan=planned):
+        def call(value,current_disks,current_plan=planned,*,injected=False):
+            def reader(url,_operation,_resource):return value if '/instances/' in url else current_disks[url]
             with mock.patch.object(close,'STARTUP_SHA256',custody.sha256(startup.encode())), \
-                    mock.patch.object(close,'read_json',side_effect=lambda url,*_args,**_kwargs:value if '/instances/' in url else current_disks[url]):
-                return close.vm_proof(current_plan,planned_disk)
+                    mock.patch.object(close,'read_json',side_effect=AssertionError('Injected reader must supply all metadata') if injected else reader) as default:
+                proof=close.vm_proof(current_plan,planned_disk,reader=reader) if injected else close.vm_proof(current_plan,planned_disk)
+                if injected:default.assert_not_called()
+                return proof
         original=call(vm,disks)
+        self.assertEqual(original,call(vm,disks,injected=True))
         changed=deepcopy(vm);changed['lastStartTimestamp']='2026-11-18T18:29:00Z'
         self.assertNotEqual(original,call(changed,disks))
         for scenario in ('status','public-IP','data-id','data-size','data-type','boot-id','image-id','planned-metadata'):
@@ -516,19 +609,33 @@ class FoundationCloseContract(unittest.TestCase):
     def test_new_state_receipt_requires_42_untainted_descendant_addresses_and_exact_iap(self):
         state=json.loads(self.raw);state['serial']=7
         state['resources'].append({'mode':'managed','type':'google_iap_tunnel_instance_iam_member','name':'protected_bootstrap',
-            'instances':[{'attributes':{'project':'816643438938','instance':'1670495097211408131','zone':'us-central1-a',
-                'role':close.FUNCTIONAL_ROLE,'member':close.DEPLOY_MEMBER,'condition':None,'private':PRIVATE}}]})
-        for scenario in ('valid','tainted','missing','wrong-member','same-generation','lock'):
+            'instances':[{'attributes':deepcopy(OBSERVED_STATE7_IAP_ATTRIBUTES)}]})
+        for scenario in ('valid-full','valid-short','tainted','missing','wrong-project','wrong-zone','wrong-instance',
+                         'wrong-uri-project','wrong-uri-zone','wrong-uri-prefix','wrong-uri-suffix','named-instance',
+                         'wrong-role','wrong-member','condition','empty-dict-condition','same-generation','lock'):
             value=deepcopy(state);generation='2001'
+            attributes=value['resources'][-1]['instances'][0]['attributes']
+            if scenario=='valid-short':attributes.update(instance='1670495097211408131',condition=None)
             if scenario=='tainted':value['resources'][0]['instances'][0]['status']='tainted'
             elif scenario=='missing':value['resources'].pop(0)
-            elif scenario=='wrong-member':value['resources'][-1]['instances'][0]['attributes']['member']='user:other'
+            elif scenario=='wrong-project':attributes['project']='clipforgebeta2'
+            elif scenario=='wrong-zone':attributes['zone']='us-central1-b'
+            elif scenario=='wrong-instance':attributes['instance']='1670495097211408132'
+            elif scenario=='wrong-uri-project':attributes['instance']=close.IAP_RESOURCE.replace('816643438938','816643438939')
+            elif scenario=='wrong-uri-zone':attributes['instance']=close.IAP_RESOURCE.replace('us-central1-a','us-central1-b')
+            elif scenario=='wrong-uri-prefix':attributes['instance']='https://iap.googleapis.com/v1/'+close.IAP_RESOURCE
+            elif scenario=='wrong-uri-suffix':attributes['instance']=close.IAP_RESOURCE+'/'
+            elif scenario=='named-instance':attributes['instance']=close.IAP_RESOURCE.replace('1670495097211408131','clipforge-int-base-postgres')
+            elif scenario=='wrong-role':attributes['role']='roles/viewer'
+            elif scenario=='wrong-member':attributes['member']='user:other'
+            elif scenario=='condition':attributes['condition']=[{'expression':'request.time < timestamp("2030-01-01T00:00:00Z")'}]
+            elif scenario=='empty-dict-condition':attributes['condition']={}
             elif scenario=='same-generation':generation=self.contract['backend']['generation']
             raw=custody.canonical(value);obj={'name':c.PREFIX+'/default.tfstate','generation':generation}
             live=[obj]+([{'name':c.PREFIX+'/default.tflock','generation':'2002'}] if scenario=='lock' else [])
             with mock.patch.object(close.state_reader,'private_current_state',return_value=(raw,obj,{})), \
                     mock.patch.object(close.driver,'backend_inventory',return_value={'live':live}),self.subTest(scenario=scenario):
-                if scenario=='valid':
+                if scenario.startswith('valid-'):
                     result=close.state_after_apply({'name':c.BUCKET},self.proposal['plan'])
                     self.assertEqual(len(result['managed_addresses']),42);self.assertNotIn(PRIVATE,json.dumps(result))
                 else:
