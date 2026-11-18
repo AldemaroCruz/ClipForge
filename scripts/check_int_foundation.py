@@ -30,6 +30,72 @@ WORKFLOW = ".github/workflows/int-foundation-check.yml"
 BUNDLE = ("foundation-report.json", "bandit-native.json", "iac-native.json", "gitleaks-native.json")
 REQUIRED_CHECKS = {"static_scope_bindings_cost_iam", "fmt", "init_backend_false", "validate", "bandit_install_offline",
                    "gitleaks", "actionlint", "vm_startup_shellcheck", "python_contracts", "native_mock_contracts", "iac_native", "bandit_native"}
+APPROVED_PLAN_FIELDS = ("commit", "run_id", "manifest", "binary", "json", "created_utc", "configuration_sha256",
+                        "provider_lock_sha256", "terraform_version", "inputs", "backend", "managed_addresses", "actions")
+EXECUTION_SOURCE_SHA256 = "70982d2f5867d0101a181967d182058514e8c82a77423e5eceb09eb0cf89761b"
+IMAGE_IDENTITY = {"project": "debian-cloud", "name": "debian-13-trixie-v20261116", "image_id": "5913446147369107523"}
+INACTIVE_DATABASE_CONDITIONS = ["PostgreSQL remains masked", "No cluster", "No TCP/5432 listener", "No user data",
+                                "No secret retrieval or payload load", "No SQL bootstrap, migrations or service activation"]
+EXECUTION_SITES = [
+    {"rule": "B404", "severity": "LOW", "line": 16, "column": 0, "end_column": 17, "line_range": [16]},
+    {"rule": "B603", "severity": "LOW", "line": 169, "column": 13, "end_column": 122, "line_range": [169]},
+    {"rule": "B603", "severity": "LOW", "line": 180, "column": 13, "end_column": 81, "line_range": [180, 181]}]
+
+
+def instant(value):
+    result = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    c.require(result.tzinfo is not None, "Foundation authorization requires timezone-aware timestamps")
+    return result
+
+
+def verify_activation(contract, now=None):
+    """Validate the owner's exact data transition, never infer candidate approval."""
+    c.require(contract.get("planning_candidate") is None, "Comparative image candidate has no apply authorization")
+    acceptance = contract.get("owner_risk_acceptance")
+    c.require(isinstance(acceptance, dict)
+              and release.sha256(release.canonical(acceptance)) == contract.get("owner_risk_acceptance_sha256"),
+              "Missing or changed exact owner risk acceptance")
+    plan = contract["plan"]
+    c.require(acceptance.get("schema") == "clipforge-int-foundation-owner-risk-acceptance-2"
+              and acceptance.get("owner") == "AldemaroCruz" and acceptance.get("effective_apply_contract_activated") is True
+              and acceptance.get("invalidates_earlier_if_conditions_change") is True and acceptance.get("extends_plan_ttl") is False,
+              "Owner authorization does not activate this exact foundation contract")
+    c.require(acceptance.get("approved_plan_binding") == {key: plan[key] for key in APPROVED_PLAN_FIELDS}
+              and acceptance.get("source_commit") == plan["commit"] and acceptance.get("plan_run") == plan["run_id"]
+              and acceptance.get("authorized_manifest") == plan["manifest"] and acceptance.get("authorized_binary") == plan["binary"],
+              "Owner acceptance names another plan, custody reference or backend")
+    c.require(plan["actions"] == {"create": 42} and plan["managed_addresses"] == sorted(c.FOUNDATION_ADDRESSES)
+              and plan["inputs"]["stage"] == "foundation" and plan["inputs"]["secret_versions"] is None,
+              "Foundation authorization cannot expand resource actions or activate secrets/runtime")
+    risks = acceptance.get("acceptances", [])
+    c.require(len(risks) == 3 and {row.get("id") for row in risks} == {"F-VM-XML", "F-SAST-EXEC", "F-AUDIT-0077"},
+              "Owner acceptance must preserve the three individual residual decisions")
+    risks = {row["id"]: row for row in risks}
+    vm = risks["F-VM-XML"]
+    c.require(vm.get("image") == IMAGE_IDENTITY and vm.get("responsible") == acceptance["owner"]
+              and vm.get("decision") == "temporarily_accepted_by_owner_for_exact_image"
+              and vm.get("conditions") == INACTIVE_DATABASE_CONDITIONS and vm.get("remediation_or_scan_claimed") is False,
+              "VM acceptance cannot change the image, inactive database conditions or claim remediation")
+    c.require(risks["F-SAST-EXEC"].get("source_sha256") == EXECUTION_SOURCE_SHA256
+              and risks["F-SAST-EXEC"].get("native_findings") == EXECUTION_SITES,
+              "F-SAST-EXEC cannot transfer to changed execution sources")
+    expected_audit = [{"id": "GCP-0077", "severity": "MEDIUM", "resource": 'google_storage_bucket.private["' + name + '"]'}
+                      for name in ("backups", "media")]
+    c.require(risks["F-AUDIT-0077"].get("retention_days") == 30
+              and risks["F-AUDIT-0077"].get("operational") is False
+              and risks["F-AUDIT-0077"].get("gcs_server_access_logging") is False
+              and risks["F-AUDIT-0077"].get("findings") == expected_audit,
+              "Audit alternative requires its original retention, limits and operational verification")
+    current = now or datetime.now(timezone.utc)
+    created = instant(plan["created_utc"])
+    deadline = instant(acceptance["owner_apply_deadline_utc"])
+    risk_expiry = instant(acceptance["maximum_risk_expiry_utc"])
+    vm_expiry = instant(vm["maximum_expiry_utc"])
+    c.require(created <= current < deadline <= created + timedelta(seconds=86400),
+              "Owner apply authorization or original plan is expired; renewal requires review")
+    c.require(current < vm_expiry <= risk_expiry <= instant("2026-11-28T05:59:59+00:00"),
+              "Individual risk acceptance is expired or exceeds the owner's maximum validity")
+    return acceptance
 
 
 def load_contract(root=ROOT):
@@ -79,6 +145,15 @@ def check_static(root, module, contract):
     if candidate is None:
         c.require(binding["configuration_sha256"] == contract["plan"]["configuration_sha256"],
                   "Original foundation plan binding changed: configuration_sha256")
+        acceptance = verify_activation(contract)
+        c.require(json.loads((root / "config/owner-risk-acceptance.json").read_bytes()) == acceptance,
+                  "Versioned acceptance record differs from the exact active contract")
+        history = contract["history"]["previous_contract"]
+        c.require(history["path"] == "config/int-foundation-history/bb4d104-contract.json"
+                  and release.sha256((root / history["path"]).read_bytes()) == history["sha256"],
+                  "Historical contract and planning_candidate evidence changed")
+        c.require(release.sha256((root / "scripts/tf_int_plan.py").read_bytes()) == EXECUTION_SOURCE_SHA256,
+                  "The accepted F-SAST-EXEC execution source changed")
     c.require(sorted(c.FOUNDATION_ADDRESSES) == contract["plan"]["managed_addresses"], "Foundation resource scope changed")
     c.require(release.sha256((root / ".gitleaks.toml").read_bytes()) == contract["unchanged_gitleaks_policy_sha256"],
               "Secret policy changed; fresh precision evidence and review are required")
@@ -232,7 +307,10 @@ def decision_template(report, contract):
             "configuration_sha256": contract["plan"]["configuration_sha256"], "provider_lock_sha256": contract["plan"]["provider_lock_sha256"],
             "inputs": contract["plan"]["inputs"], "backend": contract["plan"]["backend"],
             "control_sources_sha256": report["control_sources_sha256"], "evidence_sha256": None,
-            "expires_utc": (datetime.fromisoformat(contract["plan"]["created_utc"]) + timedelta(seconds=86400)).isoformat(),
+            "owner_risk_acceptance_sha256": contract.get("owner_risk_acceptance_sha256"),
+            "expires_utc": min(instant(contract["plan"]["created_utc"]) + timedelta(seconds=86400),
+                               instant(contract.get("owner_risk_acceptance", {}).get("owner_apply_deadline_utc",
+                                       (instant(contract["plan"]["created_utc"]) + timedelta(seconds=86400)).isoformat()))).isoformat(),
             "apply_decision": "pending_not_authorized", "residual_decisions": [
                 {"id": "F-SAST-EXEC", "decision": "pending_not_accepted", "findings": residual},
                 *[{**row, "decision": "pending_not_accepted"} for row in contract["residual_controls"]]]}
@@ -242,13 +320,14 @@ def verify_plan_bridge(manifest, module, environ, reference, contract=None):
     contract = contract or load_contract()
     c.require(contract.get("planning_candidate") is None,
               "Comparative image candidate planning cannot authorize any saved-plan apply")
+    verify_activation(contract)
     plan = contract["plan"]
     c.require(environ.get("INT_STAGE") == "foundation" and isinstance(manifest.get("inputs"), dict)
               and manifest["inputs"].get("stage") == "foundation", "The control bridge is foundation-only")
     c.require(environ.get("INT_APPROVED_PLAN_COMMIT") == plan["commit"] == manifest.get("commit")
               and environ.get("INT_APPROVED_COMMIT") == environ.get("GITHUB_SHA"), "Both exact plan and control commits need explicit approval")
     c.require(reference == plan["manifest"] and all(manifest.get(key) == plan[key] for key in
-              ("binary", "json", "configuration_sha256", "provider_lock_sha256", "terraform_version", "inputs", "backend", "created_utc")),
+              ("binary", "json", "configuration_sha256", "provider_lock_sha256", "terraform_version", "inputs", "backend", "created_utc", "run_id")),
               "The bridge cannot change or reseal the approved saved plan")
     binding = release.source_binding(module, environ)
     c.require(all(binding[key] == manifest[key] for key in ("inputs", "configuration_sha256", "provider_lock_sha256", "terraform_version", "repository", "branch")),
@@ -258,21 +337,26 @@ def verify_plan_bridge(manifest, module, environ, reference, contract=None):
 def verify_owner_decision(decision, expected_sha, report, contract):
     c.require(contract.get("planning_candidate") is None,
               "Image candidate risks and apply require a separate explicit review")
+    verify_activation(contract)
     c.require(release.sha256(release.canonical(decision)) == expected_sha, "Owner decision hash differs from the reviewed canonical JSON")
     expected = decision_template(report, contract)
     c.require(set(decision) == set(expected) and all(decision[key] == expected[key] for key in expected
               if key not in {"apply_decision", "residual_decisions", "evidence_sha256", "expires_utc"}), "Owner decision does not bind this exact plan, control and evidence scope")
     c.require(decision["evidence_sha256"] == release.sha256(release.canonical(report)), "Owner decision names different foundation evidence")
-    expires = datetime.fromisoformat(decision["expires_utc"])
-    c.require(datetime.now(timezone.utc) < expires <= datetime.fromisoformat(expected["expires_utc"]), "Decision cannot extend the original plan lifetime")
+    c.require(report.get("source_files", {}).get("scripts/tf_int_plan.py") == EXECUTION_SOURCE_SHA256,
+              "Foundation evidence does not contain the unchanged accepted execution source")
+    expires = instant(decision["expires_utc"])
+    c.require(datetime.now(timezone.utc) < expires <= instant(expected["expires_utc"]), "Decision cannot extend the original plan lifetime")
     c.require(decision["apply_decision"] == "approve_exact_foundation_binary_once", "No specific saved-plan apply authorization")
     residual = expected["residual_decisions"][0]["findings"]
     # This is one named residual, not a general exception mechanism. Every other
     # native finding/error/high severity remains inadmissible.
     allowed = {("B404", 16), ("B603", 169), ("B603", 180)}
     c.require(all(row.get("resource") == "scripts/tf_int_plan.py" and row.get("severity") == "LOW"
+                  and row.get("source_sha256") == EXECUTION_SOURCE_SHA256
                   and (row.get("rule"), row.get("line")) in allowed for row in residual)
-              and len({(row["rule"], row["line"]) for row in residual}) == len(residual), "Unknown or higher-risk finding cannot be accepted through F-SAST-EXEC")
+              and {(row["rule"], row["line"]) for row in residual} == allowed and len(residual) == len(allowed),
+              "Missing, unknown or higher-risk finding cannot be accepted through F-SAST-EXEC")
     required = [] if not residual else [{"id": "F-SAST-EXEC", "decision": "approve_exact_execution_sites_for_this_binary_only", "findings": residual}]
     decisions = {"F-AUDIT-0077": "approve_this_alternative_with_mandatory_operational_validation",
                  "F-VM-XML": "approve_expected_dependency_install_inactive_only_with_mandatory_vm_inventory_review"}
@@ -344,6 +428,12 @@ def fetch_evidence(environ, root=ROOT):
     c.require(all(release.sha256(data[name]) == report["native_report_sha256"][name] for name in BUNDLE[1:]), "Native evidence bytes changed")
     native = json.loads(data["bandit-native.json"])
     bandit_contract(native, contract)
+    if contract.get("planning_candidate") is None:
+        sites = [{"rule": row["test_id"], "severity": row["issue_severity"], "line": row["line_number"],
+                  "column": row["col_offset"], "end_column": row["end_col_offset"], "line_range": row["line_range"]}
+                 for row in native["results"] if row["filename"] == "/source/scripts/tf_int_plan.py" and row["test_id"] in {"B404", "B603"}]
+        c.require(sorted(sites, key=lambda row: row["line"]) == EXECUTION_SITES,
+                  "Native execution-site coordinates differ from the individual owner's acceptance")
     c.require(report["sast"] == sast.evaluate(root, native), "SAST classifications do not reproduce from exact native findings/source")
     iac_contract(json.loads(data["iac-native.json"]), contract)
     c.require(json.loads(data["gitleaks-native.json"]) == [], "Secret findings block foundation")
@@ -355,18 +445,87 @@ def require_foundation_ci(environ, root=ROOT):
     decision = json.loads(environ.get("FOUNDATION_DECISION_JSON", "null"))
     c.require(isinstance(decision, dict), "A reviewed plan-specific owner decision is required; int approval alone is insufficient")
     verify_owner_decision(decision, environ.get("FOUNDATION_DECISION_SHA256", ""), report, load_contract(root))
+    # This fixed public image GET uses the same fresh Terraform WIF token as
+    # the backend/custody reads. It does not mutate the image or IAM.
+    from scripts import review_int_foundation_plan
+    image = review_int_foundation_plan.image_metadata()
+    c.require({"project": image["project"], "name": image["name"], "image_id": image["id"]} == IMAGE_IDENTITY,
+              "The current image no longer matches the individually accepted identity")
     return {"plan_commit": decision["plan_commit"], "control_commit": decision["control_commit"],
-            "decision_sha256": environ["FOUNDATION_DECISION_SHA256"], "evidence_sha256": decision["evidence_sha256"]}
+            "decision_sha256": environ["FOUNDATION_DECISION_SHA256"], "evidence_sha256": decision["evidence_sha256"],
+            "owner_risk_acceptance_sha256": decision["owner_risk_acceptance_sha256"], "image_preflight": image}
+
+
+def save_apply_summary(reports, summary, environ):
+    """Only explicitly constructed metadata may enter public apply evidence."""
+    encoded = json.dumps(summary, indent=2) + "\n"
+    (reports / "summary.json").write_text(encoded)
+    markdown = "# INT saved-plan apply\n\nStatus: " + summary["status"] + "\n\n"
+    markdown += "Preserve the resulting state. No automatic retry, replacement plan or runtime authorization.\n\n```json\n" + encoded + "```\n"
+    (reports / "summary.md").write_text(markdown)
+    if environ.get("GITHUB_STEP_SUMMARY"):
+        with Path(environ["GITHUB_STEP_SUMMARY"]).open("a") as stream:
+            stream.write(markdown)
+
+
+def apply_reviewed(work, reports, environ):
+    """Use the existing apply path once, retaining only a sanitized outcome."""
+    def commit_value(name):
+        value = environ.get(name, "")
+        return value if len(value) == 40 and all(char in "0123456789abcdef" for char in value) else "invalid_commit"
+    stage = environ.get("INT_STAGE")
+    run_id = environ.get("GITHUB_RUN_ID", "")
+    execution = {"configuration_commit": commit_value("INT_APPROVED_PLAN_COMMIT"),
+                 "controls_commit": commit_value("GITHUB_SHA"), "stage": stage if stage in {"foundation", "runtime"} else "invalid_stage",
+                 "run_id": run_id if run_id.isdecimal() else "invalid_run", "automatic_retry": False}
+    try:
+        reference = json.loads(environ["PLAN_MANIFEST_JSON"])
+        release.apply_saved(work, reports, reference, environ)
+    except (ValueError, HTTPError, KeyError) as error:
+        diagnostic = getattr(error, "receipt", None)
+        if not isinstance(diagnostic, dict):
+            diagnostic = c.diagnostic("reviewed_apply_preflight_or_receipt", str(error),
+                                      error.code if isinstance(error, HTTPError) else None)
+        summary = {"status": "apply_failed_preserve_state_no_retry", "execution": execution, "error": diagnostic}
+        save_apply_summary(reports, summary, environ)
+        return 1
+    # A successful foundation apply emits a privately held, generation-pinned
+    # receipt. Publish its metadata/address list, never the state attributes.
+    if environ.get("INT_STAGE") == "foundation":
+        summary = json.loads((reports / "summary.json").read_bytes())
+        try:
+            receipt = json.loads(release.fetch_verified(summary["foundation_receipt"]))
+            c.require(receipt["control_commit"] == execution["controls_commit"]
+                      and receipt["foundation_commit"] == execution["configuration_commit"], "Apply receipt commit identity differs")
+            c.require(set(receipt["state"]) == {"name", "generation", "size", "sha256", "lineage", "serial"}
+                      and receipt["managed_addresses"] == sorted(c.FOUNDATION_ADDRESSES), "Unrecognized post-apply receipt metadata")
+        except (ValueError, HTTPError, KeyError):
+            summary.update(status="foundation_applied_post_summary_verification_failed_no_retry", execution=execution,
+                           apply_completed=True, post_creation_acceptance="pending_actual_verification")
+            save_apply_summary(reports, summary, environ)
+            return 1
+        summary.update(execution=execution, resulting_state=receipt["state"], created_addresses=receipt["managed_addresses"],
+                       runtime_deployment="not_authorized", post_creation_acceptance="pending_actual_verification")
+        (reports / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+        markdown = "# INT foundation apply\n\nStatus: " + summary["status"] + "\n\nConfiguration: `" + execution["configuration_commit"] + "`. Controls: `" + execution["controls_commit"] + "`.\n\n"
+        markdown += "42 foundation addresses recorded. Runtime, Cloud Run, Jobs and SQL bootstrap remain outside this authorization.\n\nState metadata:\n```json\n" + json.dumps(receipt["state"], indent=2) + "\n```\n\nActual VM and audit verification remains pending.\n"
+        (reports / "summary.md").write_text(markdown)
+        if environ.get("GITHUB_STEP_SUMMARY"):
+            with Path(environ["GITHUB_STEP_SUMMARY"]).open("a") as stream:
+                stream.write(markdown)
+    return 0
 
 
 def main():
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=["prepare", "checks"])
+    parser.add_argument("operation", choices=["prepare", "checks", "apply"])
     parser.add_argument("--paths", type=Path)
     args = parser.parse_args()
     os.umask(0o077)
     work, reports = driver.private_paths()
+    if args.operation == "apply":
+        return apply_reviewed(work, reports, os.environ)
     if args.operation == "prepare":
         c.require(args.paths is not None, "Complete tracked-path input required")
         prepare(work, args.paths)
@@ -380,5 +539,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception:
-        print("Foundation validation blocked; private diagnostics retained locally, no acceptance or apply performed.")
+        print("Foundation operation blocked; sanitized diagnostics retained. No automatic retry or replacement plan.")
         raise SystemExit(1)

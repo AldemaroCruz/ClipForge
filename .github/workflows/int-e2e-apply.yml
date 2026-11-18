@@ -8,7 +8,7 @@ on:
         type: string
         required: true
       approved_plan_commit:
-        description: Exact source-plan commit; aa68d4a3228bf6a1092703285f05022c8727d99c for the foundation bridge
+        description: Exact configuration commit of the saved plan; independently bound from the dispatch control SHA
         type: string
         required: true
       foundation_decision_json:
@@ -80,7 +80,7 @@ jobs:
       PLAN_MANIFEST_JSON: ${{ inputs.manifest_reference_json }}
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
-      - name: Check out the exact source commit without retained credentials
+      - name: Check out the exact dispatch controls; the bridge verifies the original configuration bytes
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -133,7 +133,7 @@ jobs:
           GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           GH_TOKEN: ${{ github.token }}
         shell: bash
-        run: python -B -m scripts.int_release apply
+        run: python -B -m scripts.check_int_foundation apply
 
       - name: Preserve only the explicitly permitted summary
         if: ${{ always() && steps.scratch.outcome == 'success' }}

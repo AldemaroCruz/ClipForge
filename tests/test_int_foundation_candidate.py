@@ -1,5 +1,6 @@
 """Image-candidate configuration checks grant no deployment authorization."""
 import copy
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -8,6 +9,7 @@ import unittest
 from unittest import mock
 
 from scripts import check_int_foundation as f, check_tf_int as c, int_release as r
+from tests.test_int_foundation import acceptance_fixture
 
 
 class PlanningCandidate(unittest.TestCase):
@@ -82,6 +84,53 @@ class PlanningCandidate(unittest.TestCase):
             f.verify_owner_decision({"apply_decision": "approve_exact_foundation_binary_once"}, "", {}, self.contract)
         with self.assertRaisesRegex(ValueError, "cannot authorize"):
             f.verify_plan_bridge({}, self.module, {}, {}, self.contract)
+
+    def activated_fixture(self):
+        """Synthetic data transition, retaining the entire previous contract."""
+        active = copy.deepcopy(self.contract)
+        candidate = active.pop("planning_candidate")
+        active["history"] = copy.deepcopy(self.contract)
+        plan = active["plan"]
+        now = datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc)
+        plan.update(configuration_sha256=candidate["configuration_sha256"], run_id="456", created_utc=(now - timedelta(hours=1)).isoformat(),
+                    actions={"create": 42}, backend={"bucket": c.BUCKET, "prefix": c.PREFIX, "workspace": "default",
+                    "lineage": "synthetic-lineage", "serial": 1, "state_generation": "123", "state_sha256": "d" * 64})
+        prefix = "private-plans/int/" + plan["commit"] + "/456-1/"
+        for key, filename in (("manifest", "manifest.json"), ("binary", "int.tfplan"), ("json", "int.json")):
+            plan[key] = {"name": prefix + filename, "generation": "123", "sha256": "d" * 64, "size": 100}
+        active["owner_risk_acceptance"] = acceptance_fixture(plan, (now + timedelta(hours=2)).isoformat())
+        active["owner_risk_acceptance_sha256"] = r.sha256(r.canonical(active["owner_risk_acceptance"]))
+        return active, now
+
+    def test_exact_activation_uses_new_configuration_and_retains_previous_contract(self):
+        previous = copy.deepcopy(self.contract)
+        active, now = self.activated_fixture()
+        f.verify_activation(active, now=now)
+        self.assertEqual(active["history"], previous)
+        self.assertEqual(self.contract, previous)
+        self.assertNotEqual(active["plan"]["configuration_sha256"], previous["plan"]["configuration_sha256"])
+        self.assertNotEqual(active["plan"]["manifest"], previous["plan"]["manifest"])
+        self.assertNotIn("planning_candidate", active)
+
+    def test_candidate_flag_removal_or_resealed_unapproved_record_is_insufficient(self):
+        active, now = self.activated_fixture()
+        del active["owner_risk_acceptance"]
+        with self.assertRaises(ValueError): f.verify_activation(active, now=now)
+        active, now = self.activated_fixture()
+        active["owner_risk_acceptance"]["effective_apply_contract_activated"] = False
+        active["owner_risk_acceptance_sha256"] = r.sha256(r.canonical(active["owner_risk_acceptance"]))
+        with self.assertRaises(ValueError): f.verify_activation(active, now=now)
+        active, now = self.activated_fixture()
+        active["plan"]["manifest"] = copy.deepcopy(active["history"]["plan"]["manifest"])
+        with self.assertRaises(ValueError): f.verify_activation(active, now=now)
+
+    def test_rebinding_an_expired_original_does_not_create_a_new_lifetime(self):
+        active, now = self.activated_fixture()
+        active["plan"]["created_utc"] = "2026-11-13T23:39:17+00:00"
+        active["owner_risk_acceptance"] = acceptance_fixture(active["plan"], "2026-11-14T23:39:17+00:00")
+        active["owner_risk_acceptance_sha256"] = r.sha256(r.canonical(active["owner_risk_acceptance"]))
+        with self.assertRaisesRegex(ValueError, "expired"):
+            f.verify_activation(active, now=now)
 
 
 if __name__ == "__main__":

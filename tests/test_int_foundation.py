@@ -8,7 +8,9 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -16,8 +18,48 @@ from scripts import check_int_foundation as f, check_tf_int as c, int_release as
 from scripts import int_release_state as state, tf_int_plan as driver
 
 
+EXECUTION_SOURCE_FIXTURE = "70982d2f5867d0101a181967d182058514e8c82a77423e5eceb09eb0cf89761b"
+PLAN_BINDING_FIXTURE_FIELDS = ("commit", "run_id", "manifest", "binary", "json", "created_utc", "configuration_sha256",
+                               "provider_lock_sha256", "terraform_version", "inputs", "backend", "managed_addresses", "actions")
+
+
+def acceptance_fixture(plan, deadline):
+    """Authored adversarial-test input; never a real owner authorization."""
+    return {"schema": "clipforge-int-foundation-owner-risk-acceptance-2", "owner": "AldemaroCruz",
+            "source_commit": plan["commit"], "plan_run": plan["run_id"],
+            "authorized_manifest": copy.deepcopy(plan["manifest"]), "authorized_binary": copy.deepcopy(plan["binary"]),
+            "approved_plan_binding": {key: copy.deepcopy(plan[key]) for key in PLAN_BINDING_FIXTURE_FIELDS},
+            "effective_apply_contract_activated": True, "owner_apply_deadline_utc": deadline,
+            "maximum_risk_expiry_utc": "2026-11-28T05:59:59+00:00",
+            "invalidates_earlier_if_conditions_change": True, "extends_plan_ttl": False,
+            "acceptances": [
+                {"id": "F-VM-XML", "decision": "temporarily_accepted_by_owner_for_exact_image",
+                 "image": {"project": "debian-cloud", "name": "debian-13-trixie-v20261116", "image_id": "5913446147369107523"},
+                 "responsible": "AldemaroCruz", "maximum_expiry_utc": "2026-11-28T05:59:59+00:00",
+                 "remediation_or_scan_claimed": False,
+                 "conditions": ["PostgreSQL remains masked", "No cluster", "No TCP/5432 listener", "No user data",
+                                "No secret retrieval or payload load", "No SQL bootstrap, migrations or service activation"]},
+                {"id": "F-SAST-EXEC", "source_sha256": EXECUTION_SOURCE_FIXTURE, "native_findings": [
+                    {"rule": "B404", "severity": "LOW", "line": 16, "column": 0, "end_column": 17, "line_range": [16]},
+                    {"rule": "B603", "severity": "LOW", "line": 169, "column": 13, "end_column": 122, "line_range": [169]},
+                    {"rule": "B603", "severity": "LOW", "line": 180, "column": 13, "end_column": 81, "line_range": [180, 181]}]},
+                {"id": "F-AUDIT-0077", "retention_days": 30, "operational": False, "gcs_server_access_logging": False,
+                 "findings": [{"id": "GCP-0077", "severity": "MEDIUM", "resource": 'google_storage_bucket.private["backups"]'},
+                              {"id": "GCP-0077", "severity": "MEDIUM", "resource": 'google_storage_bucket.private["media"]'}]}]}
+
+
 class FoundationContract(unittest.TestCase):
     def setUp(self):
+        self.now = datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc)
+        fixed = self.now
+        class FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed.astimezone(tz) if tz else fixed.replace(tzinfo=None)
+        for module in (f, r):
+            clock = mock.patch.object(module, "datetime", FrozenDatetime)
+            clock.start()
+            self.addCleanup(clock.stop)
         self.temp = tempfile.TemporaryDirectory(prefix="clipforge-foundation-fixture-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -38,17 +80,26 @@ class FoundationContract(unittest.TestCase):
         ref = lambda name: {"name": base + name, "generation": "123", "sha256": "d" * 64, "size": 100}
         self.backend = {"classification": "recognized_initial_state", "initial_lineage": "authored-lineage", "initial_state_sha256": "e" * 64,
                         "live": [{"name": c.PREFIX + "/default.tfstate", "generation": "11"}]}
-        self.manifest = {"schema": r.SCHEMA, **binding, "created_utc": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),
+        self.manifest = {"schema": r.SCHEMA, **binding, "created_utc": (self.now - timedelta(hours=1)).isoformat(),
                          "backend": r.backend_binding(self.backend), "binary": ref("int.tfplan"), "json": ref("int.json"), "run_id": "123", "run_attempt": "1"}
         self.reference = ref("manifest.json")
-        self.contract = {"plan": {**self.manifest, "manifest": self.reference},
+        self.contract = {"plan": {**self.manifest, "manifest": self.reference,
+                                  "managed_addresses": sorted(c.FOUNDATION_ADDRESSES), "actions": {"create": 42}},
                          "residual_controls": [{"id": "F-AUDIT-0077", "status": "pending", "resources": ["authored-bucket"]},
                                                {"id": "F-VM-XML", "status": "pending", "resource": "authored-masked-vm", "advisory": "CVE-2026-6653"}]}
+        self.contract["history"] = {"previous_contract": {"plan": copy.deepcopy(self.contract["plan"])}}
+        self.contract["owner_risk_acceptance"] = acceptance_fixture(self.contract["plan"], (self.now + timedelta(hours=2)).isoformat())
+        self.seal_acceptance(self.contract)
+
+    @staticmethod
+    def seal_acceptance(contract):
+        contract["owner_risk_acceptance_sha256"] = r.sha256(r.canonical(contract["owner_risk_acceptance"]))
 
     def report(self):
         pending = [{"resource": "scripts/tf_int_plan.py", "rule": rule, "line": line, "severity": "LOW",
-                    "source_sha256": "f" * 64, "disposition": "risk_pending"} for rule, line in (("B404", 16), ("B603", 169), ("B603", 180))]
+                    "source_sha256": EXECUTION_SOURCE_FIXTURE, "disposition": "risk_pending"} for rule, line in (("B404", 16), ("B603", 169), ("B603", 180))]
         return {"control_commit": self.control_commit, "control_sources_sha256": "f" * 64,
+                "source_files": {"scripts/tf_int_plan.py": EXECUTION_SOURCE_FIXTURE},
                 "integrity_status": "passed", "integrity": {name: {"status": "passed"} for name in f.REQUIRED_CHECKS},
                 "readiness": "blocked", "sast": {"findings": pending}}
 
@@ -84,8 +135,10 @@ class FoundationContract(unittest.TestCase):
         with mock.patch.object(f, "load_contract", return_value=self.contract):
             r.verify_manifest(self.manifest, self.module, self.env, self.backend, foundation_bridge=True)
             stale = copy.deepcopy(self.manifest)
-            stale["created_utc"] = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+            stale["created_utc"] = (self.now - timedelta(hours=25)).isoformat()
             old_contract = copy.deepcopy(self.contract); old_contract["plan"]["created_utc"] = stale["created_utc"]
+            old_contract["owner_risk_acceptance"]["approved_plan_binding"]["created_utc"] = stale["created_utc"]
+            self.seal_acceptance(old_contract)
             with mock.patch.object(f, "load_contract", return_value=old_contract), self.assertRaisesRegex(ValueError, "expired"):
                 r.verify_manifest(stale, self.module, self.env, self.backend, foundation_bridge=True)
         with self.assertRaises(ValueError): r.verify_manifest(self.manifest, self.module, self.env, self.backend)
@@ -100,8 +153,259 @@ class FoundationContract(unittest.TestCase):
                              ("evidence_sha256", "0" * 64), ("residual_decisions", [])):
             changed = {**approved, field: value}
             with self.subTest(field=field), self.assertRaises(ValueError): f.verify_owner_decision(changed, r.sha256(r.canonical(changed)), report, self.contract)
-        changed = {**approved, "expires_utc": (datetime.now(timezone.utc) + timedelta(hours=25)).isoformat()}
+        changed = {**approved, "expires_utc": (self.now + timedelta(hours=25)).isoformat()}
         with self.assertRaises(ValueError): f.verify_owner_decision(changed, r.sha256(r.canonical(changed)), report, self.contract)
+
+    def test_exact_activation_binds_new_controls_without_mutating_plan_or_history(self):
+        before = copy.deepcopy(self.contract)
+        f.verify_activation(self.contract, now=self.now)
+        report = self.report()
+        decision = self.future_approved_fixture(report)
+        f.verify_owner_decision(decision, r.sha256(r.canonical(decision)), report, self.contract)
+        f.verify_plan_bridge(self.manifest, self.module, self.env, self.reference, self.contract)
+        self.assertEqual(decision["owner_risk_acceptance_sha256"], self.contract["owner_risk_acceptance_sha256"])
+        self.assertEqual(decision["expires_utc"], (self.now + timedelta(hours=2)).isoformat())
+        fresh_report = copy.deepcopy(report)
+        fresh_report.update(control_commit="c" * 40, control_sources_sha256="1" * 64)
+        fresh_report["source_files"]["scripts/check_int_foundation.py"] = "2" * 64
+        with self.assertRaises(ValueError):
+            f.verify_owner_decision(decision, r.sha256(r.canonical(decision)), fresh_report, self.contract)
+        fresh_decision = self.future_approved_fixture(fresh_report)
+        f.verify_owner_decision(fresh_decision, r.sha256(r.canonical(fresh_decision)), fresh_report, self.contract)
+        env = {**self.env, "GITHUB_SHA": "c" * 40, "INT_APPROVED_COMMIT": "c" * 40}
+        f.verify_plan_bridge(self.manifest, self.module, env, self.reference, self.contract)
+        self.assertNotEqual(fresh_decision["evidence_sha256"], decision["evidence_sha256"])
+        self.assertEqual(self.contract, before)
+
+    def test_activation_rejects_unapproved_candidate_or_changed_owner_and_custody(self):
+        original = copy.deepcopy(self.contract)
+        for field, value in (("owner", "another-owner"), ("effective_apply_contract_activated", False),
+                             ("invalidates_earlier_if_conditions_change", False), ("extends_plan_ttl", True),
+                             ("source_commit", "e" * 40), ("plan_run", "999")):
+            contract = copy.deepcopy(original)
+            contract["owner_risk_acceptance"][field] = value
+            self.seal_acceptance(contract)
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                f.verify_activation(contract, now=self.now)
+        for reference in ("manifest", "binary", "json"):
+            for field in ("name", "generation", "sha256", "size"):
+                contract = copy.deepcopy(original)
+                contract["plan"][reference][field] = 101 if field == "size" else "different"
+                with self.subTest(reference=reference, field=field), self.assertRaises(ValueError):
+                    f.verify_activation(contract, now=self.now)
+        for field in ("configuration_sha256", "provider_lock_sha256", "terraform_version", "backend", "inputs", "created_utc"):
+            contract = copy.deepcopy(original)
+            contract["plan"][field] = "different"
+            with self.subTest(binding=field), self.assertRaises(ValueError):
+                f.verify_activation(contract, now=self.now)
+        for candidate in ({"apply_authorized": False}, {"apply_authorized": True}):
+            with self.subTest(candidate=candidate), self.assertRaises(ValueError):
+                f.verify_activation({**original, "planning_candidate": candidate}, now=self.now)
+        with self.assertRaises(ValueError):
+            f.verify_activation({**original, "owner_risk_acceptance_sha256": "0" * 64}, now=self.now)
+
+    def test_activation_enforces_individual_risks_and_exact_three_execution_sites(self):
+        mutations = (
+            (0, "responsible", "another-owner"), (0, "image", {"project": "debian-cloud", "name": "mobile", "image_id": "1"}),
+            (0, "conditions", []), (0, "conditions", ["PostgreSQL enabled"]), (0, "remediation_or_scan_claimed", True),
+            (1, "source_sha256", "0" * 64), (1, "native_findings", []),
+            (1, "native_findings", self.contract["owner_risk_acceptance"]["acceptances"][1]["native_findings"][:2]),
+            (2, "retention_days", 29), (2, "operational", True), (2, "gcs_server_access_logging", True), (2, "findings", []))
+        for index, field, value in mutations:
+            contract = copy.deepcopy(self.contract)
+            contract["owner_risk_acceptance"]["acceptances"][index][field] = value
+            self.seal_acceptance(contract)
+            with self.subTest(residual=index, field=field), self.assertRaises(ValueError):
+                f.verify_activation(contract, now=self.now)
+        for field, value in (("column", 14), ("end_column", 121), ("severity", "HIGH"), ("line_range", [169, 170])):
+            contract = copy.deepcopy(self.contract)
+            contract["owner_risk_acceptance"]["acceptances"][1]["native_findings"][1][field] = value
+            self.seal_acceptance(contract)
+            with self.subTest(native_field=field), self.assertRaises(ValueError):
+                f.verify_activation(contract, now=self.now)
+        for count in (0, 2, 4):
+            contract = copy.deepcopy(self.contract)
+            risks = contract["owner_risk_acceptance"]["acceptances"]
+            contract["owner_risk_acceptance"]["acceptances"] = (risks + [risks[0]])[:count]
+            self.seal_acceptance(contract)
+            with self.subTest(residual_count=count), self.assertRaises(ValueError):
+                f.verify_activation(contract, now=self.now)
+        for mutation in ("empty", "subset", "changed-source", "source-inventory"):
+            report = self.report()
+            if mutation == "empty": report["sast"]["findings"] = []
+            elif mutation == "subset": report["sast"]["findings"].pop()
+            elif mutation == "changed-source": report["sast"]["findings"][0]["source_sha256"] = "0" * 64
+            else: report["source_files"]["scripts/tf_int_plan.py"] = "0" * 64
+            decision = self.future_approved_fixture(report)
+            with self.subTest(report_mutation=mutation), self.assertRaises(ValueError):
+                f.verify_owner_decision(decision, r.sha256(r.canonical(decision)), report, self.contract)
+
+    def test_expiry_and_scope_are_not_relaxed_even_with_a_resealed_record(self):
+        created = datetime.fromisoformat(self.manifest["created_utc"])
+        for instant in (created - timedelta(seconds=1), self.now + timedelta(hours=2), created + timedelta(hours=24)):
+            with self.subTest(instant=instant), self.assertRaises(ValueError):
+                f.verify_activation(self.contract, now=instant)
+        mutations = (("owner_apply_deadline_utc", (created + timedelta(hours=24, seconds=1)).isoformat()),
+                     ("owner_apply_deadline_utc", self.now.replace(tzinfo=None).isoformat()),
+                     ("maximum_risk_expiry_utc", (self.now - timedelta(seconds=1)).isoformat()),
+                     ("maximum_risk_expiry_utc", "2026-11-28T06:00:00+00:00"))
+        for field, value in mutations:
+            contract = copy.deepcopy(self.contract)
+            contract["owner_risk_acceptance"][field] = value
+            self.seal_acceptance(contract)
+            with self.subTest(expiry_field=field, value=value), self.assertRaises(ValueError):
+                f.verify_activation(contract, now=self.now)
+        contract = copy.deepcopy(self.contract)
+        contract["owner_risk_acceptance"]["acceptances"][0]["maximum_expiry_utc"] = self.now.isoformat()
+        self.seal_acceptance(contract)
+        with self.assertRaises(ValueError): f.verify_activation(contract, now=self.now)
+        for field, value in (("actions", {"create": 42, "delete": 1}), ("managed_addresses", sorted(c.FOUNDATION_ADDRESSES)[:-1]),
+                             ("inputs", {**self.contract["plan"]["inputs"], "stage": "runtime"}),
+                             ("inputs", {**self.contract["plan"]["inputs"], "secret_versions": {"app_password": "1"}})):
+            contract = copy.deepcopy(self.contract)
+            contract["plan"][field] = value
+            contract["owner_risk_acceptance"]["approved_plan_binding"][field] = copy.deepcopy(value)
+            self.seal_acceptance(contract)
+            with self.subTest(scope_field=field), self.assertRaises(ValueError):
+                f.verify_activation(contract, now=self.now)
+        report = self.report()
+        expired_decision = self.future_approved_fixture(report)
+        expired_decision["expires_utc"] = self.now.isoformat()
+        with self.assertRaises(ValueError):
+            f.verify_owner_decision(expired_decision, r.sha256(r.canonical(expired_decision)), report, self.contract)
+
+    def test_live_image_lookup_follows_valid_decision_and_blocks_before_tools(self):
+        # Explicit HTTP-boundary fixture: the authored-tests context intentionally
+        # has no cloud helper module, credentials or HCL. This is not a live GET.
+        image_module = types.ModuleType("scripts.review_int_foundation_plan")
+        image_module.image_metadata = mock.Mock(return_value={"project": "debian-cloud", "name": "debian-13-trixie-v20261116",
+                                                               "id": "5913446147369107523", "status": "READY"})
+        report = self.report()
+        decision = self.future_approved_fixture(report)
+        env = {**self.env, "FOUNDATION_DECISION_JSON": json.dumps(decision), "FOUNDATION_DECISION_SHA256": r.sha256(r.canonical(decision))}
+        with mock.patch.dict(sys.modules, {image_module.__name__: image_module}), \
+                mock.patch.object(sys.modules["scripts"], "review_int_foundation_plan", image_module, create=True), \
+                mock.patch.object(f, "fetch_evidence", return_value=report), mock.patch.object(f, "load_contract", return_value=self.contract):
+            approval = f.require_foundation_ci(env)
+            self.assertEqual(approval["plan_commit"], self.plan_commit)
+            image_module.image_metadata.assert_called_once_with()
+            image_module.image_metadata.reset_mock()
+            with mock.patch.object(driver, "run") as commands, self.assertRaises(ValueError):
+                r.apply_saved(self.root, self.root, self.reference, {**env, "FOUNDATION_DECISION_SHA256": "0" * 64})
+            commands.assert_not_called()
+            image_module.image_metadata.assert_not_called()
+            for failure in (ValueError("Image GET denied 403"), ValueError("Image deprecated")):
+                image_module.image_metadata.side_effect = failure
+                with mock.patch.object(driver, "run") as commands, self.subTest(failure=str(failure)), self.assertRaises(ValueError):
+                    r.apply_saved(self.root, self.root, self.reference, env)
+                commands.assert_not_called()
+            image_module.image_metadata.side_effect = None
+            image_module.image_metadata.return_value["id"] = "5913446147369107524"
+            with mock.patch.object(driver, "run") as commands, self.assertRaises(ValueError):
+                r.apply_saved(self.root, self.root, self.reference, env)
+            commands.assert_not_called()
+
+    def test_exact_foundation_apply_uses_verified_saved_bytes_and_native_lock_once(self):
+        from tests.test_tf_int import fixture
+        source_plan = fixture()
+        source_plan["resource_changes"] = [row for row in source_plan["resource_changes"] if row["address"] in c.FOUNDATION_ADDRESSES]
+        source_plan["variables"].update(stage={"value": "foundation"}, secret_versions={"value": None}, runtime_image={"value": self.image})
+        source_plan["terraform_version"] = self.manifest["terraform_version"]
+        vm = next(row for row in source_plan["resource_changes"] if row["address"] == "google_compute_instance.postgres")
+        vm["change"]["after"]["metadata_startup_script"] = (self.module / "postgres-install.sh").read_text()
+        plan_json, binary = r.canonical(source_plan), b"synthetic exact saved binary"
+        for key, raw in (("json", plan_json), ("binary", binary)):
+            self.manifest[key].update(sha256=r.sha256(raw), size=len(raw))
+        raw_manifest = r.canonical(self.manifest)
+        self.reference.update(sha256=r.sha256(raw_manifest), size=len(raw_manifest))
+        self.contract["owner_risk_acceptance"] = acceptance_fixture(self.contract["plan"], (self.now + timedelta(hours=2)).isoformat())
+        self.seal_acceptance(self.contract)
+        report = self.report()
+        decision = self.future_approved_fixture(report)
+        env = {**self.env, "FOUNDATION_DECISION_JSON": json.dumps(decision), "FOUNDATION_DECISION_SHA256": r.sha256(r.canonical(decision))}
+        objects = {self.reference["name"]: raw_manifest, self.manifest["json"]["name"]: plan_json, self.manifest["binary"]["name"]: binary}
+        def get(method, name, *, generation=None):
+            self.assertEqual(method, "GET")
+            self.assertEqual(generation, "123")
+            return objects[name]
+        image_module = types.ModuleType("scripts.review_int_foundation_plan")
+        image_module.image_metadata = mock.Mock(return_value={"project": "debian-cloud", "name": "debian-13-trixie-v20261116", "id": "5913446147369107523"})
+        with mock.patch.dict(sys.modules, {image_module.__name__: image_module}), \
+                mock.patch.object(sys.modules["scripts"], "review_int_foundation_plan", image_module, create=True), \
+                mock.patch.object(f, "fetch_evidence", return_value=report), mock.patch.object(f, "load_contract", return_value=self.contract), \
+                mock.patch.object(r, "request", side_effect=get), mock.patch.object(driver, "metadata", return_value={}), \
+                mock.patch.object(driver, "inspect_backend", return_value=self.backend) as inspect, \
+                mock.patch.object(driver, "terraform_binary", return_value="synthetic-terraform"), \
+                mock.patch.object(driver, "run", return_value=(0, b"")) as commands, \
+                mock.patch.object(r, "require_application_ci") as app_gate, \
+                mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(state, "emit_foundation_receipt", return_value={"name": "synthetic-receipt"}):
+            r.apply_saved(self.root, self.root, self.reference, env)
+        self.assertEqual((self.root / "approved.tfplan").read_bytes(), binary)
+        self.assertEqual(commands.call_count, 2)
+        self.assertEqual(commands.call_args_list[0].args[0][1], "init")
+        apply_argv = commands.call_args_list[1].args[0]
+        self.assertEqual(apply_argv, ["synthetic-terraform", "apply", "-input=false", "-no-color", "-lock=true", "-lock-timeout=120s", str(self.root / "approved.tfplan")])
+        self.assertEqual(inspect.call_count, 2)
+        app_gate.assert_not_called()
+
+    def test_apply_wrapper_preserves_sanitized_native_failure_without_retry(self):
+        failure = driver.FailedOperation("approved_same_plan_apply", "403 Permission 'compute.instances.create' denied on resource projects/clipforgebeta2/zones/us-central1-a/instances/synthetic\n403 Bearer synthetic-private-sentinel")
+        env = {**self.env, "PLAN_MANIFEST_JSON": json.dumps(self.reference)}
+        with mock.patch.object(r, "apply_saved", side_effect=failure) as saved, mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(f.apply_reviewed(self.root, self.root, env), 1)
+        saved.assert_called_once_with(self.root, self.root, self.reference, env)
+        value = json.loads((self.root / "summary.json").read_bytes())
+        self.assertEqual(value["error"], failure.receipt)
+        self.assertEqual(value["status"], "apply_failed_preserve_state_no_retry")
+        self.assertFalse(value["execution"]["automatic_retry"])
+        self.assertNotIn("synthetic-private-sentinel", json.dumps(value))
+
+    def test_apply_wrapper_publishes_only_receipt_metadata_and_foundation_addresses(self):
+        state_metadata = {"name": c.PREFIX + "/default.tfstate", "lineage": "synthetic-lineage", "serial": 2, "generation": "124", "sha256": "d" * 64, "size": 100}
+        private_receipt = {"control_commit": self.control_commit, "foundation_commit": self.plan_commit,
+                           "state": state_metadata, "managed_addresses": sorted(c.FOUNDATION_ADDRESSES),
+                           "private_resource_attributes": "synthetic-private-receipt-sentinel"}
+        reference = {"name": "synthetic-receipt"}
+        def applied(*_args):
+            (self.root / "summary.json").write_text(json.dumps({"status": "foundation_applied_runtime_not_approved", "foundation_receipt": reference}))
+        env = {**self.env, "PLAN_MANIFEST_JSON": json.dumps(self.reference)}
+        with mock.patch.object(r, "apply_saved", side_effect=applied) as saved, \
+                mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(r, "fetch_verified", return_value=r.canonical(private_receipt)) as fetch:
+            self.assertEqual(f.apply_reviewed(self.root, self.root, env), 0)
+        saved.assert_called_once()
+        fetch.assert_called_once_with(reference)
+        summary = json.loads((self.root / "summary.json").read_bytes())
+        self.assertEqual(summary["resulting_state"], state_metadata)
+        self.assertEqual(summary["created_addresses"], sorted(c.FOUNDATION_ADDRESSES))
+        self.assertEqual(summary["runtime_deployment"], "not_authorized")
+        self.assertNotIn("synthetic-private-receipt-sentinel", (self.root / "summary.json").read_text() + (self.root / "summary.md").read_text())
+
+    def test_receipt_failure_after_apply_reports_completion_without_retry_or_private_state(self):
+        reference = {"name": "synthetic-private-receipt"}
+        def applied(*_args):
+            (self.root / "summary.json").write_text(json.dumps({"status": "foundation_applied_runtime_not_approved", "foundation_receipt": reference}))
+        env = {**self.env, "PLAN_MANIFEST_JSON": json.dumps(self.reference)}
+        for outcome in ("fetch-error", "private-state-key", "missing-address"):
+            state_metadata = {"name": c.PREFIX + "/default.tfstate", "lineage": "synthetic-lineage", "serial": 2, "generation": "124", "sha256": "d" * 64, "size": 100}
+            receipt = {"control_commit": self.control_commit, "foundation_commit": self.plan_commit,
+                       "state": state_metadata, "managed_addresses": sorted(c.FOUNDATION_ADDRESSES)}
+            if outcome == "private-state-key": receipt["state"]["private_attributes"] = "synthetic-private-state-sentinel"
+            if outcome == "missing-address": receipt["managed_addresses"].pop()
+            with mock.patch.object(r, "apply_saved", side_effect=applied) as saved, \
+                    mock.patch.dict(os.environ, {}, clear=True), \
+                    mock.patch.object(r, "fetch_verified", return_value=r.canonical(receipt),
+                                      side_effect=ValueError("synthetic-private-state-sentinel") if outcome == "fetch-error" else None), self.subTest(outcome=outcome):
+                self.assertEqual(f.apply_reviewed(self.root, self.root, env), 1)
+            saved.assert_called_once()
+            summary = json.loads((self.root / "summary.json").read_bytes())
+            self.assertEqual(summary["status"], "foundation_applied_post_summary_verification_failed_no_retry")
+            self.assertTrue(summary["apply_completed"])
+            self.assertEqual(summary["foundation_receipt"], reference)
+            self.assertFalse(summary["execution"]["automatic_retry"])
+            self.assertNotIn("resulting_state", summary)
+            self.assertNotIn("synthetic-private-state-sentinel", (self.root / "summary.json").read_text() + (self.root / "summary.md").read_text())
 
     def test_unknown_high_findings_or_failed_integrity_cannot_be_accepted(self):
         for kind in ("high", "unknown", "failed-integrity"):

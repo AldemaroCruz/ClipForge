@@ -4,29 +4,29 @@
   "branch": "ci/bootstrap-sec03",
   "environment": "int",
   "plan": {
-    "commit": "aa68d4a3228bf6a1092703285f05022c8727d99c",
-    "run_id": "43528573812",
+    "commit": "bb4d10414b56c7c264ef8d4bc5649c08f2a9163b",
+    "run_id": "44194990499",
     "manifest": {
-      "name": "private-plans/int/aa68d4a3228bf6a1092703285f05022c8727d99c/43528573812-1/manifest.json",
-      "generation": "1794613158433064",
-      "sha256": "6f5dd879f288fdca587d30adbf54ad98db5ce4733b39d7c50a2516a1f7f8494a",
+      "name": "private-plans/int/bb4d10414b56c7c264ef8d4bc5649c08f2a9163b/44194990499-1/manifest.json",
+      "generation": "1794956399393543",
+      "sha256": "c30520602a48835b9c7ecc4f582020d5d8f7d648c8659a9a4804fc11da1553bf",
       "size": 1504
     },
     "binary": {
-      "name": "private-plans/int/aa68d4a3228bf6a1092703285f05022c8727d99c/43528573812-1/int.tfplan",
-      "generation": "1794613158020437",
-      "sha256": "41826c9951c2123d21c5afad87a567ffa5608aea6cf288178aa5626dc61cb3ea",
-      "size": 22008
+      "name": "private-plans/int/bb4d10414b56c7c264ef8d4bc5649c08f2a9163b/44194990499-1/int.tfplan",
+      "generation": "1794956398925734",
+      "sha256": "6ce16847341786469e52facebabd89f458933cc4c46f689a102f1d61ca556de7",
+      "size": 22086
     },
     "json": {
-      "name": "private-plans/int/aa68d4a3228bf6a1092703285f05022c8727d99c/43528573812-1/int.json",
-      "generation": "1794613158258874",
-      "sha256": "9ac8469de52170333edd868a3a14997b736774b6eb67b16b80ee99f3cf52604d",
-      "size": 135002
+      "name": "private-plans/int/bb4d10414b56c7c264ef8d4bc5649c08f2a9163b/44194990499-1/int.json",
+      "generation": "1794956399226154",
+      "sha256": "3bae11f54336ff23c0c4c96da3ba7ca868875b6d6e086afa231bbb7ea83205a0",
+      "size": 135265
     },
-    "created_utc": "2026-11-13T23:39:17.873727+00:00",
+    "created_utc": "2026-11-17T22:59:58.765194+00:00",
     "maximum_age_seconds": 86400,
-    "configuration_sha256": "4d23ddc3e8b22ea58e5e998e8b381291876f79ab562e3d15dd95ff5556476f31",
+    "configuration_sha256": "1cf09b8ebd357761a217b7cae3d46e37397eadff39deeaa79500aac5276a7a7c",
     "provider_lock_sha256": "89e2189a1b882ac5ad3ce74ad17a304e95cf7fa072b9ced86fce09e78b88b5fa",
     "terraform_version": "1.15.8",
     "inputs": {
@@ -141,7 +141,9 @@
       "config/int-foundation-contract.json",
       "config/tf-int01-costs.json",
       ".gitleaks.toml",
-      "requirements-ci-tools.lock"
+      "requirements-ci-tools.lock",
+      "config/owner-risk-acceptance.json",
+      "config/int-foundation-history/bb4d104-contract.json"
     ],
     "deferred_procedures": [
       "protected database initialization",
@@ -173,8 +175,8 @@
   "design_decisions": {
     "google_managed_encryption": "owner_approved_design_only",
     "gcs_access_audit_30_days": "owner_approved_design_only",
-    "apply": "not_authorized",
-    "foundation_sast_execution": "pending_F-SAST-EXEC"
+    "apply": "owner_authorized_exact_saved_foundation_binary_only_before_owner_deadline",
+    "foundation_sast_execution": "owner_accepted_exact_unchanged_execution_sites_for_this_binary_only"
   },
   "iac_findings_preserved": [
     {
@@ -221,12 +223,12 @@
   "limitations": [
     "VM image inventory/SCA, TLS and restore are not proven before VM creation; post-create gates remain mandatory before application acceptance.",
     "No application, browser or PostgreSQL CI image findings are relabeled as VM results.",
-    "No general SAST acceptance; unresolved exact execution warnings require a future owner decision bound to this plan and the reviewed control commit."
+    "Only the three exact unchanged LOW execution sites are temporarily accepted for this exact foundation binary; all other findings and application/runtime gates remain effective."
   ],
   "residual_controls": [
     {
       "id": "F-AUDIT-0077",
-      "status": "pending_not_accepted",
+      "status": "owner_accepted_exact_scope_temporarily; operational_validation_pending",
       "resources": [
         "google_storage_bucket.private[\"media\"]",
         "google_storage_bucket.private[\"backups\"]"
@@ -238,7 +240,7 @@
     },
     {
       "id": "F-VM-XML",
-      "status": "pending_not_accepted",
+      "status": "owner_accepted_exact_scope_temporarily; operational_validation_pending",
       "resource": "google_compute_instance.postgres",
       "advisory": "CVE-2026-6653",
       "expected_package": "libxml2",
@@ -247,30 +249,228 @@
       "vm_inventory_sca": "not_measured",
       "startup_control": "PostgreSQL remains masked; no cluster, SQL or upload parser is activated",
       "activation_block": "No database bootstrap until actual VM inventory and individual security review",
-      "decision_scope": "Expected dependency installation inactive only; no acceptance of runtime, image or arbitrary HIGH findings"
+      "decision_scope": "Expected dependency installation inactive only; no acceptance of runtime, image or arbitrary HIGH findings",
+      "image": {
+        "project": "debian-cloud",
+        "name": "debian-13-trixie-v20261116",
+        "image_id": "5913446147369107523"
+      },
+      "responsible": "AldemaroCruz",
+      "expires_utc": "2026-11-28T05:59:59+00:00"
     }
   ],
-  "planning_candidate": {
-    "purpose": "comparative_plan_only",
-    "apply_authorized": false,
-    "configuration_sha256": "1cf09b8ebd357761a217b7cae3d46e37397eadff39deeaa79500aac5276a7a7c",
-    "baseline_configuration_sha256": "4d23ddc3e8b22ea58e5e998e8b381291876f79ab562e3d15dd95ff5556476f31",
-    "baseline_manifest": {
-      "name": "private-plans/int/aa68d4a3228bf6a1092703285f05022c8727d99c/43528573812-1/manifest.json",
-      "generation": "1794613158433064",
-      "sha256": "6f5dd879f288fdca587d30adbf54ad98db5ce4733b39d7c50a2516a1f7f8494a",
+  "history": {
+    "previous_contract": {
+      "path": "config/int-foundation-history/bb4d104-contract.json",
+      "sha256": "9f4e61f706057c90ccd17ce2cd511ad84237810d951a05591042e0f90aac9c83",
+      "source_commit": "bb4d10414b56c7c264ef8d4bc5649c08f2a9163b"
+    },
+    "status": "Historical expired plan and comparative-only planning_candidate retained intact; neither is an active authorization"
+  },
+  "owner_risk_acceptance": {
+    "schema": "clipforge-int-foundation-owner-risk-acceptance-2",
+    "owner": "AldemaroCruz",
+    "recorded_utc": "2026-11-17T23:50:38.148951+00:00",
+    "authority": "Explicit owner authorization: exact saved foundation plan plus scoped contract/control update; manual int approval required; configuration remains bb4d104; no runtime, SQL bootstrap, Cloud Run or Jobs authorization",
+    "source_commit": "bb4d10414b56c7c264ef8d4bc5649c08f2a9163b",
+    "plan_run": "44194990499",
+    "authorized_manifest": {
+      "name": "private-plans/int/bb4d10414b56c7c264ef8d4bc5649c08f2a9163b/44194990499-1/manifest.json",
+      "generation": "1794956399393543",
+      "sha256": "c30520602a48835b9c7ecc4f582020d5d8f7d648c8659a9a4804fc11da1553bf",
       "size": 1504
     },
-    "configuration_baseline_commit": "aa68d4a3228bf6a1092703285f05022c8727d99c",
-    "controls_origin_commit": "d93e21224f15886762f1f87bbcf917f51d801a42",
-    "image": {
-      "project": "debian-cloud",
-      "name": "debian-13-trixie-v20261116",
-      "image_id": "5913446147369107523",
-      "status": "READY"
+    "authorized_binary": {
+      "generation": "1794956398925734",
+      "name": "private-plans/int/bb4d10414b56c7c264ef8d4bc5649c08f2a9163b/44194990499-1/int.tfplan",
+      "sha256": "6ce16847341786469e52facebabd89f458933cc4c46f689a102f1d61ca556de7",
+      "size": 22086
     },
-    "F-VM-XML": "Not accepted for this new image identity; requires its own inventory and individual review",
-    "risk_acceptance": "No previous risk acceptance is extended by this candidate plan",
-    "baseline_status": "Historical expired plan kept intact for comparison only; cannot be activated by this candidate"
-  }
+    "original_plan_expiry_utc": "2026-11-18T22:59:58.765194+00:00",
+    "maximum_risk_expiry_utc": "2026-11-28T05:59:59+00:00",
+    "maximum_risk_expiry_local": "2026-11-27T23:59:59-06:00",
+    "invalidates_earlier_if_conditions_change": true,
+    "extends_plan_ttl": false,
+    "acceptances": [
+      {
+        "id": "F-VM-XML",
+        "decision": "temporarily_accepted_by_owner_for_exact_image",
+        "image": {
+          "project": "debian-cloud",
+          "name": "debian-13-trixie-v20261116",
+          "image_id": "5913446147369107523"
+        },
+        "scope": "Creation, planned startup and own inventory of the private VM only",
+        "conditions": [
+          "PostgreSQL remains masked",
+          "No cluster",
+          "No TCP/5432 listener",
+          "No user data",
+          "No secret retrieval or payload load",
+          "No SQL bootstrap, migrations or service activation"
+        ],
+        "remediation_or_scan_claimed": false,
+        "responsible": "AldemaroCruz",
+        "maximum_expiry_utc": "2026-11-28T05:59:59+00:00"
+      },
+      {
+        "id": "F-SAST-EXEC",
+        "decision": "prior_narrow_acceptance_preserved_without_scope_expansion",
+        "source_sha256": "70982d2f5867d0101a181967d182058514e8c82a77423e5eceb09eb0cf89761b",
+        "native_findings": [
+          {
+            "rule": "B404",
+            "severity": "LOW",
+            "line": 16,
+            "column": 0,
+            "end_column": 17,
+            "line_range": [
+              16
+            ]
+          },
+          {
+            "rule": "B603",
+            "severity": "LOW",
+            "line": 169,
+            "column": 13,
+            "end_column": 122,
+            "line_range": [
+              169
+            ]
+          },
+          {
+            "rule": "B603",
+            "severity": "LOW",
+            "line": 180,
+            "column": 13,
+            "end_column": 81,
+            "line_range": [
+              180,
+              181
+            ]
+          }
+        ],
+        "native_bandit_sha256": "80142a98179d7ea3f2f5b4913416b5b57cfc0ebd71d9cb6a4c7a4fd1ad39cbfb",
+        "source_condition_check": "Exact commit sources and native finding tuples match the preserved foundation evidence; no caller, executable, argv construction or privilege change made in this apply review"
+      },
+      {
+        "id": "F-AUDIT-0077",
+        "decision": "prior_acceptance_preserved_for_two_exact_detections_and_reviewed_alternative",
+        "findings": [
+          {
+            "id": "GCP-0077",
+            "severity": "MEDIUM",
+            "resource": "google_storage_bucket.private[\"backups\"]"
+          },
+          {
+            "id": "GCP-0077",
+            "severity": "MEDIUM",
+            "resource": "google_storage_bucket.private[\"media\"]"
+          }
+        ],
+        "retention_days": 30,
+        "alternative": "Cloud Audit Logs with documented coverage, routing, permissions and exclusions",
+        "operational": false,
+        "gcs_server_access_logging": false
+      }
+    ],
+    "google_managed_encryption": "Owner design decision preserved; all five key detections and their limits retained",
+    "effective_apply_contract_activated": true,
+    "apply_executed": false,
+    "owner_apply_deadline_utc": "2026-11-18T22:59:58+00:00",
+    "approved_plan_binding": {
+      "commit": "bb4d10414b56c7c264ef8d4bc5649c08f2a9163b",
+      "run_id": "44194990499",
+      "manifest": {
+        "name": "private-plans/int/bb4d10414b56c7c264ef8d4bc5649c08f2a9163b/44194990499-1/manifest.json",
+        "generation": "1794956399393543",
+        "sha256": "c30520602a48835b9c7ecc4f582020d5d8f7d648c8659a9a4804fc11da1553bf",
+        "size": 1504
+      },
+      "binary": {
+        "generation": "1794956398925734",
+        "name": "private-plans/int/bb4d10414b56c7c264ef8d4bc5649c08f2a9163b/44194990499-1/int.tfplan",
+        "sha256": "6ce16847341786469e52facebabd89f458933cc4c46f689a102f1d61ca556de7",
+        "size": 22086
+      },
+      "json": {
+        "generation": "1794956399226154",
+        "name": "private-plans/int/bb4d10414b56c7c264ef8d4bc5649c08f2a9163b/44194990499-1/int.json",
+        "sha256": "3bae11f54336ff23c0c4c96da3ba7ca868875b6d6e086afa231bbb7ea83205a0",
+        "size": 135265
+      },
+      "created_utc": "2026-11-17T22:59:58.765194+00:00",
+      "configuration_sha256": "1cf09b8ebd357761a217b7cae3d46e37397eadff39deeaa79500aac5276a7a7c",
+      "provider_lock_sha256": "89e2189a1b882ac5ad3ce74ad17a304e95cf7fa072b9ced86fce09e78b88b5fa",
+      "terraform_version": "1.15.8",
+      "inputs": {
+        "machine_type": "e2-micro",
+        "runtime_image": "us-central1-docker.pkg.dev/clipforgebeta2/clipforge-int/runtime@sha256:d4b65631b30c26785ae18898cd826990fa20b4dce45015fb241ba108ddba7d49",
+        "secret_versions": null,
+        "stage": "foundation"
+      },
+      "backend": {
+        "bucket": "clipforgebeta2-tfstate-int",
+        "lineage": "813c84a2-2ef1-ceb3-177e-3a2c3b815066",
+        "prefix": "terraform/int/tf-int-01",
+        "serial": 1,
+        "state_generation": "1794599421671184",
+        "state_sha256": "648a329bdee385b59be64b598a2cbce07653e42edfcf5deb12f0d14133c4c223",
+        "workspace": "default"
+      },
+      "managed_addresses": [
+        "google_compute_address.postgres",
+        "google_compute_disk.postgres",
+        "google_compute_firewall.deny_egress",
+        "google_compute_firewall.https",
+        "google_compute_firewall.iap",
+        "google_compute_firewall.postgres",
+        "google_compute_instance.postgres",
+        "google_compute_instance_iam_member.protected_bootstrap",
+        "google_compute_network.int",
+        "google_compute_route.egress",
+        "google_compute_router.egress",
+        "google_compute_router_nat.maintenance",
+        "google_compute_subnetwork.private[\"postgres\"]",
+        "google_compute_subnetwork.private[\"run\"]",
+        "google_iap_tunnel_instance_iam_member.protected_bootstrap",
+        "google_logging_log_view.access",
+        "google_logging_log_view_iam_member.audit_reader",
+        "google_logging_project_bucket_config.access",
+        "google_logging_project_sink.access",
+        "google_project_iam_audit_config.storage_access",
+        "google_project_iam_custom_role.bootstrap_reader",
+        "google_project_iam_member.bootstrap_reader",
+        "google_secret_manager_secret.runtime[\"bootstrap-admin\"]",
+        "google_secret_manager_secret.runtime[\"postgres-ca\"]",
+        "google_secret_manager_secret_iam_member.runtime[\"api_ca\"]",
+        "google_secret_manager_secret_iam_member.runtime[\"api_password\"]",
+        "google_secret_manager_secret_iam_member.runtime[\"bootstrap_admin\"]",
+        "google_secret_manager_secret_iam_member.runtime[\"migrate_ca\"]",
+        "google_secret_manager_secret_iam_member.runtime[\"migrate_password\"]",
+        "google_secret_manager_secret_iam_member.runtime[\"worker_ca\"]",
+        "google_secret_manager_secret_iam_member.runtime[\"worker_password\"]",
+        "google_secret_manager_secret_iam_member.version_publisher[\"app_password\"]",
+        "google_secret_manager_secret_iam_member.version_publisher[\"bootstrap_admin\"]",
+        "google_secret_manager_secret_iam_member.version_publisher[\"migrator_password\"]",
+        "google_secret_manager_secret_iam_member.version_publisher[\"postgres_ca\"]",
+        "google_service_account_iam_member.protected_bootstrap",
+        "google_storage_bucket.private[\"backups\"]",
+        "google_storage_bucket.private[\"media\"]",
+        "google_storage_bucket_iam_member.backup_writer",
+        "google_storage_bucket_iam_member.media[\"api\"]",
+        "google_storage_bucket_iam_member.media[\"worker\"]",
+        "terraform_data.boundary"
+      ],
+      "actions": {
+        "create": 42
+      }
+    },
+    "previous_acceptance_record_sha256": "98e70f5c11574370edb1f2765efb83acdae7ee0f89dcc66f26701a2de8ac4801",
+    "controls_commit_binding": "Exact full dispatch SHA must equal GITHUB_SHA, reviewed foundation evidence and approved_control_commit; intentionally not embedded self-reference",
+    "preserved_originals": "Original manifest, saved binary, JSON plan and prior private acceptance record remain unchanged",
+    "control_update_boundary": "Owner explicitly permits contract/control update; Terraform configuration, tf_int_plan.py and int_release.py remain byte-identical to bb4d104. Existing subprocess sites, arguments and privileges are unchanged. Fresh native evidence is mandatory for the new dispatch control commit.",
+    "historical_native_report_limit": "native_bandit_sha256 identifies the preserved prior report, not the report of the new controls. New native report bytes and exact coordinates are independently verified and bound by the dispatch decision."
+  },
+  "owner_risk_acceptance_sha256": "096306c845df142f4be69a8b34a8e5ed89b5d153713a6fddcaf10ae9a47b3857"
 }
