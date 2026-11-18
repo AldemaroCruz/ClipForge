@@ -32,6 +32,25 @@ El journal, autorización, propuesta y recibo originales permanecen en evidencia
 privada. La preparación revisada se conserva con su decisión pendiente original;
 la autorización y el resultado son registros nuevos.
 
+El primer run de inventario, `44406292891`, commit `0ef3625`, conserva `failure`:
+WIF y las lecturas Compute de VM/discos pasaron; GET del perfil OS Login usando
+el número IAM devolvió 403. No generó ni registró clave, no intentó SSH y confirmó
+`no_registered_key`. Su artefacto original permanece intacto.
+
+El SDK 582.0.0 y el [ejemplo oficial de cuentas de servicio](https://docs.cloud.google.com/compute/docs/tutorials/service-account-ssh)
+usan `users/{email}`. La corrección alinea GET/import/delete con el email literal
+de Deploy y deja de equiparar `LoginProfile.name` con `serviceAccount.uniqueId`:
+conserva ese identificador opaco desde la primera respuesta válida, lo fija antes
+de registrar la clave y lo exige también durante su retirada. El diagnóstico lee
+la ruta numérica histórica y la ruta SDK con el mismo token, conservando ambos
+estados HTTP; sólo email 200 y perfil válido habilitan el resto. Un 403 nunca se
+convierte en perfil vacío ni justifica ampliar permisos.
+
+La consulta administrativa acotada de auditoría devolvió HTTP 200 sin entradas;
+Google documenta que [GetLoginProfile no produce Audit Logs](https://docs.cloud.google.com/compute/docs/oslogin/view-audit-logs#methods_that_dont_produce_audit_logs).
+Esa ausencia no identifica el principal ni la causa del 403. El motivo histórico
+queda pendiente de contraste con las lecturas del run corregido, sin nuevos grants.
+
 La ruta `.github/workflows/int-guest-inventory.yml` usa exclusivamente Deploy
 mediante WIF, environment `int`, aprobación manual, SDK 582.0.0, clave cliente
 propia de 15 minutos y comprobación estricta del pin. El UID de Deploy comprobado

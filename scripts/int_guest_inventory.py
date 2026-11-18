@@ -50,9 +50,10 @@ BASE = "https://compute.googleapis.com/compute/v1/projects/clipforgebeta2/zones/
 VM_URL = BASE + "instances/" + VM_NAME
 BOOT_URL = BASE + "disks/clipforge-int-base-postgres"
 DATA_URL = BASE + "disks/clipforge-int-base-postgres-data"
-OSLOGIN_USER = "https://oslogin.googleapis.com/v1/users/" + DEPLOY_UNIQUE_ID
+OSLOGIN_USER = "https://oslogin.googleapis.com/v1/users/" + DEPLOY
 PROFILE_URL = OSLOGIN_USER + "/loginProfile?projectId=clipforgebeta2"
 IMPORT_URL = OSLOGIN_USER + ":importSshPublicKey?projectId=clipforgebeta2"
+HISTORICAL_PROFILE_URL = "https://oslogin.googleapis.com/v1/users/" + DEPLOY_UNIQUE_ID + "/loginProfile?projectId=clipforgebeta2"
 
 
 class Blocked(ValueError):
@@ -198,9 +199,9 @@ def key_preexists(profile, public_key):
                and value["key"].split()[:2] == public_key.split() for value in keys.values())
 
 
-def validate_import_response(value, public_key, expiration_us):
+def validate_import_response(value, public_key, expiration_us, *, expected_profile_name=None):
     profile = value.get("loginProfile", {})
-    validate_deploy_profile(profile)
+    validate_deploy_profile(profile, expected_name=expected_profile_name)
     fingerprint = find_own_key(profile, public_key, expiration_us)
     require(fingerprint is not None, "import_did_not_confirm_own_key")
     accounts = profile.get("posixAccounts", [])
@@ -210,16 +211,33 @@ def validate_import_response(value, public_key, expiration_us):
     chosen = primary if primary else eligible
     require(len(chosen) == 1, "oslogin_username_ambiguous")
     username = chosen[0].get("username", "")
-    require(re.fullmatch(r"[a-z_][a-z0-9_-]{0,63}", username) and username != "root"
+    require(re.fullmatch(r"sa_[a-z0-9_-]{1,29}", username)
             and re.fullmatch(r"[1-9][0-9]*", str(chosen[0].get("uid", ""))), "oslogin_username_or_uid")
     return {"fingerprint": fingerprint, "username": username}
 
 
-def validate_deploy_profile(profile):
-    require(isinstance(DEPLOY_UNIQUE_ID, str) and re.fullmatch(r"[1-9][0-9]{5,30}", DEPLOY_UNIQUE_ID), "deploy_unique_id_not_materialized")
-    require(isinstance(profile, dict) and profile.get("name") in {DEPLOY_UNIQUE_ID, "users/" + DEPLOY_UNIQUE_ID}, "effective_oslogin_actor_not_deploy")
-    return {"verified_profile_account": DEPLOY, "oslogin_unique_id": DEPLOY_UNIQUE_ID,
-            "observed_by": "canonical_OSLogin_loginProfile", "OAuth_token_subject_introspected": False}
+def validate_deploy_profile(profile, *, expected_name=None):
+    require(isinstance(profile, dict) and {"name"} <= set(profile) <= {"name", "posixAccounts", "sshPublicKeys"}, "closed_oslogin_profile_required")
+    name = profile["name"]
+    require(isinstance(name, str) and 0 < len(name) <= 256 and (name in {DEPLOY, "users/" + DEPLOY}
+            or re.fullmatch(r"(?:users/)?[A-Za-z0-9_-]{1,128}", name)), "invalid_opaque_oslogin_profile_name")
+    require(expected_name is None or name == expected_name, "oslogin_profile_name_changed")
+    accounts, keys = profile.get("posixAccounts", []), profile.get("sshPublicKeys", {})
+    account_fields = {"accountId", "gecos", "gid", "homeDirectory", "name", "operatingSystemType", "primary", "shell", "systemId", "uid", "username"}
+    require(isinstance(accounts, list) and len(accounts) <= 32 and all(isinstance(row, dict) and set(row) <= account_fields for row in accounts)
+            and isinstance(keys, dict) and len(keys) <= 256, "closed_oslogin_profile_collections")
+    for row in accounts:
+        require(all((type(item) is bool if key == "primary" else isinstance(item, (str, int)) and type(item) is not bool
+                     and len(str(item)) <= 2048 and not re.search(r"[\x00-\x1f\x7f]", str(item))) for key, item in row.items()), "oslogin_posix_field_type")
+        require("username" not in row or isinstance(row["username"], str) and re.fullmatch(r"sa_[a-z0-9_-]{1,29}", row["username"]), "oslogin_service_account_username_required")
+    for fingerprint, row in keys.items():
+        require(isinstance(fingerprint, str) and re.fullmatch(r"[A-Za-z0-9_:+/=-]{16,128}", fingerprint)
+                and isinstance(row, dict) and {"key"} <= set(row) <= {"key", "fingerprint", "expirationTimeUsec", "name"}
+                and all(isinstance(item, (str, int)) and type(item) is not bool and len(str(item)) <= 16384
+                        and not re.search(r"[\x00-\x1f\x7f]", str(item).rstrip("\n")) for item in row.values()), "oslogin_public_key_field_type")
+    return {"requested_service_account_email": DEPLOY, "profile_name_sha256": sha(name.encode("utf-8")),
+            "observed_by": "SDK_email_OSLogin_endpoint_with_Deploy_WIF_target", "OAuth_token_subject_introspected": False,
+            "iam_unique_id_equivalence_assumed": False}
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -235,6 +253,8 @@ class Client:
         self.actor_verified = False
         self.key_absent_before_import = False
         self._delete_authorization = None
+        self.profile_name = None
+        self._access_token = None
 
     def arm_key(self, public_key, expiration_us, *, now=None):
         canonical_key, _ = host_guest.public_key(public_key.encode("ascii"))
@@ -244,16 +264,17 @@ class Client:
         self.key, self.expiration_us = public_key, expiration_us
 
     def request(self, method, url, payload=None):
-        importing = method == "POST" and url == IMPORT_URL and self.actor_verified and self.key_absent_before_import and self.key is not None and payload == {"key": self.key, "expirationTimeUsec": str(self.expiration_us)} and not self.import_attempted
-        deleting = method == "DELETE" and self.actor_verified and self.key_absent_before_import and self.key is not None and self.fingerprint is not None and url == OSLOGIN_USER + "/sshPublicKeys/" + quote(self.fingerprint, safe="") and payload is None and self._delete_authorization == (self.key, self.expiration_us, self.fingerprint)
-        require((method == "GET" and url in {VM_URL, BOOT_URL, DATA_URL, PROFILE_URL} and payload is None)
+        importing = method == "POST" and url == IMPORT_URL and self.actor_verified and self.profile_name is not None and self.key_absent_before_import and self.key is not None and payload == {"key": self.key, "expirationTimeUsec": str(self.expiration_us)} and not self.import_attempted
+        deleting = method == "DELETE" and self.actor_verified and self.profile_name is not None and self.key_absent_before_import and self.key is not None and self.fingerprint is not None and url == OSLOGIN_USER + "/sshPublicKeys/" + quote(self.fingerprint, safe="") and payload is None and self._delete_authorization == (self.key, self.expiration_us, self.fingerprint, self.profile_name)
+        require((method == "GET" and url in {VM_URL, BOOT_URL, DATA_URL, PROFILE_URL, HISTORICAL_PROFILE_URL} and payload is None)
                 or importing or deleting, "cloud_capability_denied_before_token")
         if importing:
             self.import_attempted = True
         if deleting:
             self._delete_authorization = None
-        token = self.token_provider()
+        token = self._access_token if self._access_token is not None else self.token_provider()
         require(isinstance(token, str) and re.fullmatch(r"[A-Za-z0-9._~+/=-]{20,16384}", token), "short_lived_deploy_token_required")
+        self._access_token = token  # Both diagnostic routes use these same short-lived bytes, never published.
         request = Request(url, method=method, data=canonical(payload) if payload is not None else None,
                           headers={"Authorization": "Bearer " + token, "Content-Type": "application/json",
                                    "X-Goog-Request-Reason": "ClipForge INT readonly guest inventory"})
@@ -275,22 +296,52 @@ class Client:
                                   and re.fullmatch(r"[A-Z][A-Z0-9_]{1,79}", row["reason"])})[:5]
             except (ValueError, AttributeError):
                 pass
-            resource = "Deploy_OSLogin_profile" if url.startswith(OSLOGIN_USER) else url.rsplit("/", 1)[-1]
-            raise Failure("cloud_http_" + str(error.code), {"operation": method + " " + ("OSLogin" if url.startswith(OSLOGIN_USER) else "ComputeGET"),
+            oslogin = url in {PROFILE_URL, HISTORICAL_PROFILE_URL, IMPORT_URL} or url.startswith(OSLOGIN_USER + "/sshPublicKeys/")
+            resource = "Deploy_SDK_email_profile" if url.startswith(OSLOGIN_USER) else "historical_IAM_unique_id_profile" if url == HISTORICAL_PROFILE_URL else url.rsplit("/", 1)[-1]
+            phrases = ("The caller does not have permission", "Permission denied", "permission denied", "not authorized", "not authorised",
+                       "Login profile not found", "login profile not found", "does not exist", "has not been used", "is disabled")
+            raise Failure("cloud_http_" + str(error.code), {"operation": method + " " + ("OSLogin" if oslogin else "ComputeGET"),
                 "resource": resource, "http_status": error.code, "permissions": sorted(value for value in permission_allowlist if value in text),
-                "error_info_reasons": reasons, "response_body_withheld": True}) from None
+                "error_info_reasons": reasons, "message_fragments": [phrase for phrase in phrases if phrase in text][:5], "response_body_withheld": True}) from None
 
-    def profile(self):
-        value = self.request("GET", PROFILE_URL)
-        validate_deploy_profile(value)
+    def _accept_profile(self, value):
+        validate_deploy_profile(value, expected_name=self.profile_name)
+        self.profile_name = value["name"]
         self.actor_verified = True
         return value
+
+    def profile(self):
+        self.actor_verified = False
+        return self._accept_profile(self.request("GET", PROFILE_URL))
+
+    def profile_diagnostic(self):
+        rows = {}
+        for route, url in (("historical_iam_unique_id", HISTORICAL_PROFILE_URL), ("sdk_service_account_email", PROFILE_URL)):
+            if url == PROFILE_URL:
+                self.actor_verified = False
+            try:
+                value = self.request("GET", url)
+            except Failure as error:
+                rows[route] = {"http_status": error.receipt["http_status"], "profile_valid": False, "failure": error.receipt}
+            else:
+                if url == PROFILE_URL:
+                    self.actor_verified = False
+                    try:
+                        self._accept_profile(value)
+                    except Blocked as error:
+                        rows[route] = {"http_status": 200, "profile_valid": False, "error_code": str(error)}
+                    else:
+                        rows[route] = {"http_status": 200, "profile_valid": True, "profile_name_sha256": sha(self.profile_name.encode())}
+                else:
+                    rows[route] = {"http_status": 200, "response_profile_withheld": True, "ownership_not_asserted": True}
+        return {"schema": "clipforge-oslogin-route-comparison-1", "same_access_token": True, "routes": rows}
 
     def import_key(self):
         if not self.key_absent_before_import:
             self.prepare_import()
+        require(self.profile_name is not None, "oslogin_profile_pin_required_before_import")
         value = self.request("POST", IMPORT_URL, {"key": self.key, "expirationTimeUsec": str(self.expiration_us)})
-        own = validate_import_response(value, self.key, self.expiration_us)
+        own = validate_import_response(value, self.key, self.expiration_us, expected_profile_name=self.profile_name)
         self.fingerprint = own["fingerprint"]
         return own
 
@@ -302,7 +353,7 @@ class Client:
     def delete_own_key(self, fingerprint):
         require(self.key_absent_before_import and self.key is not None and fingerprint == self.fingerprint and fingerprint is not None, "delete_only_confirmed_own_fingerprint")
         require(find_own_key(self.profile(), self.key, self.expiration_us) == fingerprint, "own_key_not_confirmed_before_delete")
-        self._delete_authorization = (self.key, self.expiration_us, fingerprint)
+        self._delete_authorization = (self.key, self.expiration_us, fingerprint, self.profile_name)
         self.request("DELETE", OSLOGIN_USER + "/sshPublicKeys/" + quote(fingerprint, safe=""))
         require(find_own_key(self.profile(), self.key, self.expiration_us) is None, "own_key_still_present")
         return {"removed_exact_own_key": True}
@@ -316,7 +367,7 @@ def parse_inventory(raw, exit_code):
 
 
 def ssh_command(work, username, port):
-    require(re.fullmatch(r"[a-z_][a-z0-9_-]{0,63}", username or "") and username != "root"
+    require(re.fullmatch(r"sa_[a-z0-9_-]{1,29}", username or "")
             and type(port) is int and 1 <= port <= 65535, "ssh_login_or_port")
     return ["/usr/bin/ssh", "-F", "/dev/null", *host.ssh_options(work / "known_hosts"),
             "-oIdentitiesOnly=yes", "-oIdentityAgent=none", "-oPreferredAuthentications=publickey",
@@ -591,7 +642,7 @@ def cleanup(*, environ, workdir, reports, client=None):
         _write_report(output, "cleanup.json", result)
         return result
     journal = decode(_local_bytes(path, 65536))
-    fields = {"schema", "repository", "run_id", "run_attempt", "commit", "public_key", "created_us", "expiration_us", "fingerprint", "import_attempted", "key_absent_before_import", "processes"}
+    fields = {"schema", "repository", "run_id", "run_attempt", "commit", "public_key", "created_us", "expiration_us", "fingerprint", "import_attempted", "key_absent_before_import", "profile_name", "processes"}
     require(set(journal) == fields and journal["schema"] == "clipforge-int-guest-cleanup-journal-1"
             and journal["repository"] == "AldemaroCruz/ClipForge" and journal["run_id"] == environ.get("GITHUB_RUN_ID")
             and journal["run_attempt"] == environ.get("GITHUB_RUN_ATTEMPT") and journal["commit"] == environ.get("GITHUB_SHA")
@@ -606,6 +657,9 @@ def cleanup(*, environ, workdir, reports, client=None):
             require(public_key == journal["public_key"] and type(journal["created_us"]) is int and type(journal["expiration_us"]) is int
                     and 0 < journal["expiration_us"] - journal["created_us"] <= KEY_TTL_SECONDS * 1000000, "cleanup_key_ttl_or_source")
             client = client or Client(lambda: environ.get("GCP_ACCESS_TOKEN", ""))
+            validate_deploy_profile({"name": journal["profile_name"]})
+            require(client.profile_name in {None, journal["profile_name"]}, "cleanup_oslogin_profile_pin_changed")
+            client.profile_name = journal["profile_name"]
             if client.key is None:
                 client.arm_key(public_key, journal["expiration_us"], now=journal["created_us"] / 1000000)
                 client.import_attempted = True  # Cleanup can never import or renew a key.
@@ -645,7 +699,7 @@ def run(*, environ, workdir, reports, host_evidence_raw, host_evidence_sha, payl
     journal = {"schema": "clipforge-int-guest-cleanup-journal-1", "repository": environ["GITHUB_REPOSITORY"],
                "run_id": environ["GITHUB_RUN_ID"], "run_attempt": environ["GITHUB_RUN_ATTEMPT"], "commit": environ["GITHUB_SHA"],
                "public_key": None, "created_us": None, "expiration_us": None, "fingerprint": None,
-               "import_attempted": False, "key_absent_before_import": False, "processes": []}
+               "import_attempted": False, "key_absent_before_import": False, "profile_name": None, "processes": []}
     _save_journal(work, journal)
     summary = {"schema": "clipforge-int-guest-inventory-run-1", "status": "blocked", "host_evidence_sha256": host_evidence_sha,
                "host_fingerprint": pin["hostkey_record"]["fingerprint"], "payload_sha256": payload_sha,
@@ -657,8 +711,13 @@ def run(*, environ, workdir, reports, host_evidence_raw, host_evidence_sha, payl
         for number in (signal.SIGINT, signal.SIGTERM):
             previous_signals[number] = signal.signal(number, interrupted)
         before = validate_compute_snapshot(client.request("GET", VM_URL), client.request("GET", BOOT_URL), client.request("GET", DATA_URL), pin)
-        profile = client.profile()
-        summary["oslogin_profile_identity"] = validate_deploy_profile(profile)
+        summary["oslogin_route_diagnostic"] = client.profile_diagnostic()
+        sdk_route = summary["oslogin_route_diagnostic"]["routes"]["sdk_service_account_email"]
+        require(sdk_route.get("http_status") == 200 and sdk_route.get("profile_valid") is True
+                and client.actor_verified and client.profile_name is not None, "sdk_email_oslogin_profile_not_verified")
+        summary["oslogin_profile_identity"] = validate_deploy_profile({"name": client.profile_name})
+        journal["profile_name"] = client.profile_name
+        _save_journal(work, journal)
         program = shutil.which("gcloud")
         require(program and Path(program).is_absolute() and Path(program).name == "gcloud", "official_gcloud_sdk_required")
         def record_process(row):
@@ -679,6 +738,7 @@ def run(*, environ, workdir, reports, host_evidence_raw, host_evidence_sha, payl
         journal.update(import_attempted=True, key_absent_before_import=True)
         _save_journal(work, journal)  # Before the sole import; unknown responses are never replayed.
         own = client.import_key()
+        summary["ssh_posix_username"] = own["username"]
         journal["fingerprint"] = own["fingerprint"]
         _save_journal(work, journal)
         known = work / "known_hosts"

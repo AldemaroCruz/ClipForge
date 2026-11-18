@@ -19,6 +19,7 @@ from tests import test_int_guest_inventory_guest as payload_tests
 PUBLIC = "ssh-ed25519 " + base64.b64encode(b"\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20" + bytes(range(32))).decode("ascii")
 NONCE = "ab" * 32
 FINGERPRINT = "AUTHORED_FINGERPRINT_001"
+PROFILE_NAME = "authored-oslogin-profile-01"
 
 
 class GuestInventoryRunner(unittest.TestCase):
@@ -77,8 +78,8 @@ class GuestInventoryRunner(unittest.TestCase):
         with mock.patch.object(inv, "HOST_EVIDENCE_SHA", inv.sha(raw)):
             return inv.validate_hostkey_bundle(raw, inv.sha(raw))
 
-    def profile(self, *, key=True, expiration=100000001):
-        value = {"name": "users/" + inv.DEPLOY_UNIQUE_ID, "posixAccounts": [
+    def profile(self, *, key=True, expiration=100000001, name=PROFILE_NAME):
+        value = {"name": name, "posixAccounts": [
             {"username": "sa_clipforge", "uid": "10001", "operatingSystemType": "LINUX", "primary": True}],
             "sshPublicKeys": {}}
         if key:
@@ -184,7 +185,7 @@ class GuestInventoryRunner(unittest.TestCase):
         cases = [("POST", inv.VM_URL + "/stop", {}), ("POST", inv.VM_URL + "/setMetadata", {}),
                  ("DELETE", inv.DATA_URL, None), ("GET", "https://invalid.example/", None),
                  ("GET", inv.VM_URL.replace("clipforgebeta2", "other-project"), None),
-                 ("GET", inv.PROFILE_URL.replace(inv.DEPLOY_UNIQUE_ID, "me"), None),
+                 ("GET", inv.PROFILE_URL.replace(inv.OSLOGIN_USER, "https://oslogin.googleapis.com/v1/users/me"), None),
                  ("GET", inv.PROFILE_URL, {}), ("POST", inv.IMPORT_URL, {"key": PUBLIC}),
                  ("DELETE", inv.OSLOGIN_USER + "/sshPublicKeys/foreign-fingerprint", None),
                  ("POST", "https://storage.googleapis.com/upload/storage/v1/b/clipforgebeta2-tfstate-int/o", {})]
@@ -236,9 +237,10 @@ class GuestInventoryRunner(unittest.TestCase):
                         client.delete_own_key(FINGERPRINT)
                     self.assertEqual(request.call_count, 1)
 
-    def test_oslogin_profile_identity_and_exact_key_fingerprint_are_required(self):
+    def test_oslogin_opaque_profile_pin_and_exact_key_fingerprint_are_required(self):
         profile = self.profile()
-        self.assertEqual(inv.validate_import_response({"loginProfile": profile}, PUBLIC, 100000001)["fingerprint"], FINGERPRINT)
+        self.assertEqual(inv.validate_import_response({"loginProfile": profile}, PUBLIC, 100000001,
+                         expected_profile_name=PROFILE_NAME)["fingerprint"], FINGERPRINT)
         self.assertFalse(inv.validate_deploy_profile(profile)["OAuth_token_subject_introspected"])
         for mutate in (lambda p: p.update(name="users/999999999999999999999"),
                        lambda p: p["sshPublicKeys"][FINGERPRINT].update(expirationTimeUsec="100000002"),
@@ -248,7 +250,93 @@ class GuestInventoryRunner(unittest.TestCase):
                        lambda p: p["posixAccounts"].append(copy.deepcopy(p["posixAccounts"][0]))):
             row = self.profile(); mutate(row)
             with self.subTest(mutate=mutate), self.assertRaises(inv.Blocked):
-                inv.validate_import_response({"loginProfile": row}, PUBLIC, 100000001)
+                inv.validate_import_response({"loginProfile": row}, PUBLIC, 100000001, expected_profile_name=PROFILE_NAME)
+
+    def test_sdk_email_routes_do_not_equate_opaque_profile_name_with_iam_uid(self):
+        expected_user = "https://oslogin.googleapis.com/v1/users/clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com"
+        self.assertEqual(inv.OSLOGIN_USER, expected_user)
+        self.assertEqual(inv.PROFILE_URL, expected_user + "/loginProfile?projectId=clipforgebeta2")
+        self.assertEqual(inv.IMPORT_URL, expected_user + ":importSshPublicKey?projectId=clipforgebeta2")
+        self.assertNotEqual(inv.PROFILE_URL, inv.HISTORICAL_PROFILE_URL)
+        for name in (PROFILE_NAME, "users/another_opaque_profile", inv.DEPLOY):
+            with self.subTest(name=name):
+                value = inv.validate_deploy_profile(self.profile(name=name))
+                self.assertEqual(value["profile_name_sha256"], inv.sha(name.encode()))
+                self.assertFalse(value["iam_unique_id_equivalence_assumed"])
+                self.assertFalse(value["OAuth_token_subject_introspected"])
+                self.assertNotIn(name, json.dumps(value).replace(inv.DEPLOY, "requested-account"))
+        for name in ("", "users/../unreviewed", "admin@example.invalid", "opaque\nprivate"):
+            with self.subTest(name=name), self.assertRaises(inv.Blocked):
+                inv.validate_deploy_profile(self.profile(name=name))
+        for username in ("root", "human_login", "sa_" + "a" * 30, "sa_;unreviewed"):
+            profile = self.profile(); profile["posixAccounts"][0]["username"] = username
+            with self.subTest(username=username), self.assertRaises(inv.Blocked):
+                inv.validate_deploy_profile(profile)
+
+    def test_profile_name_is_pinned_after_first_email_get_and_cannot_switch(self):
+        client = inv.Client(lambda: "authored-short-lived-token")
+        with mock.patch.object(client, "request", side_effect=[self.profile(key=False), self.profile(key=False, name="different-opaque-profile")]) as request:
+            client.profile()
+            self.assertEqual(client.profile_name, PROFILE_NAME)
+            with self.assertRaisesRegex(inv.Blocked, "profile_name_changed"):
+                client.profile()
+        self.assertFalse(client.actor_verified)
+        self.assertEqual(client.profile_name, PROFILE_NAME)
+        self.assertEqual(request.call_args_list, [mock.call("GET", inv.PROFILE_URL)] * 2)
+
+    def test_diagnostic_preserves_both_http_results_with_same_token_and_email_only_gate(self):
+        def response(value):
+            result = mock.MagicMock()
+            result.__enter__.return_value.read.return_value = inv.canonical(value)
+            return result
+        def denial(url):
+            body = mock.Mock()
+            body.read.return_value = inv.canonical({"error": {"message": "Permission denied authored-private-sentinel",
+                "details": [{"reason": "IAM_PERMISSION_DENIED"}]}})
+            return HTTPError(url, 403, "authored private denial", {}, body)
+        for historical, email in ((403, 200), (200, 403), (403, 403)):
+            with self.subTest(historical=historical, email=email):
+                token = mock.Mock(return_value="authored-short-lived-token")
+                client = inv.Client(token)
+                opener = mock.Mock()
+                opener.open.side_effect = [denial(inv.HISTORICAL_PROFILE_URL) if historical == 403 else response({"name": "untrusted-historical-name"}),
+                                          denial(inv.PROFILE_URL) if email == 403 else response(self.profile(key=False))]
+                with mock.patch.object(inv, "build_opener", return_value=opener):
+                    report = client.profile_diagnostic()
+                self.assertTrue(report["same_access_token"])
+                rows = report["routes"]
+                self.assertEqual(set(rows), {"historical_iam_unique_id", "sdk_service_account_email"})
+                self.assertEqual(rows["historical_iam_unique_id"]["http_status"], historical)
+                self.assertEqual(rows["sdk_service_account_email"]["http_status"], email)
+                self.assertIs(client.actor_verified, email == 200)
+                self.assertEqual(client.profile_name, PROFILE_NAME if email == 200 else None)
+                self.assertNotIn("authored-private-sentinel", json.dumps(report))
+                self.assertNotIn(PROFILE_NAME, json.dumps(report))
+                self.assertNotIn("authored-short-lived-token", json.dumps(report))
+                for row in rows.values():
+                    if row["http_status"] == 403:
+                        self.assertFalse(row["profile_valid"])
+                        self.assertEqual(row["failure"]["error_info_reasons"], ["IAM_PERMISSION_DENIED"])
+                        self.assertTrue(row["failure"]["response_body_withheld"])
+                requests = [call.args[0] for call in opener.open.call_args_list]
+                self.assertEqual([r.method for r in requests], ["GET", "GET"])
+                self.assertEqual([r.full_url for r in requests], [inv.HISTORICAL_PROFILE_URL, inv.PROFILE_URL])
+                self.assertEqual([r.get_header("Authorization") for r in requests], ["Bearer authored-short-lived-token"] * 2)
+                token.assert_called_once_with()
+
+    def test_diagnostic_never_invents_http_200_before_network_or_for_403(self):
+        with mock.patch.object(inv, "build_opener") as opener, self.assertRaisesRegex(inv.Blocked, "token_required"):
+            inv.Client(lambda: "invalid token").profile_diagnostic()
+        opener.assert_not_called()
+        client = inv.Client(lambda: "authored-short-lived-token")
+        with mock.patch.object(client, "request", side_effect=[{"name": "historical-only"}, {"name": PROFILE_NAME, "unknown_private_field": "sentinel"}]):
+            report = client.profile_diagnostic()
+        row = report["routes"]["sdk_service_account_email"]
+        self.assertEqual(row["http_status"], 200)
+        self.assertFalse(row["profile_valid"])
+        self.assertFalse(client.actor_verified)
+        self.assertIsNone(client.profile_name)
+        self.assertNotIn("sentinel", json.dumps(report))
 
     def test_http_failure_bounds_private_body_and_only_publishes_closed_diagnostic(self):
         token = "authored-short-lived-token"
@@ -290,6 +378,7 @@ class GuestInventoryRunner(unittest.TestCase):
         client = inv.Client(token)
         client.arm_key(PUBLIC, 100000001, now=100)
         client.actor_verified = client.key_absent_before_import = True
+        client.profile_name = PROFILE_NAME
         client.fingerprint = FINGERPRINT
         with self.assertRaisesRegex(inv.Blocked, "before_token"):
             client.request("DELETE", inv.OSLOGIN_USER + "/sshPublicKeys/" + quote(FINGERPRINT, safe=""))
@@ -391,7 +480,8 @@ class GuestInventoryRunner(unittest.TestCase):
             runner.run(["/usr/bin/python3", "-c", "unreviewed"])
         start.assert_not_called()
 
-    def orchestration(self, *, guest_report=None, ssh_error=None, unknown_import=False, collision=False, close_error=False):
+    def orchestration(self, *, guest_report=None, ssh_error=None, unknown_import=False, collision=False, close_error=False,
+                      sdk_profile_status=200):
         """Real orchestration/cleanup, with explicit OS/HTTP/process boundaries."""
         test = self
         vm, boot, data = self.snapshot()
@@ -404,9 +494,17 @@ class GuestInventoryRunner(unittest.TestCase):
                 self.calls.append((method, url, copy.deepcopy(payload)))
                 if method == "GET" and url in {inv.VM_URL, inv.BOOT_URL, inv.DATA_URL}:
                     return copy.deepcopy({inv.VM_URL: vm, inv.BOOT_URL: boot, inv.DATA_URL: data}[url])
+                if method == "GET" and url == inv.HISTORICAL_PROFILE_URL:
+                    raise inv.Failure("cloud_http_403", {"operation": "GET OSLogin", "http_status": 403,
+                        "resource": "historical_IAM_unique_id_profile", "response_body_withheld": True})
                 if method == "GET" and url == inv.PROFILE_URL:
+                    if sdk_profile_status != 200:
+                        raise inv.Failure("cloud_http_" + str(sdk_profile_status), {"operation": "GET OSLogin",
+                            "http_status": sdk_profile_status, "resource": "Deploy_SDK_email_profile", "response_body_withheld": True})
                     return test.profile(key=self.present, expiration=999 if collision else self.expiration_us)
                 if method == "POST" and url == inv.IMPORT_URL:
+                    journal = json.loads((test.work / "cleanup-journal.json").read_bytes())
+                    test.assertEqual(journal["profile_name"], PROFILE_NAME)
                     if not self.key_absent_before_import or self.import_attempted:
                         raise AssertionError("unreviewed synthetic import")
                     self.import_attempted, self.present = True, True
@@ -431,6 +529,8 @@ class GuestInventoryRunner(unittest.TestCase):
                 if argv == [program, "version", "--format=json"]:
                     return 0, inv.canonical({"Google Cloud SDK": "582.0.0"}), b""
                 if argv == self.keygen_command():
+                    journal = json.loads((test.work / "cleanup-journal.json").read_bytes())
+                    test.assertEqual(journal["profile_name"], PROFILE_NAME)
                     (test.work / "id_ed25519").write_bytes(b"authored private fixture, never a real key")
                     (test.work / "id_ed25519.pub").write_bytes(PUBLIC.encode())
                     return 0, b"", b""
@@ -494,6 +594,22 @@ class GuestInventoryRunner(unittest.TestCase):
         compute = [(method, url) for method, url, _ in client.calls if "compute.googleapis.com" in url]
         self.assertEqual(len(compute), 6)
         self.assertTrue(all(method == "GET" for method, _ in compute))
+        diagnostic = result["oslogin_route_diagnostic"]["routes"]
+        self.assertEqual(diagnostic["historical_iam_unique_id"]["http_status"], 403)
+        self.assertEqual(diagnostic["sdk_service_account_email"]["http_status"], 200)
+        self.assertNotIn(PROFILE_NAME, json.dumps(result))
+
+    def test_sdk_email_403_never_becomes_empty_profile_or_reaches_keygen(self):
+        result, client, processes, _ = self.orchestration(sdk_profile_status=403)
+        self.assertEqual((result["status"], result["error_code"]), ("blocked", "sdk_email_oslogin_profile_not_verified"))
+        self.assertEqual(result["oslogin_route_diagnostic"]["routes"]["sdk_service_account_email"]["http_status"], 403)
+        self.assertIsNone(client.profile_name)
+        self.assertFalse(client.actor_verified)
+        self.assertFalse(client.import_attempted)
+        self.assertFalse(processes.calls)
+        self.assertTrue(processes.closed)
+        self.assertEqual(result["cleanup"]["status"], "no_registered_key")
+        self.assertFalse(any(method != "GET" for method, _, _ in client.calls))
 
     def test_safety_stop_remains_failure_but_still_cleans_own_key(self):
         report = payload_tests.collect(payload_tests.AuthoredRunner({"clusters": b"17 main 5432 down postgres data log\n"}))
@@ -537,6 +653,36 @@ class GuestInventoryRunner(unittest.TestCase):
         with mock.patch.object(inv, "_process_ticks", return_value="1000"), mock.patch.object(inv.os, "killpg", create=True) as kill:
             self.assertEqual(inv._cleanup_process(row), "foreign_or_reused_pid_not_touched")
         kill.assert_not_called()
+
+    def test_restart_cleanup_restores_opaque_profile_pin_and_rejects_name_change(self):
+        output = self.root / "cleanup-reports"
+        output.mkdir()
+        journal = {"schema": "clipforge-int-guest-cleanup-journal-1", "repository": self.env["GITHUB_REPOSITORY"],
+            "run_id": self.env["GITHUB_RUN_ID"], "run_attempt": self.env["GITHUB_RUN_ATTEMPT"], "commit": self.env["GITHUB_SHA"],
+            "public_key": PUBLIC, "created_us": 100000000, "expiration_us": 100000001, "fingerprint": FINGERPRINT,
+            "import_attempted": True, "key_absent_before_import": True, "profile_name": PROFILE_NAME, "processes": []}
+        (self.work / "cleanup-journal.json").write_bytes(inv.canonical(journal))
+        for current_name in ("different-opaque-profile", PROFILE_NAME):
+            with self.subTest(current_name=current_name):
+                client = inv.Client(lambda: "authored-short-lived-token")
+                replies = [self.profile(name=current_name)]
+                if current_name == PROFILE_NAME:
+                    replies += [self.profile(), {}, self.profile(key=False)]
+                with mock.patch.object(inv, "_credential_document", return_value=self.adc), \
+                     mock.patch.object(inv, "_validate_paths", return_value=(self.work, output)), \
+                     mock.patch.object(inv, "_local_bytes", side_effect=lambda p, *_: p.read_bytes()), \
+                     mock.patch.object(client, "request", side_effect=replies) as request:
+                    result = inv.cleanup(environ=self.env, workdir=self.work, reports=output, client=client)
+                self.assertEqual(client.profile_name, PROFILE_NAME)
+                if current_name != PROFILE_NAME:
+                    self.assertEqual(result["status"], "cleanup_unconfirmed_TTL_pending")
+                    self.assertEqual(result["error_code"], "oslogin_profile_name_changed")
+                    self.assertEqual(request.call_args_list, [mock.call("GET", inv.PROFILE_URL)])
+                else:
+                    self.assertEqual(result["status"], "own_key_removed")
+                    self.assertEqual([call.args[0] for call in request.call_args_list], ["GET", "GET", "DELETE", "GET"])
+                    self.assertEqual(request.call_args_list[2].args[1], inv.OSLOGIN_USER + "/sshPublicKeys/" + quote(FINGERPRINT, safe=""))
+                self.assertFalse(any(call.args[0] == "POST" for call in request.call_args_list))
 
 
 if __name__ == "__main__":
