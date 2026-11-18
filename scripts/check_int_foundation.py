@@ -50,6 +50,8 @@ def instant(value):
 
 def verify_activation(contract, now=None):
     """Validate the owner's exact data transition, never infer candidate approval."""
+    c.require(contract.get("mode") != "recovery_preparation_only",
+              "Original 42-create binary retired after partial apply; recovery planning is not a new apply approval")
     c.require(contract.get("planning_candidate") is None, "Comparative image candidate has no apply authorization")
     acceptance = contract.get("owner_risk_acceptance")
     c.require(isinstance(acceptance, dict)
@@ -108,6 +110,7 @@ def scope_files(contract):
     scope = contract["scope"]
     return sorted(set(scope["executed_python"] + scope["test_support_python"] + scope["tests"]
                       + scope["workflows"] + scope["config"]
+                      + scope.get("review_support", [])
                       + ["infra/gcp/int-base/" + name for name in scope["module_files"]]))
 
 
@@ -145,7 +148,16 @@ def check_static(root, module, contract):
     if candidate is None:
         c.require(binding["configuration_sha256"] == contract["plan"]["configuration_sha256"],
                   "Original foundation plan binding changed: configuration_sha256")
-        acceptance = verify_activation(contract)
+        if contract.get("mode") == "recovery_preparation_only":
+            from scripts import int_foundation_recovery
+            int_foundation_recovery.static_contract(root)
+            previous = contract["previous_active_contract"]
+            c.require(previous["path"] == "config/int-foundation-history/d319b0d-contract.json"
+                      and release.sha256((root / previous["path"]).read_bytes()) == previous["sha256"],
+                      "Prior active contract evidence changed")
+            acceptance = contract["owner_risk_acceptance"]
+        else:
+            acceptance = verify_activation(contract)
         c.require(json.loads((root / "config/owner-risk-acceptance.json").read_bytes()) == acceptance,
                   "Versioned acceptance record differs from the exact active contract")
         history = contract["history"]["previous_contract"]
@@ -301,6 +313,10 @@ def checks(work, reports):
 
 
 def decision_template(report, contract):
+    if contract.get("mode") == "recovery_preparation_only":
+        return {"schema": "clipforge-int-recovery-review-pending-1", "apply_decision": "blocked_new_recovery_plan_not_approved",
+                "retired_original_plan": contract["plan"]["manifest"], "control_commit": report["control_commit"],
+                "recovery_contract": contract["recovery_contract"], "prior_risk_expiry_preserved": True}
     residual = [row for row in report.get("sast", {}).get("findings", []) if row.get("disposition") == "risk_pending"]
     return {"schema": DECISION_SCHEMA, "plan_commit": contract["plan"]["commit"], "control_commit": report["control_commit"],
             "manifest": contract["plan"]["manifest"], "binary": contract["plan"]["binary"],

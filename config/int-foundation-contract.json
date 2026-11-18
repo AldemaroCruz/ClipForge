@@ -115,7 +115,8 @@
       "scripts/prepare_ci_scan.py",
       "scripts/prepare_ci_context.py",
       "scripts/compare_int_foundation_plans.py",
-      "scripts/review_int_foundation_plan.py"
+      "scripts/review_int_foundation_plan.py",
+      "scripts/int_foundation_recovery.py"
     ],
     "test_support_python": [
       "scripts/int_bootstrap_db.py",
@@ -130,12 +131,14 @@
       "tests/test_int_foundation_sast.py",
       "tests/test_int_foundation_comparison.py",
       "tests/test_int_foundation_plan_review.py",
-      "tests/test_int_foundation_candidate.py"
+      "tests/test_int_foundation_candidate.py",
+      "tests/test_int_foundation_recovery.py"
     ],
     "workflows": [
       ".github/workflows/int-foundation-check.yml",
       ".github/workflows/int-e2e-apply.yml",
-      ".github/workflows/tf-int-plan.yml"
+      ".github/workflows/tf-int-plan.yml",
+      ".github/workflows/int-foundation-recovery-plan.yml"
     ],
     "config": [
       "config/int-foundation-contract.json",
@@ -143,7 +146,10 @@
       ".gitleaks.toml",
       "requirements-ci-tools.lock",
       "config/owner-risk-acceptance.json",
-      "config/int-foundation-history/bb4d104-contract.json"
+      "config/int-foundation-history/bb4d104-contract.json",
+      "config/int-foundation-recovery.json",
+      "config/int-foundation-recovery-imports.tf",
+      "config/int-foundation-history/d319b0d-contract.json"
     ],
     "deferred_procedures": [
       "protected database initialization",
@@ -151,7 +157,14 @@
       "application image publication",
       "migrations and application Jobs"
     ],
-    "global_secret_scan": "Complete permitted tracked-source snapshot, never the live installation root"
+    "global_secret_scan": "Complete permitted tracked-source snapshot, never the live installation root",
+    "review_support": [
+      "config/int-foundation-iam-delta.json",
+      "scripts/propose_int_foundation_iam.ps1",
+      "docs/INT-FOUNDATION-RECOVERY.md",
+      "docs/INT-FOUNDATION-RECOVERY-IAM.md",
+      "docs/INT-FOUNDATION-VM-ACCESS.md"
+    ]
   },
   "tools": {
     "python": "python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df",
@@ -175,8 +188,8 @@
   "design_decisions": {
     "google_managed_encryption": "owner_approved_design_only",
     "gcs_access_audit_30_days": "owner_approved_design_only",
-    "apply": "owner_authorized_exact_saved_foundation_binary_only_before_owner_deadline",
-    "foundation_sast_execution": "owner_accepted_exact_unchanged_execution_sites_for_this_binary_only"
+    "apply": "blocked_recovery_new_plan_not_approved_original_binary_retired",
+    "foundation_sast_execution": "historical_exact_binary_only_not_transferred_to_recovery"
   },
   "iac_findings_preserved": [
     {
@@ -472,5 +485,13 @@
     "control_update_boundary": "Owner explicitly permits contract/control update; Terraform configuration, tf_int_plan.py and int_release.py remain byte-identical to bb4d104. Existing subprocess sites, arguments and privileges are unchanged. Fresh native evidence is mandatory for the new dispatch control commit.",
     "historical_native_report_limit": "native_bandit_sha256 identifies the preserved prior report, not the report of the new controls. New native report bytes and exact coordinates are independently verified and bound by the dispatch decision."
   },
-  "owner_risk_acceptance_sha256": "096306c845df142f4be69a8b34a8e5ed89b5d153713a6fddcaf10ae9a47b3857"
+  "owner_risk_acceptance_sha256": "096306c845df142f4be69a8b34a8e5ed89b5d153713a6fddcaf10ae9a47b3857",
+  "mode": "recovery_preparation_only",
+  "recovery_contract": "config/int-foundation-recovery.json",
+  "previous_active_contract": {
+    "commit": "d319b0d02983b5310420c2ad1d0dceeb497ed7ab",
+    "path": "config/int-foundation-history/d319b0d-contract.json",
+    "sha256": "e0d566eb62ee4a4ea4c8ecb1edbe0fc29f979295cfb6a318bc8fa733d0ca0d42"
+  },
+  "historical_owner_acceptance_only": true
 }
