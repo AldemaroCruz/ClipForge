@@ -314,6 +314,20 @@ class IapReadDiagnosticContract(unittest.TestCase):
     def test_native_policy_extraction_rejects_managed_changes_outputs_children_or_unreviewed_data(self):
         baseline=authored_native_plan(self.policy)
         self.assertEqual(native.extract_policy(baseline),self.policy)
+        # Real Terraform 1.15.8 no-change data-only plans place the refreshed
+        # values in prior_state and may have no planned_values root resources.
+        for planned in ({}, {'root_module': {'resources': []}}):
+            prior_only=deepcopy(baseline)
+            prior_only['prior_state']={'values':deepcopy(prior_only['planned_values'])}
+            prior_only['planned_values']=planned
+            self.assertEqual(native.extract_policy(prior_only),self.policy)
+            for scenario in ('missing','managed','output','child'):
+                changed=deepcopy(prior_only);values=changed['prior_state']['values']
+                if scenario=='missing':values['root_module']['resources'].pop()
+                elif scenario=='managed':values['root_module']['resources'][0]['mode']='managed'
+                elif scenario=='output':values['outputs']={'private':{'value':SENTINEL}}
+                else:values['root_module']['child_modules']=[{}]
+                with self.subTest(prior_only=scenario),self.assertRaises(ValueError):native.extract_policy(changed)
         for actions in (['read'],['no-op']):
             plan=deepcopy(baseline);plan['resource_changes']=deepcopy(plan['planned_values']['root_module']['resources'])
             for row in plan['resource_changes']:row['change']={'actions':actions}

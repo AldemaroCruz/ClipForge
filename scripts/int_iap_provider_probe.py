@@ -109,14 +109,21 @@ def extract_policy(plan_json):
     planned = plan_json.get("planned_values", {})
     contract.require(isinstance(planned, dict) and planned.get("outputs", {}) == {}
                      and plan_json.get("output_changes", {}) == {}, "Diagnostic outputs are forbidden")
-    rows = _data_rows(planned.get("root_module", {}), complete=True)
+    rows = _data_rows(planned.get("root_module", {}), complete=False)
+    prior_rows = []
     prior = plan_json.get("prior_state")
     if prior is not None:
         contract.require(isinstance(prior, dict), "Invalid diagnostic prior values")
         prior_values = prior.get("values", {})
         contract.require(isinstance(prior_values, dict) and prior_values.get("outputs", {}) == {},
                          "Diagnostic prior outputs are forbidden")
-        _data_rows(prior_values.get("root_module", {}), complete=False)
+        prior_rows = _data_rows(prior_values.get("root_module", {}), complete=False)
+    # A successful Terraform 1.15.8 data-only plan with no changes keeps the
+    # freshly read data in prior_state and can omit planned_values entirely.
+    # Both locations remain restricted to the same two data sources; this is
+    # not permission to read or adopt any managed state.
+    contract.require({row["address"] for row in rows + prior_rows} == set(DATA),
+                     "Diagnostic data source coverage differs")
     for field in ("resource_changes", "resource_drift"):
         changes = plan_json.get(field, [])
         contract.require(isinstance(changes, list), "Invalid diagnostic change list")
@@ -126,7 +133,7 @@ def extract_policy(plan_json):
             contract.require(isinstance(change, dict)
                              and change.get("actions") in (["read"], ["no-op"]),
                              "Diagnostic plan contains a mutation action")
-    source = next(row for row in rows if row["address"] == "data.google_iap_tunnel_instance_iam_policy.probe")
+    source = next(row for row in rows + prior_rows if row["address"] == "data.google_iap_tunnel_instance_iam_policy.probe")
     values = source.get("values")
     contract.require(isinstance(values, dict), "Diagnostic IAP data values are missing")
     raw = values.get("policy_data")
