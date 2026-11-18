@@ -200,6 +200,41 @@ class HostkeyOperatorTests(unittest.TestCase):
             self.engine.execute()
         self.assertEqual(self.posts(), ["setMetadata"])
 
+    def test_foreign_boot_or_status_change_after_install_never_starts_another_cycle(self):
+        cases = (("setMetadata", "lastStartTimestamp", "2026-11-18T01:35:42.000Z"),
+                 ("setMetadata", "status", "TERMINATED"),
+                 ("stop", "lastStartTimestamp", "2026-11-18T01:35:42.000Z"))
+        for operation, field, changed in cases:
+            with self.subTest(operation=operation, field=field):
+                work = self.work / (operation + "-" + field)
+                work.mkdir()
+                api = FakeCompute()
+                op.inspect(api, work, NONCE)
+                proposal, journal, publisher = op.load(work)
+                clock = FakeTime()
+                engine = op.Recovery(api, work, proposal, journal, publisher,
+                                     clock=clock.now, sleep=clock.sleep, timeout=5)
+                api.serial_factory = lambda: guest.MARKER + json.dumps(self.valid_record()) + "\n"
+                original = api.request
+                def request(method, path, payload=None):
+                    result = original(method, path, payload)
+                    if method == "POST" and ("/" + operation + "?") in path:
+                        api.vm[field] = changed
+                    return result
+                api.request = request
+                with self.assertRaises(op.Blocked):
+                    engine.execute()
+                posts = [path.split("?", 1)[0].rsplit("/", 1)[-1]
+                         for method, path, _ in api.calls if method == "POST"]
+                expected = ["setMetadata"] if operation == "setMetadata" else ["setMetadata", "stop"]
+                self.assertEqual(posts, expected)
+                self.assertEqual(set(journal["operations"]), {"install"} if operation == "setMetadata" else {"install", "stop"})
+                self.assertTrue(journal["operations"]["install"]["done_success"])
+                self.assertNotIn(journal["phase"], {"complete", "restored_before_cycle_no_pin"})
+                self.assertEqual(api.vm[field], changed)
+                self.assertEqual(op.metadata_items(api.vm["metadata"])["startup-script"], publisher)
+                self.assertFalse((work / "known_hosts").exists())
+
     def test_stop_timeout_never_starts_or_restores(self):
         self.api.timeout_type = "stop"
         with self.assertRaisesRegex(op.Blocked, "operation_timeout_preserve_publisher"):

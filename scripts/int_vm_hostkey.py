@@ -597,12 +597,17 @@ class Recovery:
         items = [{"key": item["key"], "value": self.publisher if item["key"] == "startup-script" else item["value"]}
                  for item in vm["metadata"].get("items", [])]
         self.mutate("install", "setMetadata", {"fingerprint": vm["metadata"]["fingerprint"], "items": items})
-        self.own_current()
+        vm, _ = self.own_current()
+        require(vm.get("status") == "RUNNING"
+                and vm["lastStartTimestamp"] == self.proposal["initial_last_start_timestamp"],
+                "precycle_boot_changed_preserve_publisher")
         self.journal["phase"] = "publisher_installed"
         self.save()
         self.mutate("stop", "stop")
         vm, _ = self.own_current()
-        require(vm.get("status") == "TERMINATED", "stop_not_observed")
+        require(vm.get("status") == "TERMINATED"
+                and vm["lastStartTimestamp"] == self.proposal["initial_last_start_timestamp"],
+                "stop_not_observed_or_boot_changed_preserve_publisher")
         self.mutate("start", "start")
         self.publication()
         self.restore()

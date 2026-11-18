@@ -1,5 +1,9 @@
 # Acceso verificable a la VM de fundación INT
 
+Actualización GUEST-01 (18/11/2026): [propuesta y lecturas actuales](GUEST-01.md).
+Los bindings IAP/OS Login/actAs de Deploy ya están presentes; la host key sigue
+pendiente. La revisión histórica siguiente se conserva con su fecha original.
+
 Revisión documental: **2026-11-18 01:00 UTC** (17 de noviembre en Guatemala).
 Estado: **procedimiento propuesto; no ejecutado**. Sólo se leyeron código,
 documentación oficial e informes sanitizados. No hubo llamadas GCP, SSH,
