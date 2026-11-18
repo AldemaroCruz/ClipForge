@@ -86,7 +86,7 @@ jobs:
           if os.environ['HOST_EVIDENCE_SHA256'] != expected or hashlib.sha256(raw).hexdigest() != expected:
               raise SystemExit('Unreviewed host evidence; no authentication or key registration attempted')
           payload = Path('scripts/int_guest_inventory_guest.py').read_bytes()
-          if os.environ['PAYLOAD_SHA256'] != 'f7a8d29292fb122bab3763c30b62d686b353600bd8b74f9e94c96fa393d981d0' or hashlib.sha256(payload).hexdigest() != os.environ['PAYLOAD_SHA256']:
+          if os.environ['PAYLOAD_SHA256'] != '46c5c59346198436cd6c7d7b71d50eadc77b9a1004656b581b19d97fa15c2663' or hashlib.sha256(payload).hexdigest() != os.environ['PAYLOAD_SHA256']:
               raise SystemExit('Unreviewed guest inventory payload; no authentication attempted')
           with (work / 'host.json').open('xb') as stream:
               stream.write(raw)

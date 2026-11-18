@@ -225,9 +225,12 @@ def parse_unit_state(raw):
     for line in _text(raw).splitlines():
         require("=" in line, "QUERY_INVALID")
         key, value = line.split("=", 1)
-        require(key in UNIT_PROPERTIES and key not in values and value in UNIT_PROPERTIES[key], "QUERY_INVALID")
+        require(key in UNIT_PROPERTIES and key not in values
+                and (value in UNIT_PROPERTIES[key] or key == "Type" and value == ""), "QUERY_INVALID")
         values[key] = value
     require(set(values) == set(UNIT_PROPERTIES), "QUERY_INVALID")
+    # A masked unit may have no loaded service type; activity is checked separately.
+    require(values["Type"] != "" or values["LoadState"] == "masked" and values["UnitFileState"] == "masked", "QUERY_INVALID")
     return values
 
 

@@ -109,6 +109,47 @@ class GuestInventoryPayload(unittest.TestCase):
         self.assertEqual(len(runner.calls), 2)
         g.validate_report(report)
 
+    def test_observed_masked_unit_without_type_reaches_readonly_inventory(self):
+        # Bytes match captured length/hash from run 44412091921; other inputs are authored.
+        raw = b"Type=\nLoadState=masked\nActiveState=inactive\nSubState=dead\nUnitFileState=masked\n"
+        self.assertEqual(len(raw), 79)
+        self.assertEqual(g.digest(raw), "8caded20bb3db8a04196c6afa539bbb4376b69619c8657f3b9217a86d5dbdc1f")
+        runner = AuthoredRunner({"unit_state": raw})
+        report = collect(runner)
+        self.assertEqual((report["status"], report["exit_code"]), ("inventory_complete", 0))
+        self.assertEqual(report["safety"]["unit_state"], {"Type": "", "LoadState": "masked",
+                         "ActiveState": "inactive", "SubState": "dead", "UnitFileState": "masked"})
+        self.assertEqual([key for key, _ in runner.calls], list(g.COMMANDS))
+        g.validate_report(report)
+
+    def test_empty_type_never_allows_loaded_unmasked_active_or_incomplete_unit(self):
+        raw = b"Type=\nLoadState=masked\nActiveState=inactive\nSubState=dead\nUnitFileState=masked\n"
+        cases = [(raw.replace(b"LoadState=masked", b"LoadState=loaded"), "QUERY_INVALID"),
+                 (raw.replace(b"UnitFileState=masked", b"UnitFileState=enabled"), "QUERY_INVALID"),
+                 (raw.replace(b"ActiveState=inactive", b"ActiveState=active"), "POSTGRES_ACTIVE"),
+                 (raw.replace(b"SubState=dead", b"SubState=exited"), "POSTGRES_ACTIVE"),
+                 (raw.replace(b"ActiveState=inactive", b"ActiveState=active").replace(b"SubState=dead", b"SubState=exited"), "POSTGRES_ACTIVE"),
+                 (raw.replace(b"SubState=dead", b"SubState=running"), "POSTGRES_ACTIVE"),
+                 (raw.replace(b"Type=\n", b""), "QUERY_INVALID"),
+                 (raw.replace(b"UnitFileState=masked\n", b""), "QUERY_INVALID"),
+                 (raw + b"Type=\n", "QUERY_INVALID"),
+                 (raw + b"LoadState=masked\n", "QUERY_INVALID"),
+                 (raw.replace(b"Type=\n", b"Type=unknown-type\n"), "QUERY_INVALID")]
+        for changed, reason in cases:
+            with self.subTest(changed=changed):
+                runner = AuthoredRunner({"unit_state": changed})
+                metadata, release = mock.Mock(), mock.Mock()
+                report = collect(runner, metadata_reader=metadata, release_reader=release)
+                self.assertEqual((report["status"], report["exit_code"], report["reason"]), ("safety_stop", 2, reason))
+                self.assertEqual([key for key, _ in runner.calls], ["unit_files", "unit_state"])
+                self.assertFalse(report["safety"]["passed"])
+                self.assertIsNone(report["inventory"])
+                metadata.assert_not_called(); release.assert_not_called()
+                if reason == "POSTGRES_ACTIVE":
+                    self.assertIsNotNone(report["safety"]["unit_state"])
+                    self.assertIsNone(report["safety"]["postgres_processes"])
+                g.validate_report(report)
+
     def test_query_failures_preserve_closed_evidence_and_private_stderr(self):
         for status in ("nonzero_exit", "timeout", "stdout_limit", "stderr_limit", "spawn_error", "unsafe_binary", "budget_exhausted"):
             with self.subTest(status=status):

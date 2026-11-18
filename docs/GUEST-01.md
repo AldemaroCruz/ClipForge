@@ -48,8 +48,22 @@ convierte en perfil vacío ni justifica ampliar permisos.
 
 La consulta administrativa acotada de auditoría devolvió HTTP 200 sin entradas;
 Google documenta que [GetLoginProfile no produce Audit Logs](https://docs.cloud.google.com/compute/docs/oslogin/view-audit-logs#methods_that_dont_produce_audit_logs).
-Esa ausencia no identifica el principal ni la causa del 403. El motivo histórico
-queda pendiente de contraste con las lecturas del run corregido, sin nuevos grants.
+Esa ausencia no identifica el principal ni explica por sí sola el 403 del primer
+run. La comparación siguiente conserva los resultados de cada ruta sin nuevos grants.
+
+El run corregido `44412091921`, commit `bcea6b3`, comprobó con el mismo token
+403 por ID IAM y 200 por email. SSH funcionó con el pin estricto y el usuario
+`sa_101402373862758071342`; la clave propia se retiró y sus archivos privados
+temporales se eliminaron. VM, discos y startup permanecieron iguales.
+Su resultado `failure` se conserva: el payload se detuvo con `QUERY_INVALID`
+porque la unidad enmascarada devuelve `Type=` vacío. Los otros campos observados
+son `LoadState=masked`, `UnitFileState=masked`, `ActiveState=inactive` y
+`SubState=dead`. El contenido acotado de cinco campos coincide exactamente con
+el hash y longitud registrados: 79 bytes, SHA-256
+`8caded20bb3db8a04196c6afa539bbb4376b69619c8657f3b9217a86d5dbdc1f`.
+La corrección admite tipo vacío sólo con ambos estados `masked`; conserva el
+rechazo de actividad distinta de `inactive/dead`. No se infieren todavía
+clústeres, listeners o versiones: esas consultas no llegaron a ejecutarse.
 
 La ruta `.github/workflows/int-guest-inventory.yml` usa exclusivamente Deploy
 mediante WIF, environment `int`, aprobación manual, SDK 582.0.0, clave cliente
