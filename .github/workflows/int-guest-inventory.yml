@@ -19,6 +19,14 @@ on:
         description: SHA256 of the fixed reviewed read-only guest payload
         type: string
         required: true
+      inspection_mode:
+        description: Exact read-only operation; DB-01 gathers disk and Debian source metadata only
+        type: choice
+        options:
+          - inventory
+          - db01-observe
+        default: inventory
+        required: true
 
 permissions: {}
 concurrency:
@@ -38,6 +46,7 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
       GUEST_APPROVED_COMMIT: ${{ inputs.approved_control_commit }}
       GUEST_ENVIRONMENT: int
+      GUEST_INSPECTION_MODE: ${{ inputs.inspection_mode }}
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
       GCP_REGION: ${{ vars.GCP_REGION }}
@@ -85,8 +94,12 @@ jobs:
           expected = '1963b5e52a4606a6f0b6560dcd0ab1356e36f4ec0764b4c4fc05ee99d12229a4'
           if os.environ['HOST_EVIDENCE_SHA256'] != expected or hashlib.sha256(raw).hexdigest() != expected:
               raise SystemExit('Unreviewed host evidence; no authentication or key registration attempted')
-          payload = Path('scripts/int_guest_inventory_guest.py').read_bytes()
-          if os.environ['PAYLOAD_SHA256'] != '46c5c59346198436cd6c7d7b71d50eadc77b9a1004656b581b19d97fa15c2663' or hashlib.sha256(payload).hexdigest() != os.environ['PAYLOAD_SHA256']:
+          from scripts.int_guest_inventory import readonly_payload
+          mode = os.environ['GUEST_INSPECTION_MODE']
+          expected_payloads = {'inventory': '46c5c59346198436cd6c7d7b71d50eadc77b9a1004656b581b19d97fa15c2663',
+                               'db01-observe': 'bbdf67688a9d5f0e71f2e3009b9a6d0ed13f75f42892baab60b5f18efeee6d6c'}
+          payload = readonly_payload(mode)
+          if mode not in expected_payloads or os.environ['PAYLOAD_SHA256'] != expected_payloads[mode] or hashlib.sha256(payload).hexdigest() != os.environ['PAYLOAD_SHA256']:
               raise SystemExit('Unreviewed guest inventory payload; no authentication attempted')
           with (work / 'host.json').open('xb') as stream:
               stream.write(raw)
@@ -94,7 +107,7 @@ jobs:
               stream.write('GUEST_WORK=' + str(work) + '\nGUEST_REPORTS=' + os.environ['GUEST_REPORTS'] + '\n')
               stream.write('CLOUDSDK_CONFIG=' + str(work / 'gcloud') + '\nCLOUDSDK_CORE_DISABLE_PROMPTS=1\n')
           PY
-          python -B -m unittest tests.test_int_guest_inventory tests.test_int_guest_inventory_guest -v
+          python -B -m unittest tests.test_int_guest_inventory tests.test_int_guest_inventory_guest tests.test_int_guest_db_observe -v
 
       - name: Federate solely as the Deploy service account
         id: auth
@@ -126,8 +139,8 @@ jobs:
           umask 077
           test -f "$GOOGLE_APPLICATION_CREDENTIALS"
           git check-ignore --quiet -- "$GOOGLE_APPLICATION_CREDENTIALS"
-          python -B -m scripts.int_guest_inventory check --host-evidence "$GUEST_WORK/host.json" --host-evidence-sha "$HOST_EVIDENCE_SHA256" --payload-sha "$PAYLOAD_SHA256" --workdir "$GUEST_WORK" --reports "$GUEST_REPORTS"
-          python -B -m scripts.int_guest_inventory run --host-evidence "$GUEST_WORK/host.json" --host-evidence-sha "$HOST_EVIDENCE_SHA256" --payload-sha "$PAYLOAD_SHA256" --workdir "$GUEST_WORK" --reports "$GUEST_REPORTS"
+          python -B -m scripts.int_guest_inventory check --host-evidence "$GUEST_WORK/host.json" --host-evidence-sha "$HOST_EVIDENCE_SHA256" --payload-sha "$PAYLOAD_SHA256" --inspection-mode "$GUEST_INSPECTION_MODE" --workdir "$GUEST_WORK" --reports "$GUEST_REPORTS"
+          python -B -m scripts.int_guest_inventory run --host-evidence "$GUEST_WORK/host.json" --host-evidence-sha "$HOST_EVIDENCE_SHA256" --payload-sha "$PAYLOAD_SHA256" --inspection-mode "$GUEST_INSPECTION_MODE" --workdir "$GUEST_WORK" --reports "$GUEST_REPORTS"
 
       - name: Verify removal of only this run's expiring OS Login key
         if: ${{ always() && steps.scratch.outcome == 'success' }}

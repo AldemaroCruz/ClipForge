@@ -481,7 +481,7 @@ class GuestInventoryRunner(unittest.TestCase):
         start.assert_not_called()
 
     def orchestration(self, *, guest_report=None, ssh_error=None, unknown_import=False, collision=False, close_error=False,
-                      sdk_profile_status=200):
+                      sdk_profile_status=200, inspection_mode="inventory"):
         """Real orchestration/cleanup, with explicit OS/HTTP/process boundaries."""
         test = self
         vm, boot, data = self.snapshot()
@@ -569,7 +569,7 @@ class GuestInventoryRunner(unittest.TestCase):
             # POSIX path/mode and process creation are boundary mocks on Windows.
             result = inv.run(environ=self.env, workdir=self.work, reports=output,
                              host_evidence_raw=b"authored selected evidence", host_evidence_sha=inv.sha(b"authored selected evidence"),
-                             payload_sha=ready["payload_sha256"], client=client, processes=processes)
+                             payload_sha=ready["payload_sha256"], client=client, processes=processes, inspection_mode=inspection_mode)
         return result, client, processes, output
 
     def assert_own_cleanup(self, result, client, processes):

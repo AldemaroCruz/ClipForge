@@ -255,6 +255,7 @@ class Client:
         self._delete_authorization = None
         self.profile_name = None
         self._access_token = None
+        self.http_receipts = []
 
     def arm_key(self, public_key, expiration_us, *, now=None):
         canonical_key, _ = host_guest.public_key(public_key.encode("ascii"))
@@ -280,7 +281,12 @@ class Client:
                                    "X-Goog-Request-Reason": "ClipForge INT readonly guest inventory"})
         try:
             with build_opener(ProxyHandler({}), NoRedirect()).open(request, timeout=30) as response:
+                status = response.status
                 raw = response.read(MAX_JSON + 1)
+            if type(status) is int:
+                self.http_receipts.append({"method": method, "operation": "OSLogin.importSshPublicKey" if importing else "OSLogin.deleteSshPublicKey" if deleting else "OSLogin.getLoginProfile" if url in {PROFILE_URL, HISTORICAL_PROFILE_URL} else "Compute.get",
+                    "resource": "Deploy_own_key" if importing or deleting else "Deploy_email_profile" if url == PROFILE_URL else "historical_IAM_unique_id_profile" if url == HISTORICAL_PROFILE_URL else url.rsplit("/", 1)[-1],
+                    "http_status": status, "observed_utc": datetime.now(timezone.utc).isoformat(), "response_body_withheld": True})
             return decode(raw)
         except HTTPError as error:
             raw = error.read(16384)
@@ -359,7 +365,13 @@ class Client:
         return {"removed_exact_own_key": True}
 
 
-def parse_inventory(raw, exit_code):
+def parse_inventory(raw, exit_code, *, inspection_mode="inventory"):
+    if inspection_mode == "db01-observe":
+        from scripts import int_guest_db_observe as payload
+        value = payload.validate_report(decode(raw))
+        require(exit_code == value["exit_code"], "guest_exit_code_or_report_mismatch")
+        return value
+    require(inspection_mode == "inventory", "unknown_readonly_inspection_mode")
     from scripts import int_guest_inventory_guest as payload
     value = payload.validate_report(decode(raw))
     require(exit_code == value["exit_code"] and exit_code in {0, 2, 3}, "guest_exit_code_or_report_mismatch")
@@ -410,7 +422,9 @@ def process_diagnostic(raw):
 
 class ProcessRunner:
     """Only fixed SSH/keygen/tunnel commands, bounded pipes and own sessions."""
-    def __init__(self, work, gcloud, payload, run_tag, journal_callback=None):
+    def __init__(self, work, gcloud, payload, run_tag, journal_callback=None, *, maximum_process_seconds=180):
+        require(type(maximum_process_seconds) is int and maximum_process_seconds in {180, 600}, "reviewed_process_budget")
+        self.maximum_process_seconds = maximum_process_seconds
         self.work, self.gcloud, self.payload, self.run_tag = Path(work), gcloud, payload, run_tag
         self.journal_callback = journal_callback or (lambda row: None)
         self.owned = []
@@ -472,7 +486,7 @@ class ProcessRunner:
 
     def run(self, argv, input_data=None, *, timeout=30, stdout_limit=16384, stderr_limit=8192):
         kind = self._kind(argv, input_data)
-        require(type(timeout) in {int, float} and 0 < timeout <= 180
+        require(type(timeout) in {int, float} and 0 < timeout <= self.maximum_process_seconds
                 and 0 < stdout_limit <= MAX_JSON and 0 < stderr_limit <= 8192, "local_process_bounds")
         process = self._start(argv, kind)
         output, errors = bytearray(), bytearray()
@@ -585,9 +599,25 @@ def _validate_paths(env, workdir, reports):
     return work, output
 
 
-def readinesscheck(host_evidence_raw, host_evidence_sha, payload_sha, *, environ=None, credential_document=None):
-    pin = validate_hostkey_bundle(host_evidence_raw, host_evidence_sha)
+def readonly_payload(inspection_mode="inventory"):
     raw = _local_bytes(ROOT / "scripts/int_guest_inventory_guest.py", 131072)
+    if inspection_mode == "db01-observe":
+        extension = _local_bytes(ROOT / "scripts/int_guest_db_observe.py", 131072)
+        # Public fixed sources only; the baseline module does not execute main.
+        prefix = ("import base64,sys,types\n__clipforge_readonly_base__=types.ModuleType('_clipforge_readonly_base')\n"
+                  "sys.modules['_clipforge_readonly_base']=__clipforge_readonly_base__\n"
+                  "exec(compile(base64.b64decode(" + repr(base64.b64encode(raw)) + "),'guest_readonly_base','exec'),__clipforge_readonly_base__.__dict__)\n")
+        suffix = "exec(compile(base64.b64decode(" + repr(base64.b64encode(extension)) + "),'guest_db_observer','exec'),globals())\n"
+        raw = (prefix + suffix).encode("ascii")
+    else:
+        require(inspection_mode == "inventory", "unknown_readonly_inspection_mode")
+    require(len(raw) <= 131072, "readonly_payload_bound")
+    return raw
+
+
+def readinesscheck(host_evidence_raw, host_evidence_sha, payload_sha, *, environ=None, credential_document=None, inspection_mode="inventory"):
+    pin = validate_hostkey_bundle(host_evidence_raw, host_evidence_sha)
+    raw = readonly_payload(inspection_mode)
     require(re.fullmatch(r"[a-f0-9]{64}", payload_sha or "") and sha(raw) == payload_sha, "inventory_payload_source_digest")
     credentials = None
     if environ is not None:
@@ -689,8 +719,8 @@ def cleanup(*, environ, workdir, reports, client=None):
     return result
 
 
-def run(*, environ, workdir, reports, host_evidence_raw, host_evidence_sha, payload_sha, client=None, processes=None):
-    ready = readinesscheck(host_evidence_raw, host_evidence_sha, payload_sha, environ=environ, credential_document=_credential_document(environ))
+def run(*, environ, workdir, reports, host_evidence_raw, host_evidence_sha, payload_sha, client=None, processes=None, inspection_mode="inventory"):
+    ready = readinesscheck(host_evidence_raw, host_evidence_sha, payload_sha, environ=environ, credential_document=_credential_document(environ), inspection_mode=inspection_mode)
     work, output = _validate_paths(environ, workdir, reports)
     require(not (work / "cleanup-journal.json").exists()
             and all(path.name == "host.json" or (path.name == "gcloud" and path.is_dir() and not path.is_symlink()) for path in work.iterdir()), "new_inventory_work_directory_required")
@@ -710,8 +740,13 @@ def run(*, environ, workdir, reports, host_evidence_raw, host_evidence_sha, payl
             raise Blocked("runner_interrupted_cleanup_required")
         for number in (signal.SIGINT, signal.SIGTERM):
             previous_signals[number] = signal.signal(number, interrupted)
-        before = validate_compute_snapshot(client.request("GET", VM_URL), client.request("GET", BOOT_URL), client.request("GET", DATA_URL), pin)
-        summary["oslogin_route_diagnostic"] = client.profile_diagnostic()
+        vm_before, boot_before, data_before = client.request("GET", VM_URL), client.request("GET", BOOT_URL), client.request("GET", DATA_URL)
+        before = validate_compute_snapshot(vm_before, boot_before, data_before, pin)
+        if inspection_mode == "db01-observe":
+            profile = client.profile()
+            summary["oslogin_route_diagnostic"] = {"historical_route_not_requeried": True, "routes": {"sdk_service_account_email": {"http_status": 200, "profile_valid": True}}}
+        else:
+            summary["oslogin_route_diagnostic"] = client.profile_diagnostic()
         sdk_route = summary["oslogin_route_diagnostic"]["routes"]["sdk_service_account_email"]
         require(sdk_route.get("http_status") == 200 and sdk_route.get("profile_valid") is True
                 and client.actor_verified and client.profile_name is not None, "sdk_email_oslogin_profile_not_verified")
@@ -733,6 +768,10 @@ def run(*, environ, workdir, reports, host_evidence_raw, host_evidence_sha, payl
         created = int(time.time() * 1000000)
         expiration = created + KEY_TTL_SECONDS * 1000000
         journal.update(public_key=public_key, created_us=created, expiration_us=expiration)
+        if inspection_mode == "db01-observe":
+            summary["key_lifecycle"] = {"created_utc": datetime.fromtimestamp(created / 1000000, timezone.utc).isoformat(),
+                "expires_utc": datetime.fromtimestamp(expiration / 1000000, timezone.utc).isoformat(),
+                "ttl_seconds": KEY_TTL_SECONDS, "public_key_sha256": sha(public_key.encode()), "only_own_key": True}
         client.arm_key(public_key, expiration)
         client.prepare_import()
         journal.update(import_attempted=True, key_absent_before_import=True)
@@ -754,11 +793,18 @@ def run(*, environ, workdir, reports, host_evidence_raw, host_evidence_sha, payl
         summary["ssh_diagnostic"] = process_diagnostic(stderr)
         if code not in {0, 2, 3}:
             raise Failure("ssh_or_sudo_failed", {"exit_code": code, **process_diagnostic(stderr)})
-        inventory = parse_inventory(raw, code)
+        inventory = parse_inventory(raw, code, inspection_mode=inspection_mode)
         after = validate_compute_snapshot(client.request("GET", VM_URL), client.request("GET", BOOT_URL), client.request("GET", DATA_URL), pin)
         require(before == after and _local_bytes(known, 1024) == pin["known_hosts"], "vm_or_pin_changed_during_inventory")
+        status = inventory["status"]
+        if inspection_mode == "db01-observe":
+            from scripts import int_guest_db_observe as observation
+            inventory = observation.make_evidence(inventory, vm_before, boot_before, data_before,
+                observed_utc=datetime.now(timezone.utc).isoformat(), commit=environ["GITHUB_SHA"], payload_sha256=payload_sha)
+            if status == "observation_complete":
+                observation.disk_proof(inventory)
         _write_report(output, "inventory.json", inventory)
-        summary.update(status=inventory["status"], guest_exit_code=code, unchanged_compute_snapshot=before)
+        summary.update(status=status, inspection_mode=inspection_mode, guest_exit_code=code, unchanged_compute_snapshot=before)
     except BaseException as error:
         summary.update(status="blocked", error_code=str(error) if isinstance(error, Blocked) else "runner_failure_details_withheld")
         if isinstance(error, Failure):
@@ -778,6 +824,8 @@ def run(*, environ, workdir, reports, host_evidence_raw, host_evidence_sha, payl
                     signal.signal(number, previous)
     if summary["cleanup"]["status"] not in {"own_key_removed", "key_already_absent", "no_registered_key"}:
         summary["status"] = "blocked_cleanup_unconfirmed"
+    if inspection_mode == "db01-observe":
+        summary["http_receipts"] = client.http_receipts
     _write_report(output, "guest-summary.json", summary)
     (output / "guest-summary.md").write_text("# INT guest inventory\n\nStatus: " + summary["status"]
         + "\n\nRead-only guest inspection. No database, guest bootstrap or runtime deployment is approved.\n", encoding="utf-8")
@@ -790,6 +838,7 @@ def main():
     parser.add_argument("--host-evidence", type=Path)
     parser.add_argument("--host-evidence-sha")
     parser.add_argument("--payload-sha")
+    parser.add_argument("--inspection-mode", choices=("inventory", "db01-observe"), default="inventory")
     parser.add_argument("--workdir", type=Path, required=True)
     parser.add_argument("--reports", type=Path, required=True)
     args = parser.parse_args()
@@ -800,13 +849,13 @@ def main():
     require(args.host_evidence is not None and args.host_evidence_sha and args.payload_sha, "explicit_host_and_payload_binding_required")
     raw = _local_bytes(args.host_evidence, 65536)
     if args.operation == "check":
-        readinesscheck(raw, args.host_evidence_sha, args.payload_sha, environ=os.environ, credential_document=_credential_document(os.environ))
+        readinesscheck(raw, args.host_evidence_sha, args.payload_sha, environ=os.environ, credential_document=_credential_document(os.environ), inspection_mode=args.inspection_mode)
         print("Exact host evidence, source and Deploy WIF selection verified locally; no SSH or cloud calls.")
         return 0
     result = run(environ=os.environ, workdir=args.workdir, reports=args.reports, host_evidence_raw=raw,
-                 host_evidence_sha=args.host_evidence_sha, payload_sha=args.payload_sha)
+                 host_evidence_sha=args.host_evidence_sha, payload_sha=args.payload_sha, inspection_mode=args.inspection_mode)
     print(json.dumps({"status": result["status"], "runtime_authorized": False}))
-    return 0 if result["status"] == "inventory_complete" else 1
+    return 0 if result["status"] in {"inventory_complete", "observation_complete"} else 1
 
 
 if __name__ == "__main__":
