@@ -15,6 +15,7 @@ from unittest import mock
 
 from scripts import check_tf_int as c, check_int_foundation as foundation, int_release as custody
 from scripts import int_foundation_close as close, int_foundation_recovery as recovery
+from scripts import classify_int_foundation_sast as sast
 from tests.test_int_foundation_recovery import authored_partial, authored_manifest, authored_plan
 
 NOW = datetime(2026,11,18,18,30,tzinfo=timezone.utc)
@@ -156,6 +157,68 @@ class FoundationCloseContract(unittest.TestCase):
             elif scenario=='not-yet-open':now=datetime(2026,11,18,18,14,59,tzinfo=timezone.utc)
             with self.subTest(scenario=scenario),self.assertRaises(ValueError):
                 close.verify_owner_decision(value,custody.sha256(custody.canonical(value)),report,self.proposal,env,now=now)
+
+    def real_sast_report(self):
+        # Only the native SAST evidence is real. Plan, receipts, decision,
+        # control commit and clock remain authored test fixtures, never grants.
+        fixtures=Path(__file__).parent/'fixtures/int_foundation_close'
+        projection=json.loads((fixtures/'d67e581-sast-review.json').read_bytes())
+        native_raw=(fixtures/'d67e581-bandit-native.json').read_bytes()
+        self.assertEqual(custody.sha256(native_raw),projection['origin']['bandit_native_sha256'])
+        self.assertEqual(projection['origin']['control_commit'],'d67e5819123b0c05502daff3e402c9adaee74ba1')
+        self.assertEqual(projection['sast'],sast.evaluate(foundation.ROOT,json.loads(native_raw)))
+        report=deepcopy(self.report)
+        report['sast']=deepcopy(projection['sast'])
+        return report
+
+    def synthetic_decision_for_report(self,report):
+        with mock.patch.object(self,'report',report):
+            return self.approved()
+
+    def test_owner_decision_accepts_real_nine_findings_with_only_three_pending(self):
+        report=self.real_sast_report()
+        findings=report['sast']['findings']
+        self.assertEqual(len(findings),9)
+        self.assertEqual(sum(row['disposition']=='risk_pending' for row in findings),3)
+        self.assertEqual(sum(row['disposition']=='false_positive_proven' for row in findings),5)
+        self.assertEqual(sum(row['disposition']=='control_verified' for row in findings),1)
+        decision=self.synthetic_decision_for_report(report)
+        result=close.verify_owner_decision(decision,custody.sha256(custody.canonical(decision)),
+                                         report,self.proposal,self.env,now=NOW)
+        self.assertEqual(result['apply_controls_commit'],CONTROLS)
+        self.assertEqual(decision['residual_decisions'][0]['native_review'],report['sast'])
+
+    def test_real_sast_pending_delta_still_blocks_even_with_rebound_test_decision(self):
+        for mutation in ('extra-pending','severity','source','rule','line','resource'):
+            report=self.real_sast_report()
+            pending=next(row for row in report['sast']['findings'] if row['disposition']=='risk_pending')
+            if mutation=='extra-pending': report['sast']['findings'].append(deepcopy(pending))
+            elif mutation=='severity': pending['severity']='HIGH'
+            elif mutation=='source': pending['source_sha256']='f'*64
+            elif mutation=='rule': pending['rule']='B999'
+            elif mutation=='line': pending['line']=181
+            else: pending['resource']='scripts/unreviewed.py'
+            decision=self.synthetic_decision_for_report(report)
+            with self.subTest(mutation=mutation),self.assertRaisesRegex(ValueError,'Unknown or higher SAST'):
+                close.verify_owner_decision(decision,custody.sha256(custody.canonical(decision)),
+                                            report,self.proposal,self.env,now=NOW)
+
+    def test_real_sast_decision_must_preserve_full_native_review_and_source_binding(self):
+        report=self.real_sast_report()
+        for mutation in ('omit-classified','classified-proof','acceptance','driver-source'):
+            current=deepcopy(report);decision=self.synthetic_decision_for_report(current)
+            if mutation=='omit-classified':
+                decision['residual_decisions'][0]['native_review']['findings']=[
+                    row for row in current['sast']['findings'] if row['disposition']=='risk_pending']
+            elif mutation=='classified-proof': decision['residual_decisions'][0]['native_review']['proofs']=[]
+            elif mutation=='acceptance': decision['residual_decisions'][0]['decision']='unreviewed_acceptance'
+            else:
+                current['source_files']['scripts/tf_int_plan.py']='f'*64
+                current['control_sources_sha256']=custody.sha256(custody.canonical(current['source_files']))
+                decision=self.synthetic_decision_for_report(current)
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):
+                close.verify_owner_decision(decision,custody.sha256(custody.canonical(decision)),
+                                            current,self.proposal,self.env,now=NOW)
 
     def test_bridge_verifies_producer_control_hash_and_exact_ten_files_without_import_source(self):
         module=self.root/'module';shutil=__import__('shutil');shutil.copytree(self.producer/'infra/gcp/int-base',module)

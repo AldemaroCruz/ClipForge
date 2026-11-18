@@ -1,0 +1,151 @@
+{
+  "origin": {
+    "run_id": "44364385044",
+    "control_commit": "d67e5819123b0c05502daff3e402c9adaee74ba1",
+    "foundation_report_sha256": "fe0eb30b8a43716a26ff6551e4663f00d940d2bfa4955a812b6fa110fdc9ff09",
+    "bandit_native_sha256": "e16ad110440b32be6d2eb424bf09d124ec439011ffb825cca549357f30a54ed1"
+  },
+  "sast": {
+    "schema": "clipforge-int-foundation-sast-review-1",
+    "status": "blocked",
+    "findings": [
+      {
+        "resource": "scripts/check_int_foundation.py",
+        "line": 286,
+        "rule": "B108",
+        "severity": "MEDIUM",
+        "source_sha256": "ea96d41b9815ece9fb6883d93f16516fbc634d36c32211ca59cb338e236d0baa",
+        "disposition": "false_positive_proven",
+        "reason": "Per-container bounded tmpfs option, not a shared host temporary filename."
+      },
+      {
+        "resource": "scripts/check_tf_int.py",
+        "line": 305,
+        "rule": "B105",
+        "severity": "LOW",
+        "source_sha256": "ef222660b3d62d4db3589430c6f228dbf1429eda9c20322c413f1b213ccac605",
+        "disposition": "false_positive_proven",
+        "reason": "Literal public IAM role identifier, not credential material."
+      },
+      {
+        "resource": "scripts/check_tf_int.py",
+        "line": 306,
+        "rule": "B105",
+        "severity": "LOW",
+        "source_sha256": "ef222660b3d62d4db3589430c6f228dbf1429eda9c20322c413f1b213ccac605",
+        "disposition": "false_positive_proven",
+        "reason": "Literal public IAM role identifier, not credential material."
+      },
+      {
+        "resource": "scripts/int_release.py",
+        "line": 14,
+        "rule": "B404",
+        "severity": "LOW",
+        "source_sha256": "9c5cf839a4cc6ab6479c321b3bd0804ddbc26507a53629326fd7ba2976d31878",
+        "disposition": "control_verified",
+        "reason": "Import used only for the SubprocessError exception type; no process launch in this module."
+      },
+      {
+        "resource": "scripts/tf_int_plan.py",
+        "line": 16,
+        "rule": "B404",
+        "severity": "LOW",
+        "source_sha256": "70982d2f5867d0101a181967d182058514e8c82a77423e5eceb09eb0cf89761b",
+        "disposition": "risk_pending",
+        "reason": "Individual review required; no acceptance or general exception is recorded."
+      },
+      {
+        "resource": "scripts/tf_int_plan.py",
+        "line": 169,
+        "rule": "B603",
+        "severity": "LOW",
+        "source_sha256": "70982d2f5867d0101a181967d182058514e8c82a77423e5eceb09eb0cf89761b",
+        "disposition": "risk_pending",
+        "reason": "Individual review required; no acceptance or general exception is recorded."
+      },
+      {
+        "resource": "scripts/tf_int_plan.py",
+        "line": 180,
+        "rule": "B603",
+        "severity": "LOW",
+        "source_sha256": "70982d2f5867d0101a181967d182058514e8c82a77423e5eceb09eb0cf89761b",
+        "disposition": "risk_pending",
+        "reason": "Individual review required; no acceptance or general exception is recorded."
+      },
+      {
+        "resource": "scripts/tf_int_plan.py",
+        "line": 355,
+        "rule": "B108",
+        "severity": "MEDIUM",
+        "source_sha256": "70982d2f5867d0101a181967d182058514e8c82a77423e5eceb09eb0cf89761b",
+        "disposition": "false_positive_proven",
+        "reason": "Per-container bounded tmpfs option, not a shared host temporary filename."
+      },
+      {
+        "resource": "scripts/tf_int_plan.py",
+        "line": 361,
+        "rule": "B108",
+        "severity": "MEDIUM",
+        "source_sha256": "70982d2f5867d0101a181967d182058514e8c82a77423e5eceb09eb0cf89761b",
+        "disposition": "false_positive_proven",
+        "reason": "Per-container bounded tmpfs option, not a shared host temporary filename."
+      }
+    ],
+    "proofs": [
+      {
+        "resource": "scripts/check_int_foundation.py",
+        "line": 286,
+        "rule": "B108",
+        "severity": "MEDIUM",
+        "source_sha256": "ea96d41b9815ece9fb6883d93f16516fbc634d36c32211ca59cb338e236d0baa",
+        "disposition": "false_positive_proven",
+        "reason": "Per-container bounded tmpfs option, not a shared host temporary filename."
+      },
+      {
+        "resource": "scripts/check_tf_int.py",
+        "line": 305,
+        "rule": "B105",
+        "severity": "LOW",
+        "source_sha256": "ef222660b3d62d4db3589430c6f228dbf1429eda9c20322c413f1b213ccac605",
+        "disposition": "false_positive_proven",
+        "reason": "Literal public IAM role identifier, not credential material."
+      },
+      {
+        "resource": "scripts/check_tf_int.py",
+        "line": 306,
+        "rule": "B105",
+        "severity": "LOW",
+        "source_sha256": "ef222660b3d62d4db3589430c6f228dbf1429eda9c20322c413f1b213ccac605",
+        "disposition": "false_positive_proven",
+        "reason": "Literal public IAM role identifier, not credential material."
+      },
+      {
+        "resource": "scripts/int_release.py",
+        "line": 14,
+        "rule": "B404",
+        "severity": "LOW",
+        "source_sha256": "9c5cf839a4cc6ab6479c321b3bd0804ddbc26507a53629326fd7ba2976d31878",
+        "disposition": "control_verified",
+        "reason": "Import used only for the SubprocessError exception type; no process launch in this module."
+      },
+      {
+        "resource": "scripts/tf_int_plan.py",
+        "line": 355,
+        "rule": "B108",
+        "severity": "MEDIUM",
+        "source_sha256": "70982d2f5867d0101a181967d182058514e8c82a77423e5eceb09eb0cf89761b",
+        "disposition": "false_positive_proven",
+        "reason": "Per-container bounded tmpfs option, not a shared host temporary filename."
+      },
+      {
+        "resource": "scripts/tf_int_plan.py",
+        "line": 361,
+        "rule": "B108",
+        "severity": "MEDIUM",
+        "source_sha256": "70982d2f5867d0101a181967d182058514e8c82a77423e5eceb09eb0cf89761b",
+        "disposition": "false_positive_proven",
+        "reason": "Per-container bounded tmpfs option, not a shared host temporary filename."
+      }
+    ]
+  }
+}

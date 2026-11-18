@@ -1,0 +1,409 @@
+{
+  "errors": [],
+  "generated_at": "2026-11-18T17:58:17Z",
+  "metrics": {
+    "/source/scripts/check_int_foundation.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 1,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 1,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 549,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "/source/scripts/check_tf_int.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 2,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 2,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 337,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "/source/scripts/classify_int_foundation_sast.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 123,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "/source/scripts/compare_int_foundation_plans.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 341,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "/source/scripts/int_foundation_close.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 589,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "/source/scripts/int_foundation_recovery.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 714,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "/source/scripts/int_foundation_recovery_apply.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 352,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "/source/scripts/int_iap_diagnostic.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 472,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "/source/scripts/int_iap_provider_probe.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 230,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "/source/scripts/int_release.py": {
+      "CONFIDENCE.HIGH": 1,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 1,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 264,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "/source/scripts/int_release_state.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 117,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "/source/scripts/prepare_ci_context.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 260,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "/source/scripts/prepare_ci_scan.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 192,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "/source/scripts/review_int_foundation_plan.py": {
+      "CONFIDENCE.HIGH": 0,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 0,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 0,
+      "SEVERITY.MEDIUM": 0,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 183,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "/source/scripts/tf_int_plan.py": {
+      "CONFIDENCE.HIGH": 3,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 2,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 3,
+      "SEVERITY.MEDIUM": 2,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 421,
+      "nosec": 0,
+      "skipped_tests": 0
+    },
+    "_totals": {
+      "CONFIDENCE.HIGH": 4,
+      "CONFIDENCE.LOW": 0,
+      "CONFIDENCE.MEDIUM": 5,
+      "CONFIDENCE.UNDEFINED": 0,
+      "SEVERITY.HIGH": 0,
+      "SEVERITY.LOW": 6,
+      "SEVERITY.MEDIUM": 3,
+      "SEVERITY.UNDEFINED": 0,
+      "loc": 5144,
+      "nosec": 0,
+      "skipped_tests": 0
+    }
+  },
+  "results": [
+    {
+      "code": "285     base = [\"docker\", \"run\", \"--rm\", \"--pull=never\", \"--network=none\", \"--read-only\", \"--cap-drop=ALL\", \"--security-opt=no-new-privileges\",\n286             \"--user=\" + uid + \":\" + gid, \"--tmpfs\", \"/tmp:rw,nosuid,nodev,noexec,size=128m\"]\n287     source_mount = [\"--mount\", \"type=bind,source=\" + str(source) + \",target=/source,readonly\"]\n288     report_mount = [\"--mount\", \"type=bind,source=\" + str(reports) + \",target=/reports\"]\n",
+      "col_offset": 52,
+      "end_col_offset": 91,
+      "filename": "/source/scripts/check_int_foundation.py",
+      "issue_confidence": "MEDIUM",
+      "issue_cwe": {
+        "id": 377,
+        "link": "https://cwe.mitre.org/data/definitions/377.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Probable insecure usage of temp file/directory.",
+      "line_number": 286,
+      "line_range": [
+        285,
+        286
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b108_hardcoded_tmp_directory.html",
+      "test_id": "B108",
+      "test_name": "hardcoded_tmp_directory"
+    },
+    {
+      "code": "304         return exact[address]\n305     for prefix, role in {\"google_secret_manager_secret_iam_member.runtime[\": \"roles/secretmanager.secretAccessor\",\n306                          \"google_secret_manager_secret_iam_member.version_publisher[\": \"roles/secretmanager.secretVersionAdder\",\n307                          \"google_storage_bucket_iam_member.media[\": \"roles/storage.objectUser\",\n308                          \"google_cloud_run_v2_job_iam_member.protected_operator[\": \"roles/run.invoker\"}.items():\n309         if address.startswith(prefix):\n",
+      "col_offset": 25,
+      "end_col_offset": 75,
+      "filename": "/source/scripts/check_tf_int.py",
+      "issue_confidence": "MEDIUM",
+      "issue_cwe": {
+        "id": 259,
+        "link": "https://cwe.mitre.org/data/definitions/259.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Possible hardcoded password: 'roles/secretmanager.secretAccessor'",
+      "line_number": 305,
+      "line_range": [
+        305,
+        306,
+        307,
+        308
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b105_hardcoded_password_string.html",
+      "test_id": "B105",
+      "test_name": "hardcoded_password_string"
+    },
+    {
+      "code": "305     for prefix, role in {\"google_secret_manager_secret_iam_member.runtime[\": \"roles/secretmanager.secretAccessor\",\n306                          \"google_secret_manager_secret_iam_member.version_publisher[\": \"roles/secretmanager.secretVersionAdder\",\n307                          \"google_storage_bucket_iam_member.media[\": \"roles/storage.objectUser\",\n308                          \"google_cloud_run_v2_job_iam_member.protected_operator[\": \"roles/run.invoker\"}.items():\n309         if address.startswith(prefix):\n310             return role\n",
+      "col_offset": 25,
+      "end_col_offset": 85,
+      "filename": "/source/scripts/check_tf_int.py",
+      "issue_confidence": "MEDIUM",
+      "issue_cwe": {
+        "id": 259,
+        "link": "https://cwe.mitre.org/data/definitions/259.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Possible hardcoded password: 'roles/secretmanager.secretVersionAdder'",
+      "line_number": 306,
+      "line_range": [
+        305,
+        306,
+        307,
+        308
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b105_hardcoded_password_string.html",
+      "test_id": "B105",
+      "test_name": "hardcoded_password_string"
+    },
+    {
+      "code": "13 import re\n14 import subprocess\n15 from datetime import datetime, timezone\n",
+      "col_offset": 0,
+      "end_col_offset": 17,
+      "filename": "/source/scripts/int_release.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 78,
+        "link": "https://cwe.mitre.org/data/definitions/78.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Consider possible security implications associated with the subprocess module.",
+      "line_number": 14,
+      "line_range": [
+        14
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b404-import-subprocess",
+      "test_id": "B404",
+      "test_name": "blacklist"
+    },
+    {
+      "code": "15 import shutil\n16 import subprocess\n17 import sys\n",
+      "col_offset": 0,
+      "end_col_offset": 17,
+      "filename": "/source/scripts/tf_int_plan.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 78,
+        "link": "https://cwe.mitre.org/data/definitions/78.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "Consider possible security implications associated with the subprocess module.",
+      "line_number": 16,
+      "line_range": [
+        16
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/blacklists/blacklist_imports.html#b404-import-subprocess",
+      "test_id": "B404",
+      "test_name": "blacklist"
+    },
+    {
+      "code": "168     environment[\"TF_CLI_CONFIG_FILE\"] = str(work / \"terraform.rc\")\n169     result = subprocess.run(command, cwd=work / \"module\", capture_output=True, timeout=1200, env=environment, check=False)\n170     raw = result.stdout + b\"\\n\" + result.stderr\n",
+      "col_offset": 13,
+      "end_col_offset": 122,
+      "filename": "/source/scripts/tf_int_plan.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 78,
+        "link": "https://cwe.mitre.org/data/definitions/78.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "subprocess call - check for execution of untrusted input.",
+      "line_number": 169,
+      "line_range": [
+        169
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b603_subprocess_without_shell_equals_true.html",
+      "test_id": "B603",
+      "test_name": "subprocess_without_shell_equals_true"
+    },
+    {
+      "code": "179     contract.require(binary is not None, \"Pinned Terraform executable is required\")\n180     result = subprocess.run([binary, \"version\", \"-json\"], capture_output=True, timeout=30, check=True,\n181                             env={**os.environ, \"TF_CLI_CONFIG_FILE\": os.devnull})\n182     contract.require(json.loads(result.stdout)[\"terraform_version\"] == \"1.15.8\", \"Wrong Terraform version\")\n",
+      "col_offset": 13,
+      "end_col_offset": 81,
+      "filename": "/source/scripts/tf_int_plan.py",
+      "issue_confidence": "HIGH",
+      "issue_cwe": {
+        "id": 78,
+        "link": "https://cwe.mitre.org/data/definitions/78.html"
+      },
+      "issue_severity": "LOW",
+      "issue_text": "subprocess call - check for execution of untrusted input.",
+      "line_number": 180,
+      "line_range": [
+        180,
+        181
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b603_subprocess_without_shell_equals_true.html",
+      "test_id": "B603",
+      "test_name": "subprocess_without_shell_equals_true"
+    },
+    {
+      "code": "354          \"--security-opt\", \"no-new-privileges\", \"--user\", uid + \":\" + gid,\n355          \"--tmpfs\", \"/tmp:rw,nosuid,nodev,noexec,size=128m\", \"--mount\", \"type=bind,source=\" + str(authored_tests) + \",target=/source,readonly\",\n356          \"--workdir\", \"/source\", PYTHON_IMAGE, \"python\", \"-B\", \"-m\", \"unittest\", \"discover\", \"-s\", \"tests\", \"-v\"],\n357         \"python_negative_contracts\", work)\n358     receipt[\"checks\"][\"python_negative_contracts\"] = \"passed_without_network\"\n359     isolated = [\"docker\", \"run\", \"--rm\", \"--pull\", \"never\", \"--network\", \"none\", \"--read-only\", \"--cap-drop\", \"ALL\",\n",
+      "col_offset": 20,
+      "end_col_offset": 59,
+      "filename": "/source/scripts/tf_int_plan.py",
+      "issue_confidence": "MEDIUM",
+      "issue_cwe": {
+        "id": 377,
+        "link": "https://cwe.mitre.org/data/definitions/377.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Probable insecure usage of temp file/directory.",
+      "line_number": 355,
+      "line_range": [
+        353,
+        354,
+        355,
+        356
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b108_hardcoded_tmp_directory.html",
+      "test_id": "B108",
+      "test_name": "hardcoded_tmp_directory"
+    },
+    {
+      "code": "360          \"--security-opt\", \"no-new-privileges\", \"--user\", uid + \":\" + gid,\n361          \"--tmpfs\", \"/tmp:rw,nosuid,nodev,noexec,size=128m\", \"--mount\", \"type=bind,source=\" + str(module) + \",target=/source,readonly\"]\n362     run([*isolated, \"--mount\", \"type=bind,source=\" + str(work / \"terraform-data\") + \",target=/tfdata,readonly\",\n363          \"--workdir\", \"/source\", \"--env\", \"TF_DATA_DIR=/tfdata\", \"--env\", \"TF_CLI_CONFIG_FILE=/dev/null\",\n364          TERRAFORM_IMAGE, \"test\", \"-no-color\"], \"native_mock_contracts\", work)\n",
+      "col_offset": 20,
+      "end_col_offset": 59,
+      "filename": "/source/scripts/tf_int_plan.py",
+      "issue_confidence": "MEDIUM",
+      "issue_cwe": {
+        "id": 377,
+        "link": "https://cwe.mitre.org/data/definitions/377.html"
+      },
+      "issue_severity": "MEDIUM",
+      "issue_text": "Probable insecure usage of temp file/directory.",
+      "line_number": 361,
+      "line_range": [
+        359,
+        360,
+        361
+      ],
+      "more_info": "https://bandit.readthedocs.io/en/1.9.4/plugins/b108_hardcoded_tmp_directory.html",
+      "test_id": "B108",
+      "test_name": "hardcoded_tmp_directory"
+    }
+  ]
+}

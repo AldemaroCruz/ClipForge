@@ -201,7 +201,7 @@ def verify_owner_decision(decision, expected_sha, report, proposal, environ, now
               and custody.sha256(canonical(report["source_files"])) == report["control_sources_sha256"],
               "Fresh complete foundation integrity and the frozen native execution source are required")
     pending = [row for row in report.get("sast", {}).get("findings", []) if row.get("disposition") == "risk_pending"]
-    c.require(len(report.get("sast", {}).get("findings", [])) == len(pending) == 3 and {(row.get("rule"), row.get("line")) for row in pending} ==
+    c.require(len(pending) == 3 and {(row.get("rule"), row.get("line")) for row in pending} ==
               {("B404", 16), ("B603", 169), ("B603", 180)}
               and all(row.get("resource") == "scripts/tf_int_plan.py" and row.get("severity") == "LOW"
                       and row.get("source_sha256") == foundation.EXECUTION_SOURCE_SHA256 for row in pending),

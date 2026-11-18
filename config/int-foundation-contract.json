@@ -189,7 +189,9 @@
       "scripts/int_vm_hostkey_guest.py",
       "tests/test_int_vm_hostkey.py",
       "tests/test_int_foundation_iam.ps1",
-      "docs/INT-FOUNDATION-CLOSE.md"
+      "docs/INT-FOUNDATION-CLOSE.md",
+      "tests/fixtures/int_foundation_close/d67e581-bandit-native.json",
+      "tests/fixtures/int_foundation_close/d67e581-sast-review.json"
     ]
   },
   "tools": {
