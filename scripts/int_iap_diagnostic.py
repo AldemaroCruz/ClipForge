@@ -25,6 +25,13 @@ SELECTION_VARS = ("GOOGLE_CREDENTIALS", "GOOGLE_CLOUD_KEYFILE_JSON", "GCLOUD_KEY
                   "GOOGLE_IMPERSONATE_SERVICE_ACCOUNT_DELEGATES", "GOOGLE_APPLICATION_CREDENTIALS",
                   "GOOGLE_GHA_CREDS_PATH", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE", "GCP_ACCESS_TOKEN")
 OVERRIDES = SELECTION_VARS[:6]
+PENDING_IAP = "google_iap_tunnel_instance_iam_member.protected_bootstrap"
+NUMERIC_CONFIGURATION_SHA256 = "4f13120dc9165cd43881181eca6af95663df9d063d513bb4d776c59137d92aea"
+IDENTITY = {"project_id": "clipforgebeta2", "project_number": "816643438938", "instance_id": "1670495097211408131",
+            "instance_name": "clipforge-int-base-postgres", "zone": "us-central1-a"}
+ROUTE_EXPRESSIONS = {
+    "numeric": {"project": "data.google_project.existing.number", "zone": "local.zone", "instance": "google_compute_instance.postgres.instance_id"},
+    "named": {"project": "var.project_id", "zone": "local.zone", "instance": "google_compute_instance.postgres.name"}}
 LOG_BUCKET = "projects/clipforgebeta2/locations/us-central1/buckets/clipforge-int-access"
 LOG_VIEW = LOG_BUCKET + "/views/pilot-access"
 POSTGRES_SA = "projects/clipforgebeta2/serviceAccounts/clipforge-postgres-int@clipforgebeta2.iam.gserviceaccount.com"
@@ -64,15 +71,25 @@ def instant(value):
 
 def load_contract(root=ROOT):
     contract = json.loads((root / CONFIG).read_bytes())
-    c.require(contract.get("schema") == "clipforge-int-iap-read-diagnostic-1" and contract.get("grants_authorized") is False
+    c.require(contract.get("schema") == "clipforge-int-iap-read-diagnostic-2" and contract.get("grants_authorized") is False
               and contract.get("apply_authorized") is False, "Diagnostic cannot authorize mutations")
     c.require(contract["routes"] == ROUTES and contract["terraform_service_account"] == TF_SA,
               "Diagnostic principal or resources differ")
-    c.require(contract.get("foundation_configuration_sha256") == "1cf09b8ebd357761a217b7cae3d46e37397eadff39deeaa79500aac5276a7a7c"
+    c.require(contract.get("foundation_configuration_sha256") == NUMERIC_CONFIGURATION_SHA256
               and contract["provider_configuration_evidence"]["provider_config_key"] == "google"
               and contract["provider_configuration_evidence"]["provider_alias"] is None
               and not contract["provider_configuration_evidence"]["credential_expression_keys_present"],
               "The pending resource provider configuration no longer matches the reviewed default provider")
+    route = contract["provider_route"]
+    c.require(route["address"] == PENDING_IAP and route["required_route"] == "numeric"
+              and route["resource"] == ROUTES["numeric"] and route["expressions"] == ROUTE_EXPRESSIONS["numeric"]
+              and route["evaluated"] == {"project": IDENTITY["project_number"], "zone": IDENTITY["zone"], "instance": IDENTITY["instance_id"]}
+              and route["configuration_sha256"] == NUMERIC_CONFIGURATION_SHA256, "Unreviewed effective IAP route")
+    window = contract["read_window"]
+    c.require(window["not_before_utc"] == "2026-11-18T17:00:00Z" and window["expires_utc"] == "2026-11-18T18:00:00Z"
+              and window["proposal_sha256"] == "b2fbaf3ba71e671601c7e803feb71cd89def33cad05cc47ea273d139ff897417"
+              and isinstance(window.get("manifest_sha256"), str) and re.fullmatch(r"[a-f0-9]{64}", window["manifest_sha256"])
+              and window["manifest_sha256"] != "0" * 64, "Exact materialized read window required")
     return contract
 
 
@@ -82,6 +99,93 @@ def verify_provider_reference(root, contract):
               "Foundation HCL/provider/alias configuration changed; do not substitute the diagnostic module")
     return {"configuration_sha256": custody.sha256(custody.canonical(files)), "source_files": files,
             "provider_config_key": "google", "alias": None, "credentials_expressions": []}
+
+
+def provider_route_from_state(root, raw_state, contract):
+    source = verify_provider_reference(root, contract)
+    text = (root / "infra/gcp/int-base/runtime.tf").read_text()
+    blocks = re.findall(r'(?ms)^resource "google_iap_tunnel_instance_iam_member" "protected_bootstrap" \{\n(.*?)^\}', text)
+    c.require(len(blocks) == 1, "Exactly one reviewed IAP resource required")
+    declarations = re.findall(r"(?m)^\s*(project|zone|instance)\s*=\s*(.*?)\s*$", blocks[0])
+    c.require(len(declarations) == 3 and len(dict(declarations)) == 3, "Unreviewed IAP identity expressions")
+    expressions = dict(declarations)
+    matches = [key for key, value in ROUTE_EXPRESSIONS.items() if expressions == value]
+    c.require(len(matches) == 1, "IAP expressions do not match a recognized configuration")
+    state = json.loads(raw_state)
+    def attributes(kind, name, mode):
+        rows = [row for row in state.get("resources", []) if row.get("type") == kind and row.get("name") == name]
+        c.require(len(rows) == 1 and rows[0].get("mode") == mode and not rows[0].get("module")
+                  and rows[0].get("provider") == 'provider["registry.terraform.io/hashicorp/google"]'
+                  and len(rows[0].get("instances", [])) == 1, "Default provider state identity is ambiguous")
+        instance = rows[0]["instances"][0]
+        c.require("index_key" not in instance and not instance.get("deposed") and instance.get("status") in {None, "ready"},
+                  "Unreviewed IAP identity instance")
+        return instance["attributes"]
+    project, vm = attributes("google_project", "existing", "data"), attributes("google_compute_instance", "postgres", "managed")
+    identity = {"project_id": project.get("project_id"), "project_number": str(project.get("number")),
+                "instance_id": str(vm.get("instance_id")), "instance_name": vm.get("name"), "zone": vm.get("zone")}
+    c.require(identity == IDENTITY and vm.get("project") == IDENTITY["project_id"], "Pinned state resource identity differs")
+    route = matches[0]
+    evaluated = {"project": identity["project_number"] if route == "numeric" else identity["project_id"],
+                 "zone": identity["zone"], "instance": identity["instance_id"] if route == "numeric" else identity["instance_name"]}
+    result = {"route": route, "resource": ROUTES[route], "evaluated": evaluated, "expressions": expressions,
+              "address": PENDING_IAP, "configuration_sha256": source["configuration_sha256"]}
+    expected = contract["provider_route"]
+    c.require(all(result[key] == expected["required_route" if key == "route" else key] for key in result),
+              "Actual HCL/state route differs from its configuration contract")
+    return result
+
+
+class RouteReadBlocked(ValueError):
+    def __init__(self, operation, resource, permission, status):
+        self.receipt = {"operation": operation, "resource": resource, "required_permission_for_operation": permission,
+                        "http_status": status, "response_payload_withheld": True}
+        super().__init__("Effective IAP identity metadata read failed")
+
+
+def live_route_identity(proof, token):
+    targets = (
+        ("project", "https://cloudresourcemanager.googleapis.com/v1/projects/clipforgebeta2?fields=projectId,projectNumber",
+         "resourcemanager.projects.get", "projects/clipforgebeta2"),
+        ("instance", "https://compute.googleapis.com/compute/v1/projects/clipforgebeta2/zones/us-central1-a/instances/clipforge-int-base-postgres?fields=id,name,zone",
+         "compute.instances.get", "projects/clipforgebeta2/zones/us-central1-a/instances/1670495097211408131"))
+    values, operations = {}, []
+    for key, url, permission, resource in targets:
+        try:
+            request = Request(url, headers={"Authorization": "Bearer " + token})
+            with build_opener(ProxyHandler({}), driver.NoRedirect()).open(request, timeout=45) as response:
+                raw = response.read(65537)
+            c.require(len(raw) <= 65536, "Bounded identity metadata required")
+            values[key] = json.loads(raw)
+        except HTTPError as error:
+            raise RouteReadBlocked("verify_effective_IAP_" + key, resource, permission, error.code) from None
+        operations.append({"operation": permission, "resource": resource, "http_status": 200,
+                           "checked_utc": datetime.now(timezone.utc).isoformat()})
+    live = {"project_id": values["project"].get("projectId"), "project_number": str(values["project"].get("projectNumber")),
+            "instance_id": str(values["instance"].get("id")), "instance_name": values["instance"].get("name"),
+            "zone": str(values["instance"].get("zone", "")).rsplit("/", 1)[-1]}
+    c.require(live == IDENTITY, "Live resource identity differs from the pinned evaluated IAP resource")
+    return {**proof, "live_identity": {**live, "verified": True}, "live_operations": operations}
+
+
+def read_window_guard(contract, environ):
+    window = contract["read_window"]
+    c.require(window["not_before_utc"] == "2026-11-18T17:00:00Z" and window["expires_utc"] == "2026-11-18T18:00:00Z"
+              and window["proposal_sha256"] == "b2fbaf3ba71e671601c7e803feb71cd89def33cad05cc47ea273d139ff897417",
+              "Unauthorized read window")
+    c.require(isinstance(window.get("manifest_sha256"), str) and re.fullmatch(r"[a-f0-9]{64}", window["manifest_sha256"])
+              and window["manifest_sha256"] != "0" * 64
+              and environ.get("INT_READ_WINDOW_MANIFEST_SHA256") == window["manifest_sha256"]
+              and isinstance(environ.get("INT_ADMIN_READ_RECEIPTS_SHA256"), str)
+              and re.fullmatch(r"[a-f0-9]{64}", environ["INT_ADMIN_READ_RECEIPTS_SHA256"]), "Read grant custody references differ")
+    now = datetime.now(timezone.utc)
+    if not instant(window["not_before_utc"]) <= now < instant(window["expires_utc"]):
+        error = ValueError("Authorized read window is not active")
+        error.receipt = {"operation": "read_window", "not_before_utc": window["not_before_utc"],
+                         "expires_utc": window["expires_utc"], "observed_utc": now.isoformat(), "status": "blocked_no_window_extension"}
+        raise error
+    return {**window, "administrator_receipt_index_sha256": environ["INT_ADMIN_READ_RECEIPTS_SHA256"],
+            "receipt_validation": "Reference verified locally before dispatch; receipt bytes are not ingested by this workflow"}
 
 
 def credential_metadata(environ, document):
@@ -220,11 +324,13 @@ def direct_identity_anchor(token, reason):
             "reason": reason, "effective_identity": None, "proof": "requires_authenticated_server_audit_event"}
 
 
-def required_reads(token, reason):
+def required_reads(token, reason, before_read=None):
     """Read only ten fixed metadata/policy endpoints; publish no response values."""
     c.require(bool(re.fullmatch(r"[A-Za-z0-9 ]{1,150}", reason)), "Invalid read correlation reason")
     rows = []
     for key, method, url, body, permission, resource in READ_TARGETS:
+        if before_read is not None:
+            before_read()
         started = datetime.now(timezone.utc).isoformat()
         request = Request(url, method=method, data=custody.canonical(body) if body is not None else None,
                           headers={"Authorization": "Bearer " + token, "Content-Type": "application/json",
@@ -246,14 +352,32 @@ def required_reads(token, reason):
     return rows
 
 
-def reads_allow_plan(result):
+def reads_allow_plan(result, contract=None):
+    contract = load_contract() if contract is None else contract
+    route, expected = result.get("provider_route", {}), contract["provider_route"]
+    selected = expected.get("required_route")
+    if (selected not in ROUTES or expected.get("resource") != ROUTES[selected]
+            or expected.get("expressions") != ROUTE_EXPRESSIONS[selected]
+            or expected.get("address") != PENDING_IAP
+            or expected.get("evaluated") != {"project": IDENTITY["project_number"] if selected == "numeric" else IDENTITY["project_id"],
+                                             "zone": IDENTITY["zone"], "instance": IDENTITY["instance_id"] if selected == "numeric" else IDENTITY["instance_name"]}):
+        return False
+    keys = {"route": "required_route", **{key: key for key in ("address", "resource", "evaluated", "expressions", "configuration_sha256")}}
+    if (not all(route.get(key) == expected.get(target) for key, target in keys.items())
+            or route.get("configuration_sha256") != contract["foundation_configuration_sha256"]
+            or result.get("provider_source", {}).get("configuration_sha256") != route.get("configuration_sha256")
+            or route.get("live_identity") != {**IDENTITY, "verified": True}):
+        return False
     rows = result.get("required_reads", [])
     return (len(rows) == len(READ_TARGETS) and {row.get("key") for row in rows} == {row[0] for row in READ_TARGETS}
-            and all(row.get("http_status") == 200 for row in rows)
+            and all(row.get("http_status") == 200 and any(row.get("key") == target[0]
+                        and row.get("method") == target[1] and row.get("resource") == target[5] and row.get("required_permission_for_operation") == target[4]
+                        for target in READ_TARGETS) for row in rows)
             and len(result.get("probes", [])) == 4
             and {(row.get("route"), row.get("mode")) for row in result["probes"]}
             == {(route, mode) for route in ROUTES for mode in ("explicit_http", "provider_ADC")}
-            and all(row.get("http_status") == 200 for row in result["probes"]))
+            and all(row.get("resource") == ROUTES[row["route"]] for row in result["probes"])
+            and all(row.get("http_status") == 200 for row in result["probes"] if row["route"] == route["route"]))
 
 
 def run_diagnostic(work, reports, environ, root=ROOT):
@@ -261,6 +385,7 @@ def run_diagnostic(work, reports, environ, root=ROOT):
     c.validate_variables(environ)
     c.require(environ.get("INT_REVIEWED_CONTROLS_COMMIT") == environ.get("GITHUB_SHA"), "Exact diagnostic control commit required")
     contract = load_contract(root)
+    window_refs = read_window_guard(contract, environ)
     source_proof = verify_provider_reference(root, contract)
     adc = Path(environ.get("GOOGLE_APPLICATION_CREDENTIALS", ""))
     c.require(adc.is_file() and adc.name.startswith("gha-creds-") and adc.suffix == ".json", "Fresh Actions ADC file required")
@@ -271,19 +396,27 @@ def run_diagnostic(work, reports, environ, root=ROOT):
     proof = state_reference(raw, obj, inventory, contract)
     after = driver.backend_inventory(bucket)
     state_reference(raw, obj, after, contract)
+    route_proof = provider_route_from_state(root, raw, contract)
+    route_proof = live_route_identity(route_proof, environ["GCP_ACCESS_TOKEN"])
+    read_window_guard(contract, environ)
     run_id = environ["GITHUB_RUN_ID"]
     c.require(bool(re.fullmatch(r"[1-9][0-9]*", run_id)), "Run identity required")
     rows = []
     for route in ROUTES:
+        read_window_guard(contract, environ)
+        started = datetime.now(timezone.utc).isoformat()
         reason = "ClipForge IAP diagnostic run " + run_id + " explicit " + route
         anchor = direct_identity_anchor(environ["GCP_ACCESS_TOKEN"], reason)
         result = direct_probe(route, environ["GCP_ACCESS_TOKEN"], reason)
         policy = result.pop("private_policy", None)
         row = {"route": route, "mode": "explicit_http", "resource": ROUTES[route], "library": "Python urllib HTTPS; not provider transport",
                "reason": reason, "identity_anchor": anchor, **result}
+        row.update(started_utc=started, completed_utc=datetime.now(timezone.utc).isoformat())
         if policy is not None:
             row["policy"] = policy_metadata(policy, contract["expired_binding"])
         rows.append(row)
+        read_window_guard(contract, environ)
+        started = datetime.now(timezone.utc).isoformat()
         native_reason = "ClipForge IAP diagnostic run " + run_id + " provider ADC " + route
         result = native.run_native(work / ("native-" + route), route, native_reason, source_root=root)
         policy = result.pop("policy", None)
@@ -292,13 +425,19 @@ def run_diagnostic(work, reports, environ, root=ROOT):
         status = 200 if policy is not None else next((error["status"] for error in result.get("errors", [])
                        if "iap.tunnelInstances.getIamPolicy" in error.get("permissions", [])), None)
         row = {"route": route, "mode": "provider_ADC", "resource": ROUTES[route], "http_status": status, **result}
+        row.update(started_utc=started, completed_utc=datetime.now(timezone.utc).isoformat())
         if policy is not None:
             row["policy"] = policy_metadata(policy, contract["expired_binding"])
         rows.append(row)
-    dependencies = required_reads(environ["GCP_ACCESS_TOKEN"], "ClipForge IAP diagnostic required reads run " + run_id)
+        (reports / "iap-diagnostic.json").write_text(json.dumps({"status": "partial_read_diagnostic",
+             "provider_route": route_proof, "probes": rows, "read_window": window_refs}, indent=2) + "\n")
+    dependencies = required_reads(environ["GCP_ACCESS_TOKEN"], "ClipForge IAP diagnostic required reads run " + run_id,
+                                  before_read=lambda: read_window_guard(contract, environ))
+    read_window_guard(contract, environ)
     state_reference(raw, obj, driver.backend_inventory(bucket), contract)
     return {"schema": "clipforge-int-iap-diagnostic-result-1", "status": "read_comparison_completed_no_grants_no_apply",
             "controls_commit": environ["GITHUB_SHA"], "credentials": metadata, "provider_source": source_proof,
+            "provider_route": route_proof, "read_window": window_refs,
             "state_reference": proof, "comparisons": compare_matrix(rows), "probes": rows, "required_reads": dependencies,
             "historical_403_before_original_expiry": instant(contract["historical_failure_utc"]) < instant(contract["expired_binding"]["expires_utc"]),
             "original_binding_expired_now": datetime.now(timezone.utc) >= instant(contract["expired_binding"]["expires_utc"]),
@@ -322,8 +461,10 @@ def main():
         result = run_diagnostic(work, reports, os.environ)
         code = 0
     except Exception as error:
+        partial = json.loads((reports / "iap-diagnostic.json").read_bytes()) if (reports / "iap-diagnostic.json").is_file() else None
         result = {"schema": "clipforge-int-iap-diagnostic-result-1", "status": "blocked_no_grants_no_apply", "error":
                   getattr(error, "receipt", {"operation": "diagnostic_preflight", "error_type": type(error).__name__}),
+                  "partial_diagnostic": partial,
                   "new_grants_authorized": False, "new_apply_authorized": False}
         code = 1
     (reports / "iap-diagnostic.json").write_text(json.dumps(result, indent=2) + "\n")

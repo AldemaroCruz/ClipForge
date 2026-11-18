@@ -1,11 +1,12 @@
-"""Synthetic binding/approval regressions. No checkout config, GCP or real state.
+"""Synthetic approval regressions and explicit current-source contract checks.
 
-Real source inventory, scanner execution and startup validation belong to the
-foundation workflow. These fixtures never count as cloud readiness evidence.
+The numeric-IAP transition tests read only its versioned contract/module files.
+No GCP or real state is read; fixtures never count as cloud readiness evidence.
 """
 import copy
 from datetime import datetime, timedelta, timezone
 import json
+import io
 import os
 from pathlib import Path
 import sys
@@ -13,6 +14,7 @@ import tempfile
 import types
 import unittest
 from unittest import mock
+import zipfile
 
 from scripts import check_int_foundation as f, check_tf_int as c, int_release as r
 from scripts import int_release_state as state, tf_int_plan as driver
@@ -447,6 +449,99 @@ class FoundationContract(unittest.TestCase):
         state.verify_parent(receipt, parent, self.module, self.env)
         receipt["control_approval"]["plan_commit"] = self.control_commit
         with self.assertRaises(ValueError): state.verify_parent(receipt, parent, self.module, self.env)
+
+
+class FoundationCurrentConfiguration(unittest.TestCase):
+    def setUp(self):
+        self.root = f.ROOT
+        self.module = self.root / "infra/gcp/int-base"
+        self.contract = f.load_contract(self.root)
+
+    def test_exact_current_configuration_passes_without_rebinding_historical_plan_or_acceptance(self):
+        before = copy.deepcopy(self.contract)
+        binding = f.check_static(self.root, self.module, self.contract)
+        self.assertEqual(binding["configuration_sha256"], "4f13120dc9165cd43881181eca6af95663df9d063d513bb4d776c59137d92aea")
+        self.assertEqual(binding["commit"], self.contract["plan"]["commit"])
+        self.assertNotEqual(binding["configuration_sha256"], self.contract["plan"]["configuration_sha256"])
+        self.assertEqual(self.contract, before)
+        with self.assertRaisesRegex(ValueError, "retired"):
+            f.verify_activation(self.contract)
+
+    def test_current_metadata_is_required_for_new_source_and_cannot_enable_other_modes(self):
+        for mutation in ("absent", "active-mode", "candidate", "purpose", "configuration_sha256", "source_patch_sha256",
+                         "historical_plan_configuration_sha256", "producer_binding", "history-path", "history-hash", "extra"):
+            contract = copy.deepcopy(self.contract)
+            current = contract["current_configuration"]
+            if mutation == "absent": del contract["current_configuration"]
+            elif mutation == "active-mode": contract["mode"] = "active_foundation"
+            elif mutation == "candidate": contract["planning_candidate"] = {"purpose": "comparative_plan_only"}
+            elif mutation == "history-path": current["historical_contract"]["path"] = "config/other.json"
+            elif mutation == "history-hash": current["historical_contract"]["sha256"] = "0" * 64
+            elif mutation == "extra": current["unreviewed"] = True
+            else: current[mutation] = "0" * 64
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                f.check_static(self.root, self.module, contract)
+
+    def test_full_historical_bytes_plan_producer_and_acceptance_must_remain_exact(self):
+        for mutation in ("bytes", "plan-hash", "plan-producer", "plan-run", "acceptance", "acceptance-hash"):
+            contract = copy.deepcopy(self.contract)
+            if mutation == "plan-hash": contract["plan"]["configuration_sha256"] = contract["current_configuration"]["configuration_sha256"]
+            elif mutation == "plan-producer": contract["plan"]["commit"] = "c" * 40
+            elif mutation == "plan-run": contract["plan"]["run_id"] = "99999"
+            elif mutation == "acceptance": contract["owner_risk_acceptance"]["source_commit"] = "c" * 40
+            elif mutation == "acceptance-hash": contract["owner_risk_acceptance_sha256"] = "0" * 64
+            native_read = Path.read_bytes
+            def read(path):
+                raw = native_read(path)
+                return raw + b"\n" if mutation == "bytes" and path.name == "5800b4c-foundation-contract.json" else raw
+            with self.subTest(mutation=mutation), mock.patch.object(Path, "read_bytes", read), self.assertRaises(ValueError):
+                f.current_configuration_binding(self.root, self.module, contract)
+
+    def test_recovery_activation_and_real_two_line_source_guard_are_required(self):
+        from scripts import int_foundation_recovery as recovery
+        recovered = recovery.load_contract(self.root)
+        without_patch = copy.deepcopy(recovered)
+        del without_patch["iap_identity_patch"]
+        with mock.patch.object(recovery, "load_contract", return_value=without_patch), self.assertRaises(ValueError):
+            f.current_configuration_binding(self.root, self.module, self.contract)
+        with tempfile.TemporaryDirectory(prefix="clipforge-foundation-current-source-") as temporary:
+            module = Path(temporary)
+            for name in c.FILES:
+                target = module / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((self.module / name).read_bytes())
+            (module / "main.tf").write_bytes((module / "main.tf").read_bytes() + b"\n# extra change\n")
+            with self.assertRaises(ValueError):
+                f.current_configuration_binding(self.root, module, self.contract)
+
+    def test_downloaded_evidence_must_bind_current_configuration_separately_from_historical_plan(self):
+        # Authored archive/HTTP fixture only; scanner evaluation deliberately stops
+        # immediately after source binding, so this cannot represent native evidence.
+        commit = "c" * 40
+        contract_bytes = (self.root / f.CONTRACT).read_bytes()
+        for mutation in ("unchanged", "missing", "changed"):
+            report = {"schema": f.REPORT_SCHEMA, "control_commit": commit, "contract_sha256": r.sha256(contract_bytes),
+                      "control_sources_sha256": "a" * 64, "source_files": {}, "plan": self.contract["plan"],
+                      "current_configuration": copy.deepcopy(self.contract["current_configuration"]),
+                      "native_report_sha256": {name: r.sha256(b"{}") for name in f.BUNDLE[1:]}}
+            if mutation == "missing": del report["current_configuration"]
+            elif mutation == "changed": report["current_configuration"]["configuration_sha256"] = "0" * 64
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w") as archive:
+                for name in f.BUNDLE:
+                    archive.writestr(name, r.canonical(report) if name == "foundation-report.json" else b"{}")
+            run = {"id": 123, "head_sha": commit, "head_branch": self.contract["branch"], "path": f.WORKFLOW,
+                   "run_number": 1, "run_attempt": 1, "status": "completed", "conclusion": "failure", "event": "push"}
+            artifacts = {"artifacts": [{"id": 456, "name": "int-foundation-evidence-" + commit + "-123-1", "expired": False}]}
+            opener = mock.Mock()
+            opener.open.return_value = io.BytesIO(buffer.getvalue())
+            with self.subTest(mutation=mutation), mock.patch.object(f, "github_json", side_effect=[{"workflow_runs": [run]}, artifacts]), \
+                    mock.patch.object(f, "build_opener", return_value=opener), mock.patch.object(f, "fingerprint", return_value=("a" * 64, {})), \
+                    mock.patch.object(f, "bandit_contract", side_effect=RuntimeError("binding accepted; fixture stops here")) as bandit:
+                expected = RuntimeError if mutation == "unchanged" else ValueError
+                with self.assertRaises(expected):
+                    f.fetch_evidence({"GITHUB_SHA": commit, "GH_TOKEN": "synthetic-not-token"}, self.root)
+                self.assertEqual(bandit.call_count, int(mutation == "unchanged"))
 
 
 if __name__ == "__main__":

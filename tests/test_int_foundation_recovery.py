@@ -107,6 +107,8 @@ def authored_plan(contract, with_imports=False):
                              run_subnet_cidr={"value": "10.80.0.0/26"}, postgres_subnet_cidr={"value": "10.80.1.0/28"})
     approved = {row["address"]: row["id"] for row in contract["imports"]} if with_imports else {}
     for row in plan["resource_changes"]:
+        if row["address"] == recovery.PENDING_IAP and recovery.iap_patch_mode(contract):
+            row["change"]["after"].update(project="816643438938", instance="1670495097211408131", zone="us-central1-a")
         existing = row["address"] in contract["backend"]["managed_addresses"] or row["address"] in approved
         row["change"]["actions"] = ["no-op"] if existing else ["create"]
         row["change"]["before"] = deepcopy(row["change"]["after"]) if existing else None
@@ -444,7 +446,7 @@ class FoundationRecovery(unittest.TestCase):
             with self.subTest(reference=key, field=field), self.assertRaises(ValueError): recovery.verify_new_manifest(changed, self.contract, now=now)
 
     def trace_recovery(self, root, *, race=None, native_exit=2, reviewed_controls="c" * 40, material_update=False,
-                       serial6=False, material_drift=False):
+                       serial6=False, material_drift=False, numeric_iap=False, expire_at=None):
         """Real validation, simulated HTTP/source preconditions/native execution."""
         raw_state, initial_inventory, initial_contract = authored_partial(serial6=True) if serial6 else (self.raw, self.inventory, self.contract)
         work, reports = root / "work", root / "reports"
@@ -454,7 +456,10 @@ class FoundationRecovery(unittest.TestCase):
         for name in c.FILES:
             target = module / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text("synthetic prepared module " + name)
+            if numeric_iap:
+                target.write_bytes((recovery.ROOT / "infra/gcp/int-base" / name).read_bytes())
+            else:
+                target.write_text("synthetic prepared module " + name)
         adc = root / "gha-creds-recovery-synthetic.json"
         adc.write_text("Synthetic filename fixture; no credentials.")
         env = {"GITHUB_REPOSITORY": "AldemaroCruz/ClipForge", "GITHUB_REF": "refs/heads/ci/bootstrap-sec03",
@@ -475,8 +480,20 @@ class FoundationRecovery(unittest.TestCase):
         contract["source_bindings"] = {"base_configuration_sha256": binding["configuration_sha256"],
                                        "provider_lock_sha256": binding["provider_lock_sha256"],
                                        **({} if serial6 else {"imports_sha256": custody.sha256(recovery.import_source(contract))})}
+        if numeric_iap:
+            contract.update(iap_identity_patch=deepcopy(recovery.IAP_PATCH), read_window=deepcopy(recovery.READ_WINDOW))
+            contract["baseline"]["historical_recovery_contract"] = {"path": "config/int-foundation-history/5800b4c-recovery-contract.json",
+                "sha256": "97ffe48de5db6ac342acc42b7bb17c1087430c080c6e66b0a431b16d0f115832"}
+            env.update(INT_READ_WINDOW_MANIFEST_SHA256="d" * 64, INT_ADMIN_READ_RECEIPTS_SHA256="e" * 64)
         (root / "config").mkdir()
         (root / "config/int-foundation-recovery.json").write_bytes(custody.canonical(contract))
+        (root / "config/int-iap-diagnostic.json").write_bytes(custody.canonical({"read_window": {
+            **recovery.READ_WINDOW, "manifest_sha256": "d" * 64}}))
+        clock = {"now": datetime(2026, 11, 18, 17, 10, tzinfo=timezone.utc)}
+        class FixtureClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return clock["now"]
         observations, calls, uploads = authored_observations(contract), [], []
         def current(_bucket):
             inventory = deepcopy(initial_inventory)
@@ -495,6 +512,9 @@ class FoundationRecovery(unittest.TestCase):
             return custody.canonical(observations[resource]["policy"])
         def native(argv, operation, _work, **_kwargs):
             calls.append((argv, operation))
+            if ((expire_at == "before-plan" and operation == "recovery_validate")
+                    or (expire_at == "after-plan" and operation == "recovery_plan")):
+                clock["now"] = datetime(2026, 11, 18, 18, tzinfo=timezone.utc)
             if operation == "recovery_plan":
                 (work / "int.tfplan").write_bytes(b"synthetic recovery binary")
                 return native_exit, b""
@@ -512,11 +532,15 @@ class FoundationRecovery(unittest.TestCase):
             return 0, b""
         def upload(name, raw):
             uploads.append((name, raw))
+            if ((expire_at == "during-upload" and name.endswith("int.json"))
+                    or (expire_at == "after-manifest" and name.endswith("manifest.json"))):
+                clock["now"] = datetime(2026, 11, 18, 18, tzinfo=timezone.utc)
             return {"name": name, "generation": str(1000 + len(uploads)), "sha256": custody.sha256(raw), "size": len(raw)}
         image_module = types.ModuleType("scripts.review_int_foundation_plan")
         image_module.image_metadata = mock.Mock(return_value={"project": "debian-cloud", "name": "debian-13-trixie-v20261116",
                                                                "id": "5913446147369107523", "status": "READY"})
         with mock.patch.object(recovery, "ROOT", root), mock.patch.object(recovery, "load_contract", return_value=contract), \
+                mock.patch.object(recovery, "datetime", FixtureClock), \
                 mock.patch.object(recovery, "static_contract"), mock.patch.object(recovery, "read_private", side_effect=read), \
                 mock.patch.object(recovery.driver, "metadata", return_value={}), mock.patch.object(recovery.driver, "backend_inventory", side_effect=current), \
                 mock.patch.object(recovery.driver, "terraform_binary", return_value="synthetic-terraform"), \
@@ -640,7 +664,7 @@ class FoundationRecoverySerial6(unittest.TestCase):
         self.assertEqual(contract["state_confirmation"]["observed_utc"], "2026-11-18T12:56:44Z")
         self.assertFalse(contract["state_confirmation"]["current_lock_present"])
         self.assertEqual(contract["baseline"]["configuration_commit"], "264d1cfad6500e1abd60d3e7f966a3614a3a5831")
-        self.assertEqual(contract["baseline"]["controls_reference"], "79ecadb")
+        self.assertEqual(contract["baseline"]["controls_reference"], "5800b4c")
         self.assertEqual(contract["imports"], [])
         self.assertEqual(len(contract["completed_imports"]), 5)
         self.assertFalse(contract["apply_authorized"])
@@ -661,14 +685,25 @@ class FoundationRecoverySerial6(unittest.TestCase):
         def read(path):
             self.assertNotIn(path.name, {"int-foundation-recovery-imports.tf", "recovery-imports.tf"})
             return native_read(path)
-        with mock.patch.object(Path, "read_bytes", read):
-            binding = recovery.static_contract(recovery.ROOT, contract)
+        with tempfile.TemporaryDirectory(prefix="clipforge-original-source-fixture-") as temporary:
+            original = Path(temporary)
+            module = original / "infra/gcp/int-base"
+            module.mkdir(parents=True)
+            for name in c.FILES:
+                raw = (recovery.ROOT / "infra/gcp/int-base" / name).read_bytes()
+                if name == "runtime.tf": raw = raw.replace(recovery.IAP_NEW, recovery.IAP_OLD)
+                (module / name).parent.mkdir(parents=True, exist_ok=True)
+                (module / name).write_bytes(raw)
+            (original / "scripts").mkdir()
+            (original / "scripts/tf_int_plan.py").write_bytes((recovery.ROOT / "scripts/tf_int_plan.py").read_bytes())
+            with mock.patch.object(Path, "read_bytes", read):
+                binding = recovery.static_contract(original, contract)
+            for key, value in (("serial", 5), ("generation", "1794975925421250"), ("sha256", "0" * 64), ("size", 109543)):
+                changed = deepcopy(contract)
+                changed["backend"][key] = value
+                with self.subTest(key=key), self.assertRaises(ValueError):
+                    recovery.static_contract(original, changed)
         self.assertEqual(binding["configuration_sha256"], "1cf09b8ebd357761a217b7cae3d46e37397eadff39deeaa79500aac5276a7a7c")
-        for key, value in (("serial", 5), ("generation", "1794975925421250"), ("sha256", "0" * 64), ("size", 109543)):
-            changed = deepcopy(contract)
-            changed["backend"][key] = value
-            with self.subTest(key=key), self.assertRaises(ValueError):
-                recovery.static_contract(recovery.ROOT, changed)
 
     def test_serial1_and_serial5_state_or_incomplete_41_set_are_rejected(self):
         for mutation in ("serial1", "serial5", "missing", "substituted", "imports", "preview-source", "phase"):
@@ -777,6 +812,127 @@ class FoundationRecoverySerial6(unittest.TestCase):
             self.assertIn(PRIVATE_SENTINEL, uploads[1][1].decode())
             self.assertEqual(len(uploads), 3)
             self.assertEqual(sum(operation == "recovery_plan" for _, operation in calls), 1)
+
+
+class FoundationRecoveryNumericIap(unittest.TestCase):
+    def setUp(self):
+        self.raw, self.inventory, self.contract = authored_partial(serial6=True)
+        self.contract.update(iap_identity_patch=deepcopy(recovery.IAP_PATCH), read_window=deepcopy(recovery.READ_WINDOW))
+
+    def test_previous_head_contract_is_preserved_byte_exact_with_serial6_and_no_new_imports(self):
+        raw = (recovery.ROOT / "config/int-foundation-history/5800b4c-recovery-contract.json").read_bytes()
+        self.assertEqual(custody.sha256(raw), "97ffe48de5db6ac342acc42b7bb17c1087430c080c6e66b0a431b16d0f115832")
+        history = json.loads(raw)
+        self.assertTrue(recovery.serial6_mode(history))
+        self.assertFalse(recovery.iap_patch_mode(history))
+        self.assertNotIn("read_window", history)
+        self.assertEqual(history["baseline"]["configuration_commit"], "264d1cfad6500e1abd60d3e7f966a3614a3a5831")
+
+    def test_current_source_is_exact_two_expression_patch_and_preserves_original_baseline(self):
+        contract = recovery.load_contract()
+        self.assertTrue(recovery.iap_patch_mode(contract))
+        binding = recovery.static_contract(recovery.ROOT, contract)
+        self.assertEqual(binding["configuration_sha256"], recovery.IAP_PATCH["configuration_sha256"])
+        self.assertEqual(contract["source_bindings"]["original_base_configuration_sha256"],
+                         recovery.IAP_PATCH["original_configuration_sha256"])
+        self.assertEqual(contract["baseline"]["previous_controls_commit"], "5800b4c5c7a58ccd9ee738cc7d72cc59cb6c007f")
+
+    def test_source_guard_rejects_old_half_patch_additional_runtime_or_other_file_changes(self):
+        with tempfile.TemporaryDirectory(prefix="clipforge-iap-source-fixture-") as temporary:
+            source = Path(temporary)
+            originals = {name: (recovery.ROOT / "infra/gcp/int-base" / name).read_bytes() for name in c.FILES}
+            for mutation in ("old", "half", "runtime", "other"):
+                changed = dict(originals)
+                if mutation == "old": changed["runtime.tf"] = changed["runtime.tf"].replace(recovery.IAP_NEW, recovery.IAP_OLD)
+                elif mutation == "half": changed["runtime.tf"] = changed["runtime.tf"].replace(b"postgres.instance_id", b"postgres.name")
+                elif mutation == "runtime": changed["runtime.tf"] += b"\n# unauthorized\n"
+                else: changed["main.tf"] += b"\n# unauthorized\n"
+                for name, raw in changed.items():
+                    (source / name).parent.mkdir(parents=True, exist_ok=True)
+                    (source / name).write_bytes(raw)
+                with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                    recovery.verify_iap_sources(source, self.contract)
+
+    def test_numeric_iap_plan_requires_exact_project_instance_and_zone(self):
+        plan = authored_plan(self.contract)
+        self.assertEqual(recovery.verify_recovery_plan(plan, self.contract)["counts"], {"no-op": 41, "create": 1})
+        for key, value in (("project", "clipforgebeta2"), ("project", "816643438939"),
+                           ("instance", "clipforge-int-base-postgres"), ("instance", "1670495097211408132"),
+                           ("zone", "us-central1-b"), ("instance", None)):
+            changed = deepcopy(plan)
+            row = next(row for row in changed["resource_changes"] if row["address"] == recovery.PENDING_IAP)
+            row["change"]["after"][key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                recovery.verify_recovery_plan(changed, self.contract)
+
+    def test_read_window_has_half_open_utc_bounds_and_reference_only_receipts(self):
+        env = {"INT_READ_WINDOW_MANIFEST_SHA256": "d" * 64, "INT_ADMIN_READ_RECEIPTS_SHA256": "e" * 64}
+        with tempfile.TemporaryDirectory(prefix="clipforge-iap-window-fixture-") as temporary:
+            root = Path(temporary)
+            (root / "config").mkdir()
+            path = root / "config/int-iap-diagnostic.json"
+            path.write_bytes(custody.canonical({"read_window": {**recovery.READ_WINDOW, "manifest_sha256": "d" * 64}}))
+            with mock.patch.object(recovery, "ROOT", root):
+                result = recovery.read_window_reference(self.contract, env, datetime(2026, 11, 18, 17, tzinfo=timezone.utc))
+                self.assertFalse(result["external_evidence_bytes_ingested"])
+                self.assertEqual(result["admin_read_receipts_sha256"], "e" * 64)
+                for hour, minute in ((16, 59), (18, 0)):
+                    with self.subTest(hour=hour), self.assertRaises(ValueError):
+                        recovery.read_window_reference(self.contract, env, datetime(2026, 11, 18, hour, minute, tzinfo=timezone.utc))
+                for key in env:
+                    changed = dict(env, **{key: "invalid"})
+                    with self.subTest(key=key), self.assertRaises(ValueError):
+                        recovery.read_window_reference(self.contract, changed, datetime(2026, 11, 18, 17, tzinfo=timezone.utc))
+                changed = dict(env, INT_READ_WINDOW_MANIFEST_SHA256="a" * 64)
+                with self.assertRaises(ValueError):
+                    recovery.read_window_reference(self.contract, changed, datetime(2026, 11, 18, 17, tzinfo=timezone.utc))
+
+    def test_new_plan_manifest_uses_new_github_sha_and_original_producer_and_keeps_private_ttl(self):
+        with tempfile.TemporaryDirectory(prefix="clipforge-numeric-iap-fixture-") as temporary:
+            summary, calls, uploads = FoundationRecovery.trace_recovery(self, Path(temporary), serial6=True, numeric_iap=True)
+        self.assertEqual(summary["status"], "recovery_plan_requires_new_review")
+        manifest = json.loads(uploads[-1][1])
+        self.assertEqual(manifest["configuration_commit"], "c" * 40)
+        self.assertEqual(manifest["controls_commit"], "c" * 40)
+        self.assertEqual(manifest["baseline_configuration_commit"], "b" * 40)
+        self.assertEqual(manifest["iap_identity_patch"], recovery.IAP_PATCH)
+        self.assertEqual(manifest["configuration_sha256"], recovery.IAP_PATCH["configuration_sha256"])
+        self.assertEqual(manifest["expires_utc"], (datetime.fromisoformat(manifest["created_utc"]) + timedelta(hours=24)).isoformat())
+        self.assertFalse(manifest["read_window"]["external_evidence_bytes_ingested"])
+        self.assertFalse(summary["apply_authorized"])
+        self.assertIn("-lock=true", calls[2][0])
+        self.assertNotIn(PRIVATE_SENTINEL, json.dumps(summary))
+
+    def test_expiry_before_plan_blocks_without_planning_or_uploading(self):
+        with tempfile.TemporaryDirectory(prefix="clipforge-numeric-iap-preexpiry-fixture-") as temporary:
+            summary, calls, uploads = FoundationRecovery.trace_recovery(self, Path(temporary), serial6=True,
+                                                                       numeric_iap=True, expire_at="before-plan")
+        self.assertIsNone(summary)
+        self.assertEqual([operation for _, operation in calls], ["recovery_init", "recovery_validate"])
+        self.assertEqual(uploads, [])
+
+    def test_expiry_after_plan_or_during_custody_preserves_private_evidence_but_blocks(self):
+        for stage in ("after-plan", "during-upload", "after-manifest"):
+            with tempfile.TemporaryDirectory(prefix="clipforge-numeric-iap-expiry-fixture-") as temporary:
+                summary, calls, uploads = FoundationRecovery.trace_recovery(self, Path(temporary), serial6=True,
+                                                                           numeric_iap=True, expire_at=stage)
+            with self.subTest(stage=stage):
+                self.assertEqual(summary["status"], "blocked_recovery_plan_read_window_expired")
+                self.assertTrue(summary["review"]["read_window_expired"])
+                self.assertEqual(len(uploads), 3)
+                self.assertFalse(summary["apply_authorized"])
+                self.assertEqual(sum(operation == "recovery_plan" for _, operation in calls), 1)
+                if stage != "after-manifest":
+                    self.assertEqual(json.loads(uploads[-1][1])["plan_review_status"], summary["status"])
+
+    def test_numeric_plan_drift_is_not_hidden_by_identity_fix(self):
+        with tempfile.TemporaryDirectory(prefix="clipforge-numeric-iap-drift-fixture-") as temporary:
+            summary, _, uploads = FoundationRecovery.trace_recovery(self, Path(temporary), serial6=True,
+                                                                    numeric_iap=True, material_drift=True)
+        self.assertEqual(summary["status"], "blocked_recovery_plan_material_difference")
+        self.assertEqual(summary["review"]["observed_drift"][0]["changed_attribute_keys"], ["etag"])
+        self.assertEqual(len(uploads), 3)
+        self.assertNotIn(PRIVATE_SENTINEL, json.dumps(summary))
 
 
 if __name__ == "__main__":

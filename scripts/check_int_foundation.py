@@ -126,12 +126,43 @@ def fingerprint(root, contract):
     return release.sha256(release.canonical(values)), values
 
 
+def current_configuration_binding(root, module, contract):
+    """An explicit recovery source transition never rewrites the historical plan."""
+    current = contract.get("current_configuration")
+    if current is None:
+        return None
+    from scripts import int_foundation_recovery as recovery
+    history = {"path": "config/int-foundation-history/5800b4c-foundation-contract.json",
+               "sha256": "31fc386818031c2db18d7eae4fcf8940c8c53b7db4824ff7bbd0c076725e8f6d"}
+    expected = {"purpose": "serial6_recovery_plan_only",
+                "configuration_sha256": recovery.IAP_PATCH["configuration_sha256"],
+                "source_patch_sha256": recovery.IAP_PATCH["source_patch_sha256"],
+                "historical_plan_configuration_sha256": recovery.IAP_PATCH["original_configuration_sha256"],
+                "historical_contract": history,
+                "producer_binding": "Actual dispatch GITHUB_SHA; original historical plan/producer retained"}
+    c.require(contract.get("mode") == "recovery_preparation_only" and contract.get("planning_candidate") is None
+              and current == expected, "Only the exact serial6 recovery configuration transition is permitted")
+    raw = (root / history["path"]).read_bytes()
+    c.require(release.sha256(raw) == history["sha256"], "Full historical foundation contract changed")
+    previous = json.loads(raw)
+    c.require(contract["plan"] == previous["plan"]
+              and contract["plan"]["configuration_sha256"] == recovery.IAP_PATCH["original_configuration_sha256"]
+              and contract.get("owner_risk_acceptance") == previous.get("owner_risk_acceptance")
+              and contract.get("owner_risk_acceptance_sha256") == previous.get("owner_risk_acceptance_sha256"),
+              "Current source metadata cannot rewrite the historical plan, producer or owner acceptance")
+    recovered = recovery.load_contract(root)
+    c.require(recovery.iap_patch_mode(recovered), "Recovery contract did not activate the exact IAP identity patch")
+    recovery.verify_iap_sources(module, recovered)
+    return current
+
+
 def check_static(root, module, contract):
     c.require(tuple(contract["scope"]["module_files"]) == c.FILES, "Foundation Terraform inventory changed")
     c.source_contract(module)
     binding = release.source_binding(module, {"GITHUB_SHA": contract["plan"]["commit"],
                                             "RUNTIME_IMAGE": contract["plan"]["inputs"]["runtime_image"]})
     candidate = contract.get("planning_candidate")
+    current = current_configuration_binding(root, module, contract)
     if candidate is not None:
         c.require(candidate.get("purpose") == "comparative_plan_only" and candidate.get("apply_authorized") is False,
                   "An image candidate cannot activate a foundation apply")
@@ -146,7 +177,7 @@ def check_static(root, module, contract):
     for key in ("provider_lock_sha256", "terraform_version", "inputs"):
         c.require(binding[key] == contract["plan"][key], "Original foundation plan binding changed: " + key)
     if candidate is None:
-        c.require(binding["configuration_sha256"] == contract["plan"]["configuration_sha256"],
+        c.require(binding["configuration_sha256"] == (current["configuration_sha256"] if current else contract["plan"]["configuration_sha256"]),
                   "Original foundation plan binding changed: configuration_sha256")
         if contract.get("mode") == "recovery_preparation_only":
             from scripts import int_foundation_recovery
@@ -234,7 +265,8 @@ def checks(work, reports):
               "contract_sha256": release.sha256((source / CONTRACT).read_bytes()), "control_sources_sha256": source_hash,
               "source_files": source_files, "plan": contract["plan"], "integrity": {}, "readiness": "blocked",
               "application_ci": "separate_contract_not_reclassified", "vm_inventory_sca_tls_restore": "not_proven_before_creation",
-              "planning_candidate": contract.get("planning_candidate"), "apply_authorized": False}
+              "planning_candidate": contract.get("planning_candidate"),
+              "current_configuration": contract.get("current_configuration"), "apply_authorized": False}
     uid = str(os.getuid()) if hasattr(os, "getuid") else "10001"
     gid = str(os.getgid()) if hasattr(os, "getgid") else "10001"
     base = ["docker", "run", "--rm", "--pull=never", "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
@@ -440,7 +472,9 @@ def fetch_evidence(environ, root=ROOT):
     c.require(report.get("schema") == REPORT_SCHEMA and report.get("control_commit") == commit
               and report.get("contract_sha256") == release.sha256((root / CONTRACT).read_bytes())
               and report.get("control_sources_sha256") == source_hash and report.get("source_files") == files
-              and report.get("plan") == contract["plan"], "Foundation evidence source/contract/plan bindings differ")
+              and report.get("plan") == contract["plan"]
+              and report.get("current_configuration") == contract.get("current_configuration"),
+              "Foundation evidence source/contract/plan bindings differ")
     c.require(all(release.sha256(data[name]) == report["native_report_sha256"][name] for name in BUNDLE[1:]), "Native evidence bytes changed")
     native = json.loads(data["bandit-native.json"])
     bandit_contract(native, contract)

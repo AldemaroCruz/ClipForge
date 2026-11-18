@@ -159,7 +159,10 @@
       "config/int-foundation-history/d319b0d-contract.json",
       "config/int-foundation-recovery-apply.json",
       "config/int-iap-diagnostic.json",
-      "config/int-foundation-history/79ecadb-recovery-contract.json"
+      "config/int-foundation-history/79ecadb-recovery-contract.json",
+      "config/int-foundation-history/5800b4c-recovery-contract.json",
+      "config/int-foundation-history/5800b4c-iap-diagnostic.json",
+      "config/int-foundation-history/5800b4c-foundation-contract.json"
     ],
     "deferred_procedures": [
       "protected database initialization",
@@ -522,6 +525,19 @@
     "purpose": "read_only_credentials_route_comparison_before_any_new_IAM_approval",
     "IAM_e72_expired_and_not_renewed": true,
     "native_policy_payloads": "private_scratch_only",
-    "apply_authorized": false
+    "apply_authorized": false,
+    "effective_provider_route": "numeric identity evaluated from pinned state, checked against live project/VM metadata",
+    "read_window_proposal_sha256": "b2fbaf3ba71e671601c7e803feb71cd89def33cad05cc47ea273d139ff897417"
+  },
+  "current_configuration": {
+    "purpose": "serial6_recovery_plan_only",
+    "configuration_sha256": "4f13120dc9165cd43881181eca6af95663df9d063d513bb4d776c59137d92aea",
+    "source_patch_sha256": "9d3826470408a37045b7ea5ddd7e5d2a955787a5f06c70b40e6df409453307ab",
+    "historical_plan_configuration_sha256": "1cf09b8ebd357761a217b7cae3d46e37397eadff39deeaa79500aac5276a7a7c",
+    "historical_contract": {
+      "path": "config/int-foundation-history/5800b4c-foundation-contract.json",
+      "sha256": "31fc386818031c2db18d7eae4fcf8940c8c53b7db4824ff7bbd0c076725e8f6d"
+    },
+    "producer_binding": "Actual dispatch GITHUB_SHA; original historical plan/producer retained"
   }
 }

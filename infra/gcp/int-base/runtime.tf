@@ -97,9 +97,9 @@ resource "google_compute_instance_iam_member" "protected_bootstrap" {
   member        = "serviceAccount:${data.google_service_account.existing["deploy"].email}"
 }
 resource "google_iap_tunnel_instance_iam_member" "protected_bootstrap" {
-  project  = var.project_id
+  project  = data.google_project.existing.number
   zone     = local.zone
-  instance = google_compute_instance.postgres.name
+  instance = google_compute_instance.postgres.instance_id
   role     = "roles/iap.tunnelResourceAccessor"
   member   = "serviceAccount:${data.google_service_account.existing["deploy"].email}"
 }

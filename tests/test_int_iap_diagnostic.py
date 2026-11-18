@@ -17,10 +17,20 @@ from scripts import int_iap_diagnostic as diagnostic
 from scripts import int_iap_provider_probe as native
 
 
-NOW = datetime(2026, 11, 18, 6, tzinfo=timezone.utc)
+NOW = datetime(2026, 11, 18, 17, 30, tzinfo=timezone.utc)
 MEMBER = 'serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com'
 SENTINEL = 'synthetic-private-policy-sentinel'
 REASON = 'ClipForge IAP diagnostic run 50000000000 provider ADC numeric'
+AUTHORED_LIVE_IDENTITY = {'verified':True,'project_id':'clipforgebeta2','project_number':'816643438938',
+    'instance_id':'1670495097211408131','instance_name':'clipforge-int-base-postgres','zone':'us-central1-a'}
+NUMERIC_RUNTIME = '''resource "google_iap_tunnel_instance_iam_member" "protected_bootstrap" {
+  project = data.google_project.existing.number
+  zone = local.zone
+  instance = google_compute_instance.postgres.instance_id
+  role = "roles/iap.tunnelResourceAccessor"
+  member = "serviceAccount:authored-fixture@clipforgebeta2.iam.gserviceaccount.com"
+}
+'''
 
 
 def authored_state():
@@ -28,13 +38,20 @@ def authored_state():
     for address in sorted(c.FOUNDATION_ADDRESSES - {'google_iap_tunnel_instance_iam_member.protected_bootstrap'}):
         kind, rest = address.split('.', 1)
         name, index = re.fullmatch(r'([^\[]+)(?:\["([^"\]]+)"\])?', rest).groups()
-        row = grouped.setdefault((kind, name), {'mode': 'managed', 'type': kind, 'name': name, 'instances': []})
+        row = grouped.setdefault((kind, name), {'mode': 'managed', 'type': kind, 'name': name,
+            'provider':'provider["registry.terraform.io/hashicorp/google"]','instances': []})
         instance = {'attributes': {'private_fixture': SENTINEL}}
+        if (kind, name) == ('google_compute_instance', 'postgres'):
+            instance['attributes'].update(instance_id='1670495097211408131',name='clipforge-int-base-postgres',
+                                          project='clipforgebeta2',zone='us-central1-a')
         if index is not None:
             instance['index_key'] = index
         row['instances'].append(instance)
+    resources = list(grouped.values()) + [{'mode':'data','type':'google_project','name':'existing',
+                  'provider':'provider["registry.terraform.io/hashicorp/google"]',
+                  'instances':[{'attributes':{'number':'816643438938','project_id':'clipforgebeta2'}}]}]
     return {'version': 4, 'terraform_version': '1.15.8', 'serial': 6,
-            'lineage': 'author-authored-lineage-not-real-state', 'resources': list(grouped.values()), 'outputs': {}}
+            'lineage': 'author-authored-lineage-not-real-state', 'resources': resources, 'outputs': {}}
 
 
 def authored_native_plan(policy):
@@ -80,10 +97,13 @@ class IapReadDiagnosticContract(unittest.TestCase):
         for name in c.FILES:
             target = self.source / 'infra/gcp/int-base' / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(('Authored source fixture for ' + name + '\n').encode())
+            target.write_bytes((NUMERIC_RUNTIME if name=='runtime.tf' else 'Authored source fixture for ' + name + '\n').encode())
             self.provider_files[name] = custody.sha256(target.read_bytes())
         self.contract.update(foundation_configuration_sha256=custody.sha256(custody.canonical(self.provider_files)),
             provider_configuration_evidence={'provider_config_key':'google','provider_alias':None,'credential_expression_keys_present':[]})
+        self.configure_route('numeric')
+        self.contract['read_window']={'not_before_utc':'2026-11-18T17:00:00Z','expires_utc':'2026-11-18T18:00:00Z',
+                                    'proposal_sha256':'b2fbaf3ba71e671601c7e803feb71cd89def33cad05cc47ea273d139ff897417','manifest_sha256':'a'*64}
         (self.source / 'config/int-iap-diagnostic.json').write_bytes(custody.canonical(self.contract))
         self.adc_document = {'type': 'external_account', 'audience': SENTINEL,
             'service_account_impersonation_url': 'https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com:generateAccessToken',
@@ -100,6 +120,7 @@ class IapReadDiagnosticContract(unittest.TestCase):
             'GCP_WIF_PROVIDER': 'projects/816643438938/locations/global/workloadIdentityPools/clipforge-gh-int/providers/github',
             'TF_STATE_BUCKET': c.BUCKET, 'TF_STATE_PREFIX': 'terraform/int',
             'GCP_ACCESS_TOKEN': 'synthetic-private-access-token', 'GOOGLE_APPLICATION_CREDENTIALS': str(self.adc),
+            'INT_READ_WINDOW_MANIFEST_SHA256':'a'*64,'INT_ADMIN_READ_RECEIPTS_SHA256':'b'*64,
             'UNRELATED_PRIVATE_VARIABLE': SENTINEL}
         class Clock(datetime):
             @classmethod
@@ -107,6 +128,33 @@ class IapReadDiagnosticContract(unittest.TestCase):
                 return NOW if tz else NOW.replace(tzinfo=None)
         self.addCleanup(mock.patch.stopall)
         mock.patch.object(diagnostic, 'datetime', Clock).start()
+
+    def configure_route(self, route):
+        numeric=route=='numeric'
+        expressions={'project':'data.google_project.existing.number' if numeric else 'var.project_id',
+                     'zone':'local.zone','instance':'google_compute_instance.postgres.instance_id' if numeric else 'google_compute_instance.postgres.name'}
+        text=NUMERIC_RUNTIME.replace('data.google_project.existing.number',expressions['project']).replace(
+            'google_compute_instance.postgres.instance_id',expressions['instance'])
+        (self.source/'infra/gcp/int-base/runtime.tf').write_text(text,encoding='utf-8',newline='\n')
+        self.provider_files={name:custody.sha256((self.source/'infra/gcp/int-base'/name).read_bytes()) for name in c.FILES}
+        fingerprint=custody.sha256(custody.canonical(self.provider_files))
+        self.contract['foundation_configuration_sha256']=fingerprint
+        self.contract['provider_route']={'required_route':route,'resource':diagnostic.ROUTES[route],
+            'evaluated':{'project':'816643438938' if numeric else 'clipforgebeta2','zone':'us-central1-a',
+                         'instance':'1670495097211408131' if numeric else 'clipforge-int-base-postgres'},
+            'expressions':expressions,'address':'google_iap_tunnel_instance_iam_member.protected_bootstrap',
+            'configuration_sha256':fingerprint}
+
+    def authored_read_result(self):
+        proof=diagnostic.provider_route_from_state(self.source,self.raw,self.contract)
+        proof['live_identity']=deepcopy(AUTHORED_LIVE_IDENTITY)
+        return {'provider_route':proof,
+                'provider_source':diagnostic.verify_provider_reference(self.source,self.contract),
+                'required_reads':[{'key':key,'method':method,'resource':resource,
+                    'required_permission_for_operation':permission,'http_status':200}
+                    for key,method,_url,_payload,permission,resource in diagnostic.READ_TARGETS],
+                'probes':[{'route':route,'mode':mode,'resource':diagnostic.ROUTES[route],'http_status':200}
+                          for route in ('numeric','named') for mode in ('explicit_http','provider_ADC')]}
 
     def test_credential_projection_is_closed_and_does_not_claim_effective_identity(self):
         document = deepcopy(self.adc_document)
@@ -152,7 +200,8 @@ class IapReadDiagnosticContract(unittest.TestCase):
         self.assertNotEqual(result['etag_sha256'], original['etag_sha256'])
         self.assertTrue(result['reviewed_binding_present_exactly'])
         self.assertTrue(result['reviewed_binding_expired_now'])
-        self.assertFalse(diagnostic.policy_metadata(self.policy, self.expected, now=NOW-timedelta(hours=2))['reviewed_binding_expired_now'])
+        self.assertFalse(diagnostic.policy_metadata(self.policy, self.expected,
+            now=datetime(2026,11,18,4,59,tzinfo=timezone.utc))['reviewed_binding_expired_now'])
         for field in ('role', 'condition', 'duplicate'):
             policy = deepcopy(self.policy)
             if field == 'role': policy['bindings'][0]['role'] = 'roles/owner'
@@ -200,7 +249,7 @@ class IapReadDiagnosticContract(unittest.TestCase):
             elif scenario=='terraform':state['terraform_version']='1.15.7'
             elif scenario=='tainted':state['resources'][0]['instances'][0]['status']='tainted'
             elif scenario=='deposed':state['resources'][0]['instances'][0]['deposed']='old'
-            elif scenario=='missing':state['resources'].pop()
+            elif scenario=='missing':state['resources'].pop(0)
             elif scenario=='duplicate':state['resources'].append(deepcopy(state['resources'][0]))
             elif scenario=='module':state['resources'][0]['module']='module.unreviewed'
             elif scenario=='secret-data':state['resources'].append({'mode':'data','type':'google_secret_manager_secret_version'})
@@ -311,6 +360,124 @@ class IapReadDiagnosticContract(unittest.TestCase):
                 finally:
                     target.write_bytes(original)
 
+    def test_provider_route_evaluates_actual_authored_hcl_and_state_for_both_supported_forms(self):
+        for route in ('numeric','named'):
+            self.configure_route(route)
+            proof=diagnostic.provider_route_from_state(self.source,self.raw,self.contract)
+            expected={key:value for key,value in self.contract['provider_route'].items() if key!='required_route'}
+            expected['route']=route
+            self.assertEqual(proof,expected)
+            self.assertEqual(proof['resource'],diagnostic.ROUTES[route])
+            self.assertEqual(proof['configuration_sha256'],self.contract['foundation_configuration_sha256'])
+            self.assertNotIn(SENTINEL,json.dumps(proof))
+
+    def test_provider_route_rejects_wrong_identity_unknown_expressions_and_discordant_configured_route(self):
+        for scenario in ('project-number','instance-id','instance-name','instance-project','instance-zone','missing-project',
+                         'duplicate-project','duplicate-instance','hash','declared-route','declared-resource','declared-hash',
+                         'hybrid-expression','literal-instance','wrong-zone-expression'):
+            self.configure_route('numeric')
+            contract=deepcopy(self.contract);state=deepcopy(self.state)
+            project=next(row for row in state['resources'] if row['type']=='google_project')['instances'][0]['attributes']
+            vm_row=next(row for row in state['resources'] if row['type']=='google_compute_instance' and row['name']=='postgres')
+            vm=vm_row['instances'][0]['attributes']
+            if scenario=='project-number':project['number']='816643438939'
+            elif scenario.startswith('instance-'):
+                vm[{'instance-id':'instance_id','instance-name':'name','instance-project':'project','instance-zone':'zone'}[scenario]]='unreviewed'
+            elif scenario=='missing-project':state['resources']=[row for row in state['resources'] if row['type']!='google_project']
+            elif scenario=='duplicate-project':state['resources'].append(deepcopy(next(row for row in state['resources'] if row['type']=='google_project')))
+            elif scenario=='duplicate-instance':vm_row['instances'].append(deepcopy(vm_row['instances'][0]))
+            elif scenario=='hash':contract['foundation_configuration_sha256']='f'*64
+            elif scenario=='declared-route':contract['provider_route']['required_route']='named'
+            elif scenario=='declared-resource':contract['provider_route']['resource']=diagnostic.ROUTES['named']
+            elif scenario=='declared-hash':contract['provider_route']['configuration_sha256']='f'*64
+            else:
+                path=self.source/'infra/gcp/int-base/runtime.tf'
+                delta={'hybrid-expression':('data.google_project.existing.number','var.project_id'),
+                       'literal-instance':('google_compute_instance.postgres.instance_id','"1670495097211408131"'),
+                       'wrong-zone-expression':('local.zone','"us-central1-a"')}[scenario]
+                path.write_text(NUMERIC_RUNTIME.replace(*delta),encoding='utf-8',newline='\n')
+                files={name:custody.sha256((self.source/'infra/gcp/int-base'/name).read_bytes()) for name in c.FILES}
+                fingerprint=custody.sha256(custody.canonical(files))
+                contract['foundation_configuration_sha256']=fingerprint
+                contract['provider_route']['configuration_sha256']=fingerprint
+            raw=custody.canonical(state)
+            contract['state_reference'].update(sha256=custody.sha256(raw),size=len(raw))
+            with self.subTest(scenario=scenario),self.assertRaises(ValueError):
+                diagnostic.provider_route_from_state(self.source,raw,contract)
+
+    def test_live_route_identity_uses_only_fixed_project_and_instance_gets_and_withholds_private_payloads(self):
+        proof=diagnostic.provider_route_from_state(self.source,self.raw,self.contract)
+        project_url='https://cloudresourcemanager.googleapis.com/v1/projects/clipforgebeta2?fields=projectId,projectNumber'
+        instance_url='https://compute.googleapis.com/compute/v1/projects/clipforgebeta2/zones/us-central1-a/instances/clipforge-int-base-postgres?fields=id,name,zone'
+        values=[{'projectId':'clipforgebeta2','projectNumber':'816643438938','private':SENTINEL},
+                {'id':'1670495097211408131','name':'clipforge-int-base-postgres',
+                 'zone':'https://www.googleapis.com/compute/v1/projects/clipforgebeta2/zones/us-central1-a','private':SENTINEL}]
+        def response(value):
+            result=mock.MagicMock();result.__enter__.return_value.read.return_value=custody.canonical(value)
+            return result
+        opener=mock.Mock();opener.open.side_effect=[response(value) for value in values]
+        with mock.patch.object(diagnostic,'build_opener',return_value=opener):
+            result=diagnostic.live_route_identity(proof,'synthetic-private-token')
+        self.assertEqual(result['live_identity'],AUTHORED_LIVE_IDENTITY)
+        self.assertEqual(result['evaluated'],proof['evaluated'])
+        self.assertEqual([row['operation'] for row in result['live_operations']],['resourcemanager.projects.get','compute.instances.get'])
+        self.assertTrue(all(row['http_status']==200 for row in result['live_operations']))
+        self.assertNotIn(SENTINEL,json.dumps(result));self.assertNotIn('synthetic-private-token',json.dumps(result))
+        for call,url in zip(opener.open.call_args_list,(project_url,instance_url)):
+            request=call.args[0];self.assertEqual(request.full_url,url)
+            self.assertEqual(request.get_method(),'GET');self.assertIsNone(request.data)
+            self.assertEqual(request.get_header('Authorization'),'Bearer synthetic-private-token')
+        for index,field,value in ((0,'projectId','other'),(0,'projectNumber','816643438939'),
+                                  (1,'id','1670495097211408132'),(1,'name','other-instance'),(1,'zone','us-central1-b')):
+            changed=deepcopy(values);changed[index][field]=value
+            opener=mock.Mock();opener.open.side_effect=[response(row) for row in changed]
+            with mock.patch.object(diagnostic,'build_opener',return_value=opener),self.subTest(field=field),self.assertRaises(ValueError):
+                diagnostic.live_route_identity(proof,'synthetic-private-token')
+        for index in (0,1):
+            for status in (403,404,500):
+                body=mock.Mock();body.read.side_effect=AssertionError('Identity error response must not be read')
+                error=diagnostic.HTTPError((project_url,instance_url)[index],status,SENTINEL,{'Authorization':'Bearer '+SENTINEL},body)
+                opener=mock.Mock();opener.open.side_effect=([response(values[0])] if index else [])+[error]
+                with mock.patch.object(diagnostic,'build_opener',return_value=opener),self.subTest(index=index,status=status):
+                    with self.assertRaises(diagnostic.RouteReadBlocked) as raised:
+                        diagnostic.live_route_identity(proof,'synthetic-private-token')
+                body.read.assert_not_called();self.assertEqual(opener.open.call_count,index+1)
+                receipt=raised.exception.receipt
+                self.assertEqual(receipt,{'operation':'verify_effective_IAP_'+('project' if index==0 else 'instance'),
+                    'resource':'projects/clipforgebeta2' if index==0 else 'projects/clipforgebeta2/zones/us-central1-a/instances/1670495097211408131',
+                    'required_permission_for_operation':'resourcemanager.projects.get' if index==0 else 'compute.instances.get',
+                    'http_status':status,'response_payload_withheld':True})
+                self.assertNotIn(SENTINEL,json.dumps(receipt)+str(raised.exception))
+
+    def test_read_window_guard_enforces_inclusive_start_exclusive_end_and_exact_custody_references(self):
+        for observed,allowed in ((datetime(2026,11,18,16,59,59,tzinfo=timezone.utc),False),
+                                 (datetime(2026,11,18,17,tzinfo=timezone.utc),True),
+                                 (datetime(2026,11,18,17,59,59,tzinfo=timezone.utc),True),
+                                 (datetime(2026,11,18,18,tzinfo=timezone.utc),False)):
+            class EdgeClock(datetime):
+                @classmethod
+                def now(cls,tz=None):return observed
+            with mock.patch.object(diagnostic,'datetime',EdgeClock),self.subTest(observed=observed):
+                if allowed:
+                    result=diagnostic.read_window_guard(self.contract,self.env)
+                    self.assertEqual(result['manifest_sha256'],self.env['INT_READ_WINDOW_MANIFEST_SHA256'])
+                    self.assertEqual(result['administrator_receipt_index_sha256'],self.env['INT_ADMIN_READ_RECEIPTS_SHA256'])
+                    self.assertEqual(result['not_before_utc'],'2026-11-18T17:00:00Z')
+                    self.assertEqual(result['expires_utc'],'2026-11-18T18:00:00Z')
+                    self.assertNotIn(SENTINEL,json.dumps(result))
+                else:
+                    with self.assertRaises(ValueError) as raised:diagnostic.read_window_guard(self.contract,self.env)
+                    self.assertEqual(raised.exception.receipt['status'],'blocked_no_window_extension')
+        for scenario in ('manifest','receipt-missing','receipt-invalid','proposal','earlier-start','later-expiry'):
+            contract=deepcopy(self.contract);env=deepcopy(self.env)
+            if scenario=='manifest':env['INT_READ_WINDOW_MANIFEST_SHA256']='f'*64
+            elif scenario=='receipt-missing':env.pop('INT_ADMIN_READ_RECEIPTS_SHA256')
+            elif scenario=='receipt-invalid':env['INT_ADMIN_READ_RECEIPTS_SHA256']=SENTINEL
+            elif scenario=='proposal':contract['read_window']['proposal_sha256']='f'*64
+            elif scenario=='earlier-start':contract['read_window']['not_before_utc']='2026-11-18T16:59:59Z'
+            elif scenario=='later-expiry':contract['read_window']['expires_utc']='2026-11-18T18:00:01Z'
+            with self.subTest(scenario=scenario),self.assertRaises(ValueError):diagnostic.read_window_guard(contract,env)
+
     def test_native_policy_extraction_rejects_managed_changes_outputs_children_or_unreviewed_data(self):
         baseline=authored_native_plan(self.policy)
         self.assertEqual(native.extract_policy(baseline),self.policy)
@@ -410,6 +577,7 @@ class IapReadDiagnosticContract(unittest.TestCase):
         # The immutable production selector is the only source-selection mock;
         # verification below still hashes all ten authored files normally.
         with mock.patch.object(diagnostic,'load_contract',return_value=self.contract), \
+                mock.patch.object(diagnostic,'live_route_identity',side_effect=lambda proof,_token:{**proof,'live_identity':deepcopy(AUTHORED_LIVE_IDENTITY)}) as live_identity, \
                 mock.patch.object(diagnostic.driver,'metadata',return_value={'name':c.BUCKET}), \
                 mock.patch.object(diagnostic.states,'private_current_state',return_value=(self.raw,self.obj,self.inventory)), \
                 mock.patch.object(diagnostic.driver,'backend_inventory',return_value=self.inventory) as inventory, \
@@ -419,6 +587,9 @@ class IapReadDiagnosticContract(unittest.TestCase):
                 mock.patch.object(custody,'upload') as upload:
             result=diagnostic.run_diagnostic(self.work,self.reports,self.env,root=self.source)
         self.assertEqual(len(direct_calls),2);self.assertEqual(len(native_calls),2);self.assertEqual(inventory.call_count,2)
+        live_identity.assert_called_once()
+        self.assertEqual(live_identity.call_args.args[0]['route'],'numeric')
+        self.assertEqual(live_identity.call_args.args[1],self.env['GCP_ACCESS_TOKEN'])
         self.assertEqual(len(anchor_calls),2)
         self.assertEqual([event[0] for event in events],['anchor','iap','anchor','iap'])
         self.assertEqual(anchor_calls,[(call[1],call[2]) for call in direct_calls])
@@ -434,7 +605,11 @@ class IapReadDiagnosticContract(unittest.TestCase):
             self.assertNotIn(private,public)
         for row in result['probes']:
             self.assertNotIn('bindings',row['policy']);self.assertIn('policy_semantic_sha256',row['policy'])
-        upload.assert_not_called();self.assertEqual(list(self.reports.iterdir()),[])
+        upload.assert_not_called()
+        self.assertEqual([path.name for path in self.reports.iterdir()],['iap-diagnostic.json'])
+        partial=(self.reports/'iap-diagnostic.json').read_text()
+        self.assertNotIn(SENTINEL,partial);self.assertNotIn(self.env['GCP_ACCESS_TOKEN'],partial)
+        self.assertEqual(json.loads(partial)['status'],'partial_read_diagnostic')
 
     def test_native_bucket_denial_is_not_attributed_to_iap_and_unknown_private_fields_block_publication(self):
         for permission,status in (('storage.buckets.get',None),('iap.tunnelInstances.getIamPolicy',403),('unreviewed-private-field',None)):
@@ -443,6 +618,7 @@ class IapReadDiagnosticContract(unittest.TestCase):
                 if permission=='unreviewed-private-field':result[SENTINEL]=SENTINEL
                 return result
             with mock.patch.object(diagnostic,'load_contract',return_value=self.contract), \
+                    mock.patch.object(diagnostic,'live_route_identity',side_effect=lambda proof,_token:{**proof,'live_identity':deepcopy(AUTHORED_LIVE_IDENTITY)}), \
                     mock.patch.object(diagnostic.driver,'metadata',return_value={'name':c.BUCKET}), \
                     mock.patch.object(diagnostic.states,'private_current_state',return_value=(self.raw,self.obj,self.inventory)), \
                     mock.patch.object(diagnostic.driver,'backend_inventory',return_value=self.inventory), \
@@ -471,6 +647,7 @@ class IapReadDiagnosticContract(unittest.TestCase):
             if scenario=='credential-drift':main.write_bytes(original+b'\nprovider "google" { credentials = "synthetic-private-credential" }')
             elif scenario=='alias-drift':main.write_bytes(original+b'\nprovider "google" { alias = "unreviewed" }')
             with mock.patch.object(diagnostic,'load_contract',return_value=self.contract), \
+                    mock.patch.object(diagnostic,'live_route_identity',side_effect=lambda proof,_token:{**proof,'live_identity':deepcopy(AUTHORED_LIVE_IDENTITY)}), \
                     mock.patch.object(diagnostic.driver,'metadata',return_value={'name':c.BUCKET}), \
                     mock.patch.object(diagnostic.states,'private_current_state',return_value=(self.raw,self.obj,self.inventory)), \
                     mock.patch.object(diagnostic.driver,'backend_inventory',return_value=inventory), \
@@ -525,19 +702,63 @@ class IapReadDiagnosticContract(unittest.TestCase):
             diagnostic.required_reads('synthetic','bad\nreason')
         network.assert_not_called()
 
+    def test_required_reads_recheck_the_window_before_each_request_and_stop_when_it_closes(self):
+        opener=mock.Mock();response=mock.MagicMock()
+        response.__enter__.return_value.read.return_value=b'{}';opener.open.return_value=response
+        guards=[]
+        def before_read():
+            guards.append(len(guards)+1)
+            if len(guards)==3:raise ValueError('Synthetic read window expired')
+        with mock.patch.object(diagnostic,'build_opener',return_value=opener),self.assertRaises(ValueError):
+            diagnostic.required_reads('synthetic-private-token',REASON,before_read=before_read)
+        self.assertEqual(guards,[1,2,3]);self.assertEqual(opener.open.call_count,2)
+
     def test_plan_requires_complete_successful_required_reads_and_same_four_iap_combinations(self):
-        result={'required_reads':[{'key':x[0],'http_status':200} for x in diagnostic.READ_TARGETS],
-                'probes':[{'route':route,'mode':mode,'http_status':200} for route in diagnostic.ROUTES
-                          for mode in ('explicit_http','provider_ADC')]}
-        self.assertTrue(diagnostic.reads_allow_plan(result))
+        result=self.authored_read_result()
+        self.assertTrue(diagnostic.reads_allow_plan(result,self.contract))
         for field in ('required_reads','probes'):
             for scenario in ('missing','duplicate','denied','unknown'):
                 value=deepcopy(result)
                 if scenario=='missing':value[field].pop()
                 elif scenario=='duplicate':value[field][-1]=deepcopy(value[field][0])
                 else:value[field][0]['http_status']=403 if scenario=='denied' else None
-                with self.subTest(field=field,scenario=scenario):self.assertFalse(diagnostic.reads_allow_plan(value))
-        self.assertFalse(diagnostic.reads_allow_plan({}))
+                with self.subTest(field=field,scenario=scenario):self.assertFalse(diagnostic.reads_allow_plan(value,self.contract))
+        self.assertFalse(diagnostic.reads_allow_plan({},self.contract))
+
+    def test_plan_uses_only_the_actual_hcl_route_without_losing_other_route_failures(self):
+        for active in ('numeric','named'):
+            self.configure_route(active)
+            result=self.authored_read_result()
+            for row in result['probes']:
+                if row['route']=='named':row['http_status']=403
+            self.assertEqual(diagnostic.reads_allow_plan(result,self.contract),active=='numeric')
+            self.assertEqual([row['http_status'] for row in result['probes'] if row['route']=='named'],[403,403])
+            if active=='numeric':
+                for mode in ('explicit_http','provider_ADC'):
+                    value=deepcopy(result)
+                    next(row for row in value['probes'] if row['route']=='numeric' and row['mode']==mode)['http_status']=403
+                    with self.subTest(active=active,mode=mode):self.assertFalse(diagnostic.reads_allow_plan(value,self.contract))
+
+    def test_plan_rejects_wrong_read_resources_route_proofs_or_missing_diagnostic_combinations(self):
+        result=self.authored_read_result()
+        for scenario in ('read-resource','read-permission','read-method','probe-resource','proof-route','proof-resource',
+                         'proof-evaluated','proof-hash','source-hash','missing-named','duplicate-named','live-missing','live-false','live-other-id'):
+            value=deepcopy(result)
+            if scenario=='read-resource':value['required_reads'][0]['resource']='projects/other'
+            elif scenario=='read-permission':value['required_reads'][0]['required_permission_for_operation']='resourcemanager.projects.setIamPolicy'
+            elif scenario=='read-method':value['required_reads'][0]['method']='DELETE'
+            elif scenario=='probe-resource':value['probes'][-1]['resource']=diagnostic.ROUTES['numeric']
+            elif scenario=='proof-route':value['provider_route']['route']='named'
+            elif scenario=='proof-resource':value['provider_route']['resource']=diagnostic.ROUTES['named']
+            elif scenario=='proof-evaluated':value['provider_route']['evaluated']['instance']='another-instance'
+            elif scenario=='proof-hash':value['provider_route']['configuration_sha256']='f'*64
+            elif scenario=='source-hash':value['provider_source']['configuration_sha256']='f'*64
+            elif scenario=='missing-named':value['probes'].pop()
+            elif scenario=='duplicate-named':value['probes'][-1]=deepcopy(value['probes'][-2])
+            elif scenario=='live-missing':value['provider_route'].pop('live_identity')
+            elif scenario=='live-false':value['provider_route']['live_identity']['verified']=False
+            elif scenario=='live-other-id':value['provider_route']['live_identity']['instance_id']='different-instance'
+            with self.subTest(scenario=scenario):self.assertFalse(diagnostic.reads_allow_plan(value,self.contract))
 
     def test_cli_preserves_grouped_missing_reads_and_never_starts_plan(self):
         from scripts import int_foundation_recovery as recovery
@@ -548,6 +769,7 @@ class IapReadDiagnosticContract(unittest.TestCase):
         with mock.patch('sys.argv',['int_iap_diagnostic','diagnose']),mock.patch.object(diagnostic.os,'umask'), \
                 mock.patch.object(diagnostic.driver,'private_paths',return_value=(self.work,self.reports)), \
                 mock.patch.object(diagnostic,'run_diagnostic',return_value=result), \
+                mock.patch.object(diagnostic,'load_contract',return_value=self.contract), \
                 mock.patch.dict(diagnostic.os.environ,{'IAP_ATTEMPT_RECOVERY_PLAN':'true'},clear=True), \
                 mock.patch.object(recovery,'load_contract',return_value={'recovery_phase':'serial6_no_imports'}), \
                 mock.patch.object(recovery,'plan_recovery') as plan,mock.patch('builtins.print'):

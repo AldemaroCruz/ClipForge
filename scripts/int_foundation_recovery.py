@@ -35,6 +35,19 @@ PENDING_IAP = "google_iap_tunnel_instance_iam_member.protected_bootstrap"
 SERIAL6_PIN = {"generation": "1794975925421249", "serial": 6,
                "lineage": "813c84a2-2ef1-ceb3-177e-3a2c3b815066",
                "sha256": "360a728e0e3dcb37050389b5bf936a4359107eeeb579794b96d35743a59a1f43", "size": 109542}
+IAP_PATCH = {
+    "source_patch_sha256": "9d3826470408a37045b7ea5ddd7e5d2a955787a5f06c70b40e6df409453307ab",
+    "original_configuration_sha256": "1cf09b8ebd357761a217b7cae3d46e37397eadff39deeaa79500aac5276a7a7c",
+    "configuration_sha256": "4f13120dc9165cd43881181eca6af95663df9d063d513bb4d776c59137d92aea",
+    "original_runtime_sha256": "fb8503722880fbff0392f16877f14282c1d04416504657298e0fcd0eb9e865f9",
+    "runtime_sha256": "f573d073f93d5bf2969548f1432a3d4cfa1f99e1030b14ed180dbb8ffea78abb"}
+IAP_OLD = (b'resource "google_iap_tunnel_instance_iam_member" "protected_bootstrap" {\n'
+           b'  project  = var.project_id\n  zone     = local.zone\n'
+           b'  instance = google_compute_instance.postgres.name\n')
+IAP_NEW = IAP_OLD.replace(b"var.project_id", b"data.google_project.existing.number").replace(
+    b"postgres.name", b"postgres.instance_id")
+READ_WINDOW = {"not_before_utc": "2026-11-18T17:00:00Z", "expires_utc": "2026-11-18T18:00:00Z",
+               "proposal_sha256": "b2fbaf3ba71e671601c7e803feb71cd89def33cad05cc47ea273d139ff897417"}
 SERIAL5_RETIRED = {"run_id": "44219757502", "state_serial": 5,
                    "manifest": {"name": "private-plans/int/264d1cfad6500e1abd60d3e7f966a3614a3a5831/44219757502-1/manifest.json",
                                 "generation": "1794967145187552", "sha256": "a6cd844f31900ab7d1c6012fa3a7b936a86698218551b2582a63266d88f4189e", "size": 6593},
@@ -80,6 +93,56 @@ def configuration_names(contract):
     return tuple(c.FILES) if serial6_mode(contract) else (*c.FILES, "recovery-imports.tf")
 
 
+def iap_patch_mode(contract):
+    patch = contract.get("iap_identity_patch")
+    if patch is None:
+        return False
+    c.require(serial6_mode(contract) and patch == IAP_PATCH and contract.get("read_window") == READ_WINDOW,
+              "Only the exact reviewed numeric IAP identity patch and read window are permitted")
+    return True
+
+
+def verify_iap_sources(source, contract):
+    """Revert only the two authorized IAP expressions; all ten originals must match."""
+    c.require(iap_patch_mode(contract), "Numeric IAP source review required")
+    files = {name: (source / name).read_bytes() for name in c.FILES}
+    runtime = files["runtime.tf"]
+    c.require(runtime.count(IAP_NEW) == 1 and IAP_OLD not in runtime
+              and custody.sha256(runtime) == IAP_PATCH["runtime_sha256"], "Numeric IAP runtime source differs")
+    current = {name: custody.sha256(raw) for name, raw in files.items()}
+    files["runtime.tf"] = runtime.replace(IAP_NEW, IAP_OLD)
+    original = {name: custody.sha256(raw) for name, raw in files.items()}
+    c.require(custody.sha256(custody.canonical(current)) == IAP_PATCH["configuration_sha256"]
+              and original["runtime.tf"] == IAP_PATCH["original_runtime_sha256"]
+              and custody.sha256(custody.canonical(original)) == IAP_PATCH["original_configuration_sha256"],
+              "Sources exceed the two reviewed IAP expressions or original ten-file baseline")
+    return current
+
+
+def read_window_reference(contract, environ, now=None):
+    """Check time and configured references; external evidence bytes are not ingested."""
+    if not iap_patch_mode(contract):
+        return None
+    configured = json.loads((ROOT / "config/int-iap-diagnostic.json").read_bytes()).get("read_window", {})
+    c.require({key: configured.get(key) for key in READ_WINDOW} == READ_WINDOW,
+              "Diagnostic and recovery read windows differ")
+    manifest = environ.get("INT_READ_WINDOW_MANIFEST_SHA256", "")
+    receipts = environ.get("INT_ADMIN_READ_RECEIPTS_SHA256", "")
+    c.require(bool(re.fullmatch(r"[a-f0-9]{64}", manifest)) and manifest == configured.get("manifest_sha256")
+              and bool(re.fullmatch(r"[a-f0-9]{64}", receipts)), "Read-window or admin receipt references missing/mismatched")
+    checked = now or datetime.now(timezone.utc)
+    c.require(datetime.fromisoformat(READ_WINDOW["not_before_utc"].replace("Z", "+00:00")) <= checked
+              < datetime.fromisoformat(READ_WINDOW["expires_utc"].replace("Z", "+00:00")),
+              "Authorized IAP read window is not currently valid; no extension or retry")
+    return {**READ_WINDOW, "manifest_sha256": manifest, "admin_read_receipts_sha256": receipts,
+            "checked_utc": checked.isoformat(), "external_evidence_bytes_ingested": False}
+
+
+def window_expired(reference, now=None):
+    return reference is not None and (now or datetime.now(timezone.utc)) >= datetime.fromisoformat(
+        reference["expires_utc"].replace("Z", "+00:00"))
+
+
 def load_contract(root=ROOT):
     value = json.loads((root / CONTRACT).read_bytes())
     c.require(value.get("schema") == SCHEMA and value.get("mode") == "plan_only_no_apply"
@@ -105,6 +168,13 @@ def static_contract(root, contract=None):
     c.source_contract(source)
     binding = custody.source_binding(source, {"GITHUB_SHA": contract["baseline"]["configuration_commit"],
                                              "RUNTIME_IMAGE": contract["inputs"]["runtime_image"]})
+    if binding["configuration_sha256"] == IAP_PATCH["configuration_sha256"] or contract.get("iap_identity_patch") is not None:
+        verify_iap_sources(source, contract)
+        history = {"path": "config/int-foundation-history/5800b4c-recovery-contract.json",
+                   "sha256": "97ffe48de5db6ac342acc42b7bb17c1087430c080c6e66b0a431b16d0f115832"}
+        c.require(contract["baseline"].get("historical_recovery_contract") == history
+                  and custody.sha256((root / history["path"]).read_bytes()) == history["sha256"],
+                  "Previous recovery contract history changed")
     c.require(binding["configuration_sha256"] == contract["source_bindings"]["base_configuration_sha256"]
               and binding["provider_lock_sha256"] == contract["source_bindings"]["provider_lock_sha256"]
               and binding["inputs"] == contract["inputs"], "Original HCL, inputs, provider or startup changed")
@@ -265,6 +335,10 @@ def verify_recovery_plan(plan, contract):
             c.require(role_matches
                       and after.get("member") == c.expected_iam_member(address) and not after.get("condition"),
                       "Planned IAM principal, role or condition changed")
+        if address == PENDING_IAP and iap_patch_mode(contract):
+            after = change.get("after") or {}
+            c.require(after.get("project") == "816643438938" and after.get("instance") == "1670495097211408131"
+                      and after.get("zone") == "us-central1-a", "Planned IAP project/instance numeric identity or zone differs")
         counts[actions[0]] += 1
     c.require(seen == targets and set(imported) == set(imports)
               and set(plan.get("output_changes", {})) <= {"reviewed_boundary"}, "Recovery plan or outputs are incomplete")
@@ -302,6 +376,23 @@ def verify_new_manifest(manifest, contract, now=None):
                   and manifest.get("completed_imports") == contract["completed_imports"]
                   and manifest.get("import_policies_sha256") is None,
                   "Serial6 manifest cannot preview imports or inherit a retired phase")
+    if iap_patch_mode(contract):
+        c.require(manifest.get("iap_identity_patch") == IAP_PATCH
+                  and manifest.get("baseline_recovery_contract") == contract["baseline"]["historical_recovery_contract"],
+                  "Numeric IAP source/history evidence missing")
+        window = manifest.get("read_window", {})
+        c.require({key: window.get(key) for key in READ_WINDOW} == READ_WINDOW
+                  and all(bool(re.fullmatch(r"[a-f0-9]{64}", window.get(key, "")))
+                          for key in ("manifest_sha256", "admin_read_receipts_sha256"))
+                  and window.get("external_evidence_bytes_ingested") is False,
+                  "Missing read-window references; external bytes cannot be claimed as verified")
+        checked = datetime.fromisoformat(window["checked_utc"].replace("Z", "+00:00"))
+        c.require(datetime.fromisoformat(READ_WINDOW["not_before_utc"].replace("Z", "+00:00")) <= checked
+                  < datetime.fromisoformat(READ_WINDOW["expires_utc"].replace("Z", "+00:00")),
+                  "Read-window check did not occur during the authorized window")
+        if window_expired(window, datetime.fromisoformat(manifest["created_utc"].replace("Z", "+00:00"))):
+            c.require(manifest.get("plan_review_status") == "blocked_recovery_plan_read_window_expired",
+                      "A plan collected beyond the read window must remain blocked")
     c.require(manifest.get("base_configuration_sha256") == contract["source_bindings"]["base_configuration_sha256"]
               and bool(re.fullmatch(r"[a-f0-9]{64}", manifest.get("control_sources_sha256", ""))), "Missing control/configuration integrity")
     c.require(bool(re.fullmatch(r"[1-9][0-9]*", manifest.get("run_id", "")))
@@ -394,12 +485,16 @@ def plan_recovery(work, reports, environ):
     contract = load_contract()
     static_contract(ROOT, contract)
     serial6 = serial6_mode(contract)
+    numeric_iap = iap_patch_mode(contract)
+    window = read_window_reference(contract, environ)
     c.require(custody.inputs(environ) == contract["inputs"], "Recovery dispatch inputs differ")
     module = work / "module"
     # The unchanged driver checks prepare the base module. Verify every byte;
     # only the historical phase adds its reviewed import file in private scratch.
     binding = custody.source_binding(module, environ)
     c.require(binding["configuration_sha256"] == contract["source_bindings"]["base_configuration_sha256"], "Prepared module drift")
+    if numeric_iap:
+        verify_iap_sources(module, contract)
     c.require({p.name for p in module.glob("*.tf")} == {name for name in c.FILES if name.endswith(".tf")}
               and not list(module.glob("*.tf.json")) and not list(module.glob("*.tfvars*")), "Unexpected Terraform module input")
     if not serial6:
@@ -417,11 +512,20 @@ def plan_recovery(work, reports, environ):
     c.require(inspect_partial(bucket, contract) == proof, "Backend changed during init")
     target = work / "int.tfplan"
     inputs = contract["inputs"]
+    if numeric_iap:
+        window = read_window_reference(contract, environ)
     code, _ = driver.run([binary, "plan", "-input=false", "-no-color", "-lock=true", "-lock-timeout=120s", "-detailed-exitcode",
                            "-var=machine_type=" + inputs["machine_type"], "-var=runtime_image=" + inputs["runtime_image"],
                            "-var=stage=foundation", "-var=secret_versions=null", "-out=" + str(target)], "recovery_plan", work, accepted=(0, 1, 2))
-    c.require(inspect_partial(bucket, contract) == proof and (serial6 or inspect_imports(contract) == observations_sha),
-              "Backend or exact import policies changed while planning")
+    expired = window_expired(window)
+    if not expired:
+        try:
+            c.require(inspect_partial(bucket, contract) == proof and (serial6 or inspect_imports(contract) == observations_sha),
+                      "Backend or exact import policies changed while planning")
+        except Exception:
+            if not window_expired(window):
+                raise
+            expired = True
     c.require({name: custody.sha256((module / name).read_bytes()) for name in files} == files,
               "Terraform/import/provider sources changed during planning")
     c.require(code in {0, 2}, "Native recovery plan failed; preserve diagnostics, no retry")
@@ -444,6 +548,10 @@ def plan_recovery(work, reports, environ):
                   "observed_drift": observed_drift(source_plan),
                   "deferred_changes_present": bool(source_plan.get("deferred_changes"))}
         review_status = "blocked_recovery_plan_material_difference"
+    if expired or window_expired(window):
+        review["read_window_expired"] = True
+        review["post_plan_backend_recheck_verified"] = False
+        review_status = "blocked_recovery_plan_read_window_expired"
     (work / "private-plan.json").write_bytes(raw)
     from scripts import check_int_foundation as foundation
     prefix = custody.PREFIX + environ["GITHUB_SHA"] + "/" + environ["GITHUB_RUN_ID"] + "-" + environ["GITHUB_RUN_ATTEMPT"] + "/"
@@ -462,8 +570,14 @@ def plan_recovery(work, reports, environ):
                 "plan_review_status": review_status}
     if serial6:
         manifest.update(recovery_phase=SERIAL6_PHASE, completed_imports=contract["completed_imports"])
+    if numeric_iap:
+        manifest.update(iap_identity_patch=IAP_PATCH, baseline_recovery_contract=contract["baseline"]["historical_recovery_contract"],
+                        read_window=window)
     manifest["binary"] = custody.upload(prefix + "int.tfplan", target.read_bytes())
     manifest["json"] = custody.upload(prefix + "int.json", raw)
+    if window_expired(window):
+        review["read_window_expired"] = True
+        review_status = manifest["plan_review_status"] = "blocked_recovery_plan_read_window_expired"
     verify_new_manifest(manifest, contract)
     reference = custody.upload(prefix + "manifest.json", custody.canonical(manifest))
     reject_original_plan(reference, contract)
@@ -471,6 +585,11 @@ def plan_recovery(work, reports, environ):
                "backend": proof, "review": review, "manifest": reference, "binary": manifest["binary"],
                "configuration_commit": environ["GITHUB_SHA"], "controls_commit": environ["GITHUB_SHA"],
                "created_utc": manifest["created_utc"], "expires_utc": manifest["expires_utc"], "image": image}
+    if numeric_iap:
+        summary["read_window"] = {**window, "completed_utc": datetime.now(timezone.utc).isoformat()}
+        if window_expired(window):
+            summary["status"] = "blocked_recovery_plan_read_window_expired"
+            summary["review"]["read_window_expired"] = True
     save_summary(reports, summary)
     return summary
 

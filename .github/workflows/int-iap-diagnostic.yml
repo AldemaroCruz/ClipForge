@@ -11,6 +11,14 @@ on:
         description: Attempt only a private plan when the verified serial6 guard is activated; never apply
         type: boolean
         default: true
+      read_window_manifest_sha256:
+        description: Exact materialized administrative read-window manifest SHA-256
+        required: true
+        type: string
+      administrator_receipt_index_sha256:
+        description: SHA-256 of the real administrative receipt index verified before dispatch
+        required: true
+        type: string
 
 permissions: {}
 concurrency:
@@ -36,6 +44,8 @@ jobs:
       TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
       INT_REVIEWED_CONTROLS_COMMIT: ${{ inputs.reviewed_control_commit }}
       IAP_ATTEMPT_RECOVERY_PLAN: ${{ inputs.attempt_recovery_plan }}
+      INT_READ_WINDOW_MANIFEST_SHA256: ${{ inputs.read_window_manifest_sha256 }}
+      INT_ADMIN_READ_RECEIPTS_SHA256: ${{ inputs.administrator_receipt_index_sha256 }}
       INT_STAGE: foundation
       MACHINE_TYPE: e2-micro
       SECRET_VERSIONS_JSON: "null"

@@ -1,0 +1,56 @@
+{
+  "schema": "clipforge-int-iap-read-diagnostic-1",
+  "repository": "AldemaroCruz/ClipForge",
+  "branch": "ci/bootstrap-sec03",
+  "environment": "int",
+  "project": "clipforgebeta2",
+  "terraform_service_account": "clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com",
+  "routes": {
+    "numeric": "projects/816643438938/iap_tunnel/zones/us-central1-a/instances/1670495097211408131",
+    "named": "projects/clipforgebeta2/iap_tunnel/zones/us-central1-a/instances/clipforge-int-base-postgres"
+  },
+  "state_reference": {
+    "name": "terraform/int/tf-int-01/default.tfstate",
+    "generation": "1794975925421249",
+    "serial": 6,
+    "lineage": "813c84a2-2ef1-ceb3-177e-3a2c3b815066",
+    "sha256": "360a728e0e3dcb37050389b5bf936a4359107eeeb579794b96d35743a59a1f43",
+    "size": 109542
+  },
+  "provider_configuration_evidence": {
+    "pending_resource": "google_iap_tunnel_instance_iam_member.protected_bootstrap",
+    "provider_config_key": "google",
+    "provider_full_name": "registry.terraform.io/hashicorp/google",
+    "provider_alias": null,
+    "provider_expression_keys": [
+      "project",
+      "region",
+      "zone"
+    ],
+    "credential_expression_keys_present": [],
+    "source_plan_json_sha256": "1ffeed1cfcd2b90e1df94dcdd23a77f78b3c5ba611255bc2eae11c2ff81ef194",
+    "provider_version": "8.11.0"
+  },
+  "expired_binding": {
+    "role": "projects/clipforgebeta2/roles/clipforgeIntRecoveryIapPolicy_20261118T044838Z",
+    "member": "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com",
+    "condition": {
+      "title": "int_foundation_recovery_20261118T044838Z",
+      "description": "Temporary recovery only; no apply authorization",
+      "expression": "request.time < timestamp(\"2026-11-18T04:48:38Z\")"
+    },
+    "expires_utc": "2026-11-18T04:48:38Z",
+    "manifest_sha256": "e72a4ca0aa9d8785e58207317367a591254e7a2f242a99c6269ac9c4ae74ca9a"
+  },
+  "historical_failure_utc": "2026-11-18T04:25:25Z",
+  "historical_run": "44237033402",
+  "grants_authorized": false,
+  "apply_authorized": false,
+  "limitations": [
+    "Current expired grant cannot establish the cause of the historical pre-expiry 403",
+    "Configured impersonation target is not proof of effective identity",
+    "Direct HTTP uses Python; native provider datasource uses pinned updater/transport but not resource Create",
+    "Effective native identity requires a correlated Storage ADMIN_READ audit event"
+  ],
+  "foundation_configuration_sha256": "1cf09b8ebd357761a217b7cae3d46e37397eadff39deeaa79500aac5276a7a7c"
+}

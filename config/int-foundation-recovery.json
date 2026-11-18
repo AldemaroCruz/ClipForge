@@ -6,10 +6,10 @@
   "environment": "int",
   "baseline": {
     "configuration_commit": "264d1cfad6500e1abd60d3e7f966a3614a3a5831",
-    "controls_reference": "79ecadb",
+    "controls_reference": "5800b4c",
     "historical_recovery_contract": {
-      "path": "config/int-foundation-history/79ecadb-recovery-contract.json",
-      "sha256": "b9be41bc3608e8ea4704cb99379dc337d3775382c32af942155a78c7f84f4a8d"
+      "path": "config/int-foundation-history/5800b4c-recovery-contract.json",
+      "sha256": "97ffe48de5db6ac342acc42b7bb17c1087430c080c6e66b0a431b16d0f115832"
     },
     "original_partial_apply": {
       "configuration_commit": "bb4d10414b56c7c264ef8d4bc5649c08f2a9163b",
@@ -21,7 +21,11 @@
     },
     "provider_version": "8.11.0",
     "provider_source_commit": "67f96115b523ba050b11dad30237f14023667de8",
-    "previous_controls_commit": "79ecadb62b9f84e4e6228e4deaa5d52c872312ed"
+    "previous_controls_commit": "5800b4c5c7a58ccd9ee738cc7d72cc59cb6c007f",
+    "previous_recovery_contract": {
+      "path": "config/int-foundation-history/79ecadb-recovery-contract.json",
+      "sha256": "b9be41bc3608e8ea4704cb99379dc337d3775382c32af942155a78c7f84f4a8d"
+    }
   },
   "backend": {
     "bucket": "clipforgebeta2-tfstate-int",
@@ -130,10 +134,11 @@
     "runtime_image": "us-central1-docker.pkg.dev/clipforgebeta2/clipforge-int/runtime@sha256:d4b65631b30c26785ae18898cd826990fa20b4dce45015fb241ba108ddba7d49"
   },
   "source_bindings": {
-    "base_configuration_sha256": "1cf09b8ebd357761a217b7cae3d46e37397eadff39deeaa79500aac5276a7a7c",
+    "base_configuration_sha256": "4f13120dc9165cd43881181eca6af95663df9d063d513bb4d776c59137d92aea",
     "provider_lock_sha256": "89e2189a1b882ac5ad3ce74ad17a304e95cf7fa072b9ced86fce09e78b88b5fa",
     "startup_sha256": "a93bd662abce93b12c6389a37fccca49612ef3d1ee83eb882051cd5489daf255",
-    "execution_driver_sha256": "70982d2f5867d0101a181967d182058514e8c82a77423e5eceb09eb0cf89761b"
+    "execution_driver_sha256": "70982d2f5867d0101a181967d182058514e8c82a77423e5eceb09eb0cf89761b",
+    "original_base_configuration_sha256": "1cf09b8ebd357761a217b7cae3d46e37397eadff39deeaa79500aac5276a7a7c"
   },
   "management_owner_confirmed": true,
   "management": {
@@ -263,5 +268,17 @@
         "size": 44420
       }
     }
-  ]
+  ],
+  "iap_identity_patch": {
+    "source_patch_sha256": "9d3826470408a37045b7ea5ddd7e5d2a955787a5f06c70b40e6df409453307ab",
+    "original_configuration_sha256": "1cf09b8ebd357761a217b7cae3d46e37397eadff39deeaa79500aac5276a7a7c",
+    "configuration_sha256": "4f13120dc9165cd43881181eca6af95663df9d063d513bb4d776c59137d92aea",
+    "original_runtime_sha256": "fb8503722880fbff0392f16877f14282c1d04416504657298e0fcd0eb9e865f9",
+    "runtime_sha256": "f573d073f93d5bf2969548f1432a3d4cfa1f99e1030b14ed180dbb8ffea78abb"
+  },
+  "read_window": {
+    "not_before_utc": "2026-11-18T17:00:00Z",
+    "expires_utc": "2026-11-18T18:00:00Z",
+    "proposal_sha256": "b2fbaf3ba71e671601c7e803feb71cd89def33cad05cc47ea273d139ff897417"
+  }
 }

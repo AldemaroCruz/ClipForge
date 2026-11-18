@@ -1,5 +1,5 @@
 {
-  "schema": "clipforge-int-iap-read-diagnostic-1",
+  "schema": "clipforge-int-iap-read-diagnostic-2",
   "repository": "AldemaroCruz/ClipForge",
   "branch": "ci/bootstrap-sec03",
   "environment": "int",
@@ -52,5 +52,41 @@
     "Direct HTTP uses Python; native provider datasource uses pinned updater/transport but not resource Create",
     "Effective native identity requires a correlated Storage ADMIN_READ audit event"
   ],
-  "foundation_configuration_sha256": "1cf09b8ebd357761a217b7cae3d46e37397eadff39deeaa79500aac5276a7a7c"
+  "foundation_configuration_sha256": "4f13120dc9165cd43881181eca6af95663df9d063d513bb4d776c59137d92aea",
+  "provider_route": {
+    "address": "google_iap_tunnel_instance_iam_member.protected_bootstrap",
+    "required_route": "numeric",
+    "resource": "projects/816643438938/iap_tunnel/zones/us-central1-a/instances/1670495097211408131",
+    "evaluated": {
+      "project": "816643438938",
+      "zone": "us-central1-a",
+      "instance": "1670495097211408131"
+    },
+    "expressions": {
+      "project": "data.google_project.existing.number",
+      "zone": "local.zone",
+      "instance": "google_compute_instance.postgres.instance_id"
+    },
+    "configuration_sha256": "4f13120dc9165cd43881181eca6af95663df9d063d513bb4d776c59137d92aea"
+  },
+  "read_window": {
+    "not_before_utc": "2026-11-18T17:00:00Z",
+    "expires_utc": "2026-11-18T18:00:00Z",
+    "proposal_sha256": "b2fbaf3ba71e671601c7e803feb71cd89def33cad05cc47ea273d139ff897417",
+    "manifest_sha256": "15e8afd74ba4842b29bae33c617fbb7134dbc5485f345d21325402e941b8ad63"
+  },
+  "configuration_change": {
+    "source_commit": "5800b4c5c7a58ccd9ee738cc7d72cc59cb6c007f",
+    "historical_diagnostic_contract": {
+      "path": "config/int-foundation-history/5800b4c-iap-diagnostic.json",
+      "sha256": "b4acce26df3be2fc1c3c6d1c1bc7b6067105f3cbf058799710c7bd80e29cdade"
+    },
+    "original_configuration_sha256": "1cf09b8ebd357761a217b7cae3d46e37397eadff39deeaa79500aac5276a7a7c",
+    "authorized_patch_sha256": "9d3826470408a37045b7ea5ddd7e5d2a955787a5f06c70b40e6df409453307ab",
+    "attributes_changed": [
+      "IAP.project",
+      "IAP.instance"
+    ],
+    "producer_binding": "New actual GITHUB_SHA is recorded at dispatch and in new private plan; no commit self-reference"
+  }
 }
