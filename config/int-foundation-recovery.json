@@ -6,7 +6,7 @@
   "environment": "int",
   "baseline": {
     "configuration_commit": "264d1cfad6500e1abd60d3e7f966a3614a3a5831",
-    "controls_reference": "5800b4c",
+    "controls_reference": "bbf7573",
     "historical_recovery_contract": {
       "path": "config/int-foundation-history/5800b4c-recovery-contract.json",
       "sha256": "97ffe48de5db6ac342acc42b7bb17c1087430c080c6e66b0a431b16d0f115832"
@@ -21,10 +21,14 @@
     },
     "provider_version": "8.11.0",
     "provider_source_commit": "67f96115b523ba050b11dad30237f14023667de8",
-    "previous_controls_commit": "5800b4c5c7a58ccd9ee738cc7d72cc59cb6c007f",
+    "previous_controls_commit": "bbf7573f6de1070aa9c3082fcbf90302ba0de614",
     "previous_recovery_contract": {
       "path": "config/int-foundation-history/79ecadb-recovery-contract.json",
       "sha256": "b9be41bc3608e8ea4704cb99379dc337d3775382c32af942155a78c7f84f4a8d"
+    },
+    "previous_configuration_contract": {
+      "path": "config/int-foundation-history/bbf7573-recovery-contract.json",
+      "sha256": "6f7fb196fa6310d24133356aa656f61cad9b70d7e994eb36a69f13e1bccad327"
     }
   },
   "backend": {
@@ -134,11 +138,12 @@
     "runtime_image": "us-central1-docker.pkg.dev/clipforgebeta2/clipforge-int/runtime@sha256:d4b65631b30c26785ae18898cd826990fa20b4dce45015fb241ba108ddba7d49"
   },
   "source_bindings": {
-    "base_configuration_sha256": "4f13120dc9165cd43881181eca6af95663df9d063d513bb4d776c59137d92aea",
+    "base_configuration_sha256": "bf2a20357afc9ccd86edf34efd4a069ba7f43eb14b2853022ec031a9850fe0e1",
     "provider_lock_sha256": "89e2189a1b882ac5ad3ce74ad17a304e95cf7fa072b9ced86fce09e78b88b5fa",
     "startup_sha256": "a93bd662abce93b12c6389a37fccca49612ef3d1ee83eb882051cd5489daf255",
     "execution_driver_sha256": "70982d2f5867d0101a181967d182058514e8c82a77423e5eceb09eb0cf89761b",
-    "original_base_configuration_sha256": "1cf09b8ebd357761a217b7cae3d46e37397eadff39deeaa79500aac5276a7a7c"
+    "original_base_configuration_sha256": "1cf09b8ebd357761a217b7cae3d46e37397eadff39deeaa79500aac5276a7a7c",
+    "previous_configuration_sha256": "4f13120dc9165cd43881181eca6af95663df9d063d513bb4d776c59137d92aea"
   },
   "management_owner_confirmed": true,
   "management": {
@@ -280,5 +285,40 @@
     "not_before_utc": "2026-11-18T17:00:00Z",
     "expires_utc": "2026-11-18T18:00:00Z",
     "proposal_sha256": "b2fbaf3ba71e671601c7e803feb71cd89def33cad05cc47ea273d139ff897417"
+  },
+  "sink_alignment": {
+    "purpose": "serial6_sink_refresh_alignment_only",
+    "previous_configuration_sha256": "4f13120dc9165cd43881181eca6af95663df9d063d513bb4d776c59137d92aea",
+    "configuration_sha256": "bf2a20357afc9ccd86edf34efd4a069ba7f43eb14b2853022ec031a9850fe0e1",
+    "previous_audit_sha256": "aa35a845fb9ed1d85de2df0876a9e707e43089c808487e645d0835095e5c74ae",
+    "audit_sha256": "afcffcd2938fa49ddef44ad2b4ec6d8c5695307a5a2ce29022fbb6ff9bbf00f5",
+    "evidence_run": "44354702837",
+    "previous_configuration_commit": "bbf7573f6de1070aa9c3082fcbf90302ba0de614"
+  },
+  "refresh_metadata": {
+    "schema": "clipforge-int-reviewed-refresh-metadata-1",
+    "source_run": "44354702837",
+    "source_private_plan_sha256": "bc70a91ec3ea9bb16eaaf0a8a0446d1282775fb2765766b3b5ee68e48e96a0ac",
+    "source_sanitized_review_sha256": "e5d1720e1520ff8a3b29d428fa34297fa041544913f29e4286de765e48d9a057",
+    "etag_only_addresses": [
+      "google_logging_log_view_iam_member.audit_reader",
+      "google_project_iam_audit_config.storage_access",
+      "google_project_iam_member.bootstrap_reader",
+      "google_secret_manager_secret_iam_member.runtime[\"api_ca\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"bootstrap_admin\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"migrate_ca\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"worker_ca\"]",
+      "google_secret_manager_secret_iam_member.version_publisher[\"bootstrap_admin\"]",
+      "google_secret_manager_secret_iam_member.version_publisher[\"postgres_ca\"]",
+      "google_service_account_iam_member.protected_bootstrap"
+    ],
+    "null_to_empty_map_addresses": [
+      "google_secret_manager_secret.runtime[\"bootstrap-admin\"]",
+      "google_secret_manager_secret.runtime[\"postgres-ca\"]"
+    ],
+    "null_to_empty_map_attributes": [
+      "annotations",
+      "version_aliases"
+    ]
   }
 }

@@ -52,7 +52,7 @@
     "Direct HTTP uses Python; native provider datasource uses pinned updater/transport but not resource Create",
     "Effective native identity requires a correlated Storage ADMIN_READ audit event"
   ],
-  "foundation_configuration_sha256": "4f13120dc9165cd43881181eca6af95663df9d063d513bb4d776c59137d92aea",
+  "foundation_configuration_sha256": "bf2a20357afc9ccd86edf34efd4a069ba7f43eb14b2853022ec031a9850fe0e1",
   "provider_route": {
     "address": "google_iap_tunnel_instance_iam_member.protected_bootstrap",
     "required_route": "numeric",
@@ -67,7 +67,7 @@
       "zone": "local.zone",
       "instance": "google_compute_instance.postgres.instance_id"
     },
-    "configuration_sha256": "4f13120dc9165cd43881181eca6af95663df9d063d513bb4d776c59137d92aea"
+    "configuration_sha256": "bf2a20357afc9ccd86edf34efd4a069ba7f43eb14b2853022ec031a9850fe0e1"
   },
   "read_window": {
     "not_before_utc": "2026-11-18T17:00:00Z",
@@ -87,6 +87,19 @@
       "IAP.project",
       "IAP.instance"
     ],
-    "producer_binding": "New actual GITHUB_SHA is recorded at dispatch and in new private plan; no commit self-reference"
+    "producer_binding": "New actual GITHUB_SHA is recorded at dispatch and in new private plan; no commit self-reference",
+    "sink_alignment": {
+      "purpose": "serial6_sink_refresh_alignment_only",
+      "previous_configuration_sha256": "4f13120dc9165cd43881181eca6af95663df9d063d513bb4d776c59137d92aea",
+      "configuration_sha256": "bf2a20357afc9ccd86edf34efd4a069ba7f43eb14b2853022ec031a9850fe0e1",
+      "previous_audit_sha256": "aa35a845fb9ed1d85de2df0876a9e707e43089c808487e645d0835095e5c74ae",
+      "audit_sha256": "afcffcd2938fa49ddef44ad2b4ec6d8c5695307a5a2ce29022fbb6ff9bbf00f5",
+      "evidence_run": "44354702837",
+      "previous_configuration_commit": "bbf7573f6de1070aa9c3082fcbf90302ba0de614"
+    },
+    "previous_diagnostic_contract": {
+      "path": "config/int-foundation-history/bbf7573-iap-diagnostic.json",
+      "sha256": "45eeed91c74b3bd032de847356df7b2cba0d2f1c61f1e8abd79cd30a5e65d4a1"
+    }
   }
 }

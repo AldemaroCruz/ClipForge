@@ -1,0 +1,284 @@
+{
+  "schema": "clipforge-int-foundation-recovery-1",
+  "mode": "plan_only_no_apply",
+  "repository": "AldemaroCruz/ClipForge",
+  "branch": "ci/bootstrap-sec03",
+  "environment": "int",
+  "baseline": {
+    "configuration_commit": "264d1cfad6500e1abd60d3e7f966a3614a3a5831",
+    "controls_reference": "5800b4c",
+    "historical_recovery_contract": {
+      "path": "config/int-foundation-history/5800b4c-recovery-contract.json",
+      "sha256": "97ffe48de5db6ac342acc42b7bb17c1087430c080c6e66b0a431b16d0f115832"
+    },
+    "original_partial_apply": {
+      "configuration_commit": "bb4d10414b56c7c264ef8d4bc5649c08f2a9163b",
+      "controls_commit": "d319b0d02983b5310420c2ad1d0dceeb497ed7ab",
+      "apply_run": "44208225603",
+      "apply_conclusion": "failure_partial_403",
+      "provider_version": "8.11.0",
+      "provider_source_commit": "67f96115b523ba050b11dad30237f14023667de8"
+    },
+    "provider_version": "8.11.0",
+    "provider_source_commit": "67f96115b523ba050b11dad30237f14023667de8",
+    "previous_controls_commit": "5800b4c5c7a58ccd9ee738cc7d72cc59cb6c007f",
+    "previous_recovery_contract": {
+      "path": "config/int-foundation-history/79ecadb-recovery-contract.json",
+      "sha256": "b9be41bc3608e8ea4704cb99379dc337d3775382c32af942155a78c7f84f4a8d"
+    }
+  },
+  "backend": {
+    "bucket": "clipforgebeta2-tfstate-int",
+    "prefix": "terraform/int/tf-int-01",
+    "workspace": "default",
+    "name": "terraform/int/tf-int-01/default.tfstate",
+    "generation": "1794975925421249",
+    "size": 109542,
+    "sha256": "360a728e0e3dcb37050389b5bf936a4359107eeeb579794b96d35743a59a1f43",
+    "lineage": "813c84a2-2ef1-ceb3-177e-3a2c3b815066",
+    "serial": 6,
+    "terraform_version": "1.15.8",
+    "version": 4,
+    "managed_addresses": [
+      "google_compute_address.postgres",
+      "google_compute_disk.postgres",
+      "google_compute_firewall.deny_egress",
+      "google_compute_firewall.https",
+      "google_compute_firewall.iap",
+      "google_compute_firewall.postgres",
+      "google_compute_instance.postgres",
+      "google_compute_instance_iam_member.protected_bootstrap",
+      "google_compute_network.int",
+      "google_compute_route.egress",
+      "google_compute_router.egress",
+      "google_compute_router_nat.maintenance",
+      "google_compute_subnetwork.private[\"postgres\"]",
+      "google_compute_subnetwork.private[\"run\"]",
+      "google_logging_log_view.access",
+      "google_logging_log_view_iam_member.audit_reader",
+      "google_logging_project_bucket_config.access",
+      "google_logging_project_sink.access",
+      "google_project_iam_audit_config.storage_access",
+      "google_project_iam_custom_role.bootstrap_reader",
+      "google_project_iam_member.bootstrap_reader",
+      "google_secret_manager_secret.runtime[\"bootstrap-admin\"]",
+      "google_secret_manager_secret.runtime[\"postgres-ca\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"api_ca\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"api_password\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"bootstrap_admin\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"migrate_ca\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"migrate_password\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"worker_ca\"]",
+      "google_secret_manager_secret_iam_member.runtime[\"worker_password\"]",
+      "google_secret_manager_secret_iam_member.version_publisher[\"app_password\"]",
+      "google_secret_manager_secret_iam_member.version_publisher[\"bootstrap_admin\"]",
+      "google_secret_manager_secret_iam_member.version_publisher[\"migrator_password\"]",
+      "google_secret_manager_secret_iam_member.version_publisher[\"postgres_ca\"]",
+      "google_service_account_iam_member.protected_bootstrap",
+      "google_storage_bucket.private[\"backups\"]",
+      "google_storage_bucket.private[\"media\"]",
+      "google_storage_bucket_iam_member.backup_writer",
+      "google_storage_bucket_iam_member.media[\"api\"]",
+      "google_storage_bucket_iam_member.media[\"worker\"]",
+      "terraform_data.boundary"
+    ]
+  },
+  "target_addresses": [
+    "google_compute_address.postgres",
+    "google_compute_disk.postgres",
+    "google_compute_firewall.deny_egress",
+    "google_compute_firewall.https",
+    "google_compute_firewall.iap",
+    "google_compute_firewall.postgres",
+    "google_compute_instance.postgres",
+    "google_compute_instance_iam_member.protected_bootstrap",
+    "google_compute_network.int",
+    "google_compute_route.egress",
+    "google_compute_router.egress",
+    "google_compute_router_nat.maintenance",
+    "google_compute_subnetwork.private[\"postgres\"]",
+    "google_compute_subnetwork.private[\"run\"]",
+    "google_iap_tunnel_instance_iam_member.protected_bootstrap",
+    "google_logging_log_view.access",
+    "google_logging_log_view_iam_member.audit_reader",
+    "google_logging_project_bucket_config.access",
+    "google_logging_project_sink.access",
+    "google_project_iam_audit_config.storage_access",
+    "google_project_iam_custom_role.bootstrap_reader",
+    "google_project_iam_member.bootstrap_reader",
+    "google_secret_manager_secret.runtime[\"bootstrap-admin\"]",
+    "google_secret_manager_secret.runtime[\"postgres-ca\"]",
+    "google_secret_manager_secret_iam_member.runtime[\"api_ca\"]",
+    "google_secret_manager_secret_iam_member.runtime[\"api_password\"]",
+    "google_secret_manager_secret_iam_member.runtime[\"bootstrap_admin\"]",
+    "google_secret_manager_secret_iam_member.runtime[\"migrate_ca\"]",
+    "google_secret_manager_secret_iam_member.runtime[\"migrate_password\"]",
+    "google_secret_manager_secret_iam_member.runtime[\"worker_ca\"]",
+    "google_secret_manager_secret_iam_member.runtime[\"worker_password\"]",
+    "google_secret_manager_secret_iam_member.version_publisher[\"app_password\"]",
+    "google_secret_manager_secret_iam_member.version_publisher[\"bootstrap_admin\"]",
+    "google_secret_manager_secret_iam_member.version_publisher[\"migrator_password\"]",
+    "google_secret_manager_secret_iam_member.version_publisher[\"postgres_ca\"]",
+    "google_service_account_iam_member.protected_bootstrap",
+    "google_storage_bucket.private[\"backups\"]",
+    "google_storage_bucket.private[\"media\"]",
+    "google_storage_bucket_iam_member.backup_writer",
+    "google_storage_bucket_iam_member.media[\"api\"]",
+    "google_storage_bucket_iam_member.media[\"worker\"]",
+    "terraform_data.boundary"
+  ],
+  "inputs": {
+    "stage": "foundation",
+    "machine_type": "e2-micro",
+    "secret_versions": null,
+    "runtime_image": "us-central1-docker.pkg.dev/clipforgebeta2/clipforge-int/runtime@sha256:d4b65631b30c26785ae18898cd826990fa20b4dce45015fb241ba108ddba7d49"
+  },
+  "source_bindings": {
+    "base_configuration_sha256": "4f13120dc9165cd43881181eca6af95663df9d063d513bb4d776c59137d92aea",
+    "provider_lock_sha256": "89e2189a1b882ac5ad3ce74ad17a304e95cf7fa072b9ced86fce09e78b88b5fa",
+    "startup_sha256": "a93bd662abce93b12c6389a37fccca49612ef3d1ee83eb882051cd5489daf255",
+    "execution_driver_sha256": "70982d2f5867d0101a181967d182058514e8c82a77423e5eceb09eb0cf89761b",
+    "original_base_configuration_sha256": "1cf09b8ebd357761a217b7cae3d46e37397eadff39deeaa79500aac5276a7a7c"
+  },
+  "management_owner_confirmed": true,
+  "management": {
+    "observed_actor": "admin@ixbalam.studio",
+    "origin": "Manual IAM grants during bootstrap, confirmed by targeted audit events 2026-11-13T18:42:20Z..18:42:42Z",
+    "current_declarative_owner": "This exact default Terraform workspace; all five imports are recorded in the confirmed serial6 state.",
+    "proposed_manager": "No new adoption is proposed; the confirmed serial6 state already records the five completed imports.",
+    "import_plan_is_not_effective_import": true,
+    "import_apply_authorized": false,
+    "confirmed_by": "AldemaroCruz, current recovery instruction reply",
+    "provenance_evidence_sha256": "50dae262683900a126f681b1b927ef72b2cb202b21476368337e3f969786ce76",
+    "confirmed_origin_window_utc": "2026-11-13T18:42:20Z..2026-11-13T18:42:42Z",
+    "historical_manual_origin": "Manual IAM grants during bootstrap, confirmed by targeted audit events 2026-11-13T18:42:20Z..18:42:42Z",
+    "effective_imports_completed": true,
+    "completed_imports_state_generation": "1794975925421249",
+    "new_import_preview_authorized": false,
+    "new_apply_authorized": false
+  },
+  "imports": [],
+  "original_plan_forbidden": {
+    "run_id": "44194990499",
+    "manifest": {
+      "name": "private-plans/int/bb4d10414b56c7c264ef8d4bc5649c08f2a9163b/44194990499-1/manifest.json",
+      "generation": "1794956399393543",
+      "sha256": "c30520602a48835b9c7ecc4f582020d5d8f7d648c8659a9a4804fc11da1553bf",
+      "size": 1504
+    },
+    "binary": {
+      "name": "private-plans/int/bb4d10414b56c7c264ef8d4bc5649c08f2a9163b/44194990499-1/int.tfplan",
+      "generation": "1794956398925734",
+      "sha256": "6ce16847341786469e52facebabd89f458933cc4c46f689a102f1d61ca556de7",
+      "size": 22086
+    }
+  },
+  "risk_acceptance": {
+    "canonical_sha256": "096306c845df142f4be69a8b34a8e5ed89b5d153713a6fddcaf10ae9a47b3857",
+    "maximum_expiry_utc": "2026-11-28T05:59:59+00:00",
+    "new_plan_approved": false,
+    "F-SAST-EXEC": "Prior exact-binary acceptance is not transferred: recovery adds a planning caller and reviewed import argv/source. Native sites remain visible.",
+    "F-VM-XML": "Exact image identity acceptance preserved, no new scan/remediation/runtime approval",
+    "F-AUDIT-0077": "Alternative still not operational",
+    "historical_reference_only": true
+  },
+  "plan_ttl_seconds": 86400,
+  "apply_authorized": false,
+  "forbidden_operations": [
+    "apply",
+    "import CLI",
+    "state push",
+    "force-unlock",
+    "destroy",
+    "backend migration",
+    "lock=false",
+    "refresh=false",
+    "implicit replan for apply"
+  ],
+  "recovery_phase": "serial6_no_imports",
+  "state_confirmation": {
+    "observed_utc": "2026-11-18T12:56:44Z",
+    "observer": "admin@ixbalam.studio",
+    "source": "Coordinator authenticated read; current-generation hash/header/address checks and double stable inventory",
+    "current_lock_present": false
+  },
+  "completed_imports": [
+    {
+      "address": "google_secret_manager_secret_iam_member.runtime[\"api_password\"]",
+      "id": "projects/clipforgebeta2/secrets/clipforge-int-pg-app-password roles/secretmanager.secretAccessor serviceAccount:clipforge-api-int@clipforgebeta2.iam.gserviceaccount.com",
+      "secret_id": "clipforge-int-pg-app-password",
+      "role": "roles/secretmanager.secretAccessor",
+      "member": "serviceAccount:clipforge-api-int@clipforgebeta2.iam.gserviceaccount.com",
+      "condition": null
+    },
+    {
+      "address": "google_secret_manager_secret_iam_member.runtime[\"worker_password\"]",
+      "id": "projects/clipforgebeta2/secrets/clipforge-int-pg-app-password roles/secretmanager.secretAccessor serviceAccount:clipforge-worker-int@clipforgebeta2.iam.gserviceaccount.com",
+      "secret_id": "clipforge-int-pg-app-password",
+      "role": "roles/secretmanager.secretAccessor",
+      "member": "serviceAccount:clipforge-worker-int@clipforgebeta2.iam.gserviceaccount.com",
+      "condition": null
+    },
+    {
+      "address": "google_secret_manager_secret_iam_member.runtime[\"migrate_password\"]",
+      "id": "projects/clipforgebeta2/secrets/clipforge-int-pg-migrator-password roles/secretmanager.secretAccessor serviceAccount:clipforge-migrate-int@clipforgebeta2.iam.gserviceaccount.com",
+      "secret_id": "clipforge-int-pg-migrator-password",
+      "role": "roles/secretmanager.secretAccessor",
+      "member": "serviceAccount:clipforge-migrate-int@clipforgebeta2.iam.gserviceaccount.com",
+      "condition": null
+    },
+    {
+      "address": "google_secret_manager_secret_iam_member.version_publisher[\"app_password\"]",
+      "id": "projects/clipforgebeta2/secrets/clipforge-int-pg-app-password roles/secretmanager.secretVersionAdder serviceAccount:clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com",
+      "secret_id": "clipforge-int-pg-app-password",
+      "role": "roles/secretmanager.secretVersionAdder",
+      "member": "serviceAccount:clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com",
+      "condition": null
+    },
+    {
+      "address": "google_secret_manager_secret_iam_member.version_publisher[\"migrator_password\"]",
+      "id": "projects/clipforgebeta2/secrets/clipforge-int-pg-migrator-password roles/secretmanager.secretVersionAdder serviceAccount:clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com",
+      "secret_id": "clipforge-int-pg-migrator-password",
+      "role": "roles/secretmanager.secretVersionAdder",
+      "member": "serviceAccount:clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com",
+      "condition": null
+    }
+  ],
+  "pending_addresses": [
+    "google_iap_tunnel_instance_iam_member.protected_bootstrap"
+  ],
+  "expected_plan": {
+    "no-op": 41,
+    "create": 1
+  },
+  "additional_retired_plans": [
+    {
+      "run_id": "44219757502",
+      "state_serial": 5,
+      "manifest": {
+        "name": "private-plans/int/264d1cfad6500e1abd60d3e7f966a3614a3a5831/44219757502-1/manifest.json",
+        "generation": "1794967145187552",
+        "sha256": "a6cd844f31900ab7d1c6012fa3a7b936a86698218551b2582a63266d88f4189e",
+        "size": 6593
+      },
+      "binary": {
+        "name": "private-plans/int/264d1cfad6500e1abd60d3e7f966a3614a3a5831/44219757502-1/int.tfplan",
+        "generation": "1794967144807369",
+        "sha256": "c75860660cee6f3ac1c929963bac70f660e08d40767610e1895cd115f2462469",
+        "size": 44420
+      }
+    }
+  ],
+  "iap_identity_patch": {
+    "source_patch_sha256": "9d3826470408a37045b7ea5ddd7e5d2a955787a5f06c70b40e6df409453307ab",
+    "original_configuration_sha256": "1cf09b8ebd357761a217b7cae3d46e37397eadff39deeaa79500aac5276a7a7c",
+    "configuration_sha256": "4f13120dc9165cd43881181eca6af95663df9d063d513bb4d776c59137d92aea",
+    "original_runtime_sha256": "fb8503722880fbff0392f16877f14282c1d04416504657298e0fcd0eb9e865f9",
+    "runtime_sha256": "f573d073f93d5bf2969548f1432a3d4cfa1f99e1030b14ed180dbb8ffea78abb"
+  },
+  "read_window": {
+    "not_before_utc": "2026-11-18T17:00:00Z",
+    "expires_utc": "2026-11-18T18:00:00Z",
+    "proposal_sha256": "b2fbaf3ba71e671601c7e803feb71cd89def33cad05cc47ea273d139ff897417"
+  }
+}

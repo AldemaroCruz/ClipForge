@@ -162,7 +162,10 @@
       "config/int-foundation-history/79ecadb-recovery-contract.json",
       "config/int-foundation-history/5800b4c-recovery-contract.json",
       "config/int-foundation-history/5800b4c-iap-diagnostic.json",
-      "config/int-foundation-history/5800b4c-foundation-contract.json"
+      "config/int-foundation-history/5800b4c-foundation-contract.json",
+      "config/int-foundation-history/bbf7573-foundation-contract.json",
+      "config/int-foundation-history/bbf7573-iap-diagnostic.json",
+      "config/int-foundation-history/bbf7573-recovery-contract.json"
     ],
     "deferred_procedures": [
       "protected database initialization",
@@ -531,13 +534,26 @@
   },
   "current_configuration": {
     "purpose": "serial6_recovery_plan_only",
-    "configuration_sha256": "4f13120dc9165cd43881181eca6af95663df9d063d513bb4d776c59137d92aea",
+    "configuration_sha256": "bf2a20357afc9ccd86edf34efd4a069ba7f43eb14b2853022ec031a9850fe0e1",
     "source_patch_sha256": "9d3826470408a37045b7ea5ddd7e5d2a955787a5f06c70b40e6df409453307ab",
     "historical_plan_configuration_sha256": "1cf09b8ebd357761a217b7cae3d46e37397eadff39deeaa79500aac5276a7a7c",
     "historical_contract": {
       "path": "config/int-foundation-history/5800b4c-foundation-contract.json",
       "sha256": "31fc386818031c2db18d7eae4fcf8940c8c53b7db4824ff7bbd0c076725e8f6d"
     },
-    "producer_binding": "Actual dispatch GITHUB_SHA; original historical plan/producer retained"
+    "producer_binding": "Actual dispatch GITHUB_SHA; original historical plan/producer retained",
+    "sink_alignment": {
+      "purpose": "serial6_sink_refresh_alignment_only",
+      "previous_configuration_sha256": "4f13120dc9165cd43881181eca6af95663df9d063d513bb4d776c59137d92aea",
+      "configuration_sha256": "bf2a20357afc9ccd86edf34efd4a069ba7f43eb14b2853022ec031a9850fe0e1",
+      "previous_audit_sha256": "aa35a845fb9ed1d85de2df0876a9e707e43089c808487e645d0835095e5c74ae",
+      "audit_sha256": "afcffcd2938fa49ddef44ad2b4ec6d8c5695307a5a2ce29022fbb6ff9bbf00f5",
+      "evidence_run": "44354702837",
+      "previous_configuration_commit": "bbf7573f6de1070aa9c3082fcbf90302ba0de614"
+    },
+    "previous_configuration_contract": {
+      "path": "config/int-foundation-history/bbf7573-foundation-contract.json",
+      "sha256": "e57024bcd2292da8ba3fb0dc50268610afeee1fc796040fab82376805853eb26"
+    }
   }
 }

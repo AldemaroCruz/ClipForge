@@ -780,5 +780,27 @@ class IapReadDiagnosticContract(unittest.TestCase):
         self.assertEqual(saved['required_reads'],result['required_reads']);self.assertFalse(saved['apply_authorized'])
 
 
+class CurrentSinkDiagnosticProvenance(unittest.TestCase):
+    def test_sink_candidate_keeps_numeric_identity_and_rejects_changed_history(self):
+        root=diagnostic.ROOT
+        actual=diagnostic.load_contract(root)
+        self.assertEqual(actual['provider_route']['resource'],diagnostic.ROUTES['numeric'])
+        self.assertEqual(actual['provider_route']['evaluated'],
+                         {'project':'816643438938','zone':'us-central1-a','instance':'1670495097211408131'})
+        native_read=Path.read_bytes
+        for mutation in ('missing-alignment','alignment-hash','history-reference','history-bytes','named-route'):
+            changed=deepcopy(actual)
+            if mutation=='missing-alignment': del changed['configuration_change']['sink_alignment']
+            elif mutation=='alignment-hash': changed['configuration_change']['sink_alignment']['configuration_sha256']='0'*64
+            elif mutation=='history-reference': changed['configuration_change']['previous_diagnostic_contract']['sha256']='0'*64
+            elif mutation=='named-route': changed['provider_route']['required_route']='named'
+            def read(path):
+                if path==root/diagnostic.CONFIG: return custody.canonical(changed)
+                raw=native_read(path)
+                return raw+b'\n' if mutation=='history-bytes' and path.name=='bbf7573-iap-diagnostic.json' else raw
+            with self.subTest(mutation=mutation),mock.patch.object(Path,'read_bytes',read),self.assertRaises(ValueError):
+                diagnostic.load_contract(root)
+
+
 if __name__=='__main__':
     unittest.main()

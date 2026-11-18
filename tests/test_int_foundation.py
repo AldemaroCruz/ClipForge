@@ -460,7 +460,7 @@ class FoundationCurrentConfiguration(unittest.TestCase):
     def test_exact_current_configuration_passes_without_rebinding_historical_plan_or_acceptance(self):
         before = copy.deepcopy(self.contract)
         binding = f.check_static(self.root, self.module, self.contract)
-        self.assertEqual(binding["configuration_sha256"], "4f13120dc9165cd43881181eca6af95663df9d063d513bb4d776c59137d92aea")
+        self.assertEqual(binding["configuration_sha256"], "bf2a20357afc9ccd86edf34efd4a069ba7f43eb14b2853022ec031a9850fe0e1")
         self.assertEqual(binding["commit"], self.contract["plan"]["commit"])
         self.assertNotEqual(binding["configuration_sha256"], self.contract["plan"]["configuration_sha256"])
         self.assertEqual(self.contract, before)
@@ -469,7 +469,8 @@ class FoundationCurrentConfiguration(unittest.TestCase):
 
     def test_current_metadata_is_required_for_new_source_and_cannot_enable_other_modes(self):
         for mutation in ("absent", "active-mode", "candidate", "purpose", "configuration_sha256", "source_patch_sha256",
-                         "historical_plan_configuration_sha256", "producer_binding", "history-path", "history-hash", "extra"):
+                         "historical_plan_configuration_sha256", "producer_binding", "history-path", "history-hash", "extra",
+                         "sink-hash", "sink-missing", "previous-contract-hash"):
             contract = copy.deepcopy(self.contract)
             current = contract["current_configuration"]
             if mutation == "absent": del contract["current_configuration"]
@@ -477,6 +478,9 @@ class FoundationCurrentConfiguration(unittest.TestCase):
             elif mutation == "candidate": contract["planning_candidate"] = {"purpose": "comparative_plan_only"}
             elif mutation == "history-path": current["historical_contract"]["path"] = "config/other.json"
             elif mutation == "history-hash": current["historical_contract"]["sha256"] = "0" * 64
+            elif mutation == "sink-hash": current["sink_alignment"]["configuration_sha256"] = "0" * 64
+            elif mutation == "sink-missing": del current["sink_alignment"]
+            elif mutation == "previous-contract-hash": current["previous_configuration_contract"]["sha256"] = "0" * 64
             elif mutation == "extra": current["unreviewed"] = True
             else: current[mutation] = "0" * 64
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):

@@ -48,6 +48,36 @@ IAP_NEW = IAP_OLD.replace(b"var.project_id", b"data.google_project.existing.numb
     b"postgres.name", b"postgres.instance_id")
 READ_WINDOW = {"not_before_utc": "2026-11-18T17:00:00Z", "expires_utc": "2026-11-18T18:00:00Z",
                "proposal_sha256": "b2fbaf3ba71e671601c7e803feb71cd89def33cad05cc47ea273d139ff897417"}
+SINK_ALIGNMENT = {
+    "purpose": "serial6_sink_refresh_alignment_only",
+    "previous_configuration_sha256": IAP_PATCH["configuration_sha256"],
+    "configuration_sha256": "bf2a20357afc9ccd86edf34efd4a069ba7f43eb14b2853022ec031a9850fe0e1",
+    "previous_audit_sha256": "aa35a845fb9ed1d85de2df0876a9e707e43089c808487e645d0835095e5c74ae",
+    "audit_sha256": "afcffcd2938fa49ddef44ad2b4ec6d8c5695307a5a2ce29022fbb6ff9bbf00f5",
+    "evidence_run": "44354702837", "previous_configuration_commit": "bbf7573f6de1070aa9c3082fcbf90302ba0de614"}
+SINK_OLD = (b"  # Same-project log-bucket routing needs no writer SA or project-wide writer grant.\n"
+            b"  unique_writer_identity = false\n")
+SINK_NEW = (b"  # Match the pinned provider refresh representation; this does not assert\n"
+            b"  # that the API returns an exclusive writer identity for this destination.\n"
+            b"  unique_writer_identity = true\n")
+ETAG_REFRESH_ADDRESSES = (
+    "google_logging_log_view_iam_member.audit_reader", "google_project_iam_audit_config.storage_access",
+    "google_project_iam_member.bootstrap_reader",
+    'google_secret_manager_secret_iam_member.runtime["api_ca"]',
+    'google_secret_manager_secret_iam_member.runtime["bootstrap_admin"]',
+    'google_secret_manager_secret_iam_member.runtime["migrate_ca"]',
+    'google_secret_manager_secret_iam_member.runtime["worker_ca"]',
+    'google_secret_manager_secret_iam_member.version_publisher["bootstrap_admin"]',
+    'google_secret_manager_secret_iam_member.version_publisher["postgres_ca"]',
+    "google_service_account_iam_member.protected_bootstrap")
+EMPTY_MAP_REFRESH_ADDRESSES = ('google_secret_manager_secret.runtime["bootstrap-admin"]',
+                               'google_secret_manager_secret.runtime["postgres-ca"]')
+REFRESH_METADATA = {"schema": "clipforge-int-reviewed-refresh-metadata-1", "source_run": "44354702837",
+                    "source_private_plan_sha256": "bc70a91ec3ea9bb16eaaf0a8a0446d1282775fb2765766b3b5ee68e48e96a0ac",
+                    "source_sanitized_review_sha256": "e5d1720e1520ff8a3b29d428fa34297fa041544913f29e4286de765e48d9a057",
+                    "etag_only_addresses": list(ETAG_REFRESH_ADDRESSES),
+                    "null_to_empty_map_addresses": list(EMPTY_MAP_REFRESH_ADDRESSES),
+                    "null_to_empty_map_attributes": ["annotations", "version_aliases"]}
 SERIAL5_RETIRED = {"run_id": "44219757502", "state_serial": 5,
                    "manifest": {"name": "private-plans/int/264d1cfad6500e1abd60d3e7f966a3614a3a5831/44219757502-1/manifest.json",
                                 "generation": "1794967145187552", "sha256": "a6cd844f31900ab7d1c6012fa3a7b936a86698218551b2582a63266d88f4189e", "size": 6593},
@@ -102,6 +132,20 @@ def iap_patch_mode(contract):
     return True
 
 
+def sink_alignment_mode(contract):
+    if contract.get("sink_alignment") is None:
+        c.require("refresh_metadata" not in contract, "Metadata refresh recognition requires exact sink alignment activation")
+        return False
+    c.require(iap_patch_mode(contract) and contract["sink_alignment"] == SINK_ALIGNMENT
+              and contract.get("refresh_metadata") == REFRESH_METADATA,
+              "Only the reviewed sink alignment and exact resource/attribute metadata refresh policy are permitted")
+    return True
+
+
+def active_configuration_sha256(contract):
+    return SINK_ALIGNMENT["configuration_sha256"] if sink_alignment_mode(contract) else contract["source_bindings"]["base_configuration_sha256"]
+
+
 def verify_iap_sources(source, contract):
     """Revert only the two authorized IAP expressions; all ten originals must match."""
     c.require(iap_patch_mode(contract), "Numeric IAP source review required")
@@ -110,10 +154,21 @@ def verify_iap_sources(source, contract):
     c.require(runtime.count(IAP_NEW) == 1 and IAP_OLD not in runtime
               and custody.sha256(runtime) == IAP_PATCH["runtime_sha256"], "Numeric IAP runtime source differs")
     current = {name: custody.sha256(raw) for name, raw in files.items()}
+    if sink_alignment_mode(contract):
+        audit = files["audit.tf"]
+        c.require(audit.count(SINK_NEW) == 1 and SINK_OLD not in audit
+                  and custody.sha256(audit) == SINK_ALIGNMENT["audit_sha256"], "Sink alignment source differs")
+        files["audit.tf"] = audit.replace(SINK_NEW, SINK_OLD)
+        reverted_sink = {name: custody.sha256(raw) for name, raw in files.items()}
+        c.require(custody.sha256(custody.canonical(current)) == SINK_ALIGNMENT["configuration_sha256"]
+                  and reverted_sink["audit.tf"] == SINK_ALIGNMENT["previous_audit_sha256"]
+                  and custody.sha256(custody.canonical(reverted_sink)) == IAP_PATCH["configuration_sha256"],
+                  "Sources exceed the exact sink alignment from the prior numeric IAP configuration")
+    else:
+        c.require(custody.sha256(custody.canonical(current)) == IAP_PATCH["configuration_sha256"], "Numeric IAP source baseline differs")
     files["runtime.tf"] = runtime.replace(IAP_NEW, IAP_OLD)
     original = {name: custody.sha256(raw) for name, raw in files.items()}
-    c.require(custody.sha256(custody.canonical(current)) == IAP_PATCH["configuration_sha256"]
-              and original["runtime.tf"] == IAP_PATCH["original_runtime_sha256"]
+    c.require(original["runtime.tf"] == IAP_PATCH["original_runtime_sha256"]
               and custody.sha256(custody.canonical(original)) == IAP_PATCH["original_configuration_sha256"],
               "Sources exceed the two reviewed IAP expressions or original ten-file baseline")
     return current
@@ -175,6 +230,12 @@ def static_contract(root, contract=None):
         c.require(contract["baseline"].get("historical_recovery_contract") == history
                   and custody.sha256((root / history["path"]).read_bytes()) == history["sha256"],
                   "Previous recovery contract history changed")
+        if sink_alignment_mode(contract):
+            previous = {"path": "config/int-foundation-history/bbf7573-recovery-contract.json",
+                        "sha256": "6f7fb196fa6310d24133356aa656f61cad9b70d7e994eb36a69f13e1bccad327"}
+            c.require(contract["baseline"].get("previous_configuration_contract") == previous
+                      and custody.sha256((root / previous["path"]).read_bytes()) == previous["sha256"],
+                      "Prior numeric IAP configuration contract changed")
     c.require(binding["configuration_sha256"] == contract["source_bindings"]["base_configuration_sha256"]
               and binding["provider_lock_sha256"] == contract["source_bindings"]["provider_lock_sha256"]
               and binding["inputs"] == contract["inputs"], "Original HCL, inputs, provider or startup changed")
@@ -263,13 +324,66 @@ def reject_original_plan(reference, contract):
                   "Retired serial1/serial5 plan cannot be reused after state progression")
 
 
+def classify_refresh_metadata(plan, contract):
+    """Compare complete native values; recognize only the twelve reviewed scopes."""
+    enabled = sink_alignment_mode(contract)
+    drift = plan.get("resource_drift") or []
+    c.require(isinstance(drift, list), "Malformed native refresh evidence")
+    if not enabled:
+        c.require(not drift, "Unreviewed native resource drift")
+        return None
+    changes = {row.get("address"): row for row in plan.get("resource_changes", []) if row.get("mode") == "managed"}
+    seen, classified = set(), []
+    for row in drift:
+        address = row.get("address")
+        c.require(address in ETAG_REFRESH_ADDRESSES + EMPTY_MAP_REFRESH_ADDRESSES and address not in seen
+                  and row.get("mode") == "managed" and row.get("type") == address.split(".")[0],
+                  "Refresh has duplicate, unreviewed resource or type")
+        seen.add(address)
+        change = row.get("change", {})
+        before, after = change.get("before"), change.get("after")
+        c.require(change.get("actions") == ["update"] and not change.get("importing")
+                  and isinstance(before, dict) and isinstance(after, dict) and set(before) == set(after),
+                  "Refresh must preserve the complete resource attribute inventory")
+        if address in ETAG_REFRESH_ADDRESSES:
+            keys, classification = ["etag"], "etag_only"
+            c.require(isinstance(before.get("etag"), str) and isinstance(after.get("etag"), str)
+                      and bool(before["etag"]) and bool(after["etag"]) and before["etag"] != after["etag"],
+                      "Reviewed etag refresh needs distinct existing string metadata")
+        else:
+            keys, classification = ["annotations", "version_aliases"], "null_to_empty_map"
+            c.require(all(key in before and before[key] is None and type(after[key]) is dict and after[key] == {} for key in keys),
+                      "Secret refresh recognizes only the two reviewed null-to-empty-object fields")
+        c.require(custody.canonical({key: value for key, value in before.items() if key not in keys})
+                  == custody.canonical({key: value for key, value in after.items() if key not in keys}),
+                  "Refresh includes an additional value, member, policy, condition or configuration difference")
+        actual = changes.get(address, {})
+        planned = actual.get("change", {})
+        c.require(actual.get("type") == row["type"] and planned.get("actions") == ["no-op"]
+                  and not planned.get("importing") and custody.canonical(planned.get("before")) == custody.canonical(after)
+                  and custody.canonical(planned.get("after")) == custody.canonical(after),
+                  "Refreshed resources must have exactly matching complete no-op values in the plan")
+        classified.append({"address": address, "type": row["type"], "classification": classification,
+                           "changed_attribute_keys": keys, "resource_actions": ["no-op"],
+                           "full_other_attributes_equal": True, "refreshed_values_match_noop": True})
+    return {"schema": REFRESH_METADATA["schema"], "source_run": REFRESH_METADATA["source_run"],
+            "source_private_plan_sha256": REFRESH_METADATA["source_private_plan_sha256"],
+            "status": "recognized_refresh_only" if classified else "no_refresh_observed",
+            "classifications": sorted(classified, key=lambda row: row["address"])}
+
+
 def verify_recovery_plan(plan, contract):
     serial6 = serial6_mode(contract)
     c.require(plan.get("terraform_version") == "1.15.8" and plan.get("errored") is not True,
               "Wrong or failed native Terraform recovery plan")
     if serial6:
-        c.require(plan.get("complete") is True and not plan.get("resource_drift") and not plan.get("deferred_changes"),
+        c.require(plan.get("complete") is True and (sink_alignment_mode(contract) or not plan.get("resource_drift"))
+                  and not plan.get("deferred_changes"),
                   "Serial6 drift, deferred work or incomplete evaluation requires private review")
+    if sink_alignment_mode(contract):
+        c.require(plan.get("errored") is False and not plan.get("errors")
+                  and not any(row.get("severity") == "error" for row in plan.get("diagnostics", [])),
+                  "Sink candidate requires an error-free complete native plan")
     c.require(set(plan.get("variables", {})) == c.VARIABLES, "Unreviewed recovery variables or secret input")
     for key, value in {"project_id": c.PROJECT, "run_subnet_cidr": "10.80.0.0/26",
                        "postgres_subnet_cidr": "10.80.1.0/28", "data_disk_gb": 20}.items():
@@ -345,9 +459,13 @@ def verify_recovery_plan(plan, contract):
     if serial6:
         c.require(dict(counts) == contract["expected_plan"] and not imported,
                   "Serial6 real plan counts/imports differ; do not force expected counts")
-    return {"counts": dict(counts), "imports": sorted(imported), "addresses": sorted(targets), "computed_iam_roles": computed_roles,
+    metadata = classify_refresh_metadata(plan, contract) if serial6 else None
+    result = {"counts": dict(counts), "imports": sorted(imported), "addresses": sorted(targets), "computed_iam_roles": computed_roles,
             "existing_state_addresses": sorted(prior), "apply_authorized": False,
             "risk_acceptance": "Existing risk conditions/expiry preserved; this new plan is not approved"}
+    if metadata is not None:
+        result["refresh_metadata"] = metadata
+    return result
 
 
 def verify_new_manifest(manifest, contract, now=None):
@@ -393,6 +511,17 @@ def verify_new_manifest(manifest, contract, now=None):
         if window_expired(window, datetime.fromisoformat(manifest["created_utc"].replace("Z", "+00:00"))):
             c.require(manifest.get("plan_review_status") == "blocked_recovery_plan_read_window_expired",
                       "A plan collected beyond the read window must remain blocked")
+    if sink_alignment_mode(contract):
+        c.require(manifest.get("sink_alignment") == SINK_ALIGNMENT
+                  and manifest.get("refresh_metadata_policy") == REFRESH_METADATA
+                  and manifest.get("previous_configuration_contract") == contract["baseline"]["previous_configuration_contract"],
+                  "Missing exact sink source/history or refresh classification policy")
+        if manifest.get("plan_review_status") == "recovery_plan_requires_new_review":
+            metadata = manifest.get("refresh_metadata_classification", {})
+            c.require(metadata.get("schema") == REFRESH_METADATA["schema"] and metadata.get("source_run") == REFRESH_METADATA["source_run"]
+                      and metadata.get("source_private_plan_sha256") == REFRESH_METADATA["source_private_plan_sha256"]
+                      and metadata.get("status") in {"recognized_refresh_only", "no_refresh_observed"},
+                      "Native refresh classification evidence missing from candidate plan")
     c.require(manifest.get("base_configuration_sha256") == contract["source_bindings"]["base_configuration_sha256"]
               and bool(re.fullmatch(r"[a-f0-9]{64}", manifest.get("control_sources_sha256", ""))), "Missing control/configuration integrity")
     c.require(bool(re.fullmatch(r"[1-9][0-9]*", manifest.get("run_id", "")))
@@ -573,6 +702,10 @@ def plan_recovery(work, reports, environ):
     if numeric_iap:
         manifest.update(iap_identity_patch=IAP_PATCH, baseline_recovery_contract=contract["baseline"]["historical_recovery_contract"],
                         read_window=window)
+    if sink_alignment_mode(contract):
+        manifest.update(sink_alignment=SINK_ALIGNMENT, refresh_metadata_policy=REFRESH_METADATA,
+                        previous_configuration_contract=contract["baseline"]["previous_configuration_contract"],
+                        refresh_metadata_classification=review.get("refresh_metadata", {"status": "blocked_not_classified"}))
     manifest["binary"] = custody.upload(prefix + "int.tfplan", target.read_bytes())
     manifest["json"] = custody.upload(prefix + "int.json", raw)
     if window_expired(window):

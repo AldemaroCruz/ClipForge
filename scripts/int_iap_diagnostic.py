@@ -26,7 +26,7 @@ SELECTION_VARS = ("GOOGLE_CREDENTIALS", "GOOGLE_CLOUD_KEYFILE_JSON", "GCLOUD_KEY
                   "GOOGLE_GHA_CREDS_PATH", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE", "GCP_ACCESS_TOKEN")
 OVERRIDES = SELECTION_VARS[:6]
 PENDING_IAP = "google_iap_tunnel_instance_iam_member.protected_bootstrap"
-NUMERIC_CONFIGURATION_SHA256 = "4f13120dc9165cd43881181eca6af95663df9d063d513bb4d776c59137d92aea"
+NUMERIC_CONFIGURATION_SHA256 = "bf2a20357afc9ccd86edf34efd4a069ba7f43eb14b2853022ec031a9850fe0e1"
 IDENTITY = {"project_id": "clipforgebeta2", "project_number": "816643438938", "instance_id": "1670495097211408131",
             "instance_name": "clipforge-int-base-postgres", "zone": "us-central1-a"}
 ROUTE_EXPRESSIONS = {
@@ -85,6 +85,14 @@ def load_contract(root=ROOT):
               and route["resource"] == ROUTES["numeric"] and route["expressions"] == ROUTE_EXPRESSIONS["numeric"]
               and route["evaluated"] == {"project": IDENTITY["project_number"], "zone": IDENTITY["zone"], "instance": IDENTITY["instance_id"]}
               and route["configuration_sha256"] == NUMERIC_CONFIGURATION_SHA256, "Unreviewed effective IAP route")
+    from scripts import int_foundation_recovery as recovery
+    change = contract["configuration_change"]
+    previous = {"path": "config/int-foundation-history/bbf7573-iap-diagnostic.json",
+                "sha256": "45eeed91c74b3bd032de847356df7b2cba0d2f1c61f1e8abd79cd30a5e65d4a1"}
+    c.require(change.get("sink_alignment") == recovery.SINK_ALIGNMENT
+              and change.get("previous_diagnostic_contract") == previous
+              and custody.sha256((root / previous["path"]).read_bytes()) == previous["sha256"],
+              "Sink alignment must preserve the previous numeric-route diagnostic evidence")
     window = contract["read_window"]
     c.require(window["not_before_utc"] == "2026-11-18T17:00:00Z" and window["expires_utc"] == "2026-11-18T18:00:00Z"
               and window["proposal_sha256"] == "b2fbaf3ba71e671601c7e803feb71cd89def33cad05cc47ea273d139ff897417"

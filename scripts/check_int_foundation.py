@@ -140,6 +140,20 @@ def current_configuration_binding(root, module, contract):
                 "historical_plan_configuration_sha256": recovery.IAP_PATCH["original_configuration_sha256"],
                 "historical_contract": history,
                 "producer_binding": "Actual dispatch GITHUB_SHA; original historical plan/producer retained"}
+    recovered = recovery.load_contract(root)
+    if recovered.get("sink_alignment") is not None:
+        expected.update(configuration_sha256=recovery.active_configuration_sha256(recovered),
+                        sink_alignment=recovery.SINK_ALIGNMENT,
+                        previous_configuration_contract={
+                            "path": "config/int-foundation-history/bbf7573-foundation-contract.json",
+                            "sha256": "e57024bcd2292da8ba3fb0dc50268610afeee1fc796040fab82376805853eb26"})
+        prior = expected["previous_configuration_contract"]
+        prior_raw = (root / prior["path"]).read_bytes()
+        c.require(release.sha256(prior_raw) == prior["sha256"], "Previous numeric-route foundation contract changed")
+        prior_contract = json.loads(prior_raw)
+        c.require(prior_contract["plan"] == contract["plan"]
+                  and prior_contract["current_configuration"]["configuration_sha256"]
+                  == recovery.IAP_PATCH["configuration_sha256"], "Sink candidate cannot rewrite the previous plan/configuration")
     c.require(contract.get("mode") == "recovery_preparation_only" and contract.get("planning_candidate") is None
               and current == expected, "Only the exact serial6 recovery configuration transition is permitted")
     raw = (root / history["path"]).read_bytes()
@@ -150,7 +164,6 @@ def current_configuration_binding(root, module, contract):
               and contract.get("owner_risk_acceptance") == previous.get("owner_risk_acceptance")
               and contract.get("owner_risk_acceptance_sha256") == previous.get("owner_risk_acceptance_sha256"),
               "Current source metadata cannot rewrite the historical plan, producer or owner acceptance")
-    recovered = recovery.load_contract(root)
     c.require(recovery.iap_patch_mode(recovered), "Recovery contract did not activate the exact IAP identity patch")
     recovery.verify_iap_sources(module, recovered)
     return current

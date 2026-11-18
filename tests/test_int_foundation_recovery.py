@@ -107,6 +107,8 @@ def authored_plan(contract, with_imports=False):
                              run_subnet_cidr={"value": "10.80.0.0/26"}, postgres_subnet_cidr={"value": "10.80.1.0/28"})
     approved = {row["address"]: row["id"] for row in contract["imports"]} if with_imports else {}
     for row in plan["resource_changes"]:
+        if row["address"] == "google_logging_project_sink.access" and recovery.sink_alignment_mode(contract):
+            row["change"]["after"]["unique_writer_identity"] = True
         if row["address"] == recovery.PENDING_IAP and recovery.iap_patch_mode(contract):
             row["change"]["after"].update(project="816643438938", instance="1670495097211408131", zone="us-central1-a")
         existing = row["address"] in contract["backend"]["managed_addresses"] or row["address"] in approved
@@ -118,6 +120,32 @@ def authored_plan(contract, with_imports=False):
     plan["planned_values"] = {"root_module": {"resources": [{"address": row["address"], "mode": "managed", "type": row["type"],
         "name": row["name"], "values": deepcopy(row["change"]["after"]), "sensitive_values": {}} for row in plan["resource_changes"]]}}
     plan.update(format_version="1.2", terraform_version="1.15.8", complete=True, applyable=True, errored=False)
+    return plan
+
+
+def authored_refresh_metadata(plan):
+    """Synthetic full-resource refresh pairs; never private production values."""
+    changes = {row["address"]: row for row in plan["resource_changes"]}
+    drift = []
+    for address in recovery.ETAG_REFRESH_ADDRESSES + recovery.EMPTY_MAP_REFRESH_ADDRESSES:
+        row = changes[address]
+        after = deepcopy(row["change"]["after"])
+        after["synthetic_unchanged_attribute"] = {"marker": PRIVATE_SENTINEL}
+        if address in recovery.ETAG_REFRESH_ADDRESSES:
+            after["etag"] = "synthetic-new-etag"
+            before = deepcopy(after)
+            before["etag"] = "synthetic-old-etag"
+        else:
+            after.update(annotations={}, version_aliases={})
+            before = deepcopy(after)
+            before.update(annotations=None, version_aliases=None)
+        row["change"]["before"] = deepcopy(after)
+        row["change"]["after"] = deepcopy(after)
+        drift.append({"address": address, "mode": "managed", "type": row["type"], "name": row["name"],
+                      "change": {"actions": ["update"], "before": before, "after": after}})
+    plan["resource_drift"] = drift
+    for row in plan["planned_values"]["root_module"]["resources"]:
+        row["values"] = deepcopy(changes[row["address"]]["change"]["after"])
     return plan
 
 
@@ -446,7 +474,8 @@ class FoundationRecovery(unittest.TestCase):
             with self.subTest(reference=key, field=field), self.assertRaises(ValueError): recovery.verify_new_manifest(changed, self.contract, now=now)
 
     def trace_recovery(self, root, *, race=None, native_exit=2, reviewed_controls="c" * 40, material_update=False,
-                       serial6=False, material_drift=False, numeric_iap=False, expire_at=None):
+                       serial6=False, material_drift=False, numeric_iap=False, expire_at=None, sink_candidate=False,
+                       metadata_refresh=False):
         """Real validation, simulated HTTP/source preconditions/native execution."""
         raw_state, initial_inventory, initial_contract = authored_partial(serial6=True) if serial6 else (self.raw, self.inventory, self.contract)
         work, reports = root / "work", root / "reports"
@@ -457,7 +486,9 @@ class FoundationRecovery(unittest.TestCase):
             target = module / name
             target.parent.mkdir(parents=True, exist_ok=True)
             if numeric_iap:
-                target.write_bytes((recovery.ROOT / "infra/gcp/int-base" / name).read_bytes())
+                raw = (recovery.ROOT / "infra/gcp/int-base" / name).read_bytes()
+                if not sink_candidate and name == "audit.tf": raw = raw.replace(recovery.SINK_NEW, recovery.SINK_OLD)
+                target.write_bytes(raw)
             else:
                 target.write_text("synthetic prepared module " + name)
         adc = root / "gha-creds-recovery-synthetic.json"
@@ -485,6 +516,11 @@ class FoundationRecovery(unittest.TestCase):
             contract["baseline"]["historical_recovery_contract"] = {"path": "config/int-foundation-history/5800b4c-recovery-contract.json",
                 "sha256": "97ffe48de5db6ac342acc42b7bb17c1087430c080c6e66b0a431b16d0f115832"}
             env.update(INT_READ_WINDOW_MANIFEST_SHA256="d" * 64, INT_ADMIN_READ_RECEIPTS_SHA256="e" * 64)
+        if sink_candidate:
+            contract.update(sink_alignment=deepcopy(recovery.SINK_ALIGNMENT), refresh_metadata=deepcopy(recovery.REFRESH_METADATA))
+            contract["baseline"]["previous_configuration_contract"] = {
+                "path": "config/int-foundation-history/bbf7573-recovery-contract.json",
+                "sha256": "6f7fb196fa6310d24133356aa656f61cad9b70d7e994eb36a69f13e1bccad327"}
         (root / "config").mkdir()
         (root / "config/int-foundation-recovery.json").write_bytes(custody.canonical(contract))
         (root / "config/int-iap-diagnostic.json").write_bytes(custody.canonical({"read_window": {
@@ -520,6 +556,8 @@ class FoundationRecovery(unittest.TestCase):
                 return native_exit, b""
             if operation == "recovery_private_plan_json":
                 plan = authored_plan(contract, with_imports=True)
+                if metadata_refresh:
+                    authored_refresh_metadata(plan)
                 if material_update:
                     row = next(row for row in plan["resource_changes"] if row["address"] in contract["backend"]["managed_addresses"])
                     row["change"]["actions"] = ["update"]
@@ -664,7 +702,7 @@ class FoundationRecoverySerial6(unittest.TestCase):
         self.assertEqual(contract["state_confirmation"]["observed_utc"], "2026-11-18T12:56:44Z")
         self.assertFalse(contract["state_confirmation"]["current_lock_present"])
         self.assertEqual(contract["baseline"]["configuration_commit"], "264d1cfad6500e1abd60d3e7f966a3614a3a5831")
-        self.assertEqual(contract["baseline"]["controls_reference"], "5800b4c")
+        self.assertEqual(contract["baseline"]["controls_reference"], "bbf7573")
         self.assertEqual(contract["imports"], [])
         self.assertEqual(len(contract["completed_imports"]), 5)
         self.assertFalse(contract["apply_authorized"])
@@ -692,6 +730,7 @@ class FoundationRecoverySerial6(unittest.TestCase):
             for name in c.FILES:
                 raw = (recovery.ROOT / "infra/gcp/int-base" / name).read_bytes()
                 if name == "runtime.tf": raw = raw.replace(recovery.IAP_NEW, recovery.IAP_OLD)
+                if name == "audit.tf": raw = raw.replace(recovery.SINK_NEW, recovery.SINK_OLD)
                 (module / name).parent.mkdir(parents=True, exist_ok=True)
                 (module / name).write_bytes(raw)
             (original / "scripts").mkdir()
@@ -832,10 +871,10 @@ class FoundationRecoveryNumericIap(unittest.TestCase):
         contract = recovery.load_contract()
         self.assertTrue(recovery.iap_patch_mode(contract))
         binding = recovery.static_contract(recovery.ROOT, contract)
-        self.assertEqual(binding["configuration_sha256"], recovery.IAP_PATCH["configuration_sha256"])
+        self.assertEqual(binding["configuration_sha256"], recovery.active_configuration_sha256(contract))
         self.assertEqual(contract["source_bindings"]["original_base_configuration_sha256"],
                          recovery.IAP_PATCH["original_configuration_sha256"])
-        self.assertEqual(contract["baseline"]["previous_controls_commit"], "5800b4c5c7a58ccd9ee738cc7d72cc59cb6c007f")
+        self.assertEqual(contract["baseline"]["previous_controls_commit"], "bbf7573f6de1070aa9c3082fcbf90302ba0de614")
 
     def test_source_guard_rejects_old_half_patch_additional_runtime_or_other_file_changes(self):
         with tempfile.TemporaryDirectory(prefix="clipforge-iap-source-fixture-") as temporary:
@@ -932,6 +971,141 @@ class FoundationRecoveryNumericIap(unittest.TestCase):
         self.assertEqual(summary["status"], "blocked_recovery_plan_material_difference")
         self.assertEqual(summary["review"]["observed_drift"][0]["changed_attribute_keys"], ["etag"])
         self.assertEqual(len(uploads), 3)
+        self.assertNotIn(PRIVATE_SENTINEL, json.dumps(summary))
+
+
+class FoundationRecoverySinkMetadata(unittest.TestCase):
+    def setUp(self):
+        self.raw, self.inventory, self.contract = authored_partial(serial6=True)
+        self.contract.update(iap_identity_patch=deepcopy(recovery.IAP_PATCH), read_window=deepcopy(recovery.READ_WINDOW),
+                             sink_alignment=deepcopy(recovery.SINK_ALIGNMENT), refresh_metadata=deepcopy(recovery.REFRESH_METADATA))
+
+    def plan(self):
+        return authored_refresh_metadata(authored_plan(self.contract))
+
+    def test_sink_source_is_exact_reversible_candidate_with_prior_numeric_iap_history_intact(self):
+        contract = recovery.load_contract()
+        self.assertTrue(recovery.sink_alignment_mode(contract))
+        self.assertEqual(recovery.static_contract(recovery.ROOT, contract)["configuration_sha256"],
+                         recovery.SINK_ALIGNMENT["configuration_sha256"])
+        raw = (recovery.ROOT / "config/int-foundation-history/bbf7573-recovery-contract.json").read_bytes()
+        self.assertEqual(custody.sha256(raw), "6f7fb196fa6310d24133356aa656f61cad9b70d7e994eb36a69f13e1bccad327")
+        history = json.loads(raw)
+        self.assertFalse(recovery.sink_alignment_mode(history))
+        self.assertEqual(history["source_bindings"]["base_configuration_sha256"], recovery.IAP_PATCH["configuration_sha256"])
+        self.assertEqual(contract["iap_identity_patch"], history["iap_identity_patch"])
+        self.assertEqual(contract["backend"], history["backend"])
+
+    def test_sink_source_rejects_false_value_or_any_additional_source_change(self):
+        with tempfile.TemporaryDirectory(prefix="clipforge-sink-source-fixture-") as temporary:
+            source = Path(temporary)
+            originals = {name: (recovery.ROOT / "infra/gcp/int-base" / name).read_bytes() for name in c.FILES}
+            for mutation in ("old-sink", "filter", "destination", "other-source"):
+                changed = dict(originals)
+                if mutation == "old-sink": changed["audit.tf"] = changed["audit.tf"].replace(recovery.SINK_NEW, recovery.SINK_OLD)
+                elif mutation == "filter": changed["audit.tf"] = changed["audit.tf"].replace(b'log_id("cloudaudit.googleapis.com/data_access")', b'log_id("other")')
+                elif mutation == "destination": changed["audit.tf"] = changed["audit.tf"].replace(b"logging.googleapis.com/", b"storage.googleapis.com/")
+                else: changed["main.tf"] += b"\n# additional change\n"
+                for name, raw in changed.items():
+                    (source / name).parent.mkdir(parents=True, exist_ok=True)
+                    (source / name).write_bytes(raw)
+                with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                    recovery.verify_iap_sources(source, self.contract)
+
+    def test_exact_ten_etags_and_two_null_map_refreshes_preserve_complete_noops(self):
+        plan = self.plan()
+        before = deepcopy(plan)
+        result = recovery.verify_recovery_plan(plan, self.contract)
+        self.assertEqual(result["counts"], {"no-op": 41, "create": 1})
+        self.assertEqual(result["imports"], [])
+        rows = result["refresh_metadata"]["classifications"]
+        self.assertEqual(sum(row["classification"] == "etag_only" for row in rows), 10)
+        self.assertEqual(sum(row["classification"] == "null_to_empty_map" for row in rows), 2)
+        self.assertTrue(all(row["resource_actions"] == ["no-op"] and row["full_other_attributes_equal"]
+                            and row["refreshed_values_match_noop"] for row in rows))
+        self.assertEqual(plan, before)
+        self.assertNotIn(PRIVATE_SENTINEL, json.dumps(result))
+
+    def test_new_metadata_activation_cannot_widen_addresses_attributes_or_evidence(self):
+        for key, value in (("etag_only_addresses", ["google_compute_instance.postgres"]),
+                           ("null_to_empty_map_attributes", ["labels"]), ("source_run", "44354702838")):
+            contract = deepcopy(self.contract)
+            contract["refresh_metadata"][key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError): recovery.verify_recovery_plan(self.plan(), contract)
+        contract = deepcopy(self.contract)
+        del contract["sink_alignment"]
+        with self.assertRaises(ValueError): recovery.verify_recovery_plan(self.plan(), contract)
+
+    def test_refresh_rejects_duplicate_unknown_type_non_update_or_import(self):
+        for mutation in ("duplicate", "unknown", "wrong-type", "delete", "import"):
+            plan = self.plan()
+            row = plan["resource_drift"][0]
+            if mutation == "duplicate": plan["resource_drift"].append(deepcopy(row))
+            elif mutation == "unknown": row["address"] = "google_compute_instance.postgres"
+            elif mutation == "wrong-type": row["type"] = "google_compute_instance"
+            elif mutation == "delete": row["change"]["actions"] = ["delete"]
+            else: row["change"]["importing"] = {"id": "synthetic"}
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError): recovery.verify_recovery_plan(plan, self.contract)
+
+    def test_etag_refresh_compares_all_other_attributes_and_corresponding_noop_values(self):
+        for mutation in ("member", "condition", "nested", "extra-key", "etag-null", "etag-unchanged", "noop-update", "noop-hidden-difference", "noop-unrelated-values"):
+            plan = self.plan()
+            drift = plan["resource_drift"][0]
+            row = next(row for row in plan["resource_changes"] if row["address"] == drift["address"])
+            if mutation in {"member", "condition"}:
+                drift["change"]["after"][mutation] = "synthetic-real-change"
+            elif mutation == "nested": drift["change"]["after"]["synthetic_unchanged_attribute"]["marker"] = "changed"
+            elif mutation == "extra-key": drift["change"]["after"]["new_attribute"] = None
+            elif mutation == "etag-null": drift["change"]["before"]["etag"] = None
+            elif mutation == "etag-unchanged": drift["change"]["before"]["etag"] = drift["change"]["after"]["etag"]
+            elif mutation == "noop-update": row["change"]["actions"] = ["update"]
+            elif mutation == "noop-hidden-difference": row["change"]["before"]["etag"] = "other"
+            else:
+                row["change"]["before"]["etag"] = row["change"]["after"]["etag"] = "other"
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError): recovery.verify_recovery_plan(plan, self.contract)
+
+    def test_secret_normalization_is_only_both_present_null_to_empty_objects(self):
+        for mutation in ("reverse", "nonempty", "list", "one-field", "missing", "other-label"):
+            plan = self.plan()
+            row = next(row for row in plan["resource_drift"] if row["address"] in recovery.EMPTY_MAP_REFRESH_ADDRESSES)
+            before, after = row["change"]["before"], row["change"]["after"]
+            if mutation == "reverse": before["annotations"], after["annotations"] = {}, None
+            elif mutation == "nonempty": after["version_aliases"] = {"latest": "1"}
+            elif mutation == "list": after["annotations"] = []
+            elif mutation == "one-field": before["annotations"] = {}
+            elif mutation == "missing": del before["annotations"]
+            else: after["labels"] = {"different": "value"}
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError): recovery.verify_recovery_plan(plan, self.contract)
+
+    def test_sink_or_vm_update_errors_imports_and_deferred_work_still_block(self):
+        for mutation in ("sink-update", "vm-update", "errored", "errors", "diagnostic", "deferred", "import"):
+            plan = self.plan()
+            if mutation in {"sink-update", "vm-update"}:
+                address = "google_logging_project_sink.access" if mutation == "sink-update" else "google_compute_instance.postgres"
+                row = next(row for row in plan["resource_changes"] if row["address"] == address)
+                row["change"]["actions"] = ["update"]
+            elif mutation == "errored": plan["errored"] = True
+            elif mutation == "errors": plan["errors"] = ["synthetic"]
+            elif mutation == "diagnostic": plan["diagnostics"] = [{"severity": "error"}]
+            elif mutation == "deferred": plan["deferred_changes"] = [{"reason": "synthetic"}]
+            else: plan["resource_changes"][0]["change"]["importing"] = {"id": "synthetic"}
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError): recovery.verify_recovery_plan(plan, self.contract)
+
+    def test_candidate_manifest_carries_actual_classification_without_changing_state_generation(self):
+        with tempfile.TemporaryDirectory(prefix="clipforge-sink-native-fixture-") as temporary:
+            summary, calls, uploads = FoundationRecovery.trace_recovery(self, Path(temporary), serial6=True, numeric_iap=True,
+                                                                       sink_candidate=True, metadata_refresh=True)
+        self.assertEqual(summary["status"], "recovery_plan_requires_new_review")
+        manifest = json.loads(uploads[-1][1])
+        self.assertEqual(manifest["configuration_sha256"], recovery.SINK_ALIGNMENT["configuration_sha256"])
+        self.assertEqual(manifest["sink_alignment"], recovery.SINK_ALIGNMENT)
+        self.assertEqual(manifest["refresh_metadata_classification"], summary["review"]["refresh_metadata"])
+        self.assertEqual(len(manifest["refresh_metadata_classification"]["classifications"]), 12)
+        self.assertEqual(manifest["backend"]["generation"], "1794975925421249")
+        self.assertEqual(manifest["backend"]["serial"], 6)
+        self.assertEqual(summary["review"]["counts"], {"no-op": 41, "create": 1})
+        self.assertEqual(sum(operation == "recovery_plan" for _, operation in calls), 1)
+        self.assertFalse(summary["apply_authorized"])
         self.assertNotIn(PRIVATE_SENTINEL, json.dumps(summary))
 
 

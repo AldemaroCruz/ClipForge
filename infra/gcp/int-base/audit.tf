@@ -20,8 +20,9 @@ resource "google_logging_project_sink" "access" {
   project     = var.project_id
   name        = "clipforge-int-access"
   destination = "logging.googleapis.com/${google_logging_project_bucket_config.access.id}"
-  # Same-project log-bucket routing needs no writer SA or project-wide writer grant.
-  unique_writer_identity = false
+  # Match the pinned provider refresh representation; this does not assert
+  # that the API returns an exclusive writer identity for this destination.
+  unique_writer_identity = true
   filter                 = <<-FILTER
     log_id("cloudaudit.googleapis.com/data_access")
     resource.type="gcs_bucket"
