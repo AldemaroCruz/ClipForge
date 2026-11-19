@@ -3,11 +3,13 @@
 import argparse
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from ipaddress import ip_address, ip_network
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import sys
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
@@ -58,6 +60,21 @@ NOBLE_FILES = (
 )
 HELPERS = ("scripts/int_vm_hostkey_guest.py", "scripts/int_noble_hostkey.py")
 SCHEMA = "clipforge-db01-noble-private-plan-1"
+SUMMARY_SCHEMA = "clipforge-db01-noble-plan-summary-1"
+BACKEND_FIELDS = {*foundation.STATE_PIN, "managed_addresses", "current_lock_absent"}
+PRIVATE_FILES = {"binary": "int.tfplan", "json": "int.json", "manifest": "manifest.json"}
+SUMMARY_SECTIONS = {
+    "checks": "Checks",
+    "iac_findings": "IaC findings pending review",
+    "image": "Verified Noble image",
+    "backend": "Observed backend evidence",
+    "network": "Observed candidate network",
+    "plan_exit_code": "Native detailed exit code",
+    "actions": "Observed managed actions",
+    "private_plan": "Private object receipts",
+    "diagnostic": "Sanitized operation failure",
+    "summary_error": "Summary failure",
+}
 REQUIRE = contract.require
 
 
@@ -103,6 +120,46 @@ def resolve_image():
     return exact
 
 
+def check_instance_addresses():
+    # Compare NIC addresses locally. The equality filter cannot traverse repeated NICs.
+    params = {"maxResults": 100, "returnPartialSuccess": "true",
+              "fields": "nextPageToken,unreachables,warning/code,"
+                        "items/*/warning/code,items/*/instances/networkInterfaces(networkIP,ipv6Address,aliasIpRanges/ipCidrRange)"}
+    seen = set()
+    address = ip_address(ADDRESS)
+    for _ in range(10):
+        page = compute_get(PROJECT_ROOT + "aggregated/instances", "check_candidate_ip_in_use", **params)
+        REQUIRE(isinstance(page, dict) and page.get("unreachables", []) == [], "Incomplete instance page")
+        zones = page.get("items", {})
+        warning = page.get("warning", {}).get("code")
+        REQUIRE(warning in (None, "NO_RESULTS_ON_PAGE")
+                and isinstance(zones, dict) and (zones or warning == "NO_RESULTS_ON_PAGE"),
+                "Candidate IP observation has incomplete instance coverage")
+        for zone in zones.values():
+            instances = zone.get("instances", [])
+            warning = zone.get("warning", {}).get("code")
+            REQUIRE(isinstance(instances, list) and warning in (None, "NO_RESULTS_ON_PAGE")
+                    and (instances or warning == "NO_RESULTS_ON_PAGE"), "Incomplete zonal instance list")
+            for instance in instances:
+                interfaces = instance.get("networkInterfaces")
+                REQUIRE(isinstance(interfaces, list) and interfaces, "Instance NIC evidence is missing")
+                for nic in interfaces:
+                    primary = nic.get("networkIP")
+                    aliases = nic.get("aliasIpRanges", [])
+                    REQUIRE(isinstance(aliases, list) and (primary or nic.get("ipv6Address")),
+                            "Instance NIC has incomplete address evidence")
+                    REQUIRE((not primary or address != ip_address(primary))
+                            and all(address not in ip_network(alias["ipCidrRange"], strict=False) for alias in aliases),
+                            "Candidate private IP is in use")
+        token = page.get("nextPageToken", "")
+        REQUIRE(isinstance(token, str) and token not in seen, "Instance pagination did not advance")
+        if not token:
+            return
+        seen.add(token)
+        params["pageToken"] = token
+    raise Blocked("candidate_ip_pagination_bound")
+
+
 def preflight_network():
     subnet = compute_get(PROJECT_ROOT + SUBNET, "read_noble_subnet",
                          fields="name,ipCidrRange,network,privateIpGoogleAccess,stackType")
@@ -119,14 +176,9 @@ def preflight_network():
                     for s in matches[0]["subnetworks"]), "Existing NAT does not cover the candidate subnet")
     reserved = compute_get(PROJECT_ROOT + "regions/us-central1/addresses", "check_reserved_candidate_ip",
                            filter=f'address = "{ADDRESS}"', fields="nextPageToken,items(address,subnetwork)")
-    instances = compute_get(PROJECT_ROOT + "aggregated/instances", "check_candidate_ip_in_use",
-                            filter=f'networkInterfaces.networkIP = "{ADDRESS}"',
-                            fields="nextPageToken,unreachables,warning(code),items(instances(networkInterfaces(networkIP,subnetwork),name),warning(code))")
-    REQUIRE(not reserved.get("nextPageToken") and not reserved.get("items")
-            and not instances.get("nextPageToken") and not instances.get("unreachables")
-            and instances.get("warning", {}).get("code") in {None, "NO_RESULTS_ON_PAGE"} and all(
-                not zone.get("instances") and zone.get("warning", {}).get("code") in {None, "NO_RESULTS_ON_PAGE"}
-                for zone in instances.get("items", {}).values()), "Candidate private IP is in use or availability is incomplete")
+    REQUIRE(not reserved.get("nextPageToken") and not reserved.get("items"),
+            "Candidate private IP is reserved or availability is incomplete")
+    check_instance_addresses()
     return {"subnet": SUBNET, "nat": matches[0]["name"], "private_ip": ADDRESS, "observed_available": True}
 
 
@@ -178,6 +230,16 @@ def action_summary(plan):
             "deviations": deviations, "refresh_drift": drift}
 
 
+def validate_action_scope(actions, exit_code):
+    REQUIRE(exit_code == 2 and actions == {
+        "counts": {"no-op": len(EXISTING), "create": len(CREATES)},
+        "preserved_addresses": sorted(EXISTING),
+        "candidate_addresses": sorted(CREATES),
+        "deviations": {},
+        "refresh_drift": {},
+    }, "Native plan differs from the reviewed additive scope")
+
+
 def retain(work, report, sources):
     commit = os.environ["GITHUB_SHA"]
     run, attempt = os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"]
@@ -191,11 +253,11 @@ def retain(work, report, sources):
                 "source_sha256": sources, "backend": report["backend"], "actions": report["actions"],
                 "apply_authorized": False}
     report["private_plan"] = {"bucket": contract.BUCKET}
-    for kind, filename, path in (("binary", "int.tfplan", "int.tfplan"), ("json", "int.json", "private-plan.json")):
-        reference = custody.upload(prefix + filename, (work / path).read_bytes())
+    for kind, path in (("binary", "int.tfplan"), ("json", "private-plan.json")):
+        reference = custody.upload(prefix + PRIVATE_FILES[kind], (work / path).read_bytes())
         manifest[kind] = reference
         report["private_plan"][kind] = reference
-    report["private_plan"]["manifest"] = custody.upload(prefix + "manifest.json", custody.canonical(manifest))
+    report["private_plan"]["manifest"] = custody.upload(prefix + PRIVATE_FILES["manifest"], custody.canonical(manifest))
     report["private_plan"]["expires_utc"] = manifest["expires_utc"]
 
 
@@ -273,8 +335,7 @@ def real_plan(work, report):
     _, raw = driver.run([binary, "show", "-json", str(path)], "noble_private_show", work)
     report["actions"] = action_summary(json.loads(raw))
     report["plan_exit_code"] = code
-    REQUIRE(code == 2 and report["actions"]["counts"] == {"no-op": 42, "create": len(CREATES)}
-            and not report["actions"]["deviations"] and not report["actions"]["refresh_drift"], "Native plan differs from the reviewed additive scope")
+    validate_action_scope(report["actions"], code)
     (work / "private-plan.json").write_bytes(raw)
     sources = json.loads((work / "source-sha256.json").read_text(encoding="utf-8"))
     REQUIRE(all(custody.sha256((work / "source" / name).read_bytes()) == sha for name, sha in sources.items()),
@@ -282,18 +343,99 @@ def real_plan(work, report):
     retain(work, report, sources)
 
 
-def main():
+def validate_summary(report):
+    REQUIRE(isinstance(report, dict) and report.get("schema") == SUMMARY_SCHEMA
+            and report.get("apply_authorized") is False
+            and report.get("status") in ("checks_passed", "blocked", "planned")
+            and isinstance(report.get("checks"), dict)
+            and report.keys() <= {"schema", "status", "apply_authorized", *SUMMARY_SECTIONS},
+            "Expected a Noble summary")
+    backend = report.get("backend", {})
+    REQUIRE(isinstance(backend, dict) and backend.keys() <= BACKEND_FIELDS, "Incompatible Noble backend evidence")
+    if report["status"] != "planned":
+        return
+    REQUIRE(BACKEND_FIELDS == backend.keys() and isinstance(report.get("image"), dict)
+            and isinstance(report.get("network"), dict) and report["network"].get("observed_available") is True
+            and "diagnostic" not in report and "summary_error" not in report, "Missing Noble planning evidence")
+    validate_action_scope(report.get("actions"), report.get("plan_exit_code"))
+    references = report.get("private_plan")
+    REQUIRE(isinstance(references, dict) and references.keys() == {"bucket", "expires_utc", *PRIVATE_FILES}
+            and references["bucket"] == contract.BUCKET
+            and datetime.fromisoformat(references["expires_utc"]).utcoffset() == timedelta(0),
+            "Missing private plan custody")
+    prefix = None
+    for kind, filename in PRIVATE_FILES.items():
+        ref = references[kind]
+        REQUIRE(isinstance(ref, dict) and ref.keys() == {"name", "generation", "sha256", "size"}
+                and re.fullmatch(r"[1-9][0-9]*", ref["generation"])
+                and re.fullmatch(r"[a-f0-9]{64}", ref["sha256"])
+                and type(ref["size"]) is int and ref["size"] > 0, "Invalid private plan object receipt")
+        name = re.fullmatch("(" + re.escape(custody.PREFIX) + r"[a-f0-9]{40}/[1-9][0-9]*-[1-9][0-9]*/)"
+                            + re.escape(filename), ref["name"])
+        REQUIRE(name and (prefix is None or prefix == name[1]), "Private receipts do not bind the same attempt")
+        prefix = name[1]
+
+
+def summary_markdown(report, sections):
+    lines = ["# DB-01-NOBLE-PLAN", "", "Status: " + report["status"], "", "Apply authorized: false.", ""]
+    if report["status"] != "planned":
+        lines.extend(["A completed plan with private custody was not confirmed.", ""])
+    for key in sections:
+        if key in report:
+            # These are the permitted JSON receipts, including the native sanitized diagnostic.
+            value = json.dumps(report[key], indent=2, ensure_ascii=True).replace("`", r"\u0060")
+            lines.extend(["## " + SUMMARY_SECTIONS[key], "", "```json", value, "```", ""])
+    return "\n".join(lines) + "\n"
+
+
+def render_summary(report):
+    validate_summary(report)
+    return summary_markdown(report, SUMMARY_SECTIONS)
+
+
+def save_summary(reports, report):
+    json_path = reports / "summary.json"
+    markdown_path = reports / "summary.md"
+    step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    stage = "render_summary"
+    try:
+        markdown = render_summary(report)
+        stage = "write_summary_json"
+        json_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        stage = "write_summary_markdown"
+        markdown_path.write_text(markdown, encoding="utf-8")
+        if step_summary:
+            stage = "write_step_summary"
+            with Path(step_summary).open("a", encoding="utf-8") as stream:
+                stream.write(markdown)
+    except Exception as error:
+        report.update(status="blocked", summary_error={"operation": stage, "error_type": type(error).__name__})
+        print(json.dumps({key: report[key] for key in ("diagnostic", "summary_error") if key in report}), file=sys.stderr)
+        try:
+            json_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            markdown_path.write_text(summary_markdown(report, ("diagnostic", "summary_error")), encoding="utf-8")
+        except (OSError, TypeError, ValueError) as fallback:
+            print(json.dumps({"operation": "write_summary_fallback", "error_type": type(fallback).__name__}), file=sys.stderr)
+        return 1
+    return int(report["status"] == "blocked")
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=("checks", "plan"))
-    command = parser.parse_args().operation
+    command = parser.parse_args(argv).operation
     os.umask(0o077)
     work, reports = driver.private_paths()
     path = reports / "summary.json"
-    report = {"schema": "clipforge-db01-noble-plan-summary-1", "checks": {}, "apply_authorized": False}
-    if command == "plan":
-        report = json.loads(path.read_text(encoding="utf-8"))
-    report["status"] = "started"
+    report = {"schema": SUMMARY_SCHEMA, "checks": {}, "apply_authorized": False}
     try:
+        if command == "plan":
+            prior = json.loads(path.read_text(encoding="utf-8"))
+            REQUIRE(isinstance(prior, dict) and prior.get("status") == "checks_passed"
+                    and prior.keys() <= {"schema", "status", "apply_authorized", "checks", "iac_findings"},
+                    "Expected the checks-only summary from this attempt")
+            validate_summary(prior)
+            report = prior
         contract.validate_variables(os.environ)
         commit = os.environ["GITHUB_SHA"]
         REQUIRE(re.fullmatch(r"[a-f0-9]{40}", commit) and commit == os.environ["DB01_NOBLE_APPROVED_COMMIT"],
@@ -308,10 +450,9 @@ def main():
         report.update(status="blocked", diagnostic=error.receipt)
     except Blocked as error:
         report.update(status="blocked", diagnostic={"operation": error.operation, "http_status": error.status})
-    except (ValueError, OSError, KeyError, TypeError) as error:
+    except Exception as error:
         report.update(status="blocked", diagnostic={"operation": command, "error_type": type(error).__name__})
-    driver.save_summary(reports, report)
-    return int(report["status"] == "blocked")
+    return save_summary(reports, report)
 
 
 if __name__ == "__main__":
