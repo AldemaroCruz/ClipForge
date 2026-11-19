@@ -1,0 +1,86 @@
+name: ClipForge DB-01 Noble read-only observation
+
+on:
+  workflow_dispatch:
+    inputs:
+      approved_commit:
+        description: Exact reviewed DB-01 Noble READ controls SHA
+        required: true
+        type: string
+
+permissions: {}
+concurrency:
+  group: clipforge-int-terraform-state
+  cancel-in-progress: false
+
+jobs:
+  noble-read:
+    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    environment: int
+    timeout-minutes: 12
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+      GCP_TERRAFORM_SA: ${{ vars.GCP_TERRAFORM_SA }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
+      DB01_NOBLE_APPROVED_COMMIT: ${{ inputs.approved_commit }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out exact reviewed read controls
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify protected inputs and allocate summary only
+        id: scratch
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test "$GITHUB_SHA" = "$DB01_NOBLE_APPROVED_COMMIT"
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          python -B -c 'import os; from scripts.check_tf_int import validate_variables; validate_variables(os.environ)'
+          printf 'DB01_NOBLE_READ_REPORT=%s\n' "$(mktemp "$RUNNER_TEMP/db01-noble-read.XXXXXXXX.json")" >> "$GITHUB_ENV"
+
+      - name: Obtain short-lived access token for the existing Terraform identity
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_TERRAFORM_SA }}
+          token_format: access_token
+          access_token_lifetime: 900s
+          # Secret Manager metadata and getIamPolicy require this scope.
+          # The observer sends only its fixed GET and getIamPolicy requests.
+          access_token_scopes: https://www.googleapis.com/auth/cloud-platform
+          create_credentials_file: false
+          export_environment_variables: false
+
+      - name: Observe current backend and exact independent resource reads
+        id: read
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: python -B -m scripts.db01_noble_read
+
+      - name: Retain only the bounded sanitized observation
+        if: ${{ always() && steps.scratch.outcome == 'success' && steps.read.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: db01-noble-read-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.DB01_NOBLE_READ_REPORT }}
+          retention-days: 7
+          if-no-files-found: error
+          include-hidden-files: false
+
+      - name: Remove this run's summary scratch
+        if: ${{ always() && steps.scratch.outcome == 'success' }}
+        run: rm -f -- "$DB01_NOBLE_READ_REPORT"

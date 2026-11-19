@@ -37,6 +37,31 @@ def network_responses():
     return subnet, router
 
 
+LOG_BUCKET = "projects/clipforgebeta2/locations/us-central1/buckets/clipforge-int-access"
+POSTGRES_CA = "projects/clipforgebeta2/secrets/clipforge-int-postgres-ca"
+BOOTSTRAP_ADMIN = "projects/clipforgebeta2/secrets/clipforge-int-bootstrap-admin"
+IAP_INSTANCE = "projects/816643438938/iap_tunnel/zones/us-central1-a/instances/1670495097211408131"
+NATIVE_REFRESH = "\n".join((
+    "terraform_data.boundary: Refreshing state... [id=00000001-1111-b403-2222-333333333333]",
+    "hash prefix aaa403aaa, storage.googleapis.com, roles/storage.objectUser",
+    "google_project_iam_custom_role.bootstrap_reader: Refreshing state... [id=iam.roles.get]",
+    "google_service_account_iam_member.protected_bootstrap: Refreshing state... [id=iam.serviceAccounts.getIamPolicy]",
+    f"│ Error: Error when reading or editing Logging Bucket Config {LOG_BUCKET}: googleapi: Error 403: "
+    f"Permission 'logging.buckets.get' denied on resource '//logging.googleapis.com/{LOG_BUCKET}' (or it may not exist).",
+    '  "reason": "IAM_PERMISSION_DENIED"',
+    f'Error: Error when reading or editing SecretManagerSecret "{POSTGRES_CA}": googleapi: Error 403: '
+    "Permission 'secretmanager.secrets.get' denied on resource (or it may not exist). "
+    "Troubleshooter URL https://console.cloud.google.com/iam-admin/troubleshooter/summary;errorId=SYNTHETIC_ID",
+    '  "reason": "IAM_PERMISSION_DENIED"',
+    f'Error: Error when reading or editing SecretManagerSecret "{BOOTSTRAP_ADMIN}": googleapi: Error 403: '
+    "Permission 'secretmanager.secrets.get' denied on resource (or it may not exist).",
+    f'Error: Error when reading or editing Resource "iap tunnelinstance \\"{IAP_INSTANCE}\\"" '
+    f'with IAM Member: Role "roles/iap.tunnelResourceAccessor": Error retrieving IAM policy for iap tunnelinstance "{IAP_INSTANCE}": '
+    "googleapi: Error 403: Permission 'iap.tunnelInstances.getIamPolicy' denied on resource "
+    "'//iap.googleapis.com/projects/816643438938/iap_tunnel/zones/us-central1-a/insta",
+))
+
+
 def network_instance(*, address="10.80.1.2", alias=None):
     interface = {"networkIP": address}
     if alias is not None:
@@ -161,6 +186,71 @@ class NoblePlanTests(unittest.TestCase):
         self.assertEqual(get.call_count, 13)
 
 
+class NobleNativeDiagnosticTests(unittest.TestCase):
+    def test_native_refresh_receipt_binds_the_four_observed_denials(self):
+        output = NATIVE_REFRESH + "\n" + NATIVE_REFRESH.splitlines()[6]
+        receipt = plan.native_diagnostic.classify_native_errors(output)
+        self.assertEqual(receipt["denials"], [
+            {"permission": permission, "resource": resource, "http_status": 403}
+            for permission, resource in (
+                ("iap.tunnelInstances.getIamPolicy", IAP_INSTANCE),
+                ("logging.buckets.get", LOG_BUCKET),
+                ("secretmanager.secrets.get", BOOTSTRAP_ADMIN),
+                ("secretmanager.secrets.get", POSTGRES_CA),
+            )
+        ])
+        self.assertEqual(receipt["role_references"], ["roles/iap.tunnelResourceAccessor"])
+        self.assertEqual(receipt["domain_references"], ["iap.googleapis.com", "logging.googleapis.com"])
+        self.assertEqual(receipt["unbound_permissions"], [])
+        self.assertEqual(receipt["unclassified_http_403_errors"], 0)
+        encoded = json.dumps(receipt)
+        for unrelated in ("iam.roles.get", "iam.serviceAccounts.getIamPolicy", "SYNTHETIC_ID",
+                          "storage.objectUser", "aaa403aaa", "00000001-1111-b403"):
+            self.assertNotIn(unrelated, encoded)
+
+    def test_permission_and_target_must_belong_to_the_same_error(self):
+        confirmed = "projects/clipforgebeta2/roles/clipforgeIntBootstrapReader"
+        receipt = plan.native_diagnostic.classify_native_errors("\n".join((
+            f'Error: Cloud error for "{LOG_BUCKET}": googleapi: Error 403: forbidden.',
+            f"Error: googleapi: Error 403: Required 'iam.roles.get' permission for '{confirmed}'.",
+            f"Error: Cloud error for '{POSTGRES_CA}': googleapi: Error 403: "
+            "Permission 'secretmanager.secrets.get' denied on resource 'projects/foreign/secrets/foreign'.",
+            "Error: can't refresh due to hash a403b; another error mentions iam.serviceAccounts.getIamPolicy.",
+        )))
+        self.assertEqual(receipt["denials"], [
+            {"permission": "iam.roles.get", "resource": confirmed, "http_status": 403},
+        ])
+        self.assertEqual(receipt["unbound_permissions"], ["secretmanager.secrets.get"])
+        self.assertEqual(receipt["unclassified_http_403_errors"], 1)
+
+    def test_native_byte_and_result_bounds_are_reported(self):
+        operation = "noble_native_plan"
+        with TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            payload = NATIVE_REFRESH.encode()
+            (scratch / (operation + ".log")).write_bytes(b"!" * 1024 + b"\n" + payload)
+            with (
+                patch.object(plan.native_diagnostic, "MAX_NATIVE_BYTES", len(payload) + 128),
+                patch.object(plan.native_diagnostic, "MAX_RECEIPT_ROWS", 1),
+            ):
+                receipt = plan.native_diagnostic.operation_receipt(scratch, {"operation": operation, "status": 1})
+        self.assertTrue(receipt["limits"]["native_tail_truncated"])
+        self.assertEqual(receipt["limits"]["native_tail_bytes"], len(payload) + 128)
+        self.assertEqual(receipt["limits"]["truncated_lists"], ["denials", "domain_references"])
+        self.assertEqual(len(receipt["denials"]), 1)
+        self.assertEqual(receipt["operation"], operation)
+        self.assertEqual(receipt["status"], 1)
+
+    def test_primary_operation_is_preserved_if_native_log_is_unavailable(self):
+        operation = "noble_native_plan"
+        with TemporaryDirectory() as temporary:
+            receipt = plan.native_diagnostic.operation_receipt(Path(temporary), {
+                "operation": operation, "status": 1, "permissions": ["iam.roles.get"], "messages": ["raw"],
+            })
+        self.assertEqual(receipt, {"operation": operation, "status": 1,
+                                   "extraction_error": {"error_type": "FileNotFoundError"}})
+
+
 class NobleSummaryTests(unittest.TestCase):
     def setUp(self):
         temporary = TemporaryDirectory()
@@ -266,6 +356,30 @@ class NobleSummaryTests(unittest.TestCase):
         self.assertEqual(self.saved_json()["summary_error"]["operation"], "render_summary")
         self.assertNotIn("legacy", self.saved_markdown())
         self.assertNotIn("Status: planned", self.saved_markdown())
+
+    def test_native_diagnostic_survives_a_summary_format_error(self):
+        operation = "noble_native_plan"
+        path = self.reports / "summary.json"
+        path.write_text(json.dumps(report_fixture("checks_passed")), encoding="utf-8")
+        (self.reports / (operation + ".log")).write_text(NATIVE_REFRESH, encoding="utf-8")
+        commit = "1" * 40
+        old_failure = plan.driver.FailedOperation(operation, NATIVE_REFRESH, 1)
+        with (
+            patch.dict(os.environ, {"GITHUB_SHA": commit, "DB01_NOBLE_APPROVED_COMMIT": commit}),
+            patch.object(plan.driver, "private_paths", return_value=(self.reports, self.reports)),
+            patch.object(plan.os, "umask"),
+            patch.object(plan.contract, "validate_variables"),
+            patch.object(plan, "real_plan", side_effect=old_failure),
+            patch.object(plan, "render_summary", side_effect=ValueError("private formatter message")),
+        ):
+            self.assertEqual(plan.main(["plan"]), 1)
+        report = self.saved_json()
+        self.assertEqual(report["diagnostic"]["operation"], operation)
+        self.assertEqual(report["diagnostic"]["status"], 1)
+        self.assertEqual(len(report["diagnostic"]["denials"]), 4)
+        self.assertEqual(report["summary_error"]["operation"], "render_summary")
+        self.assertIn("iap.tunnelInstances.getIamPolicy", self.saved_markdown())
+        self.assertNotIn("SYNTHETIC_ID", self.saved_markdown())
 
     def test_main_saves_blocked_summary_before_backend_access(self):
         path = self.reports / "summary.json"

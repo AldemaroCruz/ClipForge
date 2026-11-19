@@ -15,6 +15,7 @@ from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
 from scripts import check_tf_int as contract
+from scripts import db01_noble_diagnostic as native_diagnostic
 from scripts import int_foundation_verify as foundation
 from scripts import int_release as custody
 from scripts import int_release_state as state_reader
@@ -447,7 +448,7 @@ def main(argv=None):
             real_plan(work, report)
             report["status"] = "planned"
     except driver.FailedOperation as error:
-        report.update(status="blocked", diagnostic=error.receipt)
+        report.update(status="blocked", diagnostic=native_diagnostic.operation_receipt(work, error.receipt))
     except Blocked as error:
         report.update(status="blocked", diagnostic={"operation": error.operation, "http_status": error.status})
     except Exception as error:
