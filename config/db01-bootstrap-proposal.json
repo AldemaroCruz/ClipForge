@@ -1,0 +1,548 @@
+{
+  "schema": "clipforge-db01-bootstrap-proposal-1",
+  "status": "preparation_only_blocked_before_activation",
+  "execution_authorized": false,
+  "cloud_writes_authorized": false,
+  "VM_operations_authorized": false,
+  "SQL_on_INT_authorized": false,
+  "risk_acceptance": false,
+  "target": {
+    "project_id": "clipforgebeta2",
+    "project_number": "816643438938",
+    "zone": "us-central1-a",
+    "vm_name": "clipforge-int-base-postgres",
+    "instance_id": "1670495097211408131",
+    "postgres_private_ip": "10.80.1.2",
+    "image_id": "5913446147369107523",
+    "disk_name": "clipforge-int-base-postgres-data",
+    "disk_id": "6427691858848206684",
+    "disk_size_bytes": 21474836480,
+    "disk_type": "https://www.googleapis.com/compute/v1/projects/clipforgebeta2/zones/us-central1-a/diskTypes/pd-standard",
+    "attachment_device_name": "clipforge-pg-data",
+    "guest_by_id_expected": "/dev/disk/by-id/google-clipforge-pg-data",
+    "mountpoint": "/var/lib/clipforge-postgres/data",
+    "data_directory": "/var/lib/clipforge-postgres/data/pgdata",
+    "guest_device_name_is_not_an_identity": true,
+    "guest_device_observation": {
+      "device": "/dev/sdb",
+      "major_minor": "8:16",
+      "is_not_the_authorization_identity": true
+    }
+  },
+  "evidence": {
+    "guest_run_id": "44413106524",
+    "guest_attempt": 1,
+    "inventory_sha256": "db74601986fc57b9d6f71d3e73c0cc7b456aead7350b134a75c7574a13d24c5d",
+    "guest_summary_sha256": "7ff87c8f40dea9e10d5ad4565b51b8ff79f8eef8f52961191047e2e61595f0f3",
+    "host_evidence_sha256": "1963b5e52a4606a6f0b6560dcd0ab1356e36f4ec0764b4c4fc05ee99d12229a4",
+    "root_control_plane_read_utc": "2026-11-18T22:55:57Z",
+    "root_control_plane_metadata_sha256": "3eebdde878f1d4461eae18a34d8f8ec9d0c0801fa2fb689ebcdad27e59c5848a",
+    "guest_by_id_mapping_observed": true,
+    "blank_signature_probe_observed": true,
+    "VM_SCA_result_available_in_this_proposal": true,
+    "does_not_attest_unused_disk_sectors": true,
+    "new_read_only_observation": {
+      "run_id": "44424226652",
+      "attempt": 1,
+      "commit": "6e0c00020391aff119b420f4347df553311039a1",
+      "payload_sha256": "bbdf67688a9d5f0e71f2e3009b9a6d0ed13f75f42892baab60b5f18efeee6d6c",
+      "status": "success_observed_not_activation_authority",
+      "evidence_sha256": "748af07defac48b57236a204701988d849c51372390a36e5cf7c4ecdcc35f5b1",
+      "no_result_invented": true,
+      "artifact_id": "14486124940",
+      "artifact_archive_sha256": "5b53b7bc673191170a6553df07cd00a21e143825cc032f68728af5a6178a700f",
+      "disk_proof_sha256": "b13f463421971298a57e47e4e552d0f0bdad40c8beb23b61edfe80754ef4efab",
+      "guest_observed_utc": "2026-11-19T01:03:53.088759+00:00",
+      "guest_boot_id": "5a3bfee3-9db5-4061-9bc2-8eb622d139bd",
+      "guest_major_minor": "8:16",
+      "guest_serial": "clipforge-pg-data",
+      "sysfs_serial": null,
+      "sysfs_serial_missing_not_filled_in": true,
+      "reported_serial_sources": [
+        "lsblk SERIAL",
+        "udev ID_SERIAL_SHORT"
+      ]
+    }
+  },
+  "source_sha256": [
+    {
+      "path": "scripts/int_bootstrap_vm.py",
+      "sha256": "dd478fe9b6f6e4ce0d97bd0357eca67be727e4af4dcdcf71aa89f051cbf40c1f"
+    },
+    {
+      "path": "scripts/int_bootstrap_db.py",
+      "sha256": "d81244d13ab1ced2ed4f1604a64de8bac055c24c72dc1434f28becd4c4368c0a"
+    },
+    {
+      "path": ".github/workflows/int-e2e-bootstrap-db.yml",
+      "sha256": "55393fb68df2dd5771e5d6e07279d23bc209fb4604387e30dbc9f167f448b7c8"
+    },
+    {
+      "path": "infra/gcp/int-base/postgres-install.sh",
+      "sha256": "a93bd662abce93b12c6389a37fccca49612ef3d1ee83eb882051cd5489daf255"
+    },
+    {
+      "path": "app/auth_migrations.py",
+      "sha256": "f8f4aebbb251744116da7fe770e93bb12c3ff2409a2cac730359b0e9ee8f888d"
+    },
+    {
+      "path": "app/cloud/migrate.py",
+      "sha256": "d4833d866c7208f1b87b4a80a8882664d0208f5cd39e7ecee232db34b97235a3"
+    },
+    {
+      "path": "app/auth_db.py",
+      "sha256": "7048c96e50cd3349fd19658d44cf3b97ace90d5efe596151fc5a0459e164c745"
+    },
+    {
+      "path": "app/cloud/bootstrap_admin.py",
+      "sha256": "10d4f2d95b8252e18ef0ec2a055cb25f9a1a9c61aac4183b17530da2c4a79e36"
+    },
+    {
+      "path": "scripts/int_secrets.py",
+      "sha256": "f09f6fe8500574da66db9378ea5156aea023c3ac8a199b563f3501169ea9b685"
+    },
+    {
+      "path": "scripts/int_guest_inventory.py",
+      "sha256": "c73e70ec0cdb59715a051d78520de3b3e63d41227e600ca4ece7f0d7400d54eb"
+    },
+    {
+      "path": "scripts/int_guest_inventory_guest.py",
+      "sha256": "46c5c59346198436cd6c7d7b71d50eadc77b9a1004656b581b19d97fa15c2663"
+    },
+    {
+      "path": "scripts/int_guest_db_observe.py",
+      "sha256": "9ace0c89fb084693acae3ad64a9e20343853b18df9348f108a7caef5eb79d0bd"
+    },
+    {
+      "path": "scripts/int_db_acceptance.py",
+      "sha256": "694ad33669612c0bea42a1df40c01568b5c30a0a5a81e2304be00d8d0d918097"
+    }
+  ],
+  "database": {
+    "server_package": "postgresql-17",
+    "client_package": "postgresql-client-17",
+    "package_version": "17.12-0+deb13u1",
+    "database": "clipforge",
+    "schema": "public",
+    "cluster_version": "17",
+    "cluster_name": "main",
+    "initial_start_conf": "manual",
+    "listen_address": "10.80.1.2",
+    "port": 5432,
+    "ssl": true,
+    "minimum_TLS": "TLSv1.2",
+    "client_sslmode": "verify-full",
+    "server_certificate_SAN_IP": "10.80.1.2",
+    "password_encryption": "scram-sha-256",
+    "local_superuser_auth": "peer postgres only",
+    "remote_source_CIDR": "10.80.0.0/26",
+    "remote_roles": [
+      "clipforge_app",
+      "clipforge_migrator"
+    ],
+    "no_plaintext_host_entry": true,
+    "roles": {
+      "clipforge_migrator": {
+        "database_owner": true,
+        "LOGIN": true,
+        "SUPERUSER": false,
+        "CREATEDB": false,
+        "CREATEROLE": false,
+        "REPLICATION": false
+      },
+      "clipforge_app": {
+        "database_owner": false,
+        "LOGIN": true,
+        "SUPERUSER": false,
+        "CREATEDB": false,
+        "CREATEROLE": false,
+        "REPLICATION": false,
+        "database_grants": [
+          "CONNECT"
+        ],
+        "public_schema_grants": [
+          "USAGE"
+        ],
+        "migrator_created_table_grants": [
+          "SELECT",
+          "INSERT",
+          "UPDATE",
+          "DELETE"
+        ],
+        "migrator_created_sequence_grants": [
+          "USAGE",
+          "SELECT"
+        ]
+      }
+    },
+    "AUTH_revisions": [
+      "auth01_0001",
+      "auth02_0002"
+    ],
+    "cloud_revision": "cloud01_0001",
+    "migration_entrypoint": [
+      "python",
+      "-B",
+      "-m",
+      "app.cloud.migrate"
+    ],
+    "migration_identity": "clipforge_migrator",
+    "administrator_bootstrap_entrypoint": [
+      "python",
+      "-B",
+      "-m",
+      "app.cloud.bootstrap_admin"
+    ],
+    "administrator_bootstrap_deferred": true
+  },
+  "future_protected_inputs": {
+    "confirmation": "INITIALIZE_NEW_DISK_6427691858848206684",
+    "app_password": "protected graphic ASCII 32..4096; distinct from migrator; no value in proposal",
+    "migrator_password": "protected graphic ASCII 32..4096; no value in proposal",
+    "server_certificate": "Protected PEM; CA trust, serverAuth, SAN IP, key pair and at least 604800 seconds remaining for both CA and server certificate before any irreversible operation.",
+    "server_private_key": "protected unencrypted PKCS8 PEM; key pair checked before formatting; VM-only, never published as runtime secret",
+    "ca_certificate": "protected PEM root trust; no CA private key requested",
+    "transport": "pinned GUEST host identity, Deploy WIF email OSLogin route, ephemeral own key TTL<=900 and exact cleanup; no repeat host intervention",
+    "confirmation_status": "Prepared literal for a future exact authorization; not authorization to use it."
+  },
+  "runtime_secret_targets": {
+    "app_password": "clipforge-int-pg-app-password",
+    "migrator_password": "clipforge-int-pg-migrator-password",
+    "postgres_ca": "clipforge-int-postgres-ca",
+    "bootstrap_admin": "clipforge-int-bootstrap-admin"
+  },
+  "runtime_database_env": {
+    "CLIPFORGE_DATABASE_HOST": "10.80.1.2",
+    "CLIPFORGE_DATABASE_PORT": "5432",
+    "CLIPFORGE_DATABASE_NAME": "clipforge",
+    "CLIPFORGE_DATABASE_SCHEMA": "public",
+    "CLIPFORGE_DATABASE_USER": "clipforge_app for API/worker; clipforge_migrator for migration/bootstrap only",
+    "CLIPFORGE_DATABASE_PASSWORD_FILE": "/secrets/database/value",
+    "CLIPFORGE_DATABASE_SSL_MODE": "verify-full",
+    "CLIPFORGE_DATABASE_SSL_ROOT_CERT_FILE": "/secrets/postgres-ca/value",
+    "CLIPFORGE_DATABASE_POOL_SIZE": "2",
+    "CLIPFORGE_DATABASE_POOL_OVERFLOW": "1",
+    "CLIPFORGE_ENVIRONMENT": "int",
+    "CLIPFORGE_STORAGE_BACKEND": "gcs",
+    "CLIPFORGE_AUTH_PROFILE": "https",
+    "CLIPFORGE_CLOUD_LOCAL_TEST": "0"
+  },
+  "blocking_preconditions": [
+    "Current proposal is preparation-only: execution, VM operations, SQL and format authorization remain false. A future exact owner decision and explicitly activated proposal must agree before key registration.",
+    "The reviewed read-only disk and source-package capture succeeded in run 44424226652. Its hashes are bound here; this observation is not format or activation authority and must be revalidated immediately before bootstrap.",
+    "Repeat that fixed read-only inspection immediately before bootstrap; same VM, boot, attachment, host pin and guest identity, at most 300 seconds old before formatting.",
+    "Require exact-commit successful application CI and all existing gates. GUEST success and unit tests do not approve application security or DB activation.",
+    "The corrected source-aware own-VM SCA contains 7 CRITICAL and 208 HIGH rows; all remain visible and unaccepted. Review each source/resource exposure and demonstrate compatible remediation; no fixed version is reported for these rows by this frozen scanner.",
+    "Protected distinct passwords, CA/server certificate and private key must be available and pass full TLS checks before formatting. No credential values in decision, proposal, argv or output.",
+    "A later separate migration decision must identify two reviewed Job resources, existing service accounts/subnet, an exact published image digest and exact numeric secret versions. No new resources are created by this preparation.",
+    "Keep an explicit maintenance/containment window, one operation ID, no replay, no automatic repair and enough time for own-key cleanup."
+  ],
+  "planned_sequence": [
+    {
+      "phase": 0,
+      "name": "closed decision, source closure, application CI, WIF, VM, host pin and disk preflight",
+      "mutation": false,
+      "entry": "explicit new activation authority; current proposal blocks"
+    },
+    {
+      "phase": 1,
+      "name": "TLS trust, IP SAN, key match and seven-day minimum lifetime; protected inputs",
+      "mutation": false,
+      "before": "key registration and all irreversible guest changes"
+    },
+    {
+      "phase": 2,
+      "name": "register own OS Login key for at most 900 seconds; strict IAP SSH; repeat fixed disk and package observation",
+      "mutation": "only own expiring public key",
+      "maximum_guest_read_age_seconds": 300,
+      "cleanup": "remove exact own key; never another key"
+    },
+    {
+      "phase": 3,
+      "name": "persist private phase journal and fstab preimage; format exact reviewed blank disk once",
+      "mutation": true,
+      "requires_new_authorization": true,
+      "one_time": true
+    },
+    {
+      "phase": 4,
+      "name": "record UUID; append one fstab line by content comparison; mount and verify actual source, UUID, major:minor and restrictive options",
+      "mutation": true,
+      "requires_new_authorization": true
+    },
+    {
+      "phase": 5,
+      "name": "prepare parent traversal; create only PG17 main, UTF8/C.UTF-8; install restricted TLS files and exact closed HBA",
+      "mutation": true,
+      "requires_new_authorization": true
+    },
+    {
+      "phase": 6,
+      "name": "unmask exact units, start cluster, initialize restricted roles/database/grants through local peer postgres; verify config, mount, roles, local TLS and persistence configuration",
+      "mutation": true,
+      "requires_new_authorization": true,
+      "does_not_claim": "external acceptance, migration, reboot validation, backup, security acceptance or runtime release"
+    },
+    {
+      "phase": 7,
+      "name": "retain sanitized phase receipt; remove only own OS Login key and temporary private execution files",
+      "mutation": "own cleanup only",
+      "unknown_outcome": "preserve evidence and stop; never replay initialization"
+    },
+    {
+      "phase": 8,
+      "name": "separately authorize publication of three runtime secret versions: app password, migrator password and public CA",
+      "mutation": true,
+      "requires_new_authorization": true,
+      "server_private_key_never_published": true,
+      "bootstrap_admin_deferred": true
+    },
+    {
+      "phase": 9,
+      "name": "separately approve and create two Direct VPC Jobs from fixed image/versions, then execute migrator once and application-role acceptance once",
+      "mutation": true,
+      "requires_new_authorization": true,
+      "source_CIDR": "10.80.0.0/26",
+      "max_retries": 0
+    },
+    {
+      "phase": 10,
+      "name": "administrator bootstrap, backup/restore readiness and application runtime are separate future decisions",
+      "mutation": true,
+      "requires_new_authorization": true
+    }
+  ],
+  "failure_policy": {
+    "unknown_operation": "read and classify existing result; no automatic replay",
+    "after_mkfs": "preserve disk, UUID, journal and partial config; never wipe, reformat, pg_dropcluster, delete/adopt or replay initialization",
+    "after_service_start": "future authorized containment only: stop exact created cluster and restore masks/config only if current content/state still matches own change; preserve data",
+    "fstab_restore": "restore only own exact line/content if current file matches saved successor; foreign edits stop recovery",
+    "secret_version_unknown": "retain target/operation metadata and stop; do not add another version or revoke/delete automatically",
+    "migration_failure": "transaction rollback for failing revision; preserve prior committed revisions; no down migration or role/data deletion",
+    "forbidden": [
+      "Terraform apply/import/state write",
+      "IAM change",
+      "new host stop/start or metadata publisher",
+      "bootstrap retry",
+      "automatic database rollback through deletion",
+      "runtime deployment"
+    ]
+  },
+  "QA": {
+    "database_must_be_new_disposable": true,
+    "Docker_network_internal_only": true,
+    "no_existing_installation_or_owner_data": true,
+    "representative_case": "public schema with exact migrator owner and app DML separation; real TLS verify-full and SCRAM",
+    "legacy_test_schema_note": "AUTH/cloud fixtures create test-owned schemas with a fixture/migrator identity; do not grant schema creation to runtime app to make suites pass",
+    "required_checks": [
+      "exact PostgreSQL 17.12 version and own package inventory",
+      "TLS good CA/SAN and wrong CA/host/plaintext rejection",
+      "SCRAM good/wrong passwords and role isolation",
+      "AUTH/cloud migration from empty and repeat current",
+      "application DML allowed, DDL/CREATEDB/CREATEROLE denied",
+      "AUTH session/CSRF/ownership/recovery and cloud database regressions",
+      "failure after first AUTH migration and failed cloud transaction retains honest revision boundary"
+    ],
+    "VM_acceptance_claimed": false
+  },
+  "format_operation": {
+    "status": "prepared_blocked_pending_specific_authorization",
+    "authorized": false,
+    "argv": [
+      "/usr/sbin/mkfs.ext4",
+      "-L",
+      "clipforge-int-pg",
+      "/dev/disk/by-id/google-clipforge-pg-data"
+    ],
+    "confirmation": "INITIALIZE_NEW_DISK_6427691858848206684",
+    "disk_id": "6427691858848206684",
+    "one_invocation_only": true
+  },
+  "own_VM_inventory_SCA": {
+    "summary_sha256": "7b50980aac2754466e41c535bc039da0024b9e9ef41aa31bc0a4da53843136bd",
+    "native_report_sha256": "91f95617e72f0b378af41296c82738cb89ce5024c0ae8b2a7b2f119084888d25",
+    "sbom_sha256": "d087a032846c2889e89176d88a0a80672352e5148ccaaa1fefc2268cfe551b54",
+    "execution_sha256": "6d24ff81768444f3360e9236ddcc5299be489836e7cde5255d55ac2170795abf",
+    "delivery_manifest_sha256": "dd9ab2ef6f3c8d76fd7e03b9a811cc14309e1c083676db3b8f440fc8bdc2f0f0",
+    "inventory_sha256": "748af07defac48b57236a204701988d849c51372390a36e5cf7c4ecdcc35f5b1",
+    "scanner": "0.76.2",
+    "scanner_image": "ghcr.io/aquasecurity/trivy:0.76.2@sha256:6fa071ef8daa2e58b90cbf1710bedca91adbb3bf98693533226f442035b836a6",
+    "database_sha256": "d06c4389045c2eb4a755b6a25de8c0716007e6fcf287cf9c3778dbbaab560175",
+    "database_updated_utc": "2026-11-18T19:07:09.82030288Z",
+    "native_process_exit": 0,
+    "network_during_scan": "none",
+    "severity_counts": {
+      "CRITICAL": 7,
+      "HIGH": 208,
+      "LOW": 379,
+      "MEDIUM": 386,
+      "UNKNOWN": 53
+    },
+    "finding_rows": 1033,
+    "unique_vulnerability_identifiers": 372,
+    "recognized_binary_packages": 368,
+    "submitted_binary_packages": 368,
+    "source_name_and_version_observed": true,
+    "full_dpkg_status_observed": true,
+    "scanner_substitutes_missing_source_fields": false,
+    "complete_filesystem_sca": false,
+    "critical_high_rows": 215,
+    "critical_high_rows_with_fixed_version_reported": 0,
+    "critical_findings": [
+      {
+        "VulnerabilityID": "CVE-2019-16224",
+        "PkgName": "liblmdb0",
+        "InstalledVersion": "0.9.31-1+b2",
+        "Severity": "CRITICAL",
+        "FixedVersion": null
+      },
+      {
+        "VulnerabilityID": "CVE-2019-16225",
+        "PkgName": "liblmdb0",
+        "InstalledVersion": "0.9.31-1+b2",
+        "Severity": "CRITICAL",
+        "FixedVersion": null
+      },
+      {
+        "VulnerabilityID": "CVE-2019-16227",
+        "PkgName": "liblmdb0",
+        "InstalledVersion": "0.9.31-1+b2",
+        "Severity": "CRITICAL",
+        "FixedVersion": null
+      },
+      {
+        "VulnerabilityID": "CVE-2026-6653",
+        "PkgName": "libxml2",
+        "InstalledVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+        "Severity": "CRITICAL",
+        "FixedVersion": null
+      },
+      {
+        "VulnerabilityID": "CVE-2026-60002",
+        "PkgName": "openssh-client",
+        "InstalledVersion": "1:10.0p1-7+deb13u4",
+        "Severity": "CRITICAL",
+        "FixedVersion": null
+      },
+      {
+        "VulnerabilityID": "CVE-2026-60002",
+        "PkgName": "openssh-server",
+        "InstalledVersion": "1:10.0p1-7+deb13u4",
+        "Severity": "CRITICAL",
+        "FixedVersion": null
+      },
+      {
+        "VulnerabilityID": "CVE-2026-60002",
+        "PkgName": "openssh-sftp-server",
+        "InstalledVersion": "1:10.0p1-7+deb13u4",
+        "Severity": "CRITICAL",
+        "FixedVersion": null
+      }
+    ],
+    "limitations": [
+      "Observed guest dpkg-query binary/source package identities and status fields only; not a disk/filesystem scan.",
+      "Source fields are copied from the observation without deriving them from binary names or versions.",
+      "Trivy-compatible source properties do not assert that Trivy generated this third-party SBOM.",
+      "No language-package, file-integrity, repository-origin or runtime reachability assessment is claimed.",
+      "The kernel and disk metadata remain observations, not full component vulnerability assessments."
+    ],
+    "security_accepted": false,
+    "security_readiness": "blocked_pending_individual_review_and_demonstrated_remediation",
+    "interpretation": "Native scan exit 0 means completed evidence collection, not passing a security gate. Existing CI thresholds are unchanged."
+  },
+  "base_source_commit": "caf091eb4caf3cbc2ab8e3879b4f5016df524849",
+  "candidate_commit_binding": "The future owner decision and dispatch must identify the actual published candidate commit externally; no self-referential commit SHA is embedded here.",
+  "superseded_preparation": {
+    "proposal_bytes_sha256": "e6ed5583736fd7dd7fa4cf826910fd8571991bd603c9699eddddbe3464d7b564",
+    "accepted_compatibility_package": "DB-01-review-final.zip",
+    "accepted_compatibility_package_sha256": "0ce247416540ee3dde1948d94561b7effc8b2faeb0ba3147052cbe38dc459051",
+    "retained_originals": true,
+    "earlier_partial_patch_applied": false,
+    "implementation": "Complete reviewed source files replace the partial-patch proposal; historical files and reports remain unchanged."
+  },
+  "protected_input_metadata_observation": {
+    "receipt": "int-protected-input-presence.json",
+    "receipt_sha256": "2f4406bf8715c91cb47dd656b51b9d94a9816c507dd91c512a57c1935a2251f9",
+    "http_status": 200,
+    "values_read": false,
+    "expected_name_presence": {
+      "INT_APP_PASSWORD": false,
+      "INT_MIGRATOR_PASSWORD": false,
+      "INT_POSTGRES_CA": false,
+      "INT_PG_SERVER_CERT": false,
+      "INT_PG_SERVER_KEY": false
+    },
+    "TLS_or_password_integrity_verified": false,
+    "observation_time_source": "GitHub HTTP Date",
+    "observed_utc": "2026-11-19T00:17:47+00:00",
+    "remediation": "A separately authorized protected provisioning operation must supply all five exact int inputs; never paste values into chat or commit them."
+  },
+  "complete_implementation": {
+    "launcher": "scripts/int_bootstrap_db.py",
+    "guest_operator": "scripts/int_bootstrap_vm.py",
+    "protected_workflow": ".github/workflows/int-e2e-bootstrap-db.yml",
+    "migration_client": "scripts/int_db_acceptance.py",
+    "migration_resource_proposal": "config/db01-migration-client-proposal.json",
+    "operator_total_seconds": 540,
+    "launcher_child_seconds": 600,
+    "key_TTL_seconds": 900,
+    "cleanup_reserve_seconds": 180,
+    "minimum_authorization_seconds_remaining": 780,
+    "native_phase_count_success": 45,
+    "automatic_format_or_initialization_retry": false,
+    "candidate_prepared_is_not_execution_authorized": true
+  },
+  "previous_VM_inventory_SCA": {
+    "summary_sha256": "d2b1520c3cb804ede01b8bc6286ff7778107fee3fbb00deacdee18bc6dafcc86",
+    "execution_sha256": "de8b6624296cd4cf80546a73052039793653a5d120b3d2acedcad7dbc8316cf2",
+    "review_sha256": "13f0c8460e837b5a79feda9a2699af9bb03ed98bc8d2166f85b00cb3cb636596",
+    "scanner": "0.76.2",
+    "scanner_image": "ghcr.io/aquasecurity/trivy:0.76.2@sha256:6fa071ef8daa2e58b90cbf1710bedca91adbb3bf98693533226f442035b836a6",
+    "database_sha256": "d06c4389045c2eb4a755b6a25de8c0716007e6fcf287cf9c3778dbbaab560175",
+    "database_updated_utc": "2026-11-18T19:07:09.82030288Z",
+    "native_process_exit": 0,
+    "network_during_scan": "none",
+    "severity_counts": {
+      "CRITICAL": 1,
+      "HIGH": 25,
+      "LOW": 76,
+      "MEDIUM": 52,
+      "UNKNOWN": 18
+    },
+    "finding_rows": 172,
+    "recognized_binary_packages": 368,
+    "submitted_binary_packages": 368,
+    "complete_filesystem_sca": false,
+    "source_name_and_version_observed": false,
+    "scanner_substitutes_missing_source_fields": true,
+    "critical_high_rows_with_fixed_version_reported": 0,
+    "security_accepted": false,
+    "limitations": [
+      "Observed installed Debian binary-package metadata only; not a VM disk or filesystem scan.",
+      "Source package names and versions were not collected and are not populated in this SBOM.",
+      "Trivy 0.76.2 fills missing source names/versions from binary names/versions; Debian advisories use source packages, so detections can be missed or misattributed.",
+      "No language-package, executable-file, repository-origin, runtime reachability, or full dpkg selection/error-state coverage is claimed.",
+      "The running kernel and block-device metadata are observations, not a vulnerability assessment of those components."
+    ],
+    "critical_finding": {
+      "VulnerabilityID": "CVE-2026-6653",
+      "PkgName": "libxml2",
+      "InstalledVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+      "Severity": "CRITICAL",
+      "FixedVersion": null
+    }
+  },
+  "existing_acceptance_limits": {
+    "F_VM_XML": "The previous exact-image decision required PostgreSQL inactive, without cluster, listener, user data, secrets, SQL or migrations. It does not authorize the activation described by this candidate.",
+    "F_SAST_EXEC": "Previous acceptance of the three LOW findings in tf_int_plan.py was limited to the explicitly reviewed foundation execution route and binary; it is not transferred to these bootstrap components.",
+    "F_AUDIT_0077": "Alternative control remains pending full operational validation; resource creation is not proof of functioning audit.",
+    "previous_maximum_residual_expiry_UTC": "2026-11-28T05:59:59Z",
+    "scope_or_expiry_expanded": false
+  },
+  "remediation_proposal": {
+    "path": "config/db01-remediation-proposal.json",
+    "sha256": "933ef1d0f081c444c0ba3ad692da29fd1c2c2793796920558506cbf9af9576fa",
+    "risk_accepted": false,
+    "installable_corrected_package_verified": false
+  }
+}

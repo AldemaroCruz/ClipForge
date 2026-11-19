@@ -1,0 +1,48 @@
+{
+  "schema": "clipforge-db01-migration-client-proposal-1",
+  "status": "candidate_only_blocked_pending_owner_decision_and_runtime_prerequisites",
+  "execution_authorized": false,
+  "resource_creation_authorized": false,
+  "IAM_changes_required_by_this_proposal": false,
+  "existing_network": "projects/clipforgebeta2/global/networks/clipforge-int-base",
+  "existing_subnet": "projects/clipforgebeta2/regions/us-central1/subnetworks/clipforge-int-base-run",
+  "required_observed_client_CIDR": "10.80.0.0/26",
+  "database_address": "10.80.1.2:5432",
+  "Direct_VPC_egress": "PRIVATE_RANGES_ONLY",
+  "HBA_or_firewall_change": false,
+  "current_configuration_evidence": {
+    "report": "client-current-prerequisites.json",
+    "sha256": "43bac5c480921fd22c789f8855bb9f73b9bdc656a8f5b7b3674211c0d0579d45",
+    "observed_utc": "2026-11-19T00:00:00Z",
+    "scope": "Existing SA identities, Deploy actAs bindings, Run service-agent role, subnet /26 and exact secret IAM policies; no secret values or version listing.",
+    "proposed_job_GET_statuses": {"clipforge-int-db01-migration": 404, "clipforge-int-db01-acceptance": 404},
+    "new_IAM_grant_need_proven": false,
+    "complete_effective_authorization_proven": false,
+    "limits": "Ancestors, Deny and PAB not evaluated; current policy/configuration reads do not guarantee future Job creation or runtime access."
+  },
+  "image": null,
+  "secret_versions": {"migrator_password": null, "app_password": null, "postgres_ca": null},
+  "local_job_renderer": "scripts.int_db_acceptance.job_spec",
+  "future_run_request_renderer": "scripts.int_db_acceptance.job_run_request",
+  "future_run_sequence": "After separate plan/resource approval and exact image/secret/source review, authorize each specific execution with the closed client decision; render its exact two environment overrides structurally with job_run_request and invoke that reviewed body once from the protected int controller. No arguments, image, secret-version, task-count increase or retry overrides are permitted.",
+  "runtime_identity_observation": "Before SQL, require service-account email from the fixed metadata endpoint to equal the phase-specific existing identity; fixture authority injection is marked as a local simulation, never as observed Cloud Run identity.",
+  "public_client_source_transport": "Reviewed source bytes are embedded in the exact Job command; no application image rebuild is performed by this proposal.",
+  "jobs": [
+    {"name": "clipforge-int-db01-migration", "phase": "migrate", "service_account": "clipforge-migrate-int@clipforgebeta2.iam.gserviceaccount.com", "database_role": "clipforge_migrator", "secrets": ["clipforge-int-pg-migrator-password", "clipforge-int-postgres-ca"]},
+    {"name": "clipforge-int-db01-acceptance", "phase": "app", "service_account": "clipforge-api-int@clipforgebeta2.iam.gserviceaccount.com", "database_role": "clipforge_app", "secrets": ["clipforge-int-pg-app-password", "clipforge-int-postgres-ca"]}
+  ],
+  "native_job_limits": {"task_count": 1, "parallelism": 1, "max_retries": 0, "timeout": "600s", "cpu": "1", "memory": "1Gi"},
+  "prerequisites": [
+    "Successful exact guest initialization receipt and separate owner decision for each specific client execution; current proposal authorizes neither.",
+    "A fresh reviewed plan for the two temporary Job resources, exact published OCI manifest digest, reviewed app-source hashes and numeric secret versions; no latest or tag.",
+    "Verify existing runtime identities and exact secretAccessor bindings, Run service-agent/network permissions and subnet capacity using configuration reads; no grants are supplied automatically.",
+    "Retain exact-commit application CI and environment int approval gates for creation and execution. No existing generic Job runner is expanded by this preparation.",
+    "Publish only specifically authorized password/CA versions through the separate protected workflow, without server private key or CA private key.",
+    "Review the exact closed client-decision JSON and SHA, source/image/versions/guest-receipt/window, then render only those two authority environment overrides with job_run_request. The immutable Job definition retains image, arguments and numeric secret references; no broad override interface is added.",
+    "One execution per phase, no automatic platform retries or manual replay after unknown outcome; observe the exact returned execution and preserve partial migration boundaries.",
+    "Resource cleanup is a separate reviewed operation after retained results; no global removal, database deletion or inverse migration."
+  ],
+  "checks": ["server 17.12 and exact DB role", "server observes client address in dedicated Run /26", "TLS verify-full and TLS >=1.2", "SCRAM-enforcing guest HBA plus password_encryption", "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS", "real AUTH/cloud migrations and second current result", "app checks all four DML privileges independently", "zero-row DML and transactional DDL denials", "sequence USAGE without nextval mutation"],
+  "limits": ["The migration client is a proposed Cloud Run Direct VPC Job, not the hosted GitHub runner or the PostgreSQL VM itself.", "No Jobs exist by assertion here. No image publication, secret version creation, resource creation, IAM change, connection or SQL execution has been performed.", "The new client scripts and manifests are not validation of the production runtime image or application CI.", "Backup/restore, administrator bootstrap, application deployment and runtime activation remain separate blocked decisions."],
+  "official_sources": ["https://docs.cloud.google.com/run/docs/configuring/vpc-direct-vpc", "https://docs.cloud.google.com/run/docs/container-contract#jobs-env-vars", "https://docs.cloud.google.com/run/docs/reference/rest/v2/projects.locations.jobs", "https://www.postgresql.org/docs/17/functions-info.html"]
+}

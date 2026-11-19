@@ -1,17 +1,33 @@
-name: ClipForge INT explicit new-disk database initialization
+name: ClipForge INT reviewed single-operation database bootstrap candidate
 on:
   workflow_dispatch:
     inputs:
       approved_commit:
-        description: Exact owner-approved commit; this operation remains separate from plan approval
+        description: Exact separately owner-approved bootstrap controls SHA
         type: string
         required: true
-      new_disk_id:
-        description: Numeric ID verified after approved foundation apply; existing disks are refused
+      owner_decision_json:
+        description: Closed owner decision for one operation and at most sixty minutes
         type: string
         required: true
-      confirmation:
-        description: Type INITIALIZE_NEW_DISK_ followed by that numeric disk ID
+      owner_decision_sha256:
+        description: SHA256 of the exact decision bytes reviewed by the owner
+        type: string
+        required: true
+      host_evidence_json:
+        description: Original immutable GUEST host evidence JSON
+        type: string
+        required: true
+      baseline_run_id:
+        description: Reviewed read-only DB observation run ID
+        type: string
+        required: true
+      baseline_artifact_id:
+        description: Exact artifact ID containing inventory.json
+        type: string
+        required: true
+      observation_payload_sha256:
+        description: Exact reviewed inline read-only observer bundle SHA256
         type: string
         required: true
 permissions: {}
@@ -30,14 +46,78 @@ jobs:
       id-token: write
     env:
       INT_APPROVED_COMMIT: ${{ inputs.approved_commit }}
+      GUEST_APPROVED_COMMIT: ${{ inputs.approved_commit }}
+      GUEST_ENVIRONMENT: int
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+      GCP_DEPLOY_SA: ${{ vars.GCP_DEPLOY_SA }}
+      INT_DB_OBSERVATION_PAYLOAD_SHA256: ${{ inputs.observation_payload_sha256 }}
+      INT_BASELINE_RUN_ID: ${{ inputs.baseline_run_id }}
+      INT_BASELINE_ARTIFACT_ID: ${{ inputs.baseline_artifact_id }}
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
-      - name: Checkout the exact dispatch source before WIF
+      - name: Check out the exact approved source without retained Git credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 1
-      - name: Authenticate deployment identity using existing WIF
+      - name: Allocate private scratch and reject an unapproved activation proposal
+        id: scratch
+        env:
+          DECISION_JSON: ${{ inputs.owner_decision_json }}
+          DECISION_SHA256: ${{ inputs.owner_decision_sha256 }}
+          HOST_EVIDENCE_JSON: ${{ inputs.host_evidence_json }}
+          BASELINE_RUN_ID: ${{ inputs.baseline_run_id }}
+          BASELINE_ARTIFACT_ID: ${{ inputs.baseline_artifact_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$INT_APPROVED_COMMIT" = "$GITHUB_SHA"
+          python -B - <<'PY'
+          import os, re
+          from pathlib import Path
+          from scripts import int_bootstrap_db as b
+          from scripts import int_guest_inventory as t
+          for name in ('BASELINE_RUN_ID', 'BASELINE_ARTIFACT_ID'):
+              t.require(re.fullmatch(r'[1-9][0-9]*', os.environ[name]), 'db01_numeric_artifact_binding')
+          decision = os.environ['DECISION_JSON'].encode('ascii')
+          proposal = b.PROPOSAL.read_bytes()
+          b.validate_decision(decision, os.environ['DECISION_SHA256'], proposal, os.environ)
+          t.validate_hostkey_bundle(os.environ['HOST_EVIDENCE_JSON'].encode('ascii'), t.HOST_EVIDENCE_SHA)
+          PY
+          GUEST_WORK="$(mktemp -d "$RUNNER_TEMP/clipforge-guest-inventory.XXXXXXXX")"
+          GUEST_REPORTS="$(mktemp -d "$RUNNER_TEMP/clipforge-guest-report.XXXXXXXX")"
+          export GUEST_WORK GUEST_REPORTS
+          python -B - <<'PY'
+          import os
+          from pathlib import Path
+          work = Path(os.environ['GUEST_WORK'])
+          for name, value in [('decision.json', os.environ['DECISION_JSON']), ('host.json', os.environ['HOST_EVIDENCE_JSON'])]:
+              with (work / name).open('xb') as stream:
+                  stream.write(value.encode('ascii'))
+          with Path(os.environ['GITHUB_ENV']).open('a') as stream:
+              stream.write('GUEST_WORK=' + str(work) + '\nGUEST_REPORTS=' + os.environ['GUEST_REPORTS'] + '\n')
+              stream.write('CLOUDSDK_CONFIG=' + str(work / 'gcloud') + '\nCLOUDSDK_CORE_DISABLE_PROMPTS=1\n')
+          PY
+      - name: Read the exact prior observation artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 verified official tag
+        with:
+          artifact-ids: ${{ inputs.baseline_artifact_id }}
+          run-id: ${{ inputs.baseline_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ env.GUEST_WORK }}/baseline
+          merge-multiple: true
+      - name: Prepare the reviewed SDK version
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          version: 582.0.0
+      - name: Record a conservative token lifetime boundary
+        run: echo "INT_GCP_AUTH_STARTED_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
+      - name: Federate solely as the existing Deploy identity
         id: auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
@@ -45,24 +125,39 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOY_SA }}
           token_format: access_token
-          access_token_lifetime: 1800s
+          access_token_lifetime: 900s
+          access_token_scopes: https://www.googleapis.com/auth/cloud-platform
           create_credentials_file: true
           export_environment_variables: true
           cleanup_credentials: true
-      - name: Prepare a fixed SDK using the official pinned action
-        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1 verified tag commit
-        with:
-          version: 592.0.0
-      - name: Verify exact new disk, pinned SSH host and initialize once through IAP
+      - name: Verify WIF, approved evidence and the unchanged exact-commit application CI gate
         env:
           GH_TOKEN: ${{ github.token }}
           GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
-          INT_NEW_DISK_ID: ${{ inputs.new_disk_id }}
-          INT_DISK_CONFIRMATION: ${{ inputs.confirmation }}
-          INT_VM_SSH_HOST_KEY: ${{ vars.INT_VM_SSH_HOST_KEY }}
+          DECISION_SHA256: ${{ inputs.owner_decision_sha256 }}
+        run: python -B -m scripts.int_bootstrap_db preflight --workdir "$GUEST_WORK" --reports "$GUEST_REPORTS" --decision "$GUEST_WORK/decision.json" --decision-sha256 "$DECISION_SHA256" --host-evidence "$GUEST_WORK/host.json" --baseline-evidence "$GUEST_WORK/baseline/inventory.json"
+      - name: Validate protected TLS, observe the disk again and invoke the guest operator once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          DECISION_SHA256: ${{ inputs.owner_decision_sha256 }}
           INT_PG_APP_PASSWORD: ${{ secrets.INT_APP_PASSWORD }}
           INT_PG_MIGRATOR_PASSWORD: ${{ secrets.INT_MIGRATOR_PASSWORD }}
           INT_PG_CA_CERT: ${{ secrets.INT_POSTGRES_CA }}
           INT_PG_SERVER_CERT: ${{ secrets.INT_PG_SERVER_CERT }}
           INT_PG_SERVER_KEY: ${{ secrets.INT_PG_SERVER_KEY }}
-        run: python -B -m scripts.int_bootstrap_db
+        run: python -B -m scripts.int_bootstrap_db run --workdir "$GUEST_WORK" --reports "$GUEST_REPORTS" --decision "$GUEST_WORK/decision.json" --decision-sha256 "$DECISION_SHA256" --host-evidence "$GUEST_WORK/host.json" --baseline-evidence "$GUEST_WORK/baseline/inventory.json"
+      - name: Verify cleanup of only this operation's expiring OS Login key
+        if: ${{ always() && steps.scratch.outcome == 'success' }}
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: python -B -m scripts.int_bootstrap_db cleanup --workdir "$GUEST_WORK" --reports "$GUEST_REPORTS"
+      - name: Retain the sanitized result only
+        if: ${{ always() && steps.scratch.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: int-db01-bootstrap-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.GUEST_REPORTS }}/db01-result.json
+          include-hidden-files: false
+          if-no-files-found: warn
+          retention-days: 7
