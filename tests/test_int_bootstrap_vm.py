@@ -10,11 +10,13 @@ import json
 from pathlib import Path
 import stat
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest import mock
 
 from scripts import int_bootstrap_vm as vm
+REAL_POPEN = vm.subprocess.Popen
 
 
 SOURCE = "a" * 64
@@ -340,7 +342,8 @@ class GuestBootstrap(unittest.TestCase):
             with self.subTest(mutate=mutate), self.assertRaises(vm.Blocked):
                 vm.validate_receipt(row)
 
-    def fake_native(self, chunks, *, timeout=False, exit_code=0):
+    def fake_native(self, chunks, *, timeout=False, exit_code=0, interrupt_after_reads=None, capture_interrupt=False):
+        reads = [0]
         class Stream:
             def __init__(self, number):
                 self.number, self.closed = number, False
@@ -358,13 +361,17 @@ class GuestBootstrap(unittest.TestCase):
             def get_map(self):
                 return self.rows
             def select(self, timeout):
+                if interrupt_after_reads is not None and reads[0] >= interrupt_after_reads:
+                    raise vm.Blocked("operator_interrupted")
                 return [(next(iter(self.rows.values())), 1)]
             def close(self):
                 self.rows.clear()
         process = SimpleNamespace(pid=123456, stdout=Stream(10), stderr=Stream(11), stdin=None,
-                                  poll=lambda: None if timeout or len(chunks.get(10, [])) else exit_code,
-                                  wait=mock.Mock(return_value=-9 if timeout else exit_code), returncode=-9 if timeout else exit_code)
+                                  poll=lambda: None if timeout or interrupt_after_reads is not None or len(chunks.get(10, [])) else exit_code,
+                                  wait=mock.Mock(return_value=-9 if timeout or interrupt_after_reads is not None else exit_code),
+                                  returncode=-9 if timeout or interrupt_after_reads is not None else exit_code)
         def read(number, count):
+            reads[0] += 1
             sequence = chunks.get(number, [])
             return sequence.pop(0) if sequence else b""
         with mock.patch.object(vm, "_trusted_binary"), mock.patch.object(vm.subprocess, "Popen", return_value=process), \
@@ -375,7 +382,12 @@ class GuestBootstrap(unittest.TestCase):
                 with mock.patch.object(vm.time, "monotonic", side_effect=[0, 121, 121]):
                     result = vm.native("mkfs", ["/usr/sbin/mkfs.ext4", vm.DEVICE], None, 120)
             else:
-                result = vm.native("mkfs", ["/usr/sbin/mkfs.ext4", vm.DEVICE], None, 120)
+                try:
+                    result = vm.native("mkfs", ["/usr/sbin/mkfs.ext4", vm.DEVICE], None, 120)
+                except vm.NativeInterruption as error:
+                    if not capture_interrupt:
+                        raise
+                    result = error
             return result, kill.call_args_list
 
     def test_native_stdout_stderr_caps_and_timeout_stop_only_own_group(self):
@@ -397,6 +409,56 @@ class GuestBootstrap(unittest.TestCase):
         self.assertEqual(row["messages"], ["Permission denied"])
         self.assertEqual(row["unclassified_stderr_lines"], 1)
         self.assertNotIn("private-value", json.dumps(row))
+
+    def test_signal_preserves_observed_exit_bytes_and_diagnostic_before_propagation(self):
+        failure, killed = self.fake_native({10: [b"public marker\n", b""],
+                                            11: [b"Permission denied private fixture\n", b""]},
+                                           interrupt_after_reads=3, capture_interrupt=True)
+        self.assertIsInstance(failure, vm.NativeInterruption)
+        self.assertEqual(failure.native_receipt["exit_code"], -9)
+        self.assertEqual(failure.native_receipt["status"], "interrupted")
+        self.assertEqual(killed, [mock.call(123456, 9)])
+        operator = self.operator(mock.Mock(side_effect=failure))
+        with self.assertRaisesRegex(vm.Blocked, "operator_interrupted"):
+            operator.call("mkfs", ["/usr/sbin/mkfs.ext4", vm.DEVICE])
+        row = operator.receipt["native_operations"][0]
+        self.assertEqual(row["operation"], "mkfs")
+        self.assertEqual(row["stdout_bytes"], len(b"public marker\n"))
+        self.assertEqual(row["stderr_bytes"], len(b"Permission denied private fixture\n"))
+        self.assertEqual(row["messages"], ["Permission denied"])
+        self.assertNotIn("private fixture", json.dumps(operator.receipt))
+
+    @unittest.skipUnless(vm.sys.platform == "linux", "Real own-process SIGTERM probe requires Linux")
+    def test_linux_real_sigterm_reaps_own_child_and_records_native_receipt(self):
+        spawned = []
+        def launch(*args, **kwargs):
+            process = REAL_POPEN(*args, **kwargs)
+            spawned.append(process)
+            return process
+        def interrupted(signum, frame):
+            raise vm.Blocked("operator_interrupted")
+        previous = vm.signal.signal(vm.signal.SIGTERM, interrupted)
+        timer = threading.Timer(0.25, lambda: vm.os.kill(vm.os.getpid(), vm.signal.SIGTERM))
+        operator = self.operator(vm.native)
+        try:
+            with mock.patch.object(vm.subprocess, "Popen", side_effect=launch):
+                timer.start()
+                with self.assertRaisesRegex(vm.Blocked, "operator_interrupted"):
+                    # Fixed synthetic child only; no disk/package/SQL command.
+                    operator.call("packages", ["/usr/bin/sh", "-c",
+                        "printf 'public-marker\\n'; printf 'Permission denied fixture\\n' >&2; exec /usr/bin/sleep 20"])
+        finally:
+            timer.cancel()
+            timer.join(timeout=2)
+            vm.signal.signal(vm.signal.SIGTERM, previous)
+        self.assertEqual(len(spawned), 1)
+        self.assertEqual(spawned[0].poll(), -9)
+        self.assertTrue(spawned[0].stdout.closed and spawned[0].stderr.closed)
+        row = operator.receipt["native_operations"][0]
+        self.assertEqual((row["status"], row["exit_code"]), ("interrupted", -9))
+        self.assertEqual(row["stdout_bytes"], len(b"public-marker\n"))
+        self.assertEqual(row["stderr_bytes"], len(b"Permission denied fixture\n"))
+        self.assertEqual(row["messages"], ["Permission denied"])
 
     def postcheck_case(self, *, bad_config=False, bad_roles=False, changed_file=False, bad_handshake=False):
         config = {"version": "170012", "data_directory": str(vm.MOUNT / "pgdata"), "listen": "10.80.1.2", "port": "5432",

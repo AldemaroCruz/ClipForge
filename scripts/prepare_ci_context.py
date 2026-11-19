@@ -1,7 +1,7 @@
 """Prepare/verify a source-only Docker CI context without reading operator data.
 
-Only named root files and direct source files in four named directories are
-considered. Unknown directories are never traversed. The manifest stays outside
+Only named root files, direct code sources and exact public contract/fixture
+filenames are considered. Unknown directories are never traversed. The manifest stays outside
 both source and context. This filename allowlist is not a content secret scanner.
 """
 from __future__ import annotations
@@ -31,7 +31,70 @@ DIRECTORIES = {
     "scripts": frozenset({".py", ".ps1"}),
     "tests": frozenset({".py"}),
 }
-REQUIRED_FILES = frozenset(ROOT_FILES) | frozenset({
+
+# Public contracts/source fixtures consumed by unit tests. Exact names only;
+# never enumerate config/infra trees or include plans, state, keys or tfvars.
+SUPPORT_FILES = frozenset({
+    '.github/workflows/ci.yml',
+    '.github/workflows/gcp-auth-check.yml',
+    '.github/workflows/int-e2e-apply.yml',
+    '.github/workflows/int-e2e-bootstrap-db.yml',
+    '.github/workflows/int-e2e-jobs.yml',
+    '.github/workflows/int-e2e-runtime.yml',
+    '.github/workflows/int-e2e-secrets.yml',
+    '.github/workflows/int-foundation-check.yml',
+    '.github/workflows/int-foundation-close.yml',
+    '.github/workflows/int-foundation-recovery-apply.yml',
+    '.github/workflows/int-foundation-recovery-plan.yml',
+    '.github/workflows/int-guest-inventory.yml',
+    '.github/workflows/int-iap-diagnostic.yml',
+    '.github/workflows/tf-int-plan.yml',
+    '.gitleaks.toml',
+    'config/db01-activation-preparation.json',
+    'config/db01-bootstrap-proposal.json',
+    'config/db01-migration-client-proposal.json',
+    'config/db01-remediation-proposal.json',
+    'config/int-e2e01-decisions.json',
+    'config/int-foundation-close.json',
+    'config/int-foundation-contract.json',
+    'config/int-foundation-history/5800b4c-foundation-contract.json',
+    'config/int-foundation-history/5800b4c-iap-diagnostic.json',
+    'config/int-foundation-history/5800b4c-recovery-contract.json',
+    'config/int-foundation-history/79ecadb-recovery-contract.json',
+    'config/int-foundation-history/bb4d104-contract.json',
+    'config/int-foundation-history/bbf7573-foundation-contract.json',
+    'config/int-foundation-history/bbf7573-iap-diagnostic.json',
+    'config/int-foundation-history/bbf7573-recovery-contract.json',
+    'config/int-foundation-history/d319b0d-contract.json',
+    'config/int-foundation-iam-delta.json',
+    'config/int-foundation-recovery-apply.json',
+    'config/int-foundation-recovery-imports.tf',
+    'config/int-foundation-recovery.json',
+    'config/int-foundation-verification.json',
+    'config/int-iap-diagnostic.json',
+    'config/owner-risk-acceptance.json',
+    'config/postgres-ci-security.Dockerfile',
+    'config/tf-int01-costs.json',
+    'config/whisper-int.json',
+    'infra/gcp/int-base/.terraform.lock.hcl',
+    'infra/gcp/int-base/audit.tf',
+    'infra/gcp/int-base/backend-int.hcl',
+    'infra/gcp/int-base/main.tf',
+    'infra/gcp/int-base/outputs.tf',
+    'infra/gcp/int-base/postgres-install.sh',
+    'infra/gcp/int-base/runtime.tf',
+    'infra/gcp/int-base/tests/contracts.tftest.hcl',
+    'infra/gcp/int-base/variables.tf',
+    'infra/gcp/int-base/versions.tf',
+    'tests/fixtures/int_foundation_close/d67e581-bandit-native.json',
+    'tests/fixtures/int_foundation_close/d67e581-sast-review.json',
+})
+SUPPORT_DIRECTORIES = frozenset(
+    parent.as_posix() for name in SUPPORT_FILES
+    for parent in PurePosixPath(name).parents if parent.as_posix() != "."
+)
+
+REQUIRED_FILES = SUPPORT_FILES | frozenset(ROOT_FILES) | frozenset({
     "app/__init__.py", "app/main.py", "scripts/run_ci_tests.py",
     "scripts/prepare_ci_context.py",
 })
@@ -143,7 +206,7 @@ def _files(root: Path, *, strict: bool) -> list[tuple[str, Path]]:
     found = []
     if strict:
         # Reject unknown entries before inspecting or entering their contents.
-        permitted = set(ROOT_FILES) | {"app", "scripts", "tests"}
+        permitted = set(ROOT_FILES) | {"app", "scripts", "tests"} | {PurePosixPath(name).parts[0] for name in SUPPORT_FILES}
         with os.scandir(root) as entries:
             for entry in entries:
                 if entry.name not in permitted:
@@ -167,7 +230,7 @@ def _files(root: Path, *, strict: bool) -> list[tuple[str, Path]]:
                 metadata = _checked_stat(Path(entry.path))
                 candidate = f"{relative}/{entry.name}"
                 if stat.S_ISDIR(metadata.st_mode):
-                    if strict and candidate not in DIRECTORIES:
+                    if strict and candidate not in DIRECTORIES and candidate not in SUPPORT_DIRECTORIES:
                         raise ContextError("Context contains an unexpected directory.")
                     continue  # Only explicitly named directories are entered later.
                 if not stat.S_ISREG(metadata.st_mode):
@@ -177,6 +240,26 @@ def _files(root: Path, *, strict: bool) -> list[tuple[str, Path]]:
                         raise ContextError("Context contains a file outside its source allowlist.")
                     continue
                 found.append((candidate, Path(entry.path)))
+    for name in sorted(SUPPORT_FILES):
+        path = root / name
+        _check_components(path)
+        if not stat.S_ISREG(_checked_stat(path).st_mode):
+            raise ContextError("A required public contract/source fixture is missing.")
+        found.append((name, path))
+    if strict:
+        for relative in sorted(SUPPORT_DIRECTORIES - DIRECTORIES.keys()):
+            directory = root / relative
+            _check_components(directory)
+            if not stat.S_ISDIR(_checked_stat(directory).st_mode):
+                raise ContextError("A required public source directory is missing.")
+            permitted = {PurePosixPath(name).relative_to(relative).parts[0]
+                         for name in SUPPORT_FILES
+                         if PurePosixPath(name).is_relative_to(relative)}
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if entry.name not in permitted:
+                        raise ContextError("Context contains an unlisted public-source entry.")
+                    _checked_stat(Path(entry.path))
     names = [name for name, _ in found]
     if len({name.casefold() for name in names}) != len(names):
         raise ContextError("Case-colliding source paths are not portable.")
@@ -207,7 +290,7 @@ def _manifest_inventory(value) -> dict[str, dict]:
             raise ContextError("Invalid manifest path.")
         if any(_private(part) for part in path.parts):
             raise ContextError("Excluded path in manifest.")
-        allowed = name in ROOT_FILES or (
+        allowed = name in ROOT_FILES or name in SUPPORT_FILES or (
             path.parent.as_posix() in DIRECTORIES
             and path.suffix.lower() in DIRECTORIES[path.parent.as_posix()]
         )
@@ -235,7 +318,7 @@ def prepare_context(source: Path | str, destination: Path | str, manifest: Path 
     _check_components(destination.parent)
     _check_components(manifest.parent)
     destination.mkdir()  # Exclusive creation; never reuse/overwrite an existing context.
-    for name in DIRECTORIES:
+    for name in sorted(set(DIRECTORIES) | SUPPORT_DIRECTORIES):
         (destination / name).mkdir(parents=True, exist_ok=True)
     for name, record in expected.items():
         actual = _stream_record(source / name, destination / name)

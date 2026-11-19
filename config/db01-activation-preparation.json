@@ -1,0 +1,182 @@
+{
+  "schema": "clipforge-db01-activation-preparation-1",
+  "status": "prepared_for_review_no_go_until_specific_decisions",
+  "base_source_commit": "6c69ddc2fcaf021fdb4b91d8881c3f549fc02171",
+  "candidate_control_commit_binding": "Record the actual final SHA externally in the review/dispatch; no self-reference is embedded.",
+  "bootstrap_authorized": false,
+  "cloud_writes_authorized": false,
+  "new_IAM_grants_authorized": false,
+  "foundation_and_GUEST01_remain_closed": true,
+  "current_state_reference_only": {
+    "serial": 7,
+    "generation": "1795030868572779",
+    "addresses": 42,
+    "state_read_or_written_in_this_increment": false
+  },
+  "application_CI_gate": "Unchanged: require successful exact-commit CI before bootstrap and secret publication. Functional success does not change the overall security gate.",
+  "decisions_requiring_owner_information": [
+    {
+      "id": "inputs_and_custody",
+      "required": "Select the issuer/custodian of the CA private key and protected location for server key/password creation; never send values in chat."
+    },
+    {
+      "id": "TLS_profile",
+      "proposal": "serverAuth certificate with SAN IP 10.80.1.2, approved CA, matching private key and minimum remaining lifetime seven days. Issuance/renewal period still requires owner choice; certificate dates do not extend risk decisions."
+    },
+    {
+      "id": "input_freeze",
+      "required": "One custodian must preserve the same app/migrator passwords and public CA across bootstrap and the three separately authorized addVersion operations. No password hashes are published as a substitute."
+    },
+    {
+      "id": "residuals",
+      "required": "Individual decisions for the preserved VM and client findings. No risk acceptance is recorded here; three krb5 details remain unavailable in public sources and kernel coverage remains incomplete."
+    }
+  ],
+  "future_write_groups": [
+    {
+      "id": "protected_GitHub_inputs",
+      "service": "GitHub Environment int",
+      "authorized": false,
+      "operation": "Set exactly five encrypted environment secrets through normal administrative authentication, protected stdin, no value in argv/logs.",
+      "names": [
+        "INT_APP_PASSWORD",
+        "INT_MIGRATOR_PASSWORD",
+        "INT_POSTGRES_CA",
+        "INT_PG_SERVER_CERT",
+        "INT_PG_SERVER_KEY"
+      ],
+      "CA_private_key_uploaded": false
+    },
+    {
+      "id": "client_publication",
+      "service": "Artifact Registry",
+      "authorized": false,
+      "target": "us-central1-docker.pkg.dev/clipforgebeta2/clipforge-int/runtime@sha256:9d0a1af42b82749cbadde830a69c06d95fda8a4274a3efcfd8f19ee01c85062c",
+      "archive_sha256": "0a240e73dba1d2e47a22960c4bed817f8404e9ec6d4e05812baeb05a534a4da0",
+      "effect": "Upload the reviewed existing OCI blobs/manifest with the pinned publisher and preserve/verify the exact digest. No image rebuild, IAM grant or deployment is implied. Stop and retain partial receipts on error; no automatic retry or cleanup."
+    },
+    {
+      "id": "guest_initialization",
+      "service": "Existing PostgreSQL VM",
+      "authorized": false,
+      "target_instance": "1670495097211408131",
+      "target_disk": "6427691858848206684",
+      "effect": "One newly approved initialization on the verified blank data disk; includes exact format, mount, cluster, TLS, roles and checks only after all original guards.",
+      "failure_containment_requires_explicit_inclusion": {
+        "schema": "clipforge-db01-containment-policy-2",
+        "authorized": false,
+        "action": "single_stop_created_17_main_preserve",
+        "argv": [
+          "/usr/bin/systemctl",
+          "stop",
+          "postgresql@17-main.service"
+        ],
+        "automatic_retry": false,
+        "source_sha256": "7fbc88fae2e4b6aa6e980820df7c0b5ce2183c14b6c6d205a6372cf739ebeff4",
+        "bootstrap_source_sha256": "861de13ce61943a0a9f62118633adab24f413cb4234566cac34cf441eea4a023",
+        "journal_path": "/var/lib/clipforge-postgres/db01/operation.json",
+        "intent_path": "/var/lib/clipforge-postgres/db01/containment-intent.json",
+        "intent_creation_authorized": false,
+        "maximum_seconds": 90
+      }
+    },
+    {
+      "id": "three_secret_versions",
+      "service": "Secret Manager",
+      "authorized": false,
+      "controller": "int-e2e-secrets.yml via existing Deploy WIF and manual int approval",
+      "sequence": [
+        {
+          "target": "app_password",
+          "container": "clipforge-int-pg-app-password",
+          "result_version": null
+        },
+        {
+          "target": "migrator_password",
+          "container": "clipforge-int-pg-migrator-password",
+          "result_version": null
+        },
+        {
+          "target": "postgres_ca",
+          "container": "clipforge-int-postgres-ca",
+          "result_version": null
+        }
+      ],
+      "effect": "Exactly one addVersion per reviewed container, using the same protected values. Keep real numeric receipt references; an unknown addVersion outcome stops the sequence without another write.",
+      "excluded": [
+        "server_private_key",
+        "CA_private_key",
+        "bootstrap_admin",
+        "disable_or_destroy_versions",
+        "latest_alias",
+        "IAM_change"
+      ]
+    },
+    {
+      "id": "two_client_Jobs",
+      "service": "Cloud Run Jobs",
+      "authorized": false,
+      "resources": [
+        {
+          "name": "clipforge-int-db01-migration",
+          "phase": "migrate",
+          "service_account": "clipforge-migrate-int@clipforgebeta2.iam.gserviceaccount.com",
+          "database_role": "clipforge_migrator",
+          "secrets": [
+            "clipforge-int-pg-migrator-password",
+            "clipforge-int-postgres-ca"
+          ]
+        },
+        {
+          "name": "clipforge-int-db01-acceptance",
+          "phase": "app",
+          "service_account": "clipforge-api-int@clipforgebeta2.iam.gserviceaccount.com",
+          "database_role": "clipforge_app",
+          "secrets": [
+            "clipforge-int-pg-app-password",
+            "clipforge-int-postgres-ca"
+          ]
+        }
+      ],
+      "image": "us-central1-docker.pkg.dev/clipforgebeta2/clipforge-int/runtime@sha256:9d0a1af42b82749cbadde830a69c06d95fda8a4274a3efcfd8f19ee01c85062c",
+      "secret_versions": {
+        "migrator_password": null,
+        "app_password": null,
+        "postgres_ca": null
+      },
+      "rendering": "scripts.int_db_acceptance.job_spec after real numeric versions are available; no synthetic version is proposed as real.",
+      "controller_identity": "clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com",
+      "network": "projects/clipforgebeta2/regions/us-central1/subnetworks/clipforge-int-base-run",
+      "source_CIDR": "10.80.0.0/26",
+      "limits": {
+        "task_count": 1,
+        "parallelism": 1,
+        "max_retries": 0,
+        "timeout": "600s",
+        "cpu": "1",
+        "memory": "1Gi"
+      },
+      "effect": "Separately reviewed creation and one execution of migration then application acceptance. Max retries zero; no HBA/firewall enlargement or superuser substitution. Cleanup/removal requires its own scoped review."
+    }
+  ],
+  "future_sequence": [
+    "Resolve functional/security gates and choose individual residual decisions",
+    "Authorize and privately provision/freeze five inputs",
+    "Authorize immutable client image publication and verify its registry manifest",
+    "Authorize exact bootstrap including the conditional one-shot failure action",
+    "After successful guest verification, authorize three addVersion writes and preserve their numeric references",
+    "Render/review/create two Jobs with those exact versions and image, then authorize one migration and one app acceptance run"
+  ],
+  "out_of_scope": [
+    "SQL_or_bootstrap_on_INT_now",
+    "actual_secret_values_or_versions",
+    "IAM_changes",
+    "VM_power_cycle",
+    "CloudRun_application_or_runtime_Jobs_deployment",
+    "administrator_bootstrap",
+    "backup_restore_execution",
+    "DEV_or_operational_installation_changes"
+  ],
+  "no_cloud_write_or_provisioning_performed": true,
+  "no_risk_expiry_extended": true
+}

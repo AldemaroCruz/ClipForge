@@ -19,6 +19,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -79,7 +80,106 @@ def discover_suite(source_root: Path) -> unittest.TestSuite:
 
 
 def execute_suite(suite: unittest.TestSuite, stream: TextIO) -> unittest.TestResult:
-    return unittest.TextTestRunner(stream=stream, verbosity=2).run(suite)
+    return unittest.TextTestRunner(stream=stream, verbosity=2,
+                                   resultclass=DiagnosticResult).run(suite)
+
+
+def diagnostic_error(err, source_root: Path) -> dict:
+    """Keep stack locations, never exception messages, source text or locals."""
+    kind, value, tb = err
+    frames = []
+    count = 0
+    while tb is not None:
+        count += 1
+        if len(frames) < 64:
+            code = tb.tb_frame.f_code
+            frames.append({"file": public_source_path(code.co_filename, source_root),
+                           "line": tb.tb_lineno,
+                           "function": code.co_name if re.fullmatch(r"[A-Za-z0-9_.<>]+", code.co_name) else "<callable>"})
+        tb = tb.tb_next
+    result = {"exception_type": kind.__module__ + "." + kind.__name__,
+              "traceback": frames, "traceback_truncated": count > len(frames),
+              "exception_message_withheld": True, "locals_included": False,
+              "source_lines_included": False}
+    if isinstance(value, FileNotFoundError):
+        path = public_source_path(value.filename, source_root)
+        if path != "<external-or-private>":
+            result["missing_source_path"] = path
+    return result
+
+
+def public_source_path(value, source_root: Path) -> str:
+    """Publish only a selected source path, including a missing public file."""
+    from scripts import prepare_ci_context as context
+    if not isinstance(value, str):
+        return "<external-or-private>"
+    path = Path(value)
+    if not path.is_relative_to(source_root):
+        return "<external-or-private>"
+    relative = path.relative_to(source_root)
+    name = relative.as_posix()
+    if any(part in {".", ".."} or context._private(part) for part in relative.parts):
+        return "<external-or-private>"
+    if (name in context.ROOT_FILES or name in context.SUPPORT_FILES
+            or relative.parent.as_posix() in context.DIRECTORIES
+            and relative.suffix.lower() in context.DIRECTORIES[relative.parent.as_posix()]):
+        return name
+    return "<external-or-private>"
+
+
+def diagnostic_test_id(test) -> str:
+    # Subtest parameters may contain arbitrary data; retain the parent ID only.
+    parent = getattr(test, "test_case", test)
+    value = parent.id()
+    if isinstance(value, str) and len(value) <= 1024 and re.fullmatch(r"[A-Za-z0-9_.<>]+", value):
+        return value
+    return "nonstandard_test_id_sha256:" + hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+
+
+class DiagnosticResult(unittest.TextTestResult):
+    """The published unittest stream and report share the same closed details."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.test_diagnostics = []
+        self.source_root = Path(__file__).resolve().parents[1]
+
+    def getDescription(self, test):
+        return diagnostic_test_id(test)
+
+    def _exc_info_to_string(self, err, test):
+        return json.dumps(diagnostic_error(err, self.source_root), indent=2)
+
+    def record(self, test, err, outcome):
+        self.test_diagnostics.append({"test_id": diagnostic_test_id(test), "outcome": outcome,
+                                      **diagnostic_error(err, self.source_root)})
+
+    def addError(self, test, err):
+        self.record(test, err, "error")
+        super().addError(test, err)
+
+    def addFailure(self, test, err):
+        self.record(test, err, "failure")
+        super().addFailure(test, err)
+
+    def addExpectedFailure(self, test, err):
+        self.record(test, err, "expected_failure")
+        super().addExpectedFailure(test, err)
+
+    def addSubTest(self, test, subtest, err):
+        if err is not None:
+            self.record(test, err, "subtest_failure" if issubclass(err[0], test.failureException) else "subtest_error")
+        super().addSubTest(test, subtest, err)
+
+    def addSkip(self, test, reason):
+        # TextTestResult would otherwise publish the arbitrary skip reason.
+        self.test_diagnostics.append({"test_id": diagnostic_test_id(test), "outcome": "skipped",
+                                      "exception_type": None, "traceback": [], "reason_withheld": True})
+        super().addSkip(test, "reason withheld")
+
+    def addUnexpectedSuccess(self, test):
+        self.test_diagnostics.append({"test_id": diagnostic_test_id(test), "outcome": "unexpected_success",
+                                      "exception_type": None, "traceback": []})
+        super().addUnexpectedSuccess(test)
 
 
 def test_inventory(suite: unittest.TestSuite) -> dict:
@@ -164,7 +264,7 @@ def run_ci(
     coverage_factory: Callable | None = None,
     stream: TextIO | None = None,
 ) -> dict:
-    """Run every check and the whole suite, retaining only non-sensitive counts."""
+    """Run every check and the whole suite, retaining counts and closed diagnostics."""
     environment = dict(os.environ if environ is None else environ)
     output = sys.stderr if stream is None else stream
     report = {
@@ -176,6 +276,8 @@ def run_ci(
             "expected_failures": 0, "unexpected_successes": 0,
         },
         "suite_status": "not_started",
+        "test_diagnostics": [],
+        "test_output_withheld": True,
         "test_inventory": {"ids": [], "discovered": 0, "unique": 0, "duplicate_ids": []},
         "coverage": {
             "requested": coverage_directory is not None, "measured": False,
@@ -249,7 +351,10 @@ def run_ci(
                             "name": "coverage", "status": "failed", "error_type": type(exc).__name__,
                         })
                 try:
-                    with redirect_stdout(output), redirect_stderr(output):
+                    # Individual tests can print exception messages, environment
+                    # values or fixture secrets. Only the runner's closed
+                    # diagnostic stream is public, never arbitrary test output.
+                    with open(os.devnull, "w") as withheld, redirect_stdout(withheld), redirect_stderr(withheld):
                         suite = discover(source_root)
                         report["test_inventory"] = test_inventory(suite)
                         inventory_ok = (report["test_inventory"]["discovered"] > 0
@@ -259,6 +364,7 @@ def run_ci(
                         })
                         result = suite_executor(suite, output)
                     report["tests"] = test_counts(result)
+                    report["test_diagnostics"] = list(getattr(result, "test_diagnostics", []))
                     report["checks"].append({
                         "name": "test_execution_completeness",
                         "status": ("passed" if report["tests"]["tests_run"]
@@ -271,6 +377,7 @@ def run_ci(
                     report["suite_status"] = "discovery_or_runner_error"
                     report["tests"]["errors"] += 1
                     report["suite_error_type"] = type(exc).__name__
+                    report["suite_diagnostic"] = diagnostic_error(sys.exc_info(), source_root)
                 finally:
                     if collector is not None:
                         try:

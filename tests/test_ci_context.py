@@ -23,7 +23,8 @@ class CIContextTests(unittest.TestCase):
         self.source.mkdir()
         for directory in ci.DIRECTORIES:
             (self.source / directory).mkdir(parents=True, exist_ok=True)
-        for name in ci.ROOT_FILES:
+        for name in (*ci.ROOT_FILES, *ci.SUPPORT_FILES):
+            (self.source / name).parent.mkdir(parents=True, exist_ok=True)
             (self.source / name).write_text("authored root fixture\n", encoding="utf-8")
         for name in ("app/__init__.py", "app/main.py", "scripts/run_ci_tests.py", "scripts/prepare_ci_context.py", "tests/test_example.py"):
             (self.source / name).write_text("# authored source fixture\n", encoding="utf-8")
@@ -46,6 +47,44 @@ class CIContextTests(unittest.TestCase):
             self.assertEqual(item["bytes"], len(data))
             self.assertEqual(item["sha256"], hashlib.sha256(data).hexdigest())
         self.assertFalse((self.destination / self.manifest.name).exists())
+
+    def test_public_contract_hcl_workflow_and_scanner_sources_are_explicit_and_complete(self):
+        expected = {"config/int-foundation-contract.json", "config/int-foundation-recovery.json",
+                    "config/int-foundation-history/5800b4c-recovery-contract.json",
+                    "infra/gcp/int-base/versions.tf", "infra/gcp/int-base/postgres-install.sh",
+                    ".github/workflows/ci.yml", ".gitleaks.toml",
+                    "tests/fixtures/int_foundation_close/d67e581-sast-review.json"}
+        self.assertTrue(expected <= ci.SUPPORT_FILES)
+        self.prepare()
+        names = {row["path"] for row in json.loads(self.manifest.read_bytes())["files"]}
+        self.assertTrue(ci.SUPPORT_FILES <= names)
+        for name in ci.SUPPORT_FILES:
+            self.assertEqual((self.destination / name).read_bytes(), (self.source / name).read_bytes())
+
+    def test_missing_public_contract_is_rejected_instead_of_silently_omitted(self):
+        (self.source / "config/int-foundation-contract.json").unlink()
+        with self.assertRaises(FileNotFoundError):
+            self.prepare()
+        self.assertFalse(self.manifest.exists())
+
+    def test_unlisted_config_credentials_state_and_fixture_trees_are_not_read(self):
+        rejected = ("config/gha-creds-synthetic.json", "config/private-unreviewed.json",
+                    "infra/gcp/int-base/default.tfstate", "infra/gcp/int-base/private.tfvars",
+                    "tests/fixtures/unlisted/private.json")
+        for name in rejected:
+            path = self.source / name; path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("synthetic credential sentinel", encoding="utf-8")
+        reader = ci._stream_record
+        def checked(path, destination=None):
+            base = self.source if path.is_relative_to(self.source) else self.destination
+            self.assertNotIn(path.relative_to(base).as_posix(), rejected)
+            return reader(path, destination)
+        with mock.patch.object(ci, "_stream_record", side_effect=checked):
+            self.prepare()
+        self.assertTrue(all(not (self.destination / name).exists() for name in rejected))
+        (self.destination / "config/gha-creds-synthetic.json").write_text("never read")
+        with self.assertRaisesRegex(ci.ContextError, "unlisted public-source"):
+            self.verify()
 
     def test_private_trees_and_files_are_not_entered_or_copied(self):
         private = ("data", "cache", "backups", "release", "evidence", "test-evidence", "restore-check-fixture")

@@ -26,6 +26,10 @@ METADATA_EMAIL_URL = "http://metadata.google.internal/computeMetadata/v1/instanc
 TABLES = ("auth_users", "auth_workspaces", "auth_memberships", "auth_projects", "auth_sessions", "auth_challenges",
           "auth_login_attempts", "auth_recovery_codes", "auth_audit_events", "auth_security_attempts",
           "cloud_documents", "cloud_tasks", "cloud_outbox", "cloud_requests")
+CONNECT_TIMEOUT_SECONDS = 5
+STATEMENT_TIMEOUT_MS = 15000
+LOCK_TIMEOUT_MS = 3000
+SQL_OPTIONS = "-csearch_path=public -cstatement_timeout=15000 -clock_timeout=3000"
 
 
 def require(ok, code):
@@ -151,13 +155,39 @@ def execution_authority(env, phase, *, now=None):
     return {**value, "_observed_service_account": observed}
 
 
+def migration_engine(options):
+    """The migration's own connections carry the same native SQL deadlines."""
+    from sqlalchemy import URL, create_engine
+    from sqlalchemy.pool import NullPool
+    require(isinstance(options, dict) and all(options.get(key) for key in
+            ("host", "port", "dbname", "user", "password", "sslrootcert"))
+            and options.get("sslmode") == "verify-full", "explicit_verified_migration_connection_required")
+    url = URL.create("postgresql+psycopg", username=options["user"], password=options["password"],
+                     host=options["host"], port=options["port"], database=options["dbname"])
+    return create_engine(url, poolclass=NullPool, echo=False, hide_parameters=True,
+                         connect_args={"connect_timeout": CONNECT_TIMEOUT_SECONDS, "sslmode": "verify-full",
+                                       "sslrootcert": options["sslrootcert"], "options": SQL_OPTIONS})
+
+
+def apply_migrations(options):
+    """Both migration passes use explicit bounded connections and dispose them."""
+    from app.cloud.migrate import upgrade
+    engine = migration_engine(options)
+    try:
+        first, second = upgrade(engine), upgrade(engine)
+        require(first["status"] in {"applied", "current"} and second["status"] == "current", "migration_idempotence_failed")
+        return first, second
+    finally:
+        engine.dispose()
+
+
 def execute(phase, env, *, authority=None):
     decision = (execution_authority if authority is None else authority)(env, phase)
     import psycopg
     from psycopg import sql
     options = {"host": "10.80.1.2", "port": 5432, "dbname": "clipforge", "user": "clipforge_migrator" if phase == "migrate" else "clipforge_app",
         "password": Path("/secrets/database/value").read_text(), "sslmode": "verify-full", "sslrootcert": "/secrets/postgres-ca/value",
-        "connect_timeout": 5, "options": "-c statement_timeout=15000 -c lock_timeout=3000"}
+        "connect_timeout": CONNECT_TIMEOUT_SECONDS, "options": SQL_OPTIONS}
     result = {"schema": "clipforge-db01-external-acceptance-1", "status": "failed", "phase": phase,
         "operation_id": decision["operation_id"], "owner_decision_sha256": env["INT_DB_CLIENT_DECISION_SHA256"],
         "guest_receipt_sha256": decision["guest_receipt_sha256"], "checks": [], "runtime_authorized": False, "restore_verified": False,
@@ -179,9 +209,7 @@ def execute(phase, env, *, authority=None):
             require(encoding == "UTF8" and locale == ctype == "C.UTF-8", "reviewed_encoding_or_locale_mismatch")
             result["checks"].append({"name": "private_client_tls_role", "status": "passed", "client_address": row[1], "tls": tls[1], "server_encoding": encoding, "lc_collate": locale, "lc_ctype": ctype})
         if phase == "migrate":
-            from app.cloud.migrate import upgrade
-            first, second = upgrade(), upgrade()
-            require(first["status"] in {"applied", "current"} and second["status"] == "current", "migration_idempotence_failed")
+            first, second = apply_migrations(options)
             result["checks"].append({"name": "AUTH_and_cloud_migrations", "status": "passed", "first": first, "second": second})
         else:
             with psycopg.connect(**options) as connection:

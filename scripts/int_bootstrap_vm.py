@@ -48,6 +48,7 @@ FLAGS = {"runtime_authorized": False, "external_client_acceptance": False, "migr
 CHECK_KEYS = {"identity_verified", "disk_blank_verified", "tls_inputs_verified", "mount_verified", "parent_traversal_verified", "configuration_verified", "roles_verified", "local_tls_handshake_verified", "boot_persistence_configured"}
 OP_KEYS = {"operation", "exit_code", "status", "duration_ms", "stdout_bytes", "stderr_bytes", "messages", "unclassified_stderr_lines"}
 OPS = {"unit_files", "unit_state", "processes", "tcp", "unix", "clusters", "packages", "locale", "lsblk", "udev", "wipefs", "mounts", "tls_chain", "tls_leaf_lifetime", "tls_ca_lifetime", "tls_ip", "tls_cert_public", "tls_key_public", "mkfs", "filesystem_uuid", "mount", "mounted", "cluster_create", "unmask", "start", "sql_roles", "sql_database", "sql_grants", "sql_config", "sql_role_check", "service_active", "tls_handshake", "enable", "enabled"}
+OPS.add("containment_stop")  # Separate protected helper only; never Operator.run.
 PHRASES = ("Permission denied", "Operation not permitted", "No such file or directory", "certificate has expired", "certificate verify failed", "IP address mismatch", "unable to get local issuer certificate", "Failed to start", "already exists", "Connection refused", "No space left on device")
 BINARIES = ("/usr/bin/systemctl", "/usr/bin/ps", "/usr/bin/ss", "/usr/bin/pg_lsclusters", "/usr/bin/dpkg-query", "/usr/bin/locale",
             "/usr/bin/lsblk", "/usr/bin/udevadm", "/usr/sbin/wipefs", "/usr/bin/findmnt", "/usr/bin/openssl",
@@ -67,6 +68,13 @@ class Blocked(ValueError):
 
 class NativeFailure(Blocked):
     pass
+
+
+class NativeInterruption(Blocked):
+    """Carries the already observed native result across a signal or I/O error."""
+    def __init__(self, code, native_receipt):
+        self.native_receipt = native_receipt
+        super().__init__(code)
 
 
 def require(ok, code):
@@ -265,7 +273,7 @@ def native(operation, argv, payload, timeout):
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=ENV, start_new_session=True, bufsize=0)
     output, errors = bytearray(), bytearray()
     selector = selectors.DefaultSelector()
-    status, code = "ok", None
+    status, code, pending = "ok", None, None
     try:
         for stream, label in ((process.stdout, "stdout"), (process.stderr, "stderr")):
             os.set_blocking(stream.fileno(), False)
@@ -307,24 +315,61 @@ def native(operation, argv, payload, timeout):
                 status = "nonzero_exit"
     except subprocess.TimeoutExpired:
         status = "timeout"
+    except BaseException as error:
+        pending = error
+        status = "interrupted" if isinstance(error, (Blocked, KeyboardInterrupt, SystemExit)) else "io_error"
     finally:
-        selector.close()
-        if process.poll() is None:
+        try:
+            selector.close()
+        except BaseException as error:
+            if pending is None:
+                pending = error
+            status = "cleanup_unconfirmed"
+        finally:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        process.wait(timeout=5)
-        if code is None:
-            code = process.returncode
-        for stream in (process.stdin, process.stdout, process.stderr):
-            if stream is not None and not stream.closed:
-                stream.close()
+                if process.poll() is None:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                process.wait(timeout=5)
+                if code is None:
+                    code = process.returncode
+                # Keep already produced diagnostics, bounded, even on a signal.
+                for stream, target, cap in ((process.stdout, output, OUTPUT_LIMIT), (process.stderr, errors, ERROR_LIMIT)):
+                    if stream is None or stream.closed:
+                        continue
+                    while len(target) < cap:
+                        try:
+                            chunk = os.read(stream.fileno(), min(8192, cap - len(target)))
+                        except BlockingIOError:
+                            break
+                        if not chunk:
+                            break
+                        target.extend(chunk)
+            except BaseException as error:
+                if pending is None:
+                    pending = error
+                if code is None:
+                    code = process.poll()
+                status = "cleanup_unconfirmed"
+            finally:
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None and not stream.closed:
+                        try:
+                            stream.close()
+                        except BaseException as error:
+                            if pending is None:
+                                pending = error
+                            status = "cleanup_unconfirmed"
     lines = errors.decode("utf-8", "replace").splitlines()
     messages = sorted({phrase for line in lines for phrase in PHRASES if phrase.lower() in line.lower()})
     row = {"operation": operation, "exit_code": code, "status": status,
            "duration_ms": int((time.monotonic() - started) * 1000), "stdout_bytes": len(output), "stderr_bytes": len(errors),
            "messages": messages, "unclassified_stderr_lines": sum(not any(p.lower() in line.lower() for p in PHRASES) for line in lines if line.strip())}
+    if pending is not None:
+        reason = str(pending) if isinstance(pending, Blocked) else "operator_interrupted" if isinstance(pending, (KeyboardInterrupt, SystemExit)) else "native_io_or_cleanup_failure"
+        raise NativeInterruption(reason, row) from None
     return bytes(output), row
 
 
@@ -371,6 +416,13 @@ class Operator:
         require(remaining > 0, "operation_time_budget")
         try:
             raw, row = self.runner(operation, argv, payload, min(timeout, remaining))
+        except NativeInterruption as error:
+            self.receipt["native_operations"].append(error.native_receipt)
+            try:
+                self.save()
+            except (OSError, ValueError):
+                self.receipt["journal_error_code"] = "journal_update_unconfirmed"
+            raise Blocked(str(error)) from None
         except Blocked:
             raise
         except (OSError, ValueError, subprocess.SubprocessError):
@@ -753,7 +805,7 @@ def validate_receipt(value):
     require(isinstance(value["native_operations"], list) and len(value["native_operations"]) <= 100, "invalid_guest_receipt_native_operations")
     for row in value["native_operations"]:
         require(isinstance(row, dict) and set(row) == OP_KEYS and row["operation"] in OPS
-                and row["status"] in {"ok", "nonzero_exit", "timeout", "stdout_limit", "stderr_limit", "spawn_error"}
+                and row["status"] in {"ok", "nonzero_exit", "timeout", "stdout_limit", "stderr_limit", "spawn_error", "interrupted", "io_error", "cleanup_unconfirmed"}
                 and (row["exit_code"] is None or type(row["exit_code"]) is int)
                 and all(type(row[key]) is int and row[key] >= 0 for key in ("duration_ms", "stdout_bytes", "stderr_bytes", "unclassified_stderr_lines"))
                 and row["stdout_bytes"] <= OUTPUT_LIMIT and row["stderr_bytes"] <= ERROR_LIMIT

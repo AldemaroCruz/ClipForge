@@ -6,6 +6,12 @@ se ejecutó inicialización, formato, SQL en INT, publicación de secretos, crea
 de Jobs, cambios IAM o despliegue. La propuesta versionada conserva las banderas
 de activación en false; no es una autorización implícita por tener código completo.
 
+La [estabilización posterior a 6c69ddc](DB-01-stabilization.md) documenta las
+causas de CI demostradas, recibos de señales, límites efectivos de migración y
+la contención v2 propuesta. El cierre GUEST-01 y sus observaciones históricas se
+conservan. Las referencias antiguas de fuentes en esta guía corresponden a esa
+evidencia; los hashes actuales están en el contrato y en el recibo del nuevo SHA.
+
 ## Evidencia y bloqueos actuales
 
 GUEST-01 run 44413106524 observó Debian 13 trixie, PostgreSQL/cliente17.12-0+deb13u1,

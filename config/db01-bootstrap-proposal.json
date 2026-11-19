@@ -67,11 +67,11 @@
   "source_sha256": [
     {
       "path": "scripts/int_bootstrap_vm.py",
-      "sha256": "dd478fe9b6f6e4ce0d97bd0357eca67be727e4af4dcdcf71aa89f051cbf40c1f"
+      "sha256": "861de13ce61943a0a9f62118633adab24f413cb4234566cac34cf441eea4a023"
     },
     {
       "path": "scripts/int_bootstrap_db.py",
-      "sha256": "d81244d13ab1ced2ed4f1604a64de8bac055c24c72dc1434f28becd4c4368c0a"
+      "sha256": "c3a9fd51b87355892c6bda0119dd28bc1ba498aea8685ba22a7d4be98872303e"
     },
     {
       "path": ".github/workflows/int-e2e-bootstrap-db.yml",
@@ -115,7 +115,11 @@
     },
     {
       "path": "scripts/int_db_acceptance.py",
-      "sha256": "694ad33669612c0bea42a1df40c01568b5c30a0a5a81e2304be00d8d0d918097"
+      "sha256": "b0d1a7736fe2a0db83bae4b628ebc0d02f1cb74ed5e6524247e3fda8a84154a7"
+    },
+    {
+      "path": "scripts/int_bootstrap_containment.py",
+      "sha256": "7fbc88fae2e4b6aa6e980820df7c0b5ce2183c14b6c6d205a6372cf739ebeff4"
     }
   ],
   "database": {
@@ -450,7 +454,7 @@
     "security_readiness": "blocked_pending_individual_review_and_demonstrated_remediation",
     "interpretation": "Native scan exit 0 means completed evidence collection, not passing a security gate. Existing CI thresholds are unchanged."
   },
-  "base_source_commit": "caf091eb4caf3cbc2ab8e3879b4f5016df524849",
+  "base_source_commit": "6c69ddc2fcaf021fdb4b91d8881c3f549fc02171",
   "candidate_commit_binding": "The future owner decision and dispatch must identify the actual published candidate commit externally; no self-referential commit SHA is embedded here.",
   "superseded_preparation": {
     "proposal_bytes_sha256": "e6ed5583736fd7dd7fa4cf826910fd8571991bd603c9699eddddbe3464d7b564",
@@ -490,7 +494,8 @@
     "minimum_authorization_seconds_remaining": 780,
     "native_phase_count_success": 45,
     "automatic_format_or_initialization_retry": false,
-    "candidate_prepared_is_not_execution_authorized": true
+    "candidate_prepared_is_not_execution_authorized": true,
+    "containment": "scripts/int_bootstrap_containment.py"
   },
   "previous_VM_inventory_SCA": {
     "summary_sha256": "d2b1520c3cb804ede01b8bc6286ff7778107fee3fbb00deacdee18bc6dafcc86",
@@ -541,8 +546,61 @@
   },
   "remediation_proposal": {
     "path": "config/db01-remediation-proposal.json",
-    "sha256": "933ef1d0f081c444c0ba3ad692da29fd1c2c2793796920558506cbf9af9576fa",
+    "sha256": "3ba880b79d2f7b084d4dd8e640aabb7e3497eecd6ec732102155c46c58106fda",
     "risk_accepted": false,
     "installable_corrected_package_verified": false
+  },
+  "stabilization": {
+    "previous_proposal_sha256": "090a612243cf256754daa1b85ee9f81e1f40f371263b5c8ca4c3da28183ef1ee",
+    "previous_source_and_reports_preserved": true,
+    "clean_reproduction": {
+      "affected_tests": 162,
+      "errors": 50,
+      "cause": "All 50 reproduced errors are FileNotFoundError caused by public fixtures missing from the clean CI context/image. IDs, exception types, sanitized frames and missing paths are retained."
+    },
+    "CI_selection": "Literal public support-file selection, exact ancestors, verified manifest and matching CI COPY/ignore rules; no private directory traversal.",
+    "test_diagnostics": "Per failed test ID, qualified exception type and sanitized frame path/function/line; no arbitrary messages, locals, source lines, stdout/stderr or subtest parameter values.",
+    "native_signal_receipt": "Observed native exit and operation retained before interruption propagates; an unobserved exit remains null.",
+    "migration_engine": {
+      "connect_timeout_seconds": 5,
+      "statement_timeout_ms": 15000,
+      "lock_timeout_ms": 3000,
+      "pool": "NullPool",
+      "explicit_engine_passed_to_both_upgrade_calls": true,
+      "engine_disposed": true
+    },
+    "real_occupied_lock_regression": "Disposable PostgreSQL 17.12 TLS: AUTH and cloud locks produce 55P03 near three seconds; already committed AUTH revisions preserved; release only own locks and applied/current verified.",
+    "no_accepted_PG17_compatibility_suites_repeated": true,
+    "no_activation_or_IAM_authorized": true
+  },
+  "containment": {
+    "schema": "clipforge-db01-containment-policy-2",
+    "authorized": false,
+    "action": "single_stop_created_17_main_preserve",
+    "argv": [
+      "/usr/bin/systemctl",
+      "stop",
+      "postgresql@17-main.service"
+    ],
+    "automatic_retry": false,
+    "source_sha256": "7fbc88fae2e4b6aa6e980820df7c0b5ce2183c14b6c6d205a6372cf739ebeff4",
+    "bootstrap_source_sha256": "861de13ce61943a0a9f62118633adab24f413cb4234566cac34cf441eea4a023",
+    "journal_path": "/var/lib/clipforge-postgres/db01/operation.json",
+    "intent_path": "/var/lib/clipforge-postgres/db01/containment-intent.json",
+    "intent_creation_authorized": false,
+    "maximum_seconds": 90
+  },
+  "containment_preparation": {
+    "source": "scripts/int_bootstrap_containment.py",
+    "test": "tests/test_int_bootstrap_containment.py",
+    "source_payload_sha256": "2b9ff3b3da854cf777907945f8e1324658cb139746c9a6307e94c320a667c054",
+    "new_effect_requiring_specific_bootstrap_authority": "Create a root-private exclusive durable containment-intent.json, then send at most one systemctl stop for the verified failed operation cluster. Never replace/delete the intent or original operation journal.",
+    "preconditions": "Verified completed partial-failure receipt, original decision/proposal, same guest boot, exact private journal hash, current UUID/mount/config, effective unit and matching postmaster PID/PGDATA/start ticks.",
+    "unknown_or_missing_receipt": "No blind stop; preserve evidence and diagnose. No second initialization or stop attempt.",
+    "systemd_limit": "Controller wait is bounded; termination of its systemctl client does not cancel the systemd stop job (the reviewed unit has TimeoutStopSec=1h). An unresolved outcome consumes the intent and remains unknown.",
+    "configuration_changes": false,
+    "data_deletion_or_reinitialization": false,
+    "restart_or_mask_changes": false,
+    "current_execution_authorized": false
   }
 }

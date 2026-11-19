@@ -25,9 +25,11 @@ from scripts import int_release
 ROOT = Path(__file__).resolve().parents[1]
 PROPOSAL = ROOT / "config/db01-bootstrap-proposal.json"
 OPERATOR = ROOT / "scripts/int_bootstrap_vm.py"
+CONTAINMENT = ROOT / "scripts/int_bootstrap_containment.py"
 DISK_ID = "6427691858848206684"
 MAX_OPERATION_SECONDS = 600
 CLEANUP_MARGIN_SECONDS = 180
+CONTAINMENT_SSH_SECONDS = 100  # Guest90 plus ten seconds for its closed receipt.
 MIN_TLS_SECONDS = 604800
 SECRET_FIELDS = {"app_password": "INT_PG_APP_PASSWORD", "migrator_password": "INT_PG_MIGRATOR_PASSWORD",
                  "server_cert": "INT_PG_SERVER_CERT", "server_key": "INT_PG_SERVER_KEY", "ca_cert": "INT_PG_CA_CERT"}
@@ -54,7 +56,7 @@ def source_bindings(proposal):
         require(t.sha(t._local_bytes(ROOT / name, 2 * 1024 * 1024)) == digest, "db01_reviewed_source_changed")
         result[name] = digest
     require({"scripts/int_bootstrap_db.py", "scripts/int_bootstrap_vm.py", "scripts/int_guest_inventory.py",
-             "scripts/int_guest_inventory_guest.py", "scripts/int_guest_db_observe.py", ".github/workflows/int-e2e-bootstrap-db.yml"} <= set(result), "db01_complete_source_closure_required")
+             "scripts/int_bootstrap_containment.py", "scripts/int_guest_inventory_guest.py", "scripts/int_guest_db_observe.py", ".github/workflows/int-e2e-bootstrap-db.yml"} <= set(result), "db01_complete_source_closure_required")
     return result
 
 
@@ -96,7 +98,8 @@ def validate_decision(raw, expected_sha, proposal_raw, env, *, now=None):
 
 def preflight(env, decision_raw, decision_sha, host_raw, baseline_raw):
     selection = t.validate_deploy_credentials(env, t._credential_document(env))
-    decision, proposal = validate_decision(decision_raw, decision_sha, t._local_bytes(PROPOSAL), env)
+    proposal_raw = t._local_bytes(PROPOSAL)
+    decision, proposal = validate_decision(decision_raw, decision_sha, proposal_raw, env)
     bindings = source_bindings(proposal)
     pin = t.validate_hostkey_bundle(host_raw, decision["host_evidence_sha256"])
     require(t.sha(baseline_raw) == decision["baseline_evidence_sha256"], "db01_baseline_evidence_digest")
@@ -114,7 +117,7 @@ def preflight(env, decision_raw, decision_sha, host_raw, baseline_raw):
     vm, boot, data = (client.request("GET", url) for url in (t.VM_URL, t.BOOT_URL, t.DATA_URL))
     current = t.validate_compute_snapshot(vm, boot, data, pin)
     profile = client.profile()
-    return {"decision": decision, "proposal": proposal, "source_bindings": bindings, "pin": pin,
+    return {"decision": decision, "proposal": proposal, "proposal_raw": proposal_raw, "source_bindings": bindings, "pin": pin,
             "baseline": baseline, "baseline_proof": proof, "credential_selection": selection,
             "current_compute_snapshot": current, "oslogin_profile": t.validate_deploy_profile(profile)}
 
@@ -175,14 +178,36 @@ class BootstrapProcesses(t.ProcessRunner):
     def __init__(self, *args, operator_source, operator_sha, **kwargs):
         super().__init__(*args, **kwargs)
         self.loader = remote_loader(operator_source, operator_sha)
+        self.operator_source, self.operator_sha = operator_source, operator_sha
+        self.containment_armed = self.containment_invoked = self.containment_inflight = False
         self.bootstrap_input = None
+
+    def arm_containment(self, source, digest, protected_input):
+        from scripts import int_bootstrap_containment as containment
+        require(not self.containment_armed and self.bootstrap_input is not None, "db01_containment_cannot_be_rearmed")
+        containment.authorize(t.decode(protected_input), digest, self.operator_sha)
+        bundle = containment.public_payload(self.operator_source, source, self.operator_sha, digest)
+        self.loader = remote_loader(bundle, t.sha(bundle))
+        self.bootstrap_input = protected_input
+        self.containment_armed = True
 
     def _kind(self, argv, input_data):
         if self.username is not None and self.bootstrap_input is not None and input_data == self.bootstrap_input:
+            require(not self.containment_invoked or self.containment_inflight, "db01_containment_cannot_be_replayed")
             try: port = int(argv[argv.index("-p") + 1])
             except (ValueError, TypeError, IndexError): raise t.Blocked("db01_unreviewed_process") from None
             if argv == bootstrap_ssh_command(self.work, self.username, port, self.loader): return "ssh"
         return super()._kind(argv, input_data)
+
+    def run(self, argv, input_data=None, **kwargs):
+        if self.containment_armed and input_data == self.bootstrap_input:
+            require(not self.containment_invoked, "db01_containment_cannot_be_replayed")
+            self.containment_invoked = self.containment_inflight = True
+            try:
+                return super().run(argv, input_data, **kwargs)
+            finally:
+                self.containment_inflight = False
+        return super().run(argv, input_data, **kwargs)
 
     def _start(self, argv, kind):
         if kind == "ssh" and self.bootstrap_input is not None and argv and argv[-1] == self.loader:
@@ -193,7 +218,7 @@ class BootstrapProcesses(t.ProcessRunner):
 
 
 def phase(work, journal, name, status, **metadata):
-    require(name in {"preflight", "tls", "key", "observe", "bootstrap", "postcheck", "cleanup"}
+    require(name in {"preflight", "tls", "key", "observe", "bootstrap", "containment", "postcheck", "cleanup"}
             and status in {"started", "completed", "unknown", "blocked"}, "db01_phase_status")
     journal["phases"].append({"phase": name, "status": status, "observed_utc": datetime.now(timezone.utc).isoformat(), **metadata})
     target, pending = work / "db01-journal.json", work / "db01-journal.next.json"
@@ -222,6 +247,102 @@ def checked_guest_result(receipt, code, expected):
     require(core <= set(expected) <= allowed and code in {0, 2, 3} and code == receipt["exit_code"]
             and all(receipt[key] == value for key, value in expected.items()), "db01_guest_receipt_scope_or_exit_mismatch")
     return receipt
+
+
+def checked_containment_result(value, code, original, decision_sha):
+    """No arbitrary guest fields or success without matching operation scope."""
+    from scripts import int_bootstrap_containment as containment
+    from scripts import int_bootstrap_vm as operator
+    required = {"schema", "status", "stop_attempted", "native_operations", "data_reinitialized", "configuration_restored",
+                "restart_attempted", "IAM_or_state_written", "configuration_and_journal_preserved", "intent_creation_attempted",
+                "intent_created", "intent_path", "intent_sha256"}
+    bindings = {"operation_id": original["operation_id"], "approved_commit": original["approved_commit"],
+                "owner_decision_sha256": decision_sha, "journal_sha256": original["journal_sha256"]}
+    allowed = required | set(bindings) | {"error_code", "filesystem_uuid", "mount_preserved"}
+    require(isinstance(value, dict) and required <= set(value) <= allowed
+            and value["schema"] == "clipforge-db01-containment-receipt-1", "db01_closed_containment_receipt_required")
+    statuses = {"blocked_before_stop": 1, "stop_outcome_unknown_preserve_and_review": 1, "created_cluster_stopped_preserved": 0}
+    require(value["status"] in statuses and type(code) is int and code == statuses[value["status"]], "db01_containment_exit_mismatch")
+    for key in ("data_reinitialized", "configuration_restored", "restart_attempted", "IAM_or_state_written"):
+        require(value[key] is False, "db01_containment_forbidden_effect")
+    for key in ("stop_attempted", "configuration_and_journal_preserved", "intent_creation_attempted", "intent_created"):
+        require(type(value[key]) is bool, "db01_containment_receipt_boolean")
+    require(value["intent_path"] == containment.INTENT.as_posix()
+            and (value["intent_sha256"] is None or re.fullmatch(r"[a-f0-9]{64}", value["intent_sha256"]))
+            and (not value["intent_created"] or value["intent_creation_attempted"] and value["intent_sha256"] is not None)
+            and all(value.get(k, v) == v for k, v in bindings.items()), "db01_containment_receipt_scope_mismatch")
+    require("error_code" not in value or isinstance(value["error_code"], str)
+            and re.fullmatch(r"[a-z0-9_]{1,100}", value["error_code"]), "db01_containment_error_code")
+    if value["intent_creation_attempted"]:
+        require(all(value.get(k) == v for k, v in bindings.items()), "db01_containment_intent_scope_mismatch")
+    operator.validate_receipt({**original, "native_operations": value["native_operations"]})
+    stops = [row for row in value["native_operations"] if row["operation"] == "containment_stop"]
+    require(len(stops) <= 1 and (value["stop_attempted"] or not stops), "db01_containment_stop_count")
+    if value["stop_attempted"]:
+        require(value["intent_created"] and all(value.get(k) == v for k, v in bindings.items()), "db01_containment_receipt_scope_mismatch")
+    else:
+        require(value["status"] == "blocked_before_stop", "db01_containment_stop_status")
+    if code == 0:
+        require(value["stop_attempted"] and value["configuration_and_journal_preserved"] and value.get("mount_preserved") is True
+                and value.get("filesystem_uuid") == original["filesystem_uuid"] and len(stops) == 1
+                and stops[0]["status"] == "ok" and type(stops[0]["exit_code"]) is int and stops[0]["exit_code"] == 0,
+                "db01_containment_success_incomplete")
+    return value
+
+
+def maybe_contain_failed_guest(result, ready, *, env, processes, port, key_expiration_us, expected_guest,
+                               decision_raw, decision_sha, work, journal):
+    """One pre-authorized containment attempt; original failure is immutable."""
+    outcome = {"status": "not_attempted", "ssh_attempted": False, "receipt_scope_verified": False}
+    receipt = result.get("guest_receipt")
+    if result.get("guest_receipt_scope_verified") is not True or not isinstance(receipt, dict) \
+            or receipt.get("status") != "partial_preserved" or type(receipt.get("exit_code")) is not int or receipt["exit_code"] != 3:
+        return {**outcome, "reason": "no_scope_verified_partial_receipt"}
+    policy = ready.get("proposal", {}).get("containment", {})
+    if not isinstance(policy, dict) or policy.get("authorized") is not True or policy.get("intent_creation_authorized") is not True:
+        return {**outcome, "reason": "containment_not_authorized_in_original_proposal"}
+    from scripts import int_bootstrap_vm as operator
+    try:
+        from scripts import int_bootstrap_containment as containment
+        operator.validate_receipt(receipt)
+        require(isinstance(expected_guest, dict), "db01_containment_original_scope_unavailable")
+        checked_guest_result(receipt, 3, expected_guest)
+        require(isinstance(receipt.get("finished_utc"), str) and receipt.get("journal_error_code") is None
+                and len([row for row in receipt["native_operations"] if row["operation"] == "start"]) == 1,
+                "db01_containment_finished_start_receipt_required")
+        bootstrap_sha = ready["source_bindings"]["scripts/int_bootstrap_vm.py"]
+        own_sha = ready["source_bindings"]["scripts/int_bootstrap_containment.py"]
+        require(processes is not None and processes.username is not None and type(port) is int, "db01_containment_existing_transport_required")
+        proposal_raw = t._local_bytes(PROPOSAL)
+        require(proposal_raw == ready["proposal_raw"], "db01_containment_original_proposal_changed")
+        payload = {"schema": "clipforge-db01-containment-input-1", "owner_decision_json": decision_raw.decode("ascii"),
+            "owner_decision_sha256": decision_sha, "proposal_json": proposal_raw.decode("ascii"), "journal_sha256": receipt["journal_sha256"]}
+        epoch = time.time()
+        containment.authorize(payload, own_sha, bootstrap_sha, now=datetime.fromtimestamp(epoch, timezone.utc))
+        token_start = env.get("INT_GCP_AUTH_STARTED_EPOCH", "")
+        margin = CONTAINMENT_SSH_SECONDS + CLEANUP_MARGIN_SECONDS
+        require(type(key_expiration_us) is int and key_expiration_us / 1000000 - epoch >= margin,
+                "db01_containment_key_margin_insufficient")
+        require(re.fullmatch(r"[1-9][0-9]{9,11}", token_start) and 0 <= epoch - int(token_start)
+                and int(token_start) + 900 - epoch >= margin, "db01_containment_token_margin_insufficient")
+        source = t._local_bytes(CONTAINMENT, 131072)
+        require(t.sha(source) == own_sha, "db01_containment_source_changed")
+        private = t.canonical(payload)
+        require(len(private) <= 65536, "db01_containment_input_bound")
+        processes.arm_containment(source, own_sha, private)
+        phase(work, journal, "containment", "started")
+        outcome.update(status="unknown_preserve_and_review", ssh_attempted=True)
+        code, raw, stderr = processes.run(bootstrap_ssh_command(work, processes.username, port, processes.loader), private,
+            timeout=CONTAINMENT_SSH_SECONDS, stdout_limit=65536, stderr_limit=8192)
+        outcome.update(ssh={"exit_code": code, **t.process_diagnostic(stderr)}, receipt_sha256=t.sha(raw), stdout_bytes=len(raw))
+        value = checked_containment_result(t.decode(raw), code, receipt, decision_sha)
+        outcome.update(status=value["status"], receipt=value, receipt_scope_verified=value["stop_attempted"])
+        phase(work, journal, "containment", "completed", native_exit=code, receipt_sha256=t.sha(raw))
+    except BaseException as error:
+        outcome["error_code"] = str(error) if isinstance(error, (t.Blocked, operator.Blocked)) else "db01_containment_details_withheld"
+        if isinstance(error, t.Failure): outcome["failure"] = error.receipt
+        if not outcome["ssh_attempted"]: outcome["reason"] = outcome["error_code"]
+    return outcome
 
 
 def failure_status(journal):
@@ -264,6 +385,7 @@ def run(env, *, workdir, reports, decision_raw, decision_sha, host_raw, baseline
               "owner_decision_sha256": decision_sha, "runtime_authorized": False, "migrations_applied": False,
               "external_client_acceptance": False, "restore_verified": False}
     processes, previous = None, {}
+    port, expiration, expected_guest = None, None, None
     client = t.Client(lambda: env.get("GCP_ACCESS_TOKEN", ""))
     try:
         def interrupted(signum, frame):
@@ -328,16 +450,17 @@ def run(env, *, workdir, reports, decision_raw, decision_sha, host_raw, baseline
             "confirmation": ready["decision"]["confirmation"], "disk_proof": fresh, "secrets": values}
         private = t.canonical(request); require(len(private) <= 65536, "db01_protected_input_bound")
         processes.bootstrap_input = private
+        expected_guest = {"operation_id": journal["operation_id"], "approved_commit": env["GITHUB_SHA"],
+            "proposal_sha256": ready["decision"]["proposal_sha256"], "operator_sha256": operator_sha,
+            "disk_id": DISK_ID, "guest_boot_id": fresh["guest_boot_id"], "disk_proof_sha256": t.sha(t.canonical(fresh)),
+            "guest_read_receipt_sha256": fresh["guest_read_receipt_sha256"], "guest_read_source_sha256": fresh["guest_read_source_sha256"]}
         phase(work, journal, "bootstrap", "started")
         code, raw, stderr = processes.run(bootstrap_ssh_command(work, selected["username"], port, processes.loader), private,
                                      timeout=600, stdout_limit=65536, stderr_limit=8192)
         result["bootstrap_ssh"] = {"exit_code": code, **t.process_diagnostic(stderr)}
         receipt = operator.validate_receipt(t.decode(raw))
         result.update(guest_receipt=receipt, guest_receipt_scope_verified=False)
-        checked_guest_result(receipt, code, {"operation_id": journal["operation_id"], "approved_commit": env["GITHUB_SHA"],
-            "proposal_sha256": ready["decision"]["proposal_sha256"], "operator_sha256": operator_sha,
-            "disk_id": DISK_ID, "guest_boot_id": fresh["guest_boot_id"], "disk_proof_sha256": t.sha(t.canonical(fresh)),
-            "guest_read_receipt_sha256": fresh["guest_read_receipt_sha256"], "guest_read_source_sha256": fresh["guest_read_source_sha256"]})
+        checked_guest_result(receipt, code, expected_guest)
         result["guest_receipt_scope_verified"] = True
         phase(work, journal, "bootstrap", "completed", native_exit=code, receipt_sha256=t.sha(raw))
         vm, boot, data = (client.request("GET", url) for url in (t.VM_URL, t.BOOT_URL, t.DATA_URL))
@@ -349,16 +472,23 @@ def run(env, *, workdir, reports, decision_raw, decision_sha, host_raw, baseline
         if isinstance(error, t.Failure): result["failure"] = error.receipt
     finally:
         try:
-            if processes is not None: processes.close()
-        except Exception:
-            result["process_cleanup"] = "unconfirmed"
+            result["containment"] = maybe_contain_failed_guest(result, ready, env=env, processes=processes, port=port,
+                key_expiration_us=expiration, expected_guest=expected_guest, decision_raw=decision_raw,
+                decision_sha=decision_sha, work=work, journal=journal)
+        except BaseException:
+            result["containment"] = {"status": "unknown_preserve_and_review", "error_code": "db01_containment_unexpected_failure"}
         finally:
             try:
-                result["cleanup"] = cleanup(env, work, output, client=client)
+                if processes is not None: processes.close()
+            except Exception:
+                result["process_cleanup"] = "unconfirmed"
             finally:
-                for number, handler in previous.items():
-                    try: signal.signal(number, handler)
-                    except Exception: result["signal_handler_restore"] = "unconfirmed"
+                try:
+                    result["cleanup"] = cleanup(env, work, output, client=client)
+                finally:
+                    for number, handler in previous.items():
+                        try: signal.signal(number, handler)
+                        except Exception: result["signal_handler_restore"] = "unconfirmed"
     if result["cleanup"]["status"] not in {"own_key_removed", "key_already_absent", "no_registered_key"} or result.get("process_cleanup") == "unconfirmed":
         result["status"] = "unknown_preserve_and_review"
     try:

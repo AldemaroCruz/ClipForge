@@ -132,6 +132,71 @@ class CIRunnerTests(unittest.TestCase):
         self.assertEqual(report["tests"]["errors"], 1)
         self.assertEqual(report["exit_code"], 1)
 
+    def test_failure_error_and_subtest_tracebacks_withhold_messages_locals_and_output(self):
+        secret = "SYNTHETIC_PRIVATE_VALUE_NEVER_PUBLISH"
+        class Cases(unittest.TestCase):
+            def test_error(self):
+                local_credential = secret
+                print(local_credential)
+                print(local_credential, file=sys.stderr)
+                raise RuntimeError(local_credential)
+            def test_failure(self):
+                self.fail(secret)
+            def test_subtest(self):
+                with self.subTest(password=secret):
+                    raise ValueError(secret)
+        output = io.StringIO()
+        report = ci.run_ci(Path(__file__).resolve().parents[1], environ=self.environment,
+                           command_runner=self.command, which=lambda name: "/fixture/" + name,
+                           discover=lambda root: unittest.defaultTestLoader.loadTestsFromTestCase(Cases), stream=output)
+        self.assertEqual(report["tests"]["tests_run"], 3)
+        self.assertEqual(report["tests"]["errors"], 2)
+        self.assertEqual(report["tests"]["failures"], 1)
+        self.assertEqual(report["exit_code"], 1)
+        self.assertNotIn(secret, json.dumps(report) + output.getvalue())
+        rows = report["test_diagnostics"]
+        self.assertEqual(len(rows), 3)
+        self.assertEqual({row["exception_type"] for row in rows},
+                         {"builtins.RuntimeError", "builtins.AssertionError", "builtins.ValueError"})
+        for row in rows:
+            self.assertTrue(row["exception_message_withheld"])
+            self.assertFalse(row["locals_included"])
+            self.assertFalse(row["source_lines_included"])
+            self.assertTrue(any(frame["file"] == "tests/test_ci_runner.py" for frame in row["traceback"]))
+            self.assertTrue(all(set(frame) == {"file", "line", "function"} for frame in row["traceback"]))
+
+    def test_missing_public_source_is_actionable_without_exposing_private_path(self):
+        root = Path(__file__).resolve().parents[1]
+        for relative, expected in (("config/int-foundation-contract.json", True),
+                                   ("config/gha-creds-synthetic.json", False)):
+            class Missing(unittest.TestCase):
+                def runTest(self):
+                    raise FileNotFoundError(2, "PRIVATE_EXCEPTION_MESSAGE", str(root / relative))
+            report = self.gate(suite_factory=lambda: unittest.TestSuite([Missing()]))
+            row = report["test_diagnostics"][0]
+            self.assertEqual(row["exception_type"], "builtins.FileNotFoundError")
+            self.assertEqual("missing_source_path" in row, expected)
+            if expected:
+                self.assertEqual(row["missing_source_path"], relative)
+            else:
+                self.assertNotIn(relative, json.dumps(report))
+            self.assertNotIn("PRIVATE_EXCEPTION_MESSAGE", json.dumps(report))
+
+    def test_exception_string_and_skip_reason_cannot_enter_the_public_stream(self):
+        class UnprintableError(Exception):
+            def __str__(self):
+                raise AssertionError("exception __str__ must never execute")
+        class Cases(unittest.TestCase):
+            def test_error(self): raise UnprintableError()
+            @unittest.skip("PRIVATE_SKIP_REASON")
+            def test_skip(self): pass
+        output = io.StringIO()
+        result = ci.execute_suite(unittest.defaultTestLoader.loadTestsFromTestCase(Cases), output)
+        self.assertEqual(len(result.errors), 1)
+        self.assertEqual(len(result.skipped), 1)
+        self.assertNotIn("PRIVATE_SKIP_REASON", output.getvalue())
+        self.assertEqual(len(result.test_diagnostics), 2)
+
     def test_discovery_exception_fails_after_all_checks_without_leaking_message(self):
         def broken(root):
             raise ImportError("PRIVATE_FIXTURE_IMPORT")

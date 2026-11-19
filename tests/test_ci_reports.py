@@ -100,13 +100,12 @@ def create_fixture(tmpRoot):
         target.write_text("FIXTURE_ONLY = 1\n" if target.suffix == ".py" else "# " + SYNTHETIC + "\n",
                           encoding="utf-8")
     workflow = source / ".github/workflows/ci.yml"
-    workflow.parent.mkdir(parents=True)
+    workflow.parent.mkdir(parents=True, exist_ok=True)
     workflow.write_text("# " + SYNTHETIC + "\nname: synthetic\non: push\njobs: {}\n", encoding="utf-8")
+    (source / ".gitleaks.toml").write_bytes(fixture_policy_bytes())
     context.prepare_context(source, prepared, reports / "context-manifest.json")
     context_manifest = read_json(reports / "context-manifest.json")
-    (source / ".gitleaks.toml").write_bytes(fixture_policy_bytes())
-    tracked = sorted([record["path"] for record in context_manifest["files"]]
-                     + [".github/workflows/ci.yml", ".gitleaks.toml"])
+    tracked = sorted(record["path"] for record in context_manifest["files"])
     index = root / "tracked-fixture-paths.txt"
     index.write_bytes(("\0".join(tracked) + "\0").encode("utf-8"))
     scan.prepare_scan(source, index, root / "scan")
@@ -1157,7 +1156,7 @@ class CIReportContractTests(unittest.TestCase):
                 self.rejects_report("gitleaks-source.json", report, "gitleaks")
 
     def test_gitleaks_requires_separate_policy_execution_and_precision_evidence(self):
-        self.assertFalse((self.context / ".gitleaks.toml").exists())
+        self.assertEqual((self.context / ".gitleaks.toml").read_bytes(), fixture_policy_bytes())
         self.assertEqual(policy.validate_policy(self.reports / "gitleaks-policy.toml")["sha256"], policy.POLICY_SHA256)
         for name, control in (("gitleaks-policy.toml", "gitleaks_execution"),
                               ("gitleaks-execution.json", "gitleaks_execution"),
@@ -1256,15 +1255,17 @@ class CIReportContractTests(unittest.TestCase):
                 self.rejects_report("actionlint-summary.json", report, "actionlint")
 
     def test_missing_workflow_record_and_null_hash_cannot_compare_equal(self):
+        actionlint = read_json(self.reports / "actionlint-summary.json")
+        actionlint["workflow_sha256"] = None
+        self.rejects_report("actionlint-summary.json", actionlint, "actionlint")
         source_scan = read_json(self.reports / "source-scan-manifest.json")
         source_scan["files"] = [row for row in source_scan["files"] if row["path"] != ".github/workflows/ci.yml"]
         write_json(self.reports / "source-scan-manifest.json", source_scan)
-        actionlint = read_json(self.reports / "actionlint-summary.json")
-        actionlint["workflow_sha256"] = None
         write_json(self.reports / "actionlint-summary.json", actionlint)
-        result = gate.validate_reports(self.reports, self.context)
-        self.assertEqual(result["status"], "failed")
-        self.assertTrue(any(error["control"] == "actionlint" for error in result["errors"]))
+        # Workflow sources now belong to the build context too: omission must
+        # fail the stronger source-coverage boundary before individual gates.
+        with self.assertRaisesRegex(gate.ValidationError, "cover build sources exactly"):
+            gate.validate_reports(self.reports, self.context)
 
     def test_source_scan_must_cover_context_without_unsafe_paths(self):
         original = read_json(self.reports / "source-scan-manifest.json")

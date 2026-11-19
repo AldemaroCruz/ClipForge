@@ -41,6 +41,12 @@ RUN --network=none python -m pip install --no-index --find-links=/opt/ci-wheels 
 COPY app/ ./app/
 COPY scripts/ ./scripts/
 COPY tests/ ./tests/
+# Unit contracts inspect these public sources; the verified context selects
+# exact filenames and excludes credentials, backend state, plans and tfvars.
+COPY config/ ./config/
+COPY infra/ ./infra/
+COPY .github/ ./.github/
+COPY .gitleaks.toml ./
 # Packaging regressions inspect the production files as source; they do not
 # replace this CI image's separately locked dependency set.
 COPY Dockerfile requirements.txt requirements-test.txt requirements-ci.lock requirements-ci-tools.txt requirements-ci-tools.lock ./
