@@ -49,7 +49,7 @@ class CIContextTests(unittest.TestCase):
         self.assertFalse((self.destination / self.manifest.name).exists())
 
     def test_public_contract_hcl_workflow_and_scanner_sources_are_explicit_and_complete(self):
-        expected = {"config/int-db01-noble-read-iam.json",
+        expected = {"config/int-db01-noble-read-iam.json", "config/int-db01-noble-write-iam.json",
                     "config/int-foundation-contract.json", "config/int-foundation-recovery.json",
                     "config/int-foundation-history/5800b4c-recovery-contract.json",
                     "infra/gcp/int-base/versions.tf", "infra/gcp/int-base/postgres-install.sh",

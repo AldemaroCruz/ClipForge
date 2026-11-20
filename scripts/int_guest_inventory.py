@@ -422,11 +422,13 @@ def process_diagnostic(raw):
 
 class ProcessRunner:
     """Only fixed SSH/keygen/tunnel commands, bounded pipes and own sessions."""
-    def __init__(self, work, gcloud, payload, run_tag, journal_callback=None, *, maximum_process_seconds=180):
+    def __init__(self, work, gcloud, payload, run_tag, journal_callback=None, *, maximum_process_seconds=180,
+                 ssh_builder=ssh_command, tunnel_builder=tunnel_command):
         require(type(maximum_process_seconds) is int and maximum_process_seconds in {180, 600}, "reviewed_process_budget")
         self.maximum_process_seconds = maximum_process_seconds
         self.work, self.gcloud, self.payload, self.run_tag = Path(work), gcloud, payload, run_tag
         self.journal_callback = journal_callback or (lambda row: None)
+        self.ssh_builder, self.tunnel_builder = ssh_builder, tunnel_builder
         self.owned = []
         self.username = None
         self.tunnel_errors = threading.Event()
@@ -445,14 +447,14 @@ class ProcessRunner:
                 port = int(argv[argv.index("-p") + 1])
             except (ValueError, IndexError, TypeError):
                 raise Blocked("unreviewed_local_process") from None
-            if argv == ssh_command(self.work, self.username, port):
+            if argv == self.ssh_builder(self.work, self.username, port):
                 return "ssh"
         raise Blocked("unreviewed_local_process")
 
     def _start(self, argv, kind):
         if kind == "tunnel":
             ports = [arg.split(":")[-1] for arg in argv if isinstance(arg, str) and arg.startswith("--local-host-port=127.0.0.1:")]
-            require(len(ports) == 1 and ports[0].isdigit() and argv == tunnel_command(self.gcloud, int(ports[0])), "unreviewed_tunnel_process")
+            require(len(ports) == 1 and ports[0].isdigit() and argv == self.tunnel_builder(self.gcloud, int(ports[0])), "unreviewed_tunnel_process")
         else:
             require(self._kind(argv, self.payload if kind == "ssh" else None) == kind, "unreviewed_local_process")
         process = subprocess.Popen(argv, stdin=subprocess.PIPE if kind == "ssh" else subprocess.DEVNULL,
@@ -528,7 +530,7 @@ class ProcessRunner:
                     stream.close()
 
     def start_tunnel(self, port):
-        argv = tunnel_command(self.gcloud, port)
+        argv = self.tunnel_builder(self.gcloud, port)
         process = self._start(argv, "tunnel")
         def drain(stream, limit, save=False):
             size = 0

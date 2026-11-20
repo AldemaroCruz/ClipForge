@@ -55,6 +55,7 @@ SUPPORT_FILES = frozenset({
     'config/db01-migration-client-proposal.json',
     'config/db01-remediation-proposal.json',
     'config/int-db01-noble-read-iam.json',
+    'config/int-db01-noble-write-iam.json',
     'config/int-e2e01-decisions.json',
     'config/int-foundation-close.json',
     'config/int-foundation-contract.json',

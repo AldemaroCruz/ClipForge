@@ -1,0 +1,110 @@
+name: ClipForge INT exact DB-01 Noble creation
+
+on:
+  workflow_dispatch:
+    inputs:
+      approved_control_commit:
+        description: Exact execution controls SHA in the separate owner authorization
+        type: string
+        required: true
+      owner_decision:
+        description: Immutable private creation-and-observation owner decision reference JSON
+        type: string
+        required: true
+
+permissions: {}
+concurrency:
+  group: clipforge-int-terraform-state
+  cancel-in-progress: false
+
+jobs:
+  create-noble:
+    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    environment: int
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+      GCP_TERRAFORM_SA: ${{ vars.GCP_TERRAFORM_SA }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
+      DB01_NOBLE_APPROVED_CONTROL_COMMIT: ${{ inputs.approved_control_commit }}
+      DB01_NOBLE_OWNER_DECISION: ${{ inputs.owner_decision }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out exact creation controls without retained credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Check out immutable Noble plan sources separately
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: c302dcc366ed450f91c1693072eb9008e7975e4c
+          path: plan-source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify exact execution sources and allocate private scratch
+        id: scratch
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test "$GITHUB_SHA" = "$DB01_NOBLE_APPROVED_CONTROL_COMMIT"
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$(git -C plan-source rev-parse HEAD)" = c302dcc366ed450f91c1693072eb9008e7975e4c
+          git check-ignore --no-index --quiet gha-creds-db01-noble-apply.json
+          test -z "$(git ls-files -- ':(glob)**/gha-creds-*.json')"
+          python -B -m scripts.int_noble_apply check
+          python -B -m unittest tests.test_int_noble_apply
+          printf 'TF_INT_WORK_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/clipforge-tf-int01.XXXXXXXX")" >> "$GITHUB_ENV"
+          printf 'TF_INT_REPORT_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/clipforge-tf-report.XXXXXXXX")" >> "$GITHUB_ENV"
+
+      - name: Prepare the exact Terraform release
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.15.8
+          terraform_wrapper: false
+
+      - name: Authenticate existing Terraform identity through protected WIF
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_TERRAFORM_SA }}
+          token_format: access_token
+          access_token_lifetime: 1800s
+          create_credentials_file: true
+          export_environment_variables: true
+          cleanup_credentials: true
+
+      - name: Verify authorization, apply saved Noble binary once, and reconcile by read
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          GH_TOKEN: ${{ github.token }}
+        run: python -B -m scripts.int_noble_apply apply
+
+      - name: Retain only the sanitized creation or reconciliation summary
+        if: ${{ always() && steps.scratch.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: db01-noble-apply-summary-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.TF_INT_REPORT_DIR }}/summary.json
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false
+
+      - name: Remove only this run's local plans and Terraform scratch
+        if: ${{ always() && steps.scratch.outcome == 'success' }}
+        run: python -B -m scripts.tf_int_plan cleanup

@@ -1,0 +1,97 @@
+{
+  "schema": "clipforge-db01-noble-write-iam-1",
+  "principal": "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com",
+  "not_before_utc": "2026-11-20T22:00:00Z",
+  "expires_utc": "2026-11-21T00:00:00Z",
+  "roles": {
+    "projects/clipforgebeta2/roles/clipforgeIntNobleSaCreateAttach": {
+      "mode": "create",
+      "definition": {
+        "title": "INT Noble service account create and attach",
+        "description": "Temporary service-account creation, lookup, policy read and attachment for the reviewed Noble saved plan.",
+        "stage": "GA",
+        "includedPermissions": [
+          "iam.serviceAccounts.actAs",
+          "iam.serviceAccounts.create",
+          "iam.serviceAccounts.get",
+          "iam.serviceAccounts.getIamPolicy"
+        ]
+      }
+    },
+    "projects/clipforgebeta2/roles/clipforgeIntNobleSaBindDeploy": {
+      "mode": "create",
+      "definition": {
+        "title": "INT Noble service account policy setter",
+        "description": "Temporary permission for the reviewed serviceAccountUser IAM membership in the Noble saved plan.",
+        "stage": "GA",
+        "includedPermissions": ["iam.serviceAccounts.setIamPolicy"]
+      }
+    },
+    "projects/clipforgebeta2/roles/clipforgeIntNobleIapZoneRead": {
+      "mode": "create",
+      "definition": {
+        "title": "INT Noble zonal IAP policy read",
+        "description": "Temporary verification of the us-central1-a IAP zone policy before and after the saved plan.",
+        "stage": "GA",
+        "includedPermissions": ["iap.tunnelZones.getIamPolicy"]
+      }
+    },
+    "projects/clipforgebeta2/roles/clipforgeIntRecoveryIapPolicy_20261118T044838Z": {
+      "mode": "reuse",
+      "definition": {
+        "title": "INT recovery fixed VM IAP policy",
+        "description": "Proposal INT foundation recovery; binding expires 2026-11-18T04:48:38Z; no delete/update/payload authority.",
+        "stage": "GA",
+        "includedPermissions": ["iap.tunnelInstances.getIamPolicy", "iap.tunnelInstances.setIamPolicy"]
+      }
+    }
+  },
+  "policies": {
+    "projects/clipforgebeta2": {
+      "baseline_policy_sha256": "1e2c55364cdb425753ea08939ccc28551e65c44fa81f614ac86101ef9ccca8d6",
+      "add_bindings": [
+        {
+          "role": "projects/clipforgebeta2/roles/clipforgeIntNobleSaCreateAttach",
+          "members": ["serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"],
+          "condition": {
+            "title": "clipforge_int_noble_sa_attach_20261121T000000Z",
+            "description": "Time-limited Noble saved-plan creation and service-account attachment in INT",
+            "expression": "request.time >= timestamp(\"2026-11-20T22:00:00Z\") && request.time < timestamp(\"2026-11-21T00:00:00Z\")"
+          }
+        },
+        {
+          "role": "projects/clipforgebeta2/roles/clipforgeIntNobleSaBindDeploy",
+          "members": ["serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"],
+          "condition": {
+            "title": "clipforge_int_noble_sa_member_20261121T000000Z",
+            "description": "Time-limited service-account policy edits, limited to serviceAccountUser",
+            "expression": "request.time >= timestamp(\"2026-11-20T22:00:00Z\") && request.time < timestamp(\"2026-11-21T00:00:00Z\") && api.getAttribute(\"iam.googleapis.com/modifiedGrantsByRole\", []).hasOnly([\"roles/iam.serviceAccountUser\"])"
+          }
+        }
+      ]
+    },
+    "projects/816643438938/iap_tunnel/zones/us-central1-a": {
+      "baseline_policy_sha256": "de8e97540ca3499319bd4571ad89c465fd68328a4c4f26d143ca6f58d31816ac",
+      "add_bindings": [
+        {
+          "role": "projects/clipforgebeta2/roles/clipforgeIntRecoveryIapPolicy_20261118T044838Z",
+          "members": ["serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"],
+          "condition": {
+            "title": "clipforge_int_noble_iap_instance_20261121T000000Z",
+            "description": "Time-limited management of tunnel-instance policies in us-central1-a",
+            "expression": "request.time >= timestamp(\"2026-11-20T22:00:00Z\") && request.time < timestamp(\"2026-11-21T00:00:00Z\")"
+          }
+        },
+        {
+          "role": "projects/clipforgebeta2/roles/clipforgeIntNobleIapZoneRead",
+          "members": ["serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"],
+          "condition": {
+            "title": "clipforge_int_noble_iap_zone_read_20261121T000000Z",
+            "description": "Time-limited independent verification of the exact IAP zone IAM delta",
+            "expression": "request.time >= timestamp(\"2026-11-20T22:00:00Z\") && request.time < timestamp(\"2026-11-21T00:00:00Z\")"
+          }
+        }
+      ]
+    }
+  }
+}
