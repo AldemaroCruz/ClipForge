@@ -43,7 +43,7 @@ def nfs_exports():
 
 def forwarding(address):
     context = f"user={HUMAN},host={address},addr={address},laddr=10.80.1.3,lport=22"
-    raw = kernel.commands_output(["/usr/sbin/sshd", "-G", "-C", context], limit=16384)
+    raw = kernel.commands_output(["/usr/sbin/sshd", "-T", "-C", context], limit=16384)
     rows = dict(line.split(None, 1) for line in raw.splitlines() if " " in line)
     forwarding = rows.get("allowtcpforwarding")
     disabled = rows.get("disableforwarding")

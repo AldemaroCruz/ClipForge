@@ -37,12 +37,12 @@ class ReadinessTests(unittest.TestCase):
             self.assertIn("-s", runner.call_args.args[0])
             self.assertIn("--no-download", runner.call_args.args[0])
 
-    def test_forwarding_uses_non_key_loading_query_and_closed_human_context(self):
+    def test_forwarding_uses_openssh_test_mode_and_closed_human_context(self):
         with patch.object(demo.kernel, "commands_output", return_value=(
                 "allowtcpforwarding local\ndisableforwarding no\npermitopen 127.0.0.1:5432\n")) as query:
             self.assertEqual(demo.forwarding(demo.SAMPLES[0]), {"local_forwarding": True, "loopback_5432_allowed": True})
         command = query.call_args.args[0]
-        self.assertEqual(command[:3], ["/usr/sbin/sshd", "-G", "-C"])
+        self.assertEqual(command[:3], ["/usr/sbin/sshd", "-T", "-C"])
         self.assertIn("user=admin_ixbalam_studio,", command[3])
         self.assertIn("laddr=10.80.1.3,lport=22", command[3])
 
