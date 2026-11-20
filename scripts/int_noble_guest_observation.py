@@ -21,6 +21,8 @@ SIZE_BYTES = 20 * 1024 ** 3
 SCHEMA = "clipforge-int-db01-noble-observation-1"
 MAX_OUTPUT = 2 * 1024 ** 2
 PROJECT_PATH = "projects/" + host.PROJECT
+# The Compute Project resource has an ID distinct from the Resource Manager project number.
+COMPUTE_PROJECT_ID = "4183880808888199084"
 ZONE_PATH = PROJECT_PATH + "/zones/" + host.ZONE
 INSTANCE_PATH = ZONE_PATH + "/instances/" + host.INSTANCE
 NETWORK_PATH = PROJECT_PATH + "/global/networks/clipforge-int-base"
@@ -96,7 +98,8 @@ def control_snapshot(vm, boot, data, project, approved):
     require(isinstance(fingerprint, str) and 0 < len(fingerprint) <= 256, "NOBLE_OBSERVER_METADATA_FINGERPRINT")
     own = metadata_map(vm["metadata"])
     inherited = metadata_map(project["commonInstanceMetadata"])
-    require(project["name"] == host.PROJECT and str(project["id"]) == host.PROJECT_NUMBER
+    require(project["name"] == host.PROJECT and str(project["id"]) == COMPUTE_PROJECT_ID
+            and link_is(project["selfLink"], PROJECT_PATH)
             and set(own) == set(SECURITY_METADATA) | {"startup-script"}
             and all(own[key] == value for key, value in SECURITY_METADATA.items())
             and host.sha(own["startup-script"].encode("utf-8")) == approved["startup_sha256"]

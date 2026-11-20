@@ -54,7 +54,8 @@ def native_gets():
         disks.append({"name": name, "id": approved[key], "selfLink": source, "status": "READY", "zone": zone_link,
                       "type": zone_link + "/diskTypes/pd-standard", "sizeGb": str(size), "users": [vm_link]})
     disks[0].update(sourceImage=API + guest.IMAGE_PATH + approved["image_name"], sourceImageId=approved["image_id"])
-    project = {"name": host.PROJECT, "id": host.PROJECT_NUMBER, "commonInstanceMetadata": {}}
+    project = {"name": host.PROJECT, "id": guest.COMPUTE_PROJECT_ID, "selfLink": API + guest.PROJECT_PATH,
+               "commonInstanceMetadata": {}}
     return vm, disks[0], disks[1], project, approved
 
 
@@ -102,6 +103,15 @@ class NobleGuest(unittest.TestCase):
         self.assertEqual(evidence["record"]["guest_boot_id"], BOOT_ID)
         self.assertEqual(evidence["known_hosts_line"], host.INSTANCE + "." + ID + " " + KEY.decode() + "\n")
         self.assertNotIn("contents", evidence)
+
+    def test_control_snapshot_checks_compute_project_identity_in_its_own_namespace(self):
+        args = native_gets()
+        project = args[3]
+        project.update(id="4183880808888199084", selfLink=API + guest.PROJECT_PATH)
+        self.assertEqual(guest.control_snapshot(*args)["instance_id"], ID)
+        for field, value in (("id", host.PROJECT_NUMBER), ("selfLink", API + "projects/another-project")):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "NOBLE_OBSERVER_STARTUP_OR_METADATA"):
+                guest.control_snapshot(*args[:3], {**project, field: value}, args[4])
 
     def test_stale_duplicate_truncated_or_malformed_serial_blocks(self):
         normal = serial()

@@ -347,7 +347,8 @@ def state_postcheck(raw, obj, parent, read_profile, read_proof, write_proof, ima
               and all(state["outputs"][key] == item for key, item in parent["outputs"].items()),
               "Existing state outputs changed")
     output = state["outputs"]["db01_noble_candidate"]
-    c.require(output["sensitive"] is False, "Candidate output is not publishable")
+    # State v4 omits the sensitivity flag when its value is false.
+    c.require(output.get("sensitive", False) is False, "Candidate output is not publishable")
     candidate = output["value"]
     verify_candidate(candidate, after, image)
     proof = {"name": obj["name"], "generation": obj["generation"], "size": len(raw), "sha256": custody.sha256(raw),

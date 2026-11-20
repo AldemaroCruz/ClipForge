@@ -237,6 +237,26 @@ class NobleApplyTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "existing resource"):
                 apply.state_postcheck(json.dumps(state).encode(), metadata, parent, {"policies": {}}, {}, {}, IMAGE)
 
+    def test_post_state_uses_terraform_v4_default_for_omitted_output_sensitivity(self):
+        parent = tf_state(apply.noble.EXISTING, serial=7)
+        state = tf_state(apply.noble.EXISTING | apply.noble.CREATES, serial=9)
+        output = {"value": {"name": "fixture"}, "type": ["object", {"name": "string"}]}
+        state["outputs"]["db01_noble_candidate"] = output
+        metadata = {"name": apply.PLAN_STATE["name"], "generation": "9"}
+
+        def postcheck():
+            return apply.state_postcheck(json.dumps(state).encode(), metadata, parent, {"policies": {}}, {}, {}, IMAGE)
+
+        with patch.object(apply, "verify_candidate") as check:
+            self.assertEqual(postcheck()[1], output["value"])
+            output["sensitive"] = False
+            self.assertEqual(postcheck()[1], output["value"])
+            for value in (True, None, 0, "false"):
+                output["sensitive"] = value
+                with self.subTest(value=value), self.assertRaisesRegex(ValueError, "not publishable"):
+                    postcheck()
+            self.assertEqual(check.call_count, 2)
+
     def test_post_state_allows_only_verified_etag_transition(self):
         parent = tf_state(apply.noble.EXISTING, serial=7)
         state = tf_state(apply.noble.EXISTING | apply.noble.CREATES, serial=8)
