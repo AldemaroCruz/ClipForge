@@ -12,7 +12,8 @@ from pathlib import Path
 import re
 import stat
 import sys
-import urllib.request
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, build_opener
 
 try:
     from scripts import prepare_ci_context as context
@@ -22,6 +23,23 @@ except ModuleNotFoundError:
 ROOT_FILES = ("Dockerfile.int", "Dockerfile.int.dockerignore", "requirements-int.lock")
 MODEL_LOCK = "config/whisper-int.json"
 SOURCE_DIRS = {"app": {".py"}, "app/cloud": {".py"}, "app/static": {".html", ".js", ".css"}}
+MODEL_DOWNLOAD_HOSTS = frozenset({
+    "huggingface.co", "us.aws.cdn.hf.co", "us.gcp.cdn.hf.co",
+    "cas-bridge.xethub.hf.co", "cdn-lfs-us-1.hf.co", "cdn-lfs-eu-1.hf.co",
+})
+
+
+class _ModelRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        try:
+            destination = urlsplit(newurl)
+            if (destination.scheme != "https" or destination.netloc.removesuffix(":443") not in MODEL_DOWNLOAD_HOSTS
+                    or destination.fragment):
+                raise context.ContextError("Public model redirect destination is not permitted")
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+        except ValueError:
+            fp.close()
+            raise
 
 
 def _records(source, weights):
@@ -135,12 +153,13 @@ def fetch(source, weights):
     weights.mkdir()
     snapshot = weights / "hub" / "models--Systran--faster-whisper-tiny" / "snapshots" / lock["revision"]
     snapshot.mkdir(parents=True)
+    opener = build_opener(_ModelRedirect())
     for item in lock["files"]:
         if not re.fullmatch(r"[a-f0-9]{64}", item.get("sha256", "")) or type(item.get("bytes")) is not int:
             raise context.ContextError("Invalid model hash/size")
         url = "https://huggingface.co/Systran/faster-whisper-tiny/resolve/" + lock["revision"] + "/" + item["name"]
         digest, size = hashlib.sha256(), 0
-        with urllib.request.urlopen(url, timeout=60) as response, (snapshot / item["name"]).open("xb") as output:
+        with opener.open(url, timeout=60) as response, (snapshot / item["name"]).open("xb") as output:
             while block := response.read(1024 * 1024):
                 size += len(block)
                 if size > item["bytes"]:

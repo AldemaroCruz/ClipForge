@@ -1,9 +1,14 @@
 """Runtime packaging refuses credentials, substituted models and context drift."""
 import hashlib
+import io
 import json
+from email.message import Message
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
+from urllib.request import HTTPSHandler, ProxyHandler, build_opener
+from urllib.response import addinfourl
 from scripts import prepare_int_runtime as runtime
 
 
@@ -54,6 +59,55 @@ class RuntimeContextTests(unittest.TestCase):
         value = json.loads(self.manifest.read_text()); value["files"].append({"path": ".env", "bytes": 1, "sha256": "a" * 64})
         self.manifest.write_text(json.dumps(value))
         with self.assertRaises(ValueError): runtime.verify(self.destination, self.manifest)
+
+    def test_fetch_follows_pinned_model_cdn_and_verifies_the_bytes(self):
+        attempts = []
+
+        class FixtureHTTPS(HTTPSHandler):
+            def https_open(self, request):
+                attempts.append(request.host)
+                name = request.full_url.rsplit("/", 1)[1]
+                headers = Message()
+                if name == "model.bin" and request.host == "huggingface.co":
+                    headers["Location"] = "https://us.aws.cdn.hf.co/model.bin"
+                    response = addinfourl(io.BytesIO(), headers, request.full_url, 302)
+                    response.msg = "Redirect"
+                    return response
+                response = addinfourl(io.BytesIO(("synthetic " + name).encode()), headers, request.full_url, 200)
+                response.msg = "OK"
+                return response
+
+        with patch.object(runtime, "build_opener", side_effect=lambda handler: build_opener(
+                ProxyHandler({}), FixtureHTTPS(), handler)):
+            self.assertEqual(runtime.fetch(self.source, self.root / "fetched")["files"], 4)
+        self.assertEqual(attempts.count("huggingface.co"), 4)
+        self.assertEqual(attempts.count("us.aws.cdn.hf.co"), 1)
+
+    def test_fetch_rejects_redirect_before_any_second_request(self):
+        for destination in (
+                "http://huggingface.co/model.bin",
+                "https://localhost/model.bin",
+                "https://huggingface.co.example.invalid/model.bin",
+                "https://user@us.aws.cdn.hf.co/model.bin",
+                "https://us.aws.cdn.hf.co:444/model.bin",
+        ):
+            with self.subTest(destination=destination), tempfile.TemporaryDirectory() as folder:
+                attempts = []
+
+                class FixtureHTTPS(HTTPSHandler):
+                    def https_open(self, request):
+                        attempts.append(request.host)
+                        headers = Message()
+                        headers["Location"] = destination
+                        response = addinfourl(io.BytesIO(), headers, request.full_url, 302)
+                        response.msg = "Redirect"
+                        return response
+
+                with patch.object(runtime, "build_opener", side_effect=lambda handler: build_opener(
+                        ProxyHandler({}), FixtureHTTPS(), handler)):
+                    with self.assertRaisesRegex(ValueError, "model redirect destination"):
+                        runtime.fetch(self.source, Path(folder) / "fetched")
+                self.assertEqual(attempts, ["huggingface.co"])
 
 
 if __name__ == "__main__": unittest.main()

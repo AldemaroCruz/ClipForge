@@ -128,6 +128,33 @@ class ObjectIntegrityTests(unittest.TestCase):
 
 
 class PublicationContractTests(unittest.TestCase):
+    def test_document_update_binds_payload_and_preserves_optional_columns_and_filters(self):
+        item = {"id": "document", "label": "A writer's title"}
+        manifest = {"clip's name.mp4": {"generation": "12"}}
+        for checked_revision in (None, 8):
+            for supplied_manifest in (None, manifest):
+                with self.subTest(revision=checked_revision, manifest=supplied_manifest):
+                    conn = MagicMock()
+                    conn.execute.return_value.rowcount = 1
+                    repository.update_document(conn, "job", "export", item, checked_revision, supplied_manifest)
+                    statement, values = conn.execute.call_args.args
+                    native = "".join(str(statement).lower().split())
+                    self.assertIn("payload=cast(:pasjsonb)", native)
+                    self.assertIn("clock_timestamp()", native)
+                    self.assertIn("job_id=:j", native)
+                    self.assertIn("kind=:k", native)
+                    self.assertIn("id=:i", native)
+                    self.assertNotIn(item["label"], str(statement))
+                    self.assertEqual(values["p"], repository.packed(item))
+                    self.assertEqual("manifest=cast(:masjsonb)" in native, supplied_manifest is not None)
+                    self.assertEqual(values.get("m"), None if supplied_manifest is None else repository.packed(manifest))
+                    self.assertEqual("revision=:r" in native, checked_revision is not None)
+                    self.assertEqual(values.get("r"), checked_revision)
+        conn.execute.return_value.rowcount = 0
+        with self.assertRaises(repository.HTTPException) as failure:
+            repository.update_document(conn, "job", "export", item, revision=8)
+        self.assertEqual(failure.exception.status_code, 409)
+
     def test_lost_lease_prevents_final_document_and_task_publication(self):
         connection = MagicMock()
         connection.execute.return_value.mappings.return_value.first.return_value = None

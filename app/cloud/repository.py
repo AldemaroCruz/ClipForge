@@ -5,13 +5,17 @@ from contextvars import ContextVar
 import hashlib
 import json
 import uuid
-from sqlalchemy import text
+from sqlalchemy import Text, bindparam, cast, column, func, table, text, update
+from sqlalchemy.dialects.postgresql import JSONB
 from fastapi import HTTPException
 from ..auth_db import get_engine
 
 GLOBAL_LOCK = 1837086403
 LEASE_SECONDS = 60
 CURRENT_TASK = ContextVar("cloud_task", default=None)
+_DOCUMENTS = table("cloud_documents", *(column(name) for name in (
+    "job_id", "kind", "id", "payload", "manifest", "revision", "updated_at",
+)))
 
 
 def packed(value):
@@ -48,15 +52,18 @@ def insert_document(c, job_id, kind, item, manifest=None):
 
 def update_document(c, job_id, kind, item, revision=None, manifest=None):
     values = {"j": job_id, "k": kind, "i": item["id"], "p": packed(item)}
-    fragment = ""
+    doc = _DOCUMENTS.c
+    statement = update(_DOCUMENTS).where(
+        doc.job_id == bindparam("j"), doc.kind == bindparam("k"), doc.id == bindparam("i"),
+    ).values(payload=cast(bindparam("p", type_=Text()), JSONB),
+             revision=doc.revision + 1, updated_at=func.clock_timestamp())
     if manifest is not None:
-        fragment = ",manifest=CAST(:m AS jsonb)"
+        statement = statement.values(manifest=cast(bindparam("m", type_=Text()), JSONB))
         values["m"] = packed(manifest)
-    revision_filter = ""
     if revision is not None:
-        revision_filter = " AND revision=:r"
+        statement = statement.where(doc.revision == bindparam("r"))
         values["r"] = revision
-    result = c.execute(text("UPDATE cloud_documents SET payload=CAST(:p AS jsonb),revision=revision+1,updated_at=clock_timestamp()" + fragment + " WHERE job_id=:j AND kind=:k AND id=:i" + revision_filter), values)
+    result = c.execute(statement, values)
     if result.rowcount != 1:
         raise HTTPException(409, "El documento cambió. Vuelve a abrirlo antes de guardar.")
 
