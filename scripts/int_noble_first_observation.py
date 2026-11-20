@@ -358,7 +358,7 @@ def collect(env, work, reports, summary, pin, *, reader, client, runner=None, ke
         require(transport._local_bytes(known, 1024) == pin["known_hosts_line"].encode("ascii"), "NOBLE_PIN_CHANGED")
         if kernel:
             evidence = kernel_observer.link(checked, before, after, payload, env["GITHUB_SHA"])
-            report_name = "kernel-inventory.json"
+            report_name = kernel_observer.INVENTORY_NAME
         else:
             evidence = guest.linked_observation(raw, code, before=before, after=after, pin_receipt=pin,
                                                 workflow_commit=env["GITHUB_SHA"], expected_payload_sha256=PAYLOAD_SHA256)

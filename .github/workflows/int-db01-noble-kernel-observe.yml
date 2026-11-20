@@ -124,7 +124,7 @@ jobs:
           name: db01-noble-kernel-observation-${{ github.sha }}-${{ github.run_id }}-1
           path: |
             ${{ env.GUEST_REPORTS }}/guest-summary.json
-            ${{ env.GUEST_REPORTS }}/kernel-inventory.json
+            ${{ env.GUEST_REPORTS }}/inventory.json
             ${{ env.GUEST_REPORTS }}/cleanup.json
           include-hidden-files: false
           if-no-files-found: warn

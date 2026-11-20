@@ -1,5 +1,6 @@
 """Exercise the bounded kernel handoff without cloud or guest access."""
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
@@ -59,6 +60,16 @@ class KernelHandoffTests(unittest.TestCase):
         self.assertIn(f"{observer.CONTROLS}-{observer.POSTVERIFY_RUN}-1", workflow)
         self.assertNotIn("scripts.int_noble_first_observation run", workflow)
         self.assertNotIn("noble.cdx.json", workflow)
+
+    def test_kernel_inventory_filename_is_accepted_by_transport_and_archived(self):
+        receipt = {"schema": observer.RECEIPT_SCHEMA}
+        with TemporaryDirectory() as folder:
+            output = Path(folder)
+            transport._write_report(output, observer.INVENTORY_NAME, receipt)
+            self.assertEqual((output / observer.INVENTORY_NAME).read_bytes(), transport.canonical(receipt) + b"\n")
+        root = Path(__file__).resolve().parents[1]
+        workflow = (root / observer.WORKFLOW).read_text(encoding="utf-8")
+        self.assertIn("${{ env.GUEST_REPORTS }}/" + observer.INVENTORY_NAME, workflow)
 
 
 if __name__ == "__main__":

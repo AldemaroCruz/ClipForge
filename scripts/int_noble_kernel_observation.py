@@ -21,6 +21,7 @@ SUMMARY_SHA = "6a719afddfbc6fddab75d503bf5b0ff43519d23dbfe7bc8bd0fdcb37b412d0b8"
 PIN_SHA = "eace51fdd5447ed1d10b02d498c4d48caf9ac33e42bd58596e10282028ebb414"
 SUMMARY_SCHEMA = "clipforge-int-noble-kernel-observation-summary-1"
 RECEIPT_SCHEMA = "clipforge-int-noble-kernel-observation-receipt-1"
+INVENTORY_NAME = "inventory.json"
 PINNED_IDS = {"instance_id": "7365414160255801909", "data_disk_id": "7382984635240536620"}
 require = first.require
 
