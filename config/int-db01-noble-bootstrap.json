@@ -1,0 +1,17 @@
+{
+  "schema": "clipforge-int-noble-bootstrap-controls-1",
+  "activation_authorized": false,
+  "application_ci_gate": "global",
+  "project": "clipforgebeta2",
+  "project_number": "816643438938",
+  "zone": "us-central1-a",
+  "instance_id": "7365414160255801909",
+  "boot_disk_id": "8897353356069952044",
+  "data_disk_id": "7382984635240536620",
+  "baseline_run_id": "44772950030",
+  "baseline_artifact_id": "14649080312",
+  "baseline_sha256": "8ac056907faca259ed21c394a53c46d290dc99496dc7fe618512b1bb9c65329b",
+  "demo_source_commit": "6c1bf38c92e2bfa1d6949d5e54fb5508d4df83fd",
+  "demo_oci": "sha256:40a22f3fcceccfe163958d9c22882fc22070807bd061de836ce94b9a7d805e15",
+  "migrator_oci": "sha256:24e4d9ccea365859c6f455c3780c8abe6a0df3f1150e60380e2b2cc73e0dc5b5"
+}
