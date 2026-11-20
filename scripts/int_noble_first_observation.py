@@ -260,11 +260,18 @@ def check_hosted_context(env):
             "NOBLE_HOST_PUBLISHER_SOURCE")
 
 
-def collect(env, work, reports, summary, pin, *, reader, client, runner=None):
+def collect(env, work, reports, summary, pin, *, reader, client, runner=None, kernel=False):
     """Observe one unchanged first boot, with the GUEST own-key journal and cleanup."""
     candidate = summary["candidate"]
-    payload = guest.payload_bytes()
-    require(host.sha(payload) == PAYLOAD_SHA256 and len(payload) <= 262144, "NOBLE_PAYLOAD_SOURCE")
+    if kernel:
+        from scripts import int_noble_kernel_observation as kernel_observer
+
+        payload = kernel_observer.payload_bytes()
+        stdout_limit = kernel_observer.probe.MAX_OUTPUT
+    else:
+        payload = guest.payload_bytes()
+        require(host.sha(payload) == PAYLOAD_SHA256 and len(payload) <= 262144, "NOBLE_PAYLOAD_SOURCE")
+        stdout_limit = guest.MAX_OUTPUT
     require(not any(entry.name != "gcloud" for entry in work.iterdir()), "NOBLE_RUN_FRESH_SCRATCH")
     journal = {"schema": "clipforge-int-guest-cleanup-journal-1", "repository": env["GITHUB_REPOSITORY"],
                "run_id": env["GITHUB_RUN_ID"], "run_attempt": env["GITHUB_RUN_ATTEMPT"], "commit": env["GITHUB_SHA"],
@@ -278,6 +285,8 @@ def collect(env, work, reports, summary, pin, *, reader, client, runner=None):
               "creation_receipt": summary["receipt"], "runtime_authorized": False, "database_initialized": False}
     if "postverify_run_id" in summary:
         result["postverify_run_id"] = summary["postverify_run_id"]
+    if kernel:
+        result.update(schema=kernel_observer.SUMMARY_SCHEMA, initial_observation_run_id=kernel_observer.INITIAL_RUN)
     stage, previous_signals = "control_plane_before", {}
     def interrupted(_signum, _frame):
         raise transport.Blocked("noble_runner_interrupted")
@@ -332,22 +341,30 @@ def collect(env, work, reports, summary, pin, *, reader, client, runner=None):
         runner.start_tunnel(local_port)
         stage = "strict_ssh_guest"
         code, raw, stderr = runner.run(ssh(work, own["username"], local_port), payload,
-                                        timeout=180, stdout_limit=guest.MAX_OUTPUT)
+                                        timeout=180, stdout_limit=stdout_limit)
         result["ssh_diagnostic"] = transport.process_diagnostic(stderr)
         result["guest_exit_code"] = code
         require(code in {0, 2}, "NOBLE_GUEST_TRANSPORT_EXIT")
-        validated = guest.validate_guest(raw, code, host_record=pin["record"], expected_payload_sha256=PAYLOAD_SHA256)
-        if code != 0:
-            transport._write_report(reports, "inventory.json", validated)
-            result["guest_error"] = validated["error_code"]
-            raise transport.Blocked("noble_guest_observation_blocked")
+        if kernel:
+            checked = kernel_observer.check_guest(raw, code, pin["record"]["guest_boot_id"])
+        else:
+            validated = guest.validate_guest(raw, code, host_record=pin["record"], expected_payload_sha256=PAYLOAD_SHA256)
+            if code != 0:
+                transport._write_report(reports, "inventory.json", validated)
+                result["guest_error"] = validated["error_code"]
+                raise transport.Blocked("noble_guest_observation_blocked")
         stage = "control_plane_after"
         after = snapshot(reader, candidate)
         require(transport._local_bytes(known, 1024) == pin["known_hosts_line"].encode("ascii"), "NOBLE_PIN_CHANGED")
-        evidence = guest.linked_observation(raw, code, before=before, after=after, pin_receipt=pin,
-                                            workflow_commit=env["GITHUB_SHA"], expected_payload_sha256=PAYLOAD_SHA256)
+        if kernel:
+            evidence = kernel_observer.link(checked, before, after, payload, env["GITHUB_SHA"])
+            report_name = "kernel-inventory.json"
+        else:
+            evidence = guest.linked_observation(raw, code, before=before, after=after, pin_receipt=pin,
+                                                workflow_commit=env["GITHUB_SHA"], expected_payload_sha256=PAYLOAD_SHA256)
+            report_name = "inventory.json"
         stage = "inventory_metadata"
-        transport._write_report(reports, "inventory.json", evidence)
+        transport._write_report(reports, report_name, evidence)
         result.update(status="observation_complete", inventory_sha256=host.sha(
             transport.canonical(evidence) + b"\n"), control_plane=after, host_fingerprint=pin["record"]["fingerprint"])
     except Exception as error:

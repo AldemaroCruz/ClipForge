@@ -39,6 +39,7 @@ SUPPORT_FILES = frozenset({
     '.github/workflows/gcp-auth-check.yml',
     '.github/workflows/int-db01-noble-apply.yml',
     '.github/workflows/int-db01-noble-observe.yml',
+    '.github/workflows/int-db01-noble-kernel-observe.yml',
     '.github/workflows/int-db01-noble-plan.yml',
     '.github/workflows/int-db01-noble-postverify.yml',
     '.github/workflows/int-e2e-apply.yml',
