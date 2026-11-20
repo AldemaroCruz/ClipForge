@@ -102,6 +102,14 @@ def run_probes(identity):
             yield policy(resource, query(url + ":getIamPolicy", POLICY_VERSION), permission + ".getIamPolicy")
 
 
+def noble_policy_probes():
+    yield Probe("policy:compute.instances.getIamPolicy", NOBLE,
+                query(COMPUTE + NOBLE + "/getIamPolicy", {"optionsRequestedPolicyVersion": "3"}),
+                ("compute.instances.getIamPolicy",), kind="noble_direct_policy")
+    yield Probe("policy:iap.tunnelInstances.getIamPolicy", IAP_TUNNEL, IAP_API + IAP_TUNNEL + ":getIamPolicy",
+                ("iap.tunnelInstances.getIamPolicy",), "POST", {"options": {"requestedPolicyVersion": 3}}, "noble_direct_policy")
+
+
 def probes(identity):
     bucket = "buckets/" + BUCKET
     registry = AR_API + AR_RESOURCE
@@ -251,14 +259,19 @@ def observe(probe, token, principal, *, opener=None):
             missing = set(probe.permissions) - set(granted)
             return {**row, "http_status": status, "result": "permission_indicated_by_evaluation" if granted else "no_permission_confirmed_by_evaluation",
                     "permissions_indicated": sorted(set(granted)), "permissions_not_confirmed": sorted(missing)}
-        if probe.kind == "policy":
+        if probe.kind in {"policy", "noble_direct_policy"}:
             direct = []
             for entry in value.get("bindings", []):
                 if "serviceAccount:" + principal in entry.get("members", []):
                     role = entry["role"]
                     require(re.fullmatch(r"(?:roles/|projects/[A-Za-z0-9_-]+/roles/|organizations/[0-9]+/roles/)[A-Za-z0-9_.]+", role), "unrecognized_role")
                     direct.append({"role": role, "conditional": bool(entry.get("condition"))})
-            return {**row, "http_status": status, "result": "policy_read_wif", "direct_policy_roles": direct}
+            report = {**row, "http_status": status, "result": "policy_read_wif", "direct_policy_roles": direct}
+            if probe.kind == "noble_direct_policy":
+                require(isinstance(value.get("etag"), str) and re.fullmatch(r"[A-Za-z0-9+/=_-]{1,160}", value["etag"]), "noble_direct_policy_etag")
+                canonical = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+                report.update(policy_etag=value["etag"], policy_sha256=sha256(canonical).hexdigest())
+            return report
         return {**row, "http_status": status, "result": "read_verified_wif", **read_observation(probe, value)}
     except HTTPError as error:
         status = error.code
@@ -285,6 +298,7 @@ def main(argv=None):
     parser.add_argument("phase", choices=("local", "preflight", "observe"))
     parser.add_argument("identity", nargs="?", choices=("terraform", "deploy"))
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--mode", choices=("full", "noble_policy"), default="full")
     args = parser.parse_args(argv)
     try:
         token = os.environ.get("GCP_ACCESS_TOKEN", "")
@@ -292,7 +306,7 @@ def main(argv=None):
             hosted_context(os.environ)
             require(not token and args.identity is None and args.output is None, "local_scope_before_wif")
             return 0
-        require(args.identity is not None, "exact_observer_identity_required")
+        require(args.identity is not None and (args.mode == "full" or args.identity == "deploy"), "exact_observer_identity_required")
         preflight(args.identity, os.environ)
         if args.phase == "preflight":
             require(not token and args.output is None, "preflight_must_precede_wif")
@@ -302,10 +316,12 @@ def main(argv=None):
         require(args.output is not None and args.output.parent.resolve() == base and
                 re.fullmatch(r"clipforge-demo-a-wif\.[A-Za-z0-9]+\.json", args.output.name), "restricted_summary_path")
         principal = SA[args.identity]
+        selected = probes(args.identity) if args.mode == "full" else noble_policy_probes()
         with ThreadPoolExecutor(max_workers=5) as pool:
-            rows = list(pool.map(lambda probe: observe(probe, token, principal), probes(args.identity)))
+            rows = list(pool.map(lambda probe: observe(probe, token, principal), selected))
         report = {"schema": "clipforge-int-demo-a-wif-observation-1", "status": "read_only_evidence_collected",
                   "identity": args.identity, "principal": principal, "project": PROJECT, "environment": "int", "provider": PROVIDER,
+                  "observation": args.mode,
                   "source_commit": os.environ["GITHUB_SHA"], "run": os.environ["GITHUB_RUN_ID"], "attempt": "1",
                   "observed_utc": datetime.now(timezone.utc).isoformat(), "reads_and_evaluations": rows, "write_executed": False,
                   "writes_not_attempted": not_attempted(args.identity), "authorizes_write": False,

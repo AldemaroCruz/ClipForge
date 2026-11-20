@@ -16,6 +16,17 @@ class Response(BytesIO):
 
 
 class WifReadTests(unittest.TestCase):
+    def test_narrow_noble_policy_followup_uses_only_the_two_omitted_requests(self):
+        compute, tunnel = wif.noble_policy_probes()
+        self.assertEqual((compute.method, compute.body), ("GET", None))
+        self.assertTrue(compute.url.endswith("/instances/clipforge-int-db01-noble/getIamPolicy?optionsRequestedPolicyVersion=3"))
+        self.assertEqual((tunnel.method, tunnel.body), ("POST", {"options": {"requestedPolicyVersion": 3}}))
+        self.assertTrue(tunnel.url.endswith("/instances/7365414160255801909:getIamPolicy"))
+        opener = Mock()
+        opener.open.return_value = Response({"etag": "fixture=", "bindings": []})
+        row = wif.observe(tunnel, "fixture", wif.SA["deploy"], opener=opener)
+        self.assertEqual((row["result"], row["policy_etag"], len(row["policy_sha256"])), ("policy_read_wif", "fixture=", 64))
+
     def probe(self, identity, permission, operation_prefix, resource):
         return next(p for p in wif.probes(identity) if permission in p.permissions and p.operation.startswith(operation_prefix)
                     and resource in p.resource)
