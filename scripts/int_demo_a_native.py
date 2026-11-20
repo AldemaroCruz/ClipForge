@@ -24,11 +24,13 @@ from scripts import tf_int_plan as driver
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE = Path("infra/gcp/int-base")
-SOURCES = {str(MODULE / file) for file in ("versions.tf", "variables.tf", "main.tf", "outputs.tf", "runtime.tf", "audit.tf",
+DEMO_MODULE = Path("infra/gcp/int-demo-a")
+BASE_SOURCES = {(MODULE / file).as_posix() for file in ("versions.tf", "variables.tf", "main.tf", "outputs.tf", "runtime.tf", "audit.tf",
            "noble-candidate.tf", "backend-int.hcl", ".terraform.lock.hcl", "postgres-install.sh", "db01-noble-startup.sh",
            "db01-noble-hostkey-template.sh")}
-SOURCES |= {"scripts/int_vm_hostkey_guest.py", "scripts/int_noble_hostkey.py"}
-SOURCES = {name.replace("\\", "/") for name in SOURCES}
+BASE_SOURCES |= {"scripts/int_vm_hostkey_guest.py", "scripts/int_noble_hostkey.py"}
+OVERLAYS = {(MODULE / name).as_posix(): (DEMO_MODULE / name).as_posix() for name in ("runtime.tf", "noble-candidate.tf")}
+SOURCES = BASE_SOURCES | set(OVERLAYS.values())
 WORKFLOWS = {phase: f".github/workflows/int-demo-a-{phase}.yml" for phase in ("plan", "apply")}
 REPOSITORY = "AldemaroCruz/ClipForge"
 BRANCH = "ci/bootstrap-sec03"
@@ -48,9 +50,13 @@ LAYERS = ["sha256:" + value for value in (
 POSTVERIFY = {"name": "private-plans/int/d6915938ea056d6df6e15d29457c0f0c1f46a69e/44772432816-1/foundation-state.json",
               "generation": "1795191726103428", "sha256": "cf3236aa512cf30d59136fed3a5209448700be6401c345716db0a38f222288a3", "size": 4089}
 NAMES = {"publish", "versions", "bootstrap", "iac", "stable_write", "postverify"}
-NATIVE_HCL = {"runtime.tf": "39326bfe49d0541ebb13042bd2bb9ecff470a750a215898883af9f32adbf4458",
-              "noble-candidate.tf": "bca3d815083eec680f0faf5210a80a41d82001c987994a9f8d30595a7e4ff6bc",
-              ".terraform.lock.hcl": "89e2189a1b882ac5ad3ce74ad17a304e95cf7fa072b9ced86fce09e78b88b5fa"}
+NATIVE_HCL = {
+    (MODULE / "runtime.tf").as_posix(): "f573d073f93d5bf2969548f1432a3d4cfa1f99e1030b14ed180dbb8ffea78abb",
+    (MODULE / "noble-candidate.tf").as_posix(): "d1c89dfd11d99e68ac0ae9371597446c253c6ccc35de399ea53fd40515d7e8dd",
+    (MODULE / ".terraform.lock.hcl").as_posix(): "89e2189a1b882ac5ad3ce74ad17a304e95cf7fa072b9ced86fce09e78b88b5fa",
+    (DEMO_MODULE / "runtime.tf").as_posix(): "39326bfe49d0541ebb13042bd2bb9ecff470a750a215898883af9f32adbf4458",
+    (DEMO_MODULE / "noble-candidate.tf").as_posix(): "bca3d815083eec680f0faf5210a80a41d82001c987994a9f8d30595a7e4ff6bc",
+}
 SCHEMA = "clipforge-int-demo-a-private-plan-1"
 TTL = timedelta(hours=24)
 require = scope.require
@@ -59,6 +65,19 @@ require = scope.require
 def write_new(path, raw):
     with path.open("xb") as stream:
         stream.write(raw)
+
+
+def selected_sources(digests):
+    selected = {target: OVERLAYS.get(target, target) for target in sorted(BASE_SOURCES)}
+    return {target: {"source": name, "sha256": digests[name]} for target, name in selected.items()}
+
+
+def verified_source(root, name, expected):
+    path = root / name
+    require(path.is_file() and not path.is_symlink(), "changed_iac_source")
+    raw = path.read_bytes()
+    require(custody.sha256(raw) == expected, "changed_iac_source")
+    return raw
 
 
 def decision_current(decision):
@@ -126,9 +145,8 @@ def validate_local(phase, env, raw, *, root=ROOT, now=None):
             "publisher_and_secret_producer_pins")
     require(set(decision["sources"]) == SOURCES, "exact_iac_source_set")
     for name, digest in decision["sources"].items():
-        path = root / name
-        require(path.is_file() and not path.is_symlink() and custody.sha256(path.read_bytes()) == digest, "changed_iac_source")
-    require(all(decision["sources"][MODULE.as_posix() + "/" + name] == value for name, value in NATIVE_HCL.items()),
+        verified_source(root, name, digest)
+    require(all(decision["sources"][name] == value for name, value in NATIVE_HCL.items()),
             "reviewed_demo_hcl_or_provider_lock_changed")
     if phase == "apply":
         reference(decision["plan_manifest"], suffix="manifest.json")
@@ -200,8 +218,10 @@ def verify_inventory(oci):
 def verify_iac(review, native_raw, decision, *, now=None):
     now = now or datetime.now(timezone.utc)
     report_sha = custody.sha256(native_raw)
+    selected = selected_sources(decision["sources"])
     require(review.get("schema") == "clipforge-int-demo-a-iac-review-1" and review.get("status") == "reviewed"
             and review.get("controls_commit") == decision["controls_commit"] and review.get("sources") == decision["sources"]
+            and review.get("selected_sources") == selected
             and review.get("native_report_sha256") == report_sha == review["native_report"]["sha256"]
             and review.get("unresolved_count") == 0 and now < aware(review.get("expires_utc", "")), "exact_iac_review_required")
     native = foundation.decode(native_raw)
@@ -226,7 +246,7 @@ def verify_iac(review, native_raw, decision, *, now=None):
         target, expiry = identifier[1], aware(row["expires_utc"])
         module_file = MODULE.as_posix() + "/" + target
         require(identifier in findings and identifier not in checked and row["native_report_sha256"] == report_sha
-                and row["source_sha256"] == decision["sources"][module_file] and now < expiry
+                and row["source_sha256"] == selected[module_file]["sha256"] and now < expiry
                 and row["status"] in {"control_verified", "authorized_residual"}
                 and all(isinstance(row[key], str) and row[key].strip() for key in ("responsible", "control", "evidence")),
                 "independent_iac_finding_decision")
@@ -337,15 +357,19 @@ def store(path, raw):
     return row
 
 
-def init(decision, work):
-    (work / "module").mkdir()
+def materialize_module(decision, work, *, root=ROOT):
+    destination = work / "module"
+    destination.mkdir()
     # Keep the structural path from Noble HCL to its two historical helpers.
-    staged = work / "module" / "infra" / "gcp" / "int-base"
-    staged.mkdir(parents=True)
-    helpers = work / "module" / "scripts"
-    helpers.mkdir()
-    for name in decision["sources"]:
-        write_new(work / "module" / name, (ROOT / name).read_bytes())
+    for target, chosen in selected_sources(decision["sources"]).items():
+        path = destination / target
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_new(path, verified_source(root, chosen["source"], chosen["sha256"]))
+    return destination / MODULE
+
+
+def init(decision, work):
+    staged = materialize_module(decision, work)
     # The driver works in 'module'; global -chdir selects the pinned HCL subtree.
     binary = driver.terraform_binary()
     command = [binary, "-chdir=" + str(staged)]
@@ -390,6 +414,7 @@ def plan(decision, env, work, numbers, report):
     refs = {"int.tfplan": store(prefix + "int.tfplan", binary), "int.json": store(prefix + "int.json", raw)}
     created = datetime.now(timezone.utc)
     manifest = custody.canonical({"schema": SCHEMA, "binding": binding, "inputs": inputs, "sources": decision["sources"],
+                    "selected_sources": selected_sources(decision["sources"]),
                     "evidence": decision["evidence"], "plan_owner_decision_sha256": env["DECISION_SHA"], "intent": report["intent"],
                     "created_utc": created.isoformat(), "expires_utc": (created + TTL).isoformat(), "objects": refs})
     receipt = store(prefix + "manifest.json", manifest)
@@ -406,7 +431,7 @@ def verified_plan(decision, env, numbers):
     require(scope.NUMERIC.fullmatch(run) and run != env["GITHUB_RUN_ID"] and binding["run_attempt"] == "1"
             and ref["name"] == f"{custody.PREFIX}{env['GITHUB_SHA']}/{run}-1/manifest.json" and content["schema"] == SCHEMA
             and content["inputs"] == scope.planned_variables(numbers) and content["evidence"] == decision["evidence"]
-            and content["sources"] == decision["sources"], "saved_plan_provenance")
+            and content["sources"] == decision["sources"] and content["selected_sources"] == selected_sources(decision["sources"]), "saved_plan_provenance")
     issued, expiry = aware(content["created_utc"]), aware(content["expires_utc"])
     require(issued <= datetime.now(timezone.utc) < expiry and expiry - issued == TTL, "saved_plan_expired")
     result = get(f"https://api.github.com/repos/{REPOSITORY}/actions/runs/{run}", env["GH_TOKEN"])

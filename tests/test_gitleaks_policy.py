@@ -17,7 +17,7 @@ from scripts import gitleaks_policy as policy
 from scripts import prepare_ci_scan as scan
 
 
-def fixture_policy_bytes():
+def fixture_policy_bytes(*, with_noble=True):
     """Recreate the approved policy from the public checksum declarations."""
     reference = Path(__file__).with_name("test_auth_recovery.py")
     tree = ast.parse(reference.read_text(encoding="utf-8"))
@@ -26,9 +26,6 @@ def fixture_policy_bytes():
                       for target in node.targets)]
     if len(values) != 1 or type(values[0]) is not str or not re.fullmatch(r"[0-9a-f]{64}", values[0]):
         raise ValueError("Public frozen-DDL fixture reference is missing or malformed")
-    client = reference.parents[1] / "scripts" / "int_db_acceptance_noble.py"
-    source_map = ast.literal_eval(next(node.value for node in ast.parse(client.read_bytes()).body
-        if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "NOBLE_SOURCES" for target in node.targets)))
     template = (
         '# AUTH-02: owner-approved public DDL checksum only. Preserve every default rule.\n'
         'title = "ClipForge: exact AUTH-01 DDL checksum classification"\n'
@@ -38,6 +35,13 @@ def fixture_policy_bytes():
         'condition = "AND"\nregexTarget = "line"\n'
         "paths = ['''^/source/tests/test_auth_recovery\\.py$''']\n"
         "regexes = ['''^\\n?FROZEN_AUTH01_DDL_SHA256 = '{ddl_sha256}'$''']\n"
+    ).format(ddl_sha256=values[0])
+    if not with_noble:
+        return template.encode("utf-8")
+    client = reference.parents[1] / "scripts" / "int_db_acceptance_noble.py"
+    source_map = ast.literal_eval(next(node.value for node in ast.parse(client.read_bytes()).body
+        if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "NOBLE_SOURCES" for target in node.targets)))
+    noble = (
         '\n[[rules.allowlists]]\n'
         'description = "Approved public Noble client source-integrity checksums"\n'
         'condition = "AND"\nregexTarget = "line"\n'
@@ -47,8 +51,8 @@ def fixture_policy_bytes():
         "    '''^\\n?    \"app/auth_migrations\\.py\": \"{auth_migrations}\",$''',\n"
         ']\n'
     )
-    return template.format(ddl_sha256=values[0], auth_db=source_map["app/auth_db.py"],
-                           auth_migrations=source_map["app/auth_migrations.py"]).encode("utf-8")
+    return (template + noble.format(auth_db=source_map["app/auth_db.py"],
+                                    auth_migrations=source_map["app/auth_migrations.py"])).encode("utf-8")
 
 
 class GitleaksPolicyTests(unittest.TestCase):

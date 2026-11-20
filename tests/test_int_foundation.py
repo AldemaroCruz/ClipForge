@@ -19,6 +19,11 @@ import zipfile
 from scripts import check_int_foundation as f, check_tf_int as c, int_release as r
 from scripts import int_release_state as state, tf_int_plan as driver
 
+try:
+    from test_gitleaks_policy import fixture_policy_bytes
+except ModuleNotFoundError:
+    from tests.test_gitleaks_policy import fixture_policy_bytes
+
 
 EXECUTION_SOURCE_FIXTURE = "70982d2f5867d0101a181967d182058514e8c82a77423e5eceb09eb0cf89761b"
 PLAN_BINDING_FIXTURE_FIELDS = ("commit", "run_id", "manifest", "binary", "json", "created_utc", "configuration_sha256",
@@ -459,7 +464,14 @@ class FoundationCurrentConfiguration(unittest.TestCase):
 
     def test_exact_current_configuration_passes_without_rebinding_historical_plan_or_acceptance(self):
         before = copy.deepcopy(self.contract)
-        binding = f.check_static(self.root, self.module, self.contract)
+        policy_path = self.root / ".gitleaks.toml"
+        historical_policy = fixture_policy_bytes(with_noble=False)
+        self.assertEqual(r.sha256(historical_policy), self.contract["unchanged_gitleaks_policy_sha256"])
+        with self.assertRaisesRegex(ValueError, "Secret policy changed"):
+            f.check_static(self.root, self.module, self.contract)
+        read = Path.read_bytes
+        with mock.patch.object(Path, "read_bytes", lambda path: historical_policy if path == policy_path else read(path)):
+            binding = f.check_static(self.root, self.module, self.contract)
         self.assertEqual(binding["configuration_sha256"], "bf2a20357afc9ccd86edf34efd4a069ba7f43eb14b2853022ec031a9850fe0e1")
         self.assertEqual(binding["commit"], self.contract["plan"]["commit"])
         self.assertNotEqual(binding["configuration_sha256"], self.contract["plan"]["configuration_sha256"])

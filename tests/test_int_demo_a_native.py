@@ -63,6 +63,27 @@ class ProtectedPlanTest(unittest.TestCase):
                 self.validate()
             no_cloud.assert_not_called()
 
+    def test_materialization_uses_only_pinned_demo_overlays_in_private_scratch(self):
+        historical = (native.MODULE / "runtime.tf").as_posix()
+        overlay = native.OVERLAYS[historical]
+        tested = b"reviewed demo runtime bytes\n"
+        (self.root / overlay).write_bytes(tested)
+        original = (self.root / historical).read_bytes()
+        self.decision["sources"][overlay] = native.custody.sha256(tested)
+        work = self.root / "owned-scratch"
+        work.mkdir()
+        staged = native.materialize_module(self.decision, work, root=self.root)
+        self.assertEqual((staged / "runtime.tf").read_bytes(), tested)
+        self.assertEqual((self.root / historical).read_bytes(), original)
+        self.assertFalse((work / "module" / native.DEMO_MODULE).exists())
+        for target, chosen in native.selected_sources(self.decision["sources"]).items():
+            self.assertEqual(native.custody.sha256((work / "module" / target).read_bytes()), chosen["sha256"])
+        (self.root / overlay).write_bytes(b"unreviewed runtime change")
+        another = self.root / "another-scratch"
+        another.mkdir()
+        with self.assertRaisesRegex(ValueError, "changed_iac_source"):
+            native.materialize_module(self.decision, another, root=self.root)
+
     def test_protected_decision_digest_is_independent_of_dispatch(self):
         self.env["PROTECTED_DECISION_SHA"] = "f" * 64
         with self.assertRaisesRegex(ValueError, "independently_pinned_owner_decision"):
@@ -139,21 +160,28 @@ class ProtectedPlanTest(unittest.TestCase):
         marker.assert_not_called()
 
     def test_iac_requires_specific_current_decision_for_each_native_failure(self):
+        base_file = (native.MODULE / "runtime.tf").as_posix()
+        overlay_file = native.OVERLAYS[base_file]
+        self.decision["sources"][overlay_file] = "b" * 64
         status = {"ID": "GCP-0033", "Status": "FAIL", "Severity": "LOW", "CauseMetadata": {
                   "Resource": "google_compute_instance.postgres", "StartLine": 1, "EndLine": 2}}
         raw = native.custody.canonical({"ArtifactType": "filesystem", "Trivy": {"Version": "0.76.2"}, "Results": [
-               {"Class": "config", "Type": "terraform", "Target": "main.tf", "MisconfSummary": {"Failures": 1}, "Misconfigurations": [status]}]})
+               {"Class": "config", "Type": "terraform", "Target": "runtime.tf", "MisconfSummary": {"Failures": 1}, "Misconfigurations": [status]}]})
         digest = native.custody.sha256(raw)
         review = {"schema": "clipforge-int-demo-a-iac-review-1", "status": "reviewed", "controls_commit": self.commit,
-                  "sources": self.decision["sources"], "native_report_sha256": digest, "native_report": {"sha256": digest},
+                  "sources": self.decision["sources"], "selected_sources": native.selected_sources(self.decision["sources"]),
+                  "native_report_sha256": digest, "native_report": {"sha256": digest},
                   "unresolved_count": 0, "expires_utc": self.decision["expires_utc"], "decisions": []}
         with self.assertRaisesRegex(ValueError, "unresolved_native_iac_finding"):
             native.verify_iac(review, raw, self.decision, now=self.now)
-        row = {"id": "GCP-0033", "severity": "LOW", "target": "main.tf", "resource": status["CauseMetadata"]["Resource"],
-               "start_line": 1, "end_line": 2, "native_report_sha256": digest, "source_sha256": self.decision["sources"]["infra/gcp/int-base/main.tf"],
+        row = {"id": "GCP-0033", "severity": "LOW", "target": "runtime.tf", "resource": status["CauseMetadata"]["Resource"],
+               "start_line": 1, "end_line": 2, "native_report_sha256": digest, "source_sha256": self.decision["sources"][base_file],
                "expires_utc": self.decision["expires_utc"], "responsible": "fixture", "control": "fixture", "evidence": "fixture",
                "status": "control_verified"}
         review["decisions"] = [row]
+        with self.assertRaisesRegex(ValueError, "independent_iac_finding_decision"):
+            native.verify_iac(review, raw, self.decision, now=self.now)
+        row["source_sha256"] = self.decision["sources"][overlay_file]
         native.verify_iac(review, raw, self.decision, now=self.now)
         row["expires_utc"] = self.decision["issued_utc"]
         with self.assertRaisesRegex(ValueError, "independent_iac_finding_decision"):

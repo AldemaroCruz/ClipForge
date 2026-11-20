@@ -9,7 +9,7 @@ variable "db01_noble_candidate" {
 
   validation {
     condition = var.db01_noble_candidate == null || try(
-      var.postgres_subnet_cidr == "10.80.1.0/28" &&
+      var.stage == "foundation" && var.postgres_subnet_cidr == "10.80.1.0/28" &&
       can(regex("^ubuntu-2404-noble-amd64-v[0-9]{8}[a-z]?$", var.db01_noble_candidate.image_name)) &&
       can(regex("^[1-9][0-9]*$", var.db01_noble_candidate.image_id)), false
     )

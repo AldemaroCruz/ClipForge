@@ -1,9 +1,10 @@
 """Directed regressions for Noble's package, serial and human-access operators."""
 import base64
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -189,19 +190,41 @@ class RecoveryTests(unittest.TestCase):
                 kernel_recovery.restore(candidate, "b" * 64, "d" * 64)
         write.assert_not_called()
 
-    @unittest.skipUnless(hasattr(os, "geteuid") and os.geteuid() == 0, "owned root-file fixture requires Linux root")
+    @unittest.skipUnless(os.name == "posix", "boot-file restoration uses POSIX filesystem operations")
     def test_capture_and_restore_exact_files_without_rewriting_the_environment(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            backups = root / "backups"
             grub, env, drop = (root / name for name in ("grub.cfg", "grubenv", "kmod.conf"))
             base, rendered, drop_in = b"original fixture grub", b"rendered fixture grub", b"owned fixture drop-in"
             grub.write_bytes(base)
             env.write_bytes(b"e" * 1024)
             candidate = {"operation_id": "reviewed-noble-operation"}
-            with (patch.object(apt, "guest_identity", side_effect=[apt.GUEST_BOOT, "new-boot-fixture"]),
-                  patch.multiple(kernel_recovery, ROOT=root, BOOT_CFG=grub, BOOT_ENV=env, RECOVERY=root / "backups",
-                                 BASELINE_CFG=kernel_recovery.digest(base), EXACT_DROP_INS={drop: kernel_recovery.digest(drop_in)},
-                                 create=True)):
+            with ExitStack() as fixtures:
+                fixtures.enter_context(patch.object(apt, "guest_identity", side_effect=[apt.GUEST_BOOT, "new-boot-fixture"]))
+                fixtures.enter_context(patch.multiple(kernel_recovery, BOOT_CFG=grub, BOOT_ENV=env, RECOVERY=backups,
+                                                      BASELINE_CFG=kernel_recovery.digest(base),
+                                                      EXACT_DROP_INS={drop: kernel_recovery.digest(drop_in)}))
+                owner = root.stat()
+                if (owner.st_uid, owner.st_gid) != (0, 0):
+                    def root_owned(info):
+                        self.assertEqual((info.st_uid, info.st_gid), (owner.st_uid, owner.st_gid))
+                        fields = list(info)
+                        fields[4:6] = (0, 0)
+                        return os.stat_result(fields)
+
+                    # The non-root fixture presents root ownership only to the recovery checks.
+                    # Files, byte comparisons, exclusive opens, chmod, fsync and replacement stay real.
+                    recovery_os = SimpleNamespace(**vars(os))
+                    recovery_os.fstat = lambda fd: root_owned(os.fstat(fd))
+                    real_lstat = Path.lstat
+
+                    def owned_backup_lstat(path, *args, **options):
+                        info = real_lstat(path, *args, **options)
+                        return root_owned(info) if path == backups else info
+
+                    fixtures.enter_context(patch.object(kernel_recovery, "os", recovery_os))
+                    fixtures.enter_context(patch.object(Path, "lstat", owned_backup_lstat))
                 self.assertEqual(kernel_recovery.capture(candidate, "b" * 64)["status"], "original_boot_files_preserved")
                 grub.write_bytes(rendered)
                 env.write_bytes(b"f" * 1024)
