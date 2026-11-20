@@ -21,6 +21,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 from scripts import int_guest_inventory as transport
 from scripts import int_noble_guest_observation as guest
 from scripts import int_noble_hostkey as host
+from scripts import int_noble_postverify as postverify
 from scripts import int_vm_hostkey_guest
 from scripts import int_release as custody
 from scripts.int_foundation_verify import STATE_PIN
@@ -30,6 +31,7 @@ from scripts import db01_guest_sca as sca
 APPLY_PATH = ".github/workflows/int-db01-noble-apply.yml"
 OBSERVE_PATH = ".github/workflows/int-db01-noble-observe.yml"
 PIN_SCHEMA = "clipforge-db01-noble-first-boot-pin-1"
+POSTVERIFY_PIN_SCHEMA = "clipforge-db01-noble-postverified-first-boot-pin-1"
 PAYLOAD_SHA256 = "c13727b4c62a5b449f94bc26b1e824241cdb109d4fd0a3b9d23849865449f7d9"
 PUBLISHER_SHA256 = "0400c905a0cf8578d8315e608afdca3a87aed6521f8ae36b449b9d675cd87cc5"
 CREATION_SCHEMA = "clipforge-db01-noble-creation-receipt-1"
@@ -38,7 +40,7 @@ API = "https://compute.googleapis.com/compute/v1/"
 VM = API + guest.INSTANCE_PATH
 BOOT = API + guest.ZONE_PATH + "/disks/" + guest.BOOT_DISK
 DATA = API + guest.ZONE_PATH + "/disks/" + guest.DATA_DISK
-PROJECT = API + guest.PROJECT_PATH + "?fields=name,id,commonInstanceMetadata"
+PROJECT = API + guest.PROJECT_PATH + "?fields=name,id,selfLink,commonInstanceMetadata"
 SERIAL = VM + "/serialPort?port=1&start=0"
 SNAPSHOT_ROUTES = (VM, BOOT, DATA, PROJECT)
 CANDIDATE_CONSTANTS = {
@@ -60,11 +62,15 @@ def valid_reference(value, name, limit):
             and type(value["size"]) is int and 0 < value["size"] <= limit)
 
 
-def exact_summary(raw, expected_sha, controls, run):
+def checked_summary_bytes(raw, expected_sha, controls, run):
     require(re.fullmatch(r"[0-9a-f]{40}", controls or "")
             and re.fullmatch(host.NUMBER, run or "") and re.fullmatch(host.HEX, expected_sha or "")
             and 0 < len(raw) <= 262144 and host.sha(raw) == expected_sha, "NOBLE_APPLY_SUMMARY_HASH")
-    summary = host.closed_json(raw)
+    return host.closed_json(raw)
+
+
+def exact_summary(raw, expected_sha, controls, run):
+    summary = checked_summary_bytes(raw, expected_sha, controls, run)
     require(isinstance(summary, dict) and summary.get("schema") == CREATION_SCHEMA and summary.get("status") == "created_verified"
             and summary.get("controls_commit") == controls and str(summary.get("apply_run_id")) == run
             and summary.get("native_apply_completed") is True and summary.get("debian_preserved") is True,
@@ -77,6 +83,13 @@ def exact_summary(raw, expected_sha, controls, run):
     require(isinstance(approval, dict) and approval.get("observation") is True
             and valid_reference(approval.get("plan_manifest"), f"{custody.PREFIX}{producer}/{producer_run}-1/manifest.json",
                                 custody.LIMIT), "NOBLE_PLAN_MANIFEST_OR_APPROVAL")
+    verify_creation_target(summary)
+    require(valid_reference(summary.get("receipt"), f"{custody.PREFIX}{controls}/{run}-1/foundation-state.json", 262144),
+            "NOBLE_CREATION_RECEIPT_REFERENCE")
+    return summary
+
+
+def verify_creation_target(summary):
     state = summary["state"]
     require(state["name"] == STATE_PIN["name"] and state["lineage"] == STATE_PIN["lineage"]
             and state["generation"] != STATE_PIN["generation"] and re.fullmatch(host.NUMBER, state["generation"])
@@ -95,9 +108,25 @@ def exact_summary(raw, expected_sha, controls, run):
             and all(isinstance(candidate[k], str) and re.fullmatch(host.HEX, candidate[k]) for k in CANDIDATE_HASHES)
             and guest.timestamp(candidate["first_boot_timestamp"]) >= guest.timestamp(candidate["creation_timestamp"]),
             "NOBLE_APPLY_SUMMARY_TARGET")
-    require(valid_reference(summary.get("receipt"), f"{custody.PREFIX}{controls}/{run}-1/foundation-state.json", 262144),
-            "NOBLE_CREATION_RECEIPT_REFERENCE")
-    return summary
+
+
+def creation_handoff(raw, expected_sha, controls, run, postverify_run=""):
+    if not postverify_run:
+        summary = exact_summary(raw, expected_sha, controls, run)
+        return summary, summary
+    envelope = checked_summary_bytes(raw, expected_sha, controls, run)
+    require(re.fullmatch(host.NUMBER, postverify_run) and postverify_run != run, "NOBLE_POSTVERIFY_RUN_ID")
+    postverify.verify_envelope(envelope, controls, postverify_run)
+    require(envelope["original_apply"]["run_id"] == run, "NOBLE_POSTVERIFY_ORIGINAL_APPLY")
+    creation = envelope["creation"]
+    summary = {
+        **{key: creation[key] for key in ("candidate", "control_plane", "state")},
+        "controls_commit": controls, "apply_run_id": run, "postverify_run_id": postverify_run,
+        "producer_commit": envelope["plan"]["producer_commit"], "producer_run": envelope["plan"]["producer_run"],
+        "receipt": envelope["receipt"],
+    }
+    verify_creation_target(summary)
+    return envelope, summary
 
 
 def checked_apply_run(run, controls, token):
@@ -117,6 +146,21 @@ def checked_apply_run(run, controls, token):
             and result.get("event") == "workflow_dispatch" and result.get("status") == "completed"
             and result.get("conclusion") == "success"
             and result.get("repository", {}).get("full_name") == "AldemaroCruz/ClipForge", "NOBLE_APPLY_RUN_UNVERIFIED")
+
+
+def checked_creation_runs(run, controls, token, postverify_run=""):
+    if not postverify_run:
+        checked_apply_run(run, controls, token)
+        return
+    require(run == postverify.ORIGINAL_RUN and re.fullmatch(host.NUMBER, postverify_run) and postverify_run != run,
+            "NOBLE_POSTVERIFY_RUN_ID")
+    postverify.verify_postverify_run(postverify_run, controls, token)
+    postverify.verify_original_run(token)
+
+
+def verify_creation_receipt(envelope):
+    proof = host.closed_json(custody.fetch_verified(envelope["receipt"]))
+    require(proof == {key: value for key, value in envelope.items() if key != "receipt"}, "NOBLE_CREATED_RECEIPT_ORIGIN")
 
 
 def read_compute(url, token):
@@ -153,21 +197,25 @@ def make_pin(summary, summary_sha, reader):
     after = snapshot(reader, cand)
     pin = guest.host_receipt(serial, before=before, after=after, nonce=cand["hostkey_nonce"],
                              publisher_sha256=PUBLISHER_SHA256)
-    return {"schema": PIN_SCHEMA, "producer_commit": summary["producer_commit"], "controls_commit": summary["controls_commit"],
-            "apply_run_id": str(summary["apply_run_id"]), "apply_summary_sha256": summary_sha,
-            "creation_receipt": summary["receipt"], "pin": pin}
+    return {**pin_binding(summary, summary_sha), "pin": pin}
+
+
+def pin_binding(summary, summary_sha):
+    binding = {"schema": PIN_SCHEMA,
+               "producer_commit": summary["producer_commit"], "controls_commit": summary["controls_commit"],
+               "apply_run_id": str(summary["apply_run_id"]), "apply_summary_sha256": summary_sha,
+               "creation_receipt": summary["receipt"]}
+    if "postverify_run_id" in summary:
+        binding.update(schema=POSTVERIFY_PIN_SCHEMA, postverify_run_id=summary["postverify_run_id"])
+    return binding
 
 
 def check_pin(raw, expected_sha, summary, summary_sha):
     require(re.fullmatch(host.HEX, expected_sha or "") and 0 < len(raw) <= MAX_PIN
             and host.sha(raw) == expected_sha, "NOBLE_PIN_HASH")
     envelope = host.closed_json(raw)
-    require(isinstance(envelope, dict) and envelope.keys() == {"schema", "producer_commit", "controls_commit",
-            "apply_run_id", "apply_summary_sha256", "creation_receipt", "pin"}
-            and envelope["schema"] == PIN_SCHEMA and envelope["producer_commit"] == summary["producer_commit"]
-            and envelope["controls_commit"] == summary["controls_commit"]
-            and envelope["apply_run_id"] == str(summary["apply_run_id"])
-            and envelope["apply_summary_sha256"] == summary_sha and envelope["creation_receipt"] == summary["receipt"],
+    require(isinstance(envelope, dict) and "pin" in envelope
+            and {key: value for key, value in envelope.items() if key != "pin"} == pin_binding(summary, summary_sha),
             "NOBLE_PIN_APPLY_BINDING")
     cand, pin = summary["candidate"], envelope["pin"]
     require(isinstance(pin, dict) and pin.keys() == {"schema", "control_plane", "record", "known_hosts_line"}
@@ -228,6 +276,8 @@ def collect(env, work, reports, summary, pin, *, reader, client, runner=None):
               "controls_commit": env["GITHUB_SHA"],
               "apply_run_id": str(summary["apply_run_id"]), "observation_run_id": env["GITHUB_RUN_ID"],
               "creation_receipt": summary["receipt"], "runtime_authorized": False, "database_initialized": False}
+    if "postverify_run_id" in summary:
+        result["postverify_run_id"] = summary["postverify_run_id"]
     stage, previous_signals = "control_plane_before", {}
     def interrupted(_signum, _frame):
         raise transport.Blocked("noble_runner_interrupted")
@@ -483,7 +533,7 @@ def staged_inputs(env):
     controls, run = env["GITHUB_SHA"], env["NOBLE_APPLY_RUN"]
     summary_raw = transport._local_bytes(Path(env["NOBLE_HANDOFF"]) / "summary.json", 262144)
     summary_sha = env["NOBLE_APPLY_SUMMARY_SHA256"]
-    summary = exact_summary(summary_raw, summary_sha, controls, run)
+    _, summary = creation_handoff(summary_raw, summary_sha, controls, run, env.get("NOBLE_POSTVERIFY_RUN", ""))
     pin = check_pin(env["NOBLE_HOST_PIN_JSON"].encode("ascii"), env["NOBLE_HOST_PIN_SHA256"], summary, summary_sha)
     require(host.sha(guest.payload_bytes()) == PAYLOAD_SHA256, "NOBLE_PAYLOAD_SOURCE")
     return summary, pin
@@ -497,6 +547,7 @@ def main(argv=None):
     pin_args.add_argument("--summary-sha256", required=True)
     pin_args.add_argument("--controls", required=True)
     pin_args.add_argument("--apply-run", required=True)
+    pin_args.add_argument("--postverify-run", default="", help="Successful protected postverification of the known original apply")
     pin_args.add_argument("--output", type=Path, required=True)
     for operation in ("verify-apply-run", "check", "run", "cleanup"):
         commands.add_parser(operation)
@@ -513,12 +564,17 @@ def main(argv=None):
             iam.verify_checkout(args.controls)
             iam.verify_receipt_location(args.output)
             require(not args.output.exists(), "NOBLE_PIN_OUTPUT_EXISTS")
-            summary = exact_summary(local_input(args.apply_summary, 262144), args.summary_sha256, args.controls, args.apply_run)
+            envelope, summary = creation_handoff(local_input(args.apply_summary, 262144), args.summary_sha256,
+                                                 args.controls, args.apply_run, args.postverify_run)
+            if args.postverify_run:
+                gh = shutil.which("gh") or shutil.which("gh.exe")
+                require(gh, "NOBLE_GITHUB_CLI")
+                github_token = iam.run_local([gh, "auth", "token", "--hostname", "github.com"])
+                checked_creation_runs(args.apply_run, args.controls, github_token, args.postverify_run)
             token = iam.admin_token()
             env["GCP_ACCESS_TOKEN"] = token
             try:
-                proof = host.closed_json(custody.fetch_verified(summary["receipt"]))
-                require(proof == {key: value for key, value in summary.items() if key != "receipt"}, "NOBLE_CREATED_RECEIPT_ORIGIN")
+                verify_creation_receipt(envelope)
                 value = make_pin(summary, args.summary_sha256, lambda route: read_compute(route, token))
             finally:
                 env.pop("GCP_ACCESS_TOKEN", None)
@@ -535,7 +591,7 @@ def main(argv=None):
         else:
             check_hosted_context(env)
             if args.operation == "verify-apply-run":
-                checked_apply_run(env["NOBLE_APPLY_RUN"], env["GITHUB_SHA"], env["GH_TOKEN"])
+                checked_creation_runs(env["NOBLE_APPLY_RUN"], env["GITHUB_SHA"], env["GH_TOKEN"], env.get("NOBLE_POSTVERIFY_RUN", ""))
                 return 0
             work, reports = transport._validate_paths(env, env["GUEST_WORK"], env["GUEST_REPORTS"])
             if args.operation == "cleanup":

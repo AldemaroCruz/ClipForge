@@ -42,6 +42,7 @@
 !.github/workflows/int-db01-noble-apply.yml
 !.github/workflows/int-db01-noble-observe.yml
 !.github/workflows/int-db01-noble-plan.yml
+!.github/workflows/int-db01-noble-postverify.yml
 !.github/workflows/int-e2e-apply.yml
 !.github/workflows/int-e2e-bootstrap-db.yml
 !.github/workflows/int-e2e-jobs.yml

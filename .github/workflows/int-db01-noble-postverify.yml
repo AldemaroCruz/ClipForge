@@ -1,0 +1,127 @@
+name: ClipForge INT Noble creation postverification
+run-name: Read-only closure of Noble creation run 44761685941
+
+on:
+  workflow_dispatch:
+    inputs:
+      approved_control_commit:
+        description: Full SHA of the reviewed postverification controls
+        type: string
+        required: true
+
+permissions: {}
+concurrency:
+  group: clipforge-int-terraform-state
+  cancel-in-progress: false
+
+jobs:
+  postverify-noble:
+    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    environment: int
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+      GCP_TERRAFORM_SA: ${{ vars.GCP_TERRAFORM_SA }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
+      DB01_NOBLE_POSTVERIFY_COMMIT: ${{ inputs.approved_control_commit }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Allocate private scratch
+        id: scratch
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          printf 'TF_INT_WORK_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/clipforge-tf-int01.XXXXXXXX")" >> "$GITHUB_ENV"
+          printf 'TF_INT_REPORT_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/clipforge-tf-report.XXXXXXXX")" >> "$GITHUB_ENV"
+
+      - name: Check out only approved postverification controls
+        id: controls
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify exact postcheck source and read-only tests
+        id: checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_SHA" = "$DB01_NOBLE_POSTVERIFY_COMMIT"
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          git check-ignore --no-index --quiet gha-creds-db01-noble-postverify.json
+          test -z "$(git ls-files -- ':(glob)**/gha-creds-*.json')"
+          python -B -m scripts.int_noble_postverify check
+          python -B -m unittest tests.test_int_noble_postverify
+
+      - name: Authenticate the existing protected INT identity
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_TERRAFORM_SA }}
+          token_format: access_token
+          access_token_lifetime: 1800s
+          create_credentials_file: true
+          export_environment_variables: true
+          cleanup_credentials: true
+
+      - name: Read the existing creation and retain a distinct immutable receipt
+        id: verify
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          GH_TOKEN: ${{ github.token }}
+        run: python -B -m scripts.int_noble_postverify verify
+
+      - name: Retain a sanitized diagnosis if no controller report exists
+        if: ${{ always() && steps.scratch.outcome == 'success' }}
+        env:
+          STEP_CONTROLS: ${{ steps.controls.outcome }}
+          STEP_CHECKS: ${{ steps.checks.outcome }}
+          STEP_AUTH: ${{ steps.auth.outcome }}
+          STEP_VERIFY: ${{ steps.verify.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          python -B - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          target = Path(os.environ["TF_INT_REPORT_DIR"]) / "summary.json"
+          if target.is_file():
+              raise SystemExit(0)
+          phase = next((key for key in ("STEP_CONTROLS", "STEP_CHECKS", "STEP_AUTH", "STEP_VERIFY")
+                        if os.environ[key] in {"failure", "cancelled"}), "missing_postverification_report")
+          report = {"schema": "clipforge-db01-noble-postverification-receipt-1", "status": "postverification_blocked",
+                    "diagnostic": {"operation": phase}}
+          target.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+          raise SystemExit(1)
+          PY
+
+      - name: Retain only the sanitized postverification summary
+        if: ${{ always() && steps.scratch.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: db01-noble-postverify-summary-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.TF_INT_REPORT_DIR }}/summary.json
+          if-no-files-found: error
+          retention-days: 7
+          include-hidden-files: false
+
+      - name: Remove only dedicated postverification scratch
+        if: ${{ always() && steps.scratch.outcome == 'success' && steps.controls.outcome == 'success' }}
+        run: python -B -m scripts.tf_int_plan cleanup

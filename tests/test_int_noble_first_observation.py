@@ -8,6 +8,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch
+from urllib.parse import parse_qs, urlsplit
 
 from scripts import int_guest_inventory as transport
 from scripts import int_noble_first_observation as observer
@@ -19,6 +20,7 @@ CONTROLS = "a" * 40
 PRODUCER = "c302dcc366ed450f91c1693072eb9008e7975e4c"
 PLAN_RUN = "90"
 RUN = "91"
+POSTVERIFY_RUN = "93"
 
 
 def summary_fixture(*, producer=PRODUCER, image_name="ubuntu-2404-noble-amd64-v20261105", image_id="1892012953239034119"):
@@ -58,6 +60,106 @@ class NobleFirstObservation(unittest.TestCase):
                 opener.return_value.open.return_value = BytesIO(transport.canonical({**identity, **change}))
                 with self.subTest(change=change), self.assertRaisesRegex(ValueError, "NOBLE_APPLY_RUN_UNVERIFIED"):
                     observer.checked_apply_run(RUN, CONTROLS, "synthetic-test-header")
+
+    def test_postverification_requires_its_own_verified_run_and_exact_original(self):
+        token = "synthetic-test-header"
+        with (patch.object(observer, "checked_apply_run") as successful_apply,
+              patch.object(observer.postverify, "verify_postverify_run") as verified_run,
+              patch.object(observer.postverify, "verify_original_run") as original_run):
+            actual_original = observer.postverify.ORIGINAL_RUN
+            observer.checked_creation_runs(actual_original, CONTROLS, token, POSTVERIFY_RUN)
+            verified_run.assert_called_once_with(POSTVERIFY_RUN, CONTROLS, token)
+            original_run.assert_called_once_with(token)
+            successful_apply.assert_not_called()
+            for bad_run, verifier in ((RUN, POSTVERIFY_RUN), (actual_original, actual_original), (actual_original, "x")):
+                with self.subTest(run=bad_run, verifier=verifier), self.assertRaisesRegex(ValueError, "NOBLE_POSTVERIFY_RUN_ID"):
+                    observer.checked_creation_runs(bad_run, CONTROLS, token, verifier)
+            self.assertEqual(verified_run.call_count, 1)
+            self.assertEqual(original_run.call_count, 1)
+            original_run.reset_mock()
+            verified_run.side_effect = ValueError("NOBLE_POSTVERIFY_RUN_UNVERIFIED")
+            with self.assertRaisesRegex(ValueError, "NOBLE_POSTVERIFY_RUN_UNVERIFIED"):
+                observer.checked_creation_runs(actual_original, CONTROLS, token, POSTVERIFY_RUN)
+            original_run.assert_not_called()
+            successful_apply.assert_not_called()
+
+    def test_postverification_pin_binds_exact_handoff_and_separate_immutable_receipt(self):
+        source, readings = summary_fixture()
+        original = observer.postverify.ORIGINAL_RUN
+        receipt = {**source["receipt"], "name": f"private-plans/int/{CONTROLS}/{POSTVERIFY_RUN}-1/foundation-state.json"}
+        envelope = {
+            "schema": "clipforge-db01-noble-postverification-receipt-1", "status": "creation_postverified",
+            "verifier": {"run_id": POSTVERIFY_RUN}, "original_apply": {"run_id": original, "conclusion": "failure"},
+            "plan": {"producer_commit": PRODUCER, "producer_run": PLAN_RUN},
+            "creation": {key: source[key] for key in ("state", "candidate", "control_plane")},
+            "receipt": receipt,
+        }
+        raw = transport.canonical(envelope)
+        digest = host.sha(raw)
+        with patch.object(observer.postverify, "verify_envelope") as validator:
+            parsed, bound = observer.creation_handoff(raw, digest, CONTROLS, original, POSTVERIFY_RUN)
+            validator.assert_called_once_with(envelope, CONTROLS, POSTVERIFY_RUN)
+            self.assertEqual(parsed, envelope)
+            self.assertEqual(bound["apply_run_id"], original)
+            self.assertEqual(bound["receipt"], receipt)
+            with self.assertRaisesRegex(ValueError, "NOBLE_APPLY_SUMMARY_HASH"):
+                observer.creation_handoff(raw + b" ", digest, CONTROLS, original, POSTVERIFY_RUN)
+            with self.assertRaisesRegex(ValueError, "NOBLE_APPLY_SUMMARY_ORIGIN"):
+                observer.creation_handoff(raw, digest, CONTROLS, original)
+            with self.assertRaisesRegex(ValueError, "NOBLE_POSTVERIFY_ORIGINAL_APPLY"):
+                observer.creation_handoff(raw, digest, CONTROLS, RUN, POSTVERIFY_RUN)
+        proof = {key: value for key, value in envelope.items() if key != "receipt"}
+        with patch.object(observer.custody, "fetch_verified", return_value=transport.canonical(proof)) as fetch:
+            observer.verify_creation_receipt(parsed)
+            fetch.assert_called_once_with(receipt)
+            fetch.return_value = transport.canonical({**proof, "status": "forged"})
+            with self.assertRaisesRegex(ValueError, "NOBLE_CREATED_RECEIPT_ORIGIN"):
+                observer.verify_creation_receipt(parsed)
+        pin = observer.make_pin(bound, digest, readings.__getitem__)
+        self.assertEqual(pin["schema"], observer.POSTVERIFY_PIN_SCHEMA)
+        self.assertEqual(pin["postverify_run_id"], POSTVERIFY_RUN)
+        self.assertEqual(pin["apply_run_id"], original)
+        raw_pin = transport.canonical(pin)
+        observer.check_pin(raw_pin, host.sha(raw_pin), bound, digest)
+        for change in ({"postverify_run_id": "94"}, {"receipt": source["receipt"]}, {"controls_commit": PRODUCER}):
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, "NOBLE_PIN_APPLY_BINDING"):
+                observer.check_pin(raw_pin, host.sha(raw_pin), {**bound, **change}, digest)
+
+    def test_actual_postverification_contract_rejects_tampered_artifact_even_with_its_new_hash(self):
+        source, _ = summary_fixture()
+        postverify = observer.postverify
+        exact_ids = {"instance_id": postverify.EXPECTED_INSTANCE, "boot_disk_id": postverify.EXPECTED_BOOT_DISK,
+                     "data_disk_id": postverify.EXPECTED_DATA_DISK}
+        evidence = {
+            "schema": postverify.SCHEMA, "status": postverify.STATUS,
+            "verifier": {"controls_commit": CONTROLS, "run_id": POSTVERIFY_RUN, "attempt": "1",
+                         "workflow": postverify.WORKFLOW},
+            "original_apply": {**postverify.original_apply_binding(), "intent_at_utc": "2026-11-20T15:18:25Z",
+                               "operation_completed_at_utc": "2026-11-20T15:20:04Z"},
+            "plan": {"producer_commit": postverify.apply.PRODUCER, "producer_run": postverify.apply.PLAN_RUN,
+                     **postverify.apply.PLAN},
+            "creation": {"state": postverify.EXPECTED_STATE,
+                         "candidate": {**source["candidate"], **exact_ids},
+                         "control_plane": {**source["control_plane"], **exact_ids},
+                         "debian_preserved": True, "bootstrap_authorized": False, "application_authorized": False,
+                         "guest_access_performed": False, "checks": postverify.observed_checks()},
+        }
+        sealed = transport.canonical(evidence)
+        receipt = {"name": f"private-plans/int/{CONTROLS}/{POSTVERIFY_RUN}-1/foundation-state.json",
+                   "generation": "996", "size": len(sealed), "sha256": host.sha(sealed)}
+        report = {**evidence, "receipt": receipt}
+        raw = transport.canonical(report)
+        _, bound = observer.creation_handoff(raw, host.sha(raw), CONTROLS, postverify.ORIGINAL_RUN, POSTVERIFY_RUN)
+        self.assertEqual(bound["candidate"]["instance_id"], postverify.EXPECTED_INSTANCE)
+        changed = deepcopy(report)
+        changed["creation"]["candidate"]["hostkey_nonce"] = "b" * 64
+        forged = transport.canonical(changed)
+        with self.assertRaisesRegex(ValueError, "receipt was altered"):
+            observer.creation_handoff(forged, host.sha(forged), CONTROLS, postverify.ORIGINAL_RUN, POSTVERIFY_RUN)
+
+    def test_compute_project_request_includes_self_link_validated_by_snapshot(self):
+        fields = parse_qs(urlsplit(observer.PROJECT).query)["fields"]
+        self.assertEqual(fields, ["name,id,selfLink,commonInstanceMetadata"])
 
     def test_custodied_first_boot_pin_binds_exact_run_and_host(self):
         summary, readings = summary_fixture()

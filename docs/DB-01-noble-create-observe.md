@@ -2,6 +2,8 @@
 
 El run `44660649764` de `e5f4943ca6a67a257f8d09666abaad54822f1ee1` terminó en `blocked_preflight` con `noble_apply_write_window_unavailable` y `native_apply_attempted: false`. El flujo bajo demanda usa el perfil WRITE estable y verifica el estado real y las políticas antes de cualquier migración. Fundación y GUEST-01 mantienen su cierre. [Run anterior](https://github.com/AldemaroCruz/ClipForge/actions/runs/44660649764) · [Artefacto original del apply](https://github.com/AldemaroCruz/ClipForge/actions/runs/44660649764/artifacts/14604555083)
 
+El run `44761685941` ejecutó el binario original y registró 11 altas, cero cambios y cero bajas. Su resultado GitHub es `failure` por postcheck y su marcador de aplicación se conserva. El cierre separado verifica la generación `1795187957111147`, serial 9, 53 direcciones y la VM `7365414160255801909`. [Apply ejecutado](https://github.com/AldemaroCruz/ClipForge/actions/runs/44761685941) · [Artefacto retenido](https://github.com/AldemaroCruz/ClipForge/actions/runs/44761685941/artifacts/14640259001)
+
 ## Plan de origen y autoridad
 
 | Dato | Valor fijado |
@@ -86,7 +88,7 @@ Estimación del modelo versionado en USD para siete días continuos, 168 horas, 
 | Storage y operaciones | 0,0979 | 0,0059 |
 | **Subtotal** | **3,09** | **3,56** |
 
-Coexistencia estimada **USD 6,65**. Si NAT asigna una IPv4 adicional durante siete días, el incremento sube a USD 4,40 y la coexistencia a **USD 7,49**. El modelo excluye impuestos y variaciones de tráfico, logging, operaciones o retención que excedan sus supuestos. El propietario revisaría la convivencia al séptimo día y decidiría la retención de la VM y ambos discos. Un estado parcial puede facturar recursos creados aunque la observación quede bloqueada.
+Coexistencia estimada **USD 6,65**. Si NAT asigna una IPv4 adicional durante siete días, el incremento sube a USD 4,40 y la coexistencia a **USD 7,49**. El modelo excluye impuestos y variaciones de tráfico, logging, operaciones o retención que excedan sus supuestos. La revisión al séptimo día es seguimiento de costes. Los permisos estables y los workflows operan bajo demanda. Cualquier cambio en la retención de instancias o discos requiere una decisión propia.
 
 ## Cierre operativo y fallos
 
@@ -155,7 +157,11 @@ $OwnerRef = (Get-Content -Raw -LiteralPath $ownerRefFile).Trim()
     gh workflow run int-db01-noble-apply.yml --repo AldemaroCruz/ClipForge --ref ci/bootstrap-sec03 --json
 ```
 
-El resumen exitoso identifica el run y la referencia del objeto privado de creación. El lector autorizado verifica su procedencia y obtiene el pin autenticado del primer arranque. El archivo contiene únicamente la identidad y la clave pública válidas para esa observación. `$ApplySummaryHash` y `$HostPinHash` son las huellas de bytes exactos de los archivos verificados.
+### Postverificación de la creación existente
+
+Despachar `int-db01-noble-postverify.yml` con `approved_control_commit` igual al SHA publicado y aprobar manualmente `int`. El controlador sólo admite el apply histórico exacto y comprueba su vigencia en el instante de aquella ejecución, la salida nativa, el marcador de aplicación, las dos generaciones de estado, los recursos y las políticas. Publica su propio recibo de evidencia con generación y huella verificadas. El resumen y el resultado históricos del apply se conservan. [Workflow de postverificación](../.github/workflows/int-db01-noble-postverify.yml)
+
+Para la observación normal, el resumen de apply exitoso identifica el run y el recibo de creación. Para observar la creación postverificada, usar el `summary.json` del artefacto `db01-noble-postverify-summary-<SHA>-<run>-1`, mantener `apply_run_id=44761685941` y añadir `--postverify-run <run>` a `pin` y `postverify_run_id` al workflow de observación. En ambos casos se verifican los bytes del resumen y el recibo privado antes de obtener el pin autenticado del primer arranque. `$ApplySummaryHash` y `$HostPinHash` son las huellas de bytes exactos de los archivos verificados.
 
 ```powershell
 python -B -m scripts.int_noble_first_observation pin --apply-summary $ApplySummary --summary-sha256 $ApplySummaryHash --controls $Controls --apply-run $ApplyRun --output $HostPin
@@ -168,4 +174,4 @@ $PinInput = Get-Content -Raw -LiteralPath $HostPin
 
 El inventario exitoso produce `noble.cdx.json` y `sca-input.json`. Desde un directorio aislado, preparar una base Trivy separada y fijar el digest de la imagen `ghcr.io/aquasecurity/trivy:0.76.2@sha256:6fa071ef8daa2e58b90cbf1710bedca91adbb3bf98693533226f442035b836a6`. Conservar el digest de `trivy.db` y `metadata.json`, ejecutar `trivy sbom --skip-db-update --offline-scan --scanners vuln --list-all-pkgs --format json noble.cdx.json` sin red sobre esos insumos, y pasar los archivos exactos a `python -B -m scripts.int_noble_first_observation verify-sca` con `--inventory`, `--inventory-sha256`, `--native-report`, `--db`, `--db-sha256`, `--db-metadata` y `--output`. Los avisos PGDG y la aplicabilidad del kernel se revisan aparte sobre las versiones observadas. [Control de cobertura de SCA](../scripts/int_noble_first_observation.py)
 
-La primera [observación Noble](../.github/workflows/int-db01-noble-observe.yml) valida el run de apply exitoso, el resumen exacto y el hash del pin antes de usar WIF Deploy. Conserva su aprobación manual de `int`. El cierre registra de forma independiente el resultado Terraform, la conciliación del estado, el arranque, el pin, la observación y la revisión de seguridad. Bootstrap PostgreSQL, montajes y formato del disco, SQL, TLS, secretos, clientes, release y despliegue requieren decisiones independientes.
+La primera observación valida la vía de creación seleccionada, el resumen exacto y el hash del pin antes de usar WIF Deploy. Conserva su aprobación manual de `int`. El cierre registra de forma independiente el resultado Terraform, la conciliación del estado, el arranque, el pin, la observación y la revisión de seguridad. Bootstrap PostgreSQL, montajes y formato del disco, SQL, TLS, secretos, clientes, release y despliegue requieren decisiones independientes. [Workflow de observación](../.github/workflows/int-db01-noble-observe.yml)
