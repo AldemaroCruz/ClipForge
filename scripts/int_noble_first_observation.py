@@ -260,14 +260,14 @@ def check_hosted_context(env):
             "NOBLE_HOST_PUBLISHER_SOURCE")
 
 
-def collect(env, work, reports, summary, pin, *, reader, client, runner=None, kernel=False):
+def collect(env, work, reports, summary, pin, *, reader, client, runner=None, kernel=False, kernel_scope="kernel"):
     """Observe one unchanged first boot, with the GUEST own-key journal and cleanup."""
     candidate = summary["candidate"]
     if kernel:
         from scripts import int_noble_kernel_observation as kernel_observer
 
-        payload = kernel_observer.payload_bytes()
-        stdout_limit = kernel_observer.probe.MAX_OUTPUT
+        payload = kernel_observer.payload_bytes(kernel_scope)
+        stdout_limit = kernel_observer.SCOPES[kernel_scope].MAX_OUTPUT
     else:
         payload = guest.payload_bytes()
         require(host.sha(payload) == PAYLOAD_SHA256 and len(payload) <= 262144, "NOBLE_PAYLOAD_SOURCE")
@@ -286,7 +286,8 @@ def collect(env, work, reports, summary, pin, *, reader, client, runner=None, ke
     if "postverify_run_id" in summary:
         result["postverify_run_id"] = summary["postverify_run_id"]
     if kernel:
-        result.update(schema=kernel_observer.SUMMARY_SCHEMA, initial_observation_run_id=kernel_observer.INITIAL_RUN)
+        result.update(schema=kernel_observer.SUMMARY_SCHEMA, initial_observation_run_id=kernel_observer.INITIAL_RUN,
+                      scope=kernel_scope)
     stage, previous_signals = "control_plane_before", {}
     def interrupted(_signum, _frame):
         raise transport.Blocked("noble_runner_interrupted")
@@ -346,7 +347,7 @@ def collect(env, work, reports, summary, pin, *, reader, client, runner=None, ke
         result["guest_exit_code"] = code
         require(code in {0, 2}, "NOBLE_GUEST_TRANSPORT_EXIT")
         if kernel:
-            checked = kernel_observer.check_guest(raw, code, pin["record"]["guest_boot_id"])
+            checked = kernel_observer.check_guest(raw, code, pin["record"]["guest_boot_id"], kernel_scope)
         else:
             validated = guest.validate_guest(raw, code, host_record=pin["record"], expected_payload_sha256=PAYLOAD_SHA256)
             if code != 0:

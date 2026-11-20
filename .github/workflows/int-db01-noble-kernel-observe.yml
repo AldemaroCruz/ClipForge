@@ -11,6 +11,14 @@ on:
         description: Verified first-boot public host key receipt
         required: true
         type: string
+      read_scope:
+        description: Exact read-only evidence scope
+        required: true
+        default: kernel
+        type: choice
+        options:
+          - kernel
+          - demo-readiness
 
 permissions: {}
 concurrency:
@@ -30,6 +38,7 @@ jobs:
     env:
       PYTHONDONTWRITEBYTECODE: "1"
       GUEST_APPROVED_COMMIT: ${{ inputs.approved_control_commit }}
+      NOBLE_READ_SCOPE: ${{ inputs.read_scope }}
       GUEST_ENVIRONMENT: int
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
@@ -99,7 +108,7 @@ jobs:
         with:
           version: 582.0.0
 
-      - name: Read only Xen netback, Ceph and NFS server metadata over strict IAP SSH
+      - name: Collect the selected read-only metadata over strict IAP SSH
         env:
           GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           NOBLE_HOST_PIN_JSON: ${{ inputs.host_pin_json }}
