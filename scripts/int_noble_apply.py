@@ -340,7 +340,8 @@ def verify_new_bindings(sa, instance_id, token):
     policies = (
         (f"{noble.API}{guest.INSTANCE_PATH}/getIamPolicy?optionsRequestedPolicyVersion=3", "GET", None,
          {"role": "roles/compute.osAdminLogin"}),
-        (f"https://iam.googleapis.com/v1/{sa}:getIamPolicy", "POST", POLICY_READ, {"role": "roles/iam.serviceAccountUser"}),
+        (f"https://iam.googleapis.com/v1/{sa}:getIamPolicy?options.requestedPolicyVersion=3", "POST", None,
+         {"role": "roles/iam.serviceAccountUser"}),
         (f"https://iap.googleapis.com/v1/{IAP_ZONE}/instances/{instance_id}:getIamPolicy", "POST", POLICY_READ,
          {"role": "roles/iap.tunnelResourceAccessor", "condition": {"title": "db01_noble_ssh_only", "expression": "destination.port == 22"}}),
     )

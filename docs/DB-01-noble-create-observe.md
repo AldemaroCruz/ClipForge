@@ -10,7 +10,7 @@
 | Productor y configuración | `c302dcc366ed450f91c1693072eb9008e7975e4c`, run `44650537240`, intento 1, Terraform 1.15.8 y proveedor Google 8.11.0. |
 | Estado previo | Workspace `default`, `terraform/int/tf-int-01/default.tfstate`, generación `1795030868572779`, serial 7, lineage `813c84a2-2ef1-ceb3-177e-3a2c3b815066`, 110.325 bytes y SHA-256 `aa2d7bf8d15d0fe3fb8461483483be2aa49ccede18c94d67a1f5a5a723ef13ce`. El plan acreditó 42 direcciones. |
 | Imagen | `ubuntu-os-cloud/ubuntu-2404-noble-amd64-v20261105`, ID `1892012953239034119`, familia `ubuntu-2404-lts-amd64`, READY, licencia estándar Ubuntu 24.04 LTS, X86_64. |
-| Resultado y plazo | Código nativo de plan 2, once altas, 42 `no-op`. Vencimiento original `2026-11-21T01:05:19Z`, 20 de noviembre a las 19:05:19 de Guatemala. |
+| Resultado y plazo | Código nativo de plan 2, once altas, 42 `no-op`. Vencimiento original `2026-11-21T01:05:19.179283+00:00`, 20 de noviembre de 2026 a las 19:05:19 de Guatemala. |
 | Controles y aprobación | Un commit posterior de controles se vincula por SHA completo. El propietario identifica ese SHA, el productor, el plan exacto, las decisiones de seguridad y el delta IAM en una decisión explícita nueva. El manifiesto del plan conserva `apply_authorized: false`. |
 | Ventana WRITE propuesta, pendiente | 20 de noviembre de 2026, 16:00–18:00 de Guatemala (`2026-11-20T22:00:00Z`–`2026-11-21T00:00:00Z`). Queda dentro del plazo del plan. Se requiere una nueva revisión si no se puede terminar la fase privilegiada dentro de la ventana. |
 
@@ -103,7 +103,42 @@ Coexistencia estimada **USD 6,65**. Si NAT asigna una IPv4 adicional durante sie
 
 ## Decisión única a presentar al propietario
 
-La decisión operativa posterior debe vincular la huella del ZIP revisado, el SHA completo publicado de los controles, el productor `c302dcc366ed450f91c1693072eb9008e7975e4c`, los cuatro objetos de custodia, el vencimiento original, los cuatro hallazgos exactos de la candidata y el coste de coexistencia. Incluye el manifiesto WRITE y su huella, los permisos mínimos con actor, ámbito, precondiciones, ventana, verificación y retirada, y las referencias verificables de cada emisor. La autorización cubre un solo apply nativo protegido por `int` del binario fijado con locking, las once altas, el startup previsto y una primera observación Noble con pin estricto, limpieza de su clave y SCA del inventario real. Las autorizaciones extraordinarias previas conservan su alcance histórico.
+La decisión operativa pendiente debe identificar la huella del ZIP de revisión, el SHA completo publicado de los controles indicado en el paquete, el productor `c302dcc366ed450f91c1693072eb9008e7975e4c`, el run `44650537240`, los cuatro objetos de custodia con sus generaciones y huellas, el vencimiento original y el coste de coexistencia. El perfil WRITE exacto tiene SHA-256 canónico `7c804755a3f0c3af58a1d17bdea7bf2ea46c8cdf709dba85f99a74c3c9ccea7c`. Las referencias de los emisores y los recibos deben ser verificables. [Perfil WRITE](../config/int-db01-noble-write-iam.json) · [Matriz WRITE](DB-01-noble-create-permissions.md)
+
+**Tres definiciones nuevas.** El administrador crearía estos roles de proyecto en etapa `GA`, con los títulos y descripciones exactos del perfil WRITE.
+
+| Rol en `projects/clipforgebeta2/roles/` | Permisos exactos |
+| --- | --- |
+| `clipforgeIntNobleSaCreateAttach` | `iam.serviceAccounts.actAs`, `iam.serviceAccounts.create`, `iam.serviceAccounts.get`, `iam.serviceAccounts.getIamPolicy` |
+| `clipforgeIntNobleSaBindDeploy` | `iam.serviceAccounts.setIamPolicy` |
+| `clipforgeIntNobleIapZoneRead` | `iap.tunnelZones.getIamPolicy` |
+
+**Cuatro bindings temporales.** Todos tienen un único miembro, `serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com`, y rigen desde `2026-11-20T22:00:00Z` inclusive hasta `2026-11-21T00:00:00Z` exclusivo, el 20 de noviembre de 2026 de 16:00 a 18:00 en Guatemala.
+
+| Rol | Política y alcance efectivo |
+| --- | --- |
+| `clipforgeIntNobleSaCreateAttach` | `projects/clipforgebeta2`. Creación de SA en el proyecto y acceso para consultar, leer políticas y adjuntar SA del proyecto. El alcance efectivo incluye otras SA. |
+| `clipforgeIntNobleSaBindDeploy` | `projects/clipforgebeta2`. Escritura de políticas de SA del proyecto condicionada a `api.getAttribute("iam.googleapis.com/modifiedGrantsByRole", []).hasOnly(["roles/iam.serviceAccountUser"])`. La condición limita el rol modificado. El binario fija la SA Noble y el miembro Deploy. |
+| `clipforgeIntRecoveryIapPolicy_20261118T044838Z` | `projects/816643438938/iap_tunnel/zones/us-central1-a`. Reutiliza la definición vigente de `iap.tunnelInstances.getIamPolicy` y `iap.tunnelInstances.setIamPolicy`. Su alcance efectivo incluye los túneles de instancias de la zona, incluido Debian. El controlador verifica el binding de Deploy para el ID numérico de Noble y preserva la política Debian. |
+| `clipforgeIntNobleIapZoneRead` | `projects/816643438938/iap_tunnel/zones/us-central1-a`. Lectura de la política IAP de esa zona para verificar el delta. |
+
+**Cuatro decisiones IaC individuales.** Cada fila requiere la decisión `reviewed_for_this_noble_creation` y su propia justificación. Los índices 8 a 11 se toman del orden fijado en los hallazgos del productor.
+
+| Hallazgo | Recurso y decisión pendiente |
+| --- | --- |
+| `GCP-0033` | Cifrado predeterminado del bloque `boot_disk` de `google_compute_instance.noble[0]`. |
+| `GCP-0033` | Cifrado predeterminado del bloque `attached_disk` de `google_compute_instance.noble[0]`. |
+| `GCP-0034` | Ausencia de CMEK en `google_compute_disk.noble_boot[0]`. |
+| `GCP-0034` | Ausencia de CMEK en `google_compute_disk.noble_data[0]`. |
+
+**Ejecución y comprobaciones propuestas.** La decisión debe cubrir los siguientes pasos con recibos diferenciados.
+
+1. Aplicar una sola vez el binario original `44650537240-1/int.tfplan`, con aprobación manual de `int` y locking nativo. El binario fija once altas, 42 `no-op` y el startup previsto. Conciliar estado y postchecks antes de continuar.
+2. Retirar exactamente los cuatro bindings temporales con los `etag` vigentes y comprobación de políticas completas. Verificar la conservación de READ, los bindings preexistentes y los tres bindings de Deploy creados por el binario. Las definiciones nuevas quedan sin los bindings temporales.
+3. Observar por primera vez el guest nuevo con Deploy por WIF, IAP al puerto 22 y pin estricto de la clave de host. Retirar la clave pública efímera propia de OS Login y verificar su ausencia. Su TTL es de 900 segundos.
+4. Verificar y conservar el inventario del guest observado, incluidos los paquetes binarios y fuente, el kernel activo, el disco de datos vacío y PostgreSQL inactivo. Ligar el recibo al ID de VM, discos y primer arranque.
+5. Escanear fuera del guest el SBOM de ese inventario con Trivy y una base identificada. Conservar el informe nativo, la cobertura y las huellas del scanner, la base y sus insumos.
+6. Revisar los resultados del scan y su cobertura por componente. Contrastar los avisos de Canonical y PGDG con las versiones observadas, comprobar la aplicabilidad al kernel activo y documentar las brechas pendientes.
 
 La secuencia propuesta empieza con la conciliación de IAM y la aprobación manual de `int` para el [apply Noble](../.github/workflows/int-db01-noble-apply.yml). El [controlador](../scripts/int_noble_apply.py) valida fuentes y custodia con el SHA productor y fija aparte el SHA que ejecuta. Antes de Terraform registra una intención create-only en la ruta antes libre `44650537240-1/foundation-state.json` del prefijo original. La intención vincula el binario y el run de apply, y queda como evidencia si la ejecución se cancela. Una segunda reclamación se bloquea incluso desde otro SHA de controles. Los tres objetos originales del plan y el recibo READ conservan sus nombres y generaciones.
 

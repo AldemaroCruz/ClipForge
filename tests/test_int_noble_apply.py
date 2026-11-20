@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from scripts import int_noble_apply as apply
 
@@ -174,3 +174,29 @@ class NobleApplyTests(unittest.TestCase):
             self.assertIn("/iap_tunnel/zones/us-central1-a/instances/1234:getIamPolicy", read.call_args.args[0])
         with self.assertRaises(ValueError):
             apply.verify_new_bindings("not-used", "named-instance", "fixture")
+
+    def test_new_binding_postcheck_uses_service_specific_http_contracts(self):
+        sa = "projects/clipforgebeta2/serviceAccounts/clipforge-db01-noble-int@clipforgebeta2.iam.gserviceaccount.com"
+        deploy = [apply.historical.DEPLOY_MEMBER]
+        responses = (
+            policy("vm-policy", bindings=[{"role": "roles/compute.osAdminLogin", "members": deploy}]),
+            policy("sa-policy", bindings=[{"role": "roles/iam.serviceAccountUser", "members": deploy}]),
+            policy("iap-policy", bindings=[{
+                "role": "roles/iap.tunnelResourceAccessor",
+                "members": deploy,
+                "condition": {"title": "db01_noble_ssh_only", "expression": "destination.port == 22"},
+            }]),
+        )
+        with patch.object(apply.iam, "request_json", side_effect=responses) as read:
+            apply.verify_new_bindings(sa, "1234", "fixture")
+
+        self.assertEqual(list(read.call_args_list), [
+            call("https://www.googleapis.com/compute/v1/projects/clipforgebeta2/zones/us-central1-a/"
+                 "instances/clipforge-int-db01-noble/getIamPolicy?optionsRequestedPolicyVersion=3",
+                 "fixture", "GET", None),
+            call(f"https://iam.googleapis.com/v1/{sa}:getIamPolicy?options.requestedPolicyVersion=3",
+                 "fixture", "POST", None),
+            call("https://iap.googleapis.com/v1/projects/816643438938/iap_tunnel/zones/us-central1-a/"
+                 "instances/1234:getIamPolicy",
+                 "fixture", "POST", {"options": {"requestedPolicyVersion": 3}}),
+        ])
