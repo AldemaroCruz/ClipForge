@@ -1,6 +1,7 @@
 # INT-E2E-01 proposal only. No public principal, KMS/CSEK, service-account key,
 # secret payload, or service-identity data source is introduced by this root.
 locals {
+  demo_a           = var.int_runtime_profile == "demo-a"
   runtime_accounts = { api = "api", worker = "worker", migrate = "migrate", bootstrap = "migrate" }
   runtime_secrets = {
     app_password      = "clipforge-int-pg-app-password"
@@ -18,7 +19,7 @@ locals {
     CLIPFORGE_CLOUD_PROJECT               = var.project_id
     CLIPFORGE_CLOUD_REGION                = local.region
     CLIPFORGE_CLOUD_JOB                   = "clipforge-int-worker"
-    CLIPFORGE_DATABASE_HOST               = "10.80.1.2"
+    CLIPFORGE_DATABASE_HOST               = var.db01_noble_candidate == null ? "10.80.1.2" : local.noble_ip
     CLIPFORGE_DATABASE_PORT               = "5432"
     CLIPFORGE_DATABASE_NAME               = "clipforge"
     CLIPFORGE_DATABASE_SSL_MODE           = "verify-full"
@@ -36,6 +37,68 @@ locals {
     worker    = ["-m", "app.cloud.worker"]
     migrate   = ["-m", "app.cloud.migrate"]
     bootstrap = ["-m", "app.cloud.bootstrap_admin"]
+  }
+  runtime_env = local.demo_a ? merge({
+    for key, value in local.common_env : key => value
+    if !contains(["CLIPFORGE_GCS_BUCKET", "CLIPFORGE_CLOUD_JOB", "WHISPER_MODEL", "HF_HOME", "CLIPFORGE_MODEL_LOCK", "HF_HUB_OFFLINE"], key)
+    }, {
+    CLIPFORGE_ENVIRONMENT     = "INT"
+    CLIPFORGE_REVISION        = var.demo_source_revision
+    CLIPFORGE_RUNTIME_PROFILE = "int-demo-a"
+    CLIPFORGE_STORAGE_BACKEND = "local"
+  }) : local.common_env
+}
+
+variable "int_runtime_profile" {
+  description = "The protected INT runtime profile; demo-a excludes multimedia and the worker."
+  type        = string
+  default     = "full"
+
+  validation {
+    condition = var.int_runtime_profile == "full" || (
+      var.int_runtime_profile == "demo-a" && var.stage == "runtime" && var.db01_noble_candidate != null &&
+      var.noble_postgres_from_run && can(regex("^[a-f0-9]{40}$", var.demo_source_revision))
+    )
+    error_message = "The account demo must use a reviewed source revision and the exact private Noble runtime."
+  }
+}
+
+variable "demo_source_revision" {
+  description = "Exact publication revision of the reviewed account-demo OCI."
+  type        = string
+  default     = ""
+}
+
+variable "noble_postgres_from_run" {
+  description = "Enable the reviewed TCP/5432 path from the INT Run subnet to the existing Noble identity."
+  type        = bool
+  default     = false
+
+  validation {
+    condition = (
+      (!var.noble_postgres_from_run || (var.db01_noble_candidate != null && var.run_subnet_cidr == "10.80.0.0/26")) &&
+      (var.stage != "runtime" || var.db01_noble_candidate == null || var.noble_postgres_from_run)
+    )
+    error_message = "The Noble connection requires the exact candidate and INT Run subnet. Noble runtime must retain this rule."
+  }
+}
+
+resource "google_compute_firewall" "noble_postgres_from_run" {
+  count                   = var.noble_postgres_from_run && local.noble_count == 1 ? 1 : 0
+  project                 = var.project_id
+  name                    = "${local.noble_name}-postgres-from-run"
+  network                 = google_compute_network.int.name
+  direction               = "INGRESS"
+  priority                = 1000
+  source_ranges           = [google_compute_subnetwork.private["run"].ip_cidr_range]
+  target_service_accounts = [google_service_account.noble[0].email]
+
+  allow {
+    protocol = "tcp"
+    ports    = ["5432"]
+  }
+  log_config {
+    metadata = "EXCLUDE_ALL_METADATA"
   }
 }
 
@@ -149,14 +212,14 @@ resource "google_cloud_run_v2_service" "api" {
     containers {
       image   = var.runtime_image
       command = ["python"]
-      args    = ["-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log", "--proxy-headers", "--forwarded-allow-ips=*"]
+      args    = ["-m", "uvicorn", local.demo_a ? "app.int_demo:app" : "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log", "--proxy-headers", "--forwarded-allow-ips=*"]
       resources {
         limits            = { cpu = "1", memory = "1Gi" }
         cpu_idle          = true
         startup_cpu_boost = false
       }
       dynamic "env" {
-        for_each = merge(local.common_env, {
+        for_each = merge(local.runtime_env, {
           CLIPFORGE_DATABASE_USER          = "clipforge_app"
           CLIPFORGE_DATABASE_PASSWORD_FILE = "/secrets/database/value"
         })
@@ -218,7 +281,11 @@ resource "google_iap_web_cloud_run_service_iam_member" "pilot_admin" {
 }
 
 resource "google_cloud_run_v2_job" "task" {
-  for_each            = var.stage == "runtime" ? local.job_commands : {}
+  # The dedicated Noble migration client owns schema changes in INT.
+  for_each = var.stage == "runtime" ? {
+    for name, command in local.job_commands : name => command
+    if(var.db01_noble_candidate == null || name != "migrate") && (!local.demo_a || name == "bootstrap")
+  } : {}
   project             = var.project_id
   name                = "clipforge-int-${each.key}"
   location            = local.region
@@ -245,7 +312,7 @@ resource "google_cloud_run_v2_job" "task" {
         args    = each.value
         resources { limits = each.key == "worker" ? { cpu = "2", memory = "4Gi" } : { cpu = "1", memory = "1Gi" } }
         dynamic "env" {
-          for_each = merge(local.common_env, {
+          for_each = merge(local.runtime_env, {
             CLIPFORGE_DATABASE_USER          = each.key == "worker" ? "clipforge_app" : "clipforge_migrator"
             CLIPFORGE_DATABASE_PASSWORD_FILE = "/secrets/database/value"
           }, each.key == "bootstrap" ? { CLIPFORGE_BOOTSTRAP_ADMIN_FILE = "/secrets/admin/value" } : {})
@@ -308,7 +375,7 @@ resource "google_cloud_run_v2_job" "task" {
   depends_on = [google_secret_manager_secret_iam_member.runtime]
 }
 resource "google_cloud_run_v2_job_iam_member" "api_worker" {
-  count    = var.stage == "runtime" ? 1 : 0
+  count    = var.stage == "runtime" && !local.demo_a ? 1 : 0
   project  = var.project_id
   location = local.region
   name     = google_cloud_run_v2_job.task["worker"].name
@@ -317,10 +384,10 @@ resource "google_cloud_run_v2_job_iam_member" "api_worker" {
 }
 
 resource "google_cloud_run_v2_job_iam_member" "protected_operator" {
-  for_each = var.stage == "runtime" ? local.job_commands : {}
+  for_each = google_cloud_run_v2_job.task
   project  = var.project_id
   location = local.region
-  name     = google_cloud_run_v2_job.task[each.key].name
+  name     = each.value.name
   role     = "roles/run.invoker"
   member   = "serviceAccount:${data.google_service_account.existing["deploy"].email}"
 }

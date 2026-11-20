@@ -18,7 +18,7 @@ from scripts import prepare_ci_scan as scan
 
 
 def fixture_policy_bytes():
-    """Recreate the public approved policy without duplicating the frozen literal."""
+    """Recreate the approved policy from the public checksum declarations."""
     reference = Path(__file__).with_name("test_auth_recovery.py")
     tree = ast.parse(reference.read_text(encoding="utf-8"))
     values = [ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
@@ -26,6 +26,9 @@ def fixture_policy_bytes():
                       for target in node.targets)]
     if len(values) != 1 or type(values[0]) is not str or not re.fullmatch(r"[0-9a-f]{64}", values[0]):
         raise ValueError("Public frozen-DDL fixture reference is missing or malformed")
+    client = reference.parents[1] / "scripts" / "int_db_acceptance_noble.py"
+    source_map = ast.literal_eval(next(node.value for node in ast.parse(client.read_bytes()).body
+        if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "NOBLE_SOURCES" for target in node.targets)))
     template = (
         '# AUTH-02: owner-approved public DDL checksum only. Preserve every default rule.\n'
         'title = "ClipForge: exact AUTH-01 DDL checksum classification"\n'
@@ -35,8 +38,17 @@ def fixture_policy_bytes():
         'condition = "AND"\nregexTarget = "line"\n'
         "paths = ['''^/source/tests/test_auth_recovery\\.py$''']\n"
         "regexes = ['''^\\n?FROZEN_AUTH01_DDL_SHA256 = '{ddl_sha256}'$''']\n"
+        '\n[[rules.allowlists]]\n'
+        'description = "Approved public Noble client source-integrity checksums"\n'
+        'condition = "AND"\nregexTarget = "line"\n'
+        "paths = ['''^/source/scripts/int_db_acceptance_noble\\.py$''']\n"
+        'regexes = [\n'
+        "    '''^\\n?    \"app/auth_db\\.py\": \"{auth_db}\",$''',\n"
+        "    '''^\\n?    \"app/auth_migrations\\.py\": \"{auth_migrations}\",$''',\n"
+        ']\n'
     )
-    return template.format(ddl_sha256=values[0]).encode("utf-8")
+    return template.format(ddl_sha256=values[0], auth_db=source_map["app/auth_db.py"],
+                           auth_migrations=source_map["app/auth_migrations.py"]).encode("utf-8")
 
 
 class GitleaksPolicyTests(unittest.TestCase):
@@ -105,6 +117,20 @@ class GitleaksPolicyTests(unittest.TestCase):
             with self.subTest(raw_hash=hashlib.sha256(raw).hexdigest()):
                 self.config.write_bytes(raw)
                 with self.assertRaises(policy.PolicyError): policy.validate_policy(self.config)
+
+    def test_noble_classification_rejects_scope_or_value_changes(self):
+        original = tomllib.loads(self.approved.decode())
+        for field, replacement in (("condition", "OR"), ("regexTarget", "secret"),
+                                   ("paths", [r"^/source/scripts/.*$"]), ("regexes", [".*"])):
+            with self.subTest(field=field):
+                value = copy.deepcopy(original)
+                value["rules"][0]["allowlists"][1][field] = replacement
+                with self.assertRaises(policy.PolicyError): policy.validate_policy_structure(value)
+        changed = re.sub(rb'("app/auth_db\\\.py": ")[0-9a-f]{64}', rb'\g<1>' + b"1" * 64, self.approved)
+        self.assertNotEqual(changed, self.approved)
+        self.config.write_bytes(changed)
+        with self.assertRaisesRegex(policy.PolicyError, "fingerprint"):
+            policy.validate_policy(self.config)
 
     def test_record_copies_exact_policy_and_binds_all_input_hashes(self):
         report = self.record()

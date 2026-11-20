@@ -18,15 +18,16 @@ import tempfile
 import tomllib
 
 try:
-    from scripts import dev_local, prepare_ci_context as context
+    from scripts import dev_local, gitleaks_policy, prepare_ci_context as context
 except ModuleNotFoundError:
     import dev_local
+    import gitleaks_policy
     import prepare_ci_context as context
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCANNER = "ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:b109bc5f8f76a38196a3e413704fc5b9e3c32360bce4e4b603bd6f45b3721dbb"
-POLICY_SHA256 = "877be9355eee66e958e1b453bb59c20302a8cd8bdcd8a7eadb791575483dd054"
+SCANNER = gitleaks_policy.GITLEAKS_IMAGE
+POLICY_SHA256 = gitleaks_policy.POLICY_SHA256
 CASE_IDS = ("approved", "same_file_other_secret", "changed_value", "other_path",
             "other_rule", "same_line_other_secret", "changed_identifier", "nested_path",
             "approved_after_prelude", "approved_full_file", "same_file_secret_before", "same_line_prefix")
@@ -65,6 +66,7 @@ def main(argv=None):
         policy = config.read_bytes()
         require(hashlib.sha256(policy).hexdigest() == POLICY_SHA256, "Policy bytes differ from the reviewed configuration")
         parsed = tomllib.loads(policy.decode("utf-8"))
+        gitleaks_policy.validate_policy_structure(parsed)
         allow = parsed["rules"][0]["allowlists"][0]
         reference = ROOT / "tests/test_auth_recovery.py"
         context._check_components(reference)

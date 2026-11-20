@@ -1,0 +1,124 @@
+name: ClipForge INT demo A read-only operator WIF preflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      approved_commit:
+        description: Exact reviewed read-only observer SHA
+        type: string
+        required: true
+
+permissions: {}
+concurrency:
+  group: clipforge-int-terraform-state
+  cancel-in-progress: false
+
+jobs:
+  local-guard:
+    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      verified_commit: ${{ steps.guard.outputs.verified_commit }}
+    env:
+      INT_APPROVED_COMMIT: ${{ inputs.approved_commit }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Check out the exact dispatch SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Validate the observation source before environment approval or OIDC
+        id: guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python -B -m scripts.int_demo_a_wif_read local
+          printf 'verified_commit=%s\n' "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
+  operator-observation:
+    needs: local-guard
+    if: needs.local-guard.result == 'success' && needs.local-guard.outputs.verified_commit == github.sha
+    strategy:
+      fail-fast: false
+      matrix:
+        identity: [terraform, deploy]
+    runs-on: ubuntu-24.04
+    environment: int
+    timeout-minutes: 12
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+      GCP_TERRAFORM_SA: ${{ vars.GCP_TERRAFORM_SA }}
+      GCP_DEPLOY_SA: ${{ vars.GCP_DEPLOY_SA }}
+      INT_APPROVED_COMMIT: ${{ inputs.approved_commit }}
+      INT_DEMO_A_WIF_IDENTITY: ${{ matrix.identity }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Check out the exact dispatch SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify GitHub and Terraform or Deploy scope before federation
+        id: scratch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python -B -m scripts.int_demo_a_wif_read preflight "$INT_DEMO_A_WIF_IDENTITY"
+          umask 077
+          summary="$(mktemp "$RUNNER_TEMP/clipforge-demo-a-wif.XXXXXXXX.json")"
+          rm -f -- "$summary"
+          printf 'INT_DEMO_A_WIF_SUMMARY=%s\n' "$summary" >> "$GITHUB_ENV"
+
+      - name: Obtain one short-lived token for the fixed current operator
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ matrix.identity == 'terraform' && vars.GCP_TERRAFORM_SA || vars.GCP_DEPLOY_SA }}
+          token_format: access_token
+          access_token_lifetime: 900s
+          access_token_scopes: https://www.googleapis.com/auth/cloud-platform
+          create_credentials_file: false
+          export_environment_variables: false
+
+      - name: Collect real reads and complementary IAM observations only
+        id: observe
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: python -B -m scripts.int_demo_a_wif_read observe "$INT_DEMO_A_WIF_IDENTITY" --output "$INT_DEMO_A_WIF_SUMMARY"
+
+      - name: Record WIF admission failure without token or server body
+        if: ${{ !cancelled() && steps.scratch.outcome == 'success' && steps.auth.outcome == 'failure' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '{"schema":"clipforge-int-demo-a-wif-observation-1","identity":"%s","source_commit":"%s","run":"%s","status":"wif_admission_failed","write_executed":false,"authorizes_write":false}\n' "$INT_DEMO_A_WIF_IDENTITY" "$GITHUB_SHA" "$GITHUB_RUN_ID" > "$INT_DEMO_A_WIF_SUMMARY"
+
+      - name: Retain only the sanitized operator matrix
+        if: ${{ !cancelled() && steps.scratch.outcome == 'success' && (steps.auth.outcome == 'failure' || steps.observe.outcome == 'success') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: int-demo-a-wif-read-${{ matrix.identity }}-${{ github.run_id }}-1
+          path: ${{ env.INT_DEMO_A_WIF_SUMMARY }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove only the owned summary scratch
+        if: ${{ always() && steps.scratch.outcome == 'success' }}
+        run: rm -f -- "$INT_DEMO_A_WIF_SUMMARY"

@@ -1,0 +1,125 @@
+name: ClipForge INT Noble protected database Jobs
+on:
+  workflow_dispatch:
+    inputs:
+      approved_commit:
+        description: Exact approved controls SHA
+        type: string
+        required: true
+      bundle_run:
+        description: Private approved evidence run ID
+        type: string
+        required: true
+      bundle_artifact:
+        description: Exact artifact ID containing the reviewed receipts
+        type: string
+        required: true
+      decision_sha256:
+        description: Independently verified SHA-256 of the owner decision
+        type: string
+        required: true
+      action:
+        description: One create-only or one execution operation
+        type: choice
+        options: [create, run]
+        required: true
+      phase:
+        description: Migration, application-role acceptance or first administrator
+        type: choice
+        options: [migrate, app, admin]
+        required: true
+permissions: {}
+concurrency:
+  group: clipforge-int-protected-operations
+  cancel-in-progress: false
+env:
+  INT_APPROVED_COMMIT: ${{ inputs.approved_commit }}
+  INT_BUNDLE_RUN: ${{ inputs.bundle_run }}
+  INT_BUNDLE_ARTIFACT: ${{ inputs.bundle_artifact }}
+  INT_DECISION_SHA256: ${{ inputs.decision_sha256 }}
+  INT_JOB_ACTION: ${{ inputs.action }}
+  INT_JOB_PHASE: ${{ inputs.phase }}
+  PYTHONDONTWRITEBYTECODE: "1"
+jobs:
+  verify-evidence:
+    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Check exact controls and references
+        run: |
+          test "$(git rev-parse HEAD)" = "$INT_APPROVED_COMMIT"
+          [[ "$INT_BUNDLE_RUN" =~ ^[1-9][0-9]*$ && "$INT_BUNDLE_ARTIFACT" =~ ^[1-9][0-9]*$ && "$INT_DECISION_SHA256" =~ ^[a-f0-9]{64}$ ]]
+          echo "INT_JOB_BUNDLE=$(mktemp -d "$RUNNER_TEMP/clipforge-noble-jobs.XXXXXXXX")" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.bundle_run }}
+          artifact-ids: ${{ inputs.bundle_artifact }}
+          path: ${{ env.INT_JOB_BUNDLE }}
+      - name: Check exact evidence and existing application CI without OIDC
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -B -m scripts.int_db01_noble_jobs preflight --action "$INT_JOB_ACTION" --phase "$INT_JOB_PHASE" --bundle "$INT_JOB_BUNDLE" --decision-sha256 "$INT_DECISION_SHA256"
+  protected-operation:
+    needs: verify-evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: int
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      INT_NOBLE_JOBS_PROTECTED_GATE_MODE: ${{ vars.INT_NOBLE_JOBS_PROTECTED_GATE_MODE || 'global' }}
+      INT_NOBLE_JOBS_PROTECTED_DECISION_SHA256: ${{ vars.INT_NOBLE_JOBS_PROTECTED_DECISION_SHA256 }}
+      INT_NOBLE_JOBS_PROTECTED_REVIEW_SHA256: ${{ vars.INT_NOBLE_JOBS_PROTECTED_REVIEW_SHA256 }}
+      INT_NOBLE_JOBS_PROTECTED_BINDING_SHA256: ${{ vars.INT_NOBLE_JOBS_PROTECTED_BINDING_SHA256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Check the same controls and expected WIF identity
+        env:
+          NOBLE_JOBS_DEPLOY_EMAIL: ${{ vars.GCP_DEPLOY_SA }}
+          INT_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$INT_APPROVED_COMMIT"
+          test "$INT_PROJECT" = clipforgebeta2
+          test "$NOBLE_JOBS_DEPLOY_EMAIL" = clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com
+          echo "INT_JOB_BUNDLE=$(mktemp -d "$RUNNER_TEMP/clipforge-noble-jobs.XXXXXXXX")" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.bundle_run }}
+          artifact-ids: ${{ inputs.bundle_artifact }}
+          path: ${{ env.INT_JOB_BUNDLE }}
+      - name: Recheck exact evidence after int approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -B -m scripts.int_db01_noble_jobs preflight --protected --action "$INT_JOB_ACTION" --phase "$INT_JOB_PHASE" --bundle "$INT_JOB_BUNDLE" --decision-sha256 "$INT_DECISION_SHA256"
+      - name: Federate as existing Deploy identity for this operation
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+          token_format: access_token
+          access_token_lifetime: 1200s
+          create_credentials_file: false
+          export_environment_variables: false
+      - name: Execute one exact Noble operation and retain private receipts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          NOBLE_JOBS_DEPLOY_EMAIL: ${{ vars.GCP_DEPLOY_SA }}
+        run: python -B -m scripts.int_db01_noble_jobs execute --action "$INT_JOB_ACTION" --phase "$INT_JOB_PHASE" --bundle "$INT_JOB_BUNDLE" --decision-sha256 "$INT_DECISION_SHA256"

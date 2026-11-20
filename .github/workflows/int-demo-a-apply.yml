@@ -1,0 +1,138 @@
+name: ClipForge INT demo A reviewed saved-plan apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      approved_commit:
+        description: Exact reviewed controls SHA
+        required: true
+        type: string
+      decision_sha256:
+        description: SHA-256 of the independently protected owner decision
+        required: true
+        type: string
+      gate_run_id:
+        description: Exact evidence run for the independently authorized demo-a mode
+        type: string
+      gate_artifact_id:
+        description: Exact private evidence artifact for the independently authorized demo-a mode
+        type: string
+
+permissions: {}
+concurrency:
+  group: clipforge-int-terraform-state
+  cancel-in-progress: false
+
+jobs:
+  protected-apply:
+    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: int
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+      GCP_TERRAFORM_SA: ${{ vars.GCP_TERRAFORM_SA }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
+      INT_APPROVED_COMMIT: ${{ inputs.approved_commit }}
+      DECISION_SHA: ${{ inputs.decision_sha256 }}
+      PROTECTED_DECISION_SHA: ${{ vars.INT_DEMO_A_APPLY_DECISION_SHA256 }}
+      INT_DEMO_A_PROTECTED_GATE_MODE: ${{ vars.INT_DEMO_A_APPLY_GATE_MODE || 'global' }}
+      INT_DEMO_A_PROTECTED_REVIEW_SHA: ${{ vars.INT_DEMO_A_APPLY_REVIEW_SHA256 }}
+      INT_DEMO_A_PROTECTED_BINDING_SHA: ${{ vars.INT_DEMO_A_APPLY_BINDING_SHA256 }}
+      INT_DEMO_A_GATE_RUN: ${{ inputs.gate_run_id }}
+      INT_DEMO_A_GATE_ARTIFACT: ${{ inputs.gate_artifact_id }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Check out the dispatch SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Require immutable scope and allocate private scratch
+        id: scratch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_SHA" = "$INT_APPROVED_COMMIT"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git check-ignore --no-index --quiet gha-creds-int-demo-a.json
+          test -z "$(git ls-files -- ':(glob)**/gha-creds-*.json')"
+          umask 077
+          printf 'TF_INT_WORK_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/clipforge-tf-int01.XXXXXXXX")" >> "$GITHUB_ENV"
+          printf 'TF_INT_REPORT_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/clipforge-tf-report.XXXXXXXX")" >> "$GITHUB_ENV"
+
+      - name: Pin the independently approved demo evidence artifact before WIF
+        if: ${{ env.INT_DEMO_A_PROTECTED_GATE_MODE == 'demo-a' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$INT_DEMO_A_GATE_RUN" =~ ^[1-9][0-9]*$ && "$INT_DEMO_A_GATE_ARTIFACT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$INT_DEMO_A_PROTECTED_REVIEW_SHA" =~ ^[a-f0-9]{64}$ && "$INT_DEMO_A_PROTECTED_BINDING_SHA" =~ ^[a-f0-9]{64}$ ]]
+          umask 077
+          printf 'INT_DEMO_A_GATE_BUNDLE=%s\n' "$(mktemp -d "$RUNNER_TEMP/clipforge-int-demo-a-review.XXXXXXXX")" >> "$GITHUB_ENV"
+
+      - name: Retrieve the pinned review without GCP credentials
+        if: ${{ env.INT_DEMO_A_PROTECTED_GATE_MODE == 'demo-a' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ inputs.gate_artifact_id }}
+          run-id: ${{ inputs.gate_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ env.INT_DEMO_A_GATE_BUNDLE }}
+          merge-multiple: true
+
+      - name: Verify the protected decision and pinned sources before WIF
+        env:
+          INT_DEMO_A_OWNER_DECISION_JSON: ${{ secrets.INT_DEMO_A_APPLY_DECISION_JSON }}
+          GH_TOKEN: ${{ github.token }}
+        run: python -B -m scripts.int_demo_a_native local apply
+
+      - name: Prepare the pinned Terraform release
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.15.8
+          terraform_wrapper: false
+
+      - name: Federate only as the existing Terraform service account
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_TERRAFORM_SA }}
+          token_format: access_token
+          access_token_lifetime: 1800s
+          create_credentials_file: true
+          export_environment_variables: true
+          cleanup_credentials: true
+
+      - name: Apply only the separately reviewed immutable plan
+        env:
+          INT_DEMO_A_OWNER_DECISION_JSON: ${{ secrets.INT_DEMO_A_APPLY_DECISION_JSON }}
+          GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          GH_TOKEN: ${{ github.token }}
+        run: python -B -m scripts.int_demo_a_native cloud apply
+
+      - name: Retain only the sanitized operation result
+        if: ${{ always() && steps.scratch.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: int-demo-a-apply-${{ github.sha }}-${{ github.run_id }}-1
+          path: ${{ env.TF_INT_REPORT_DIR }}/summary.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove only this run's private scratch
+        if: ${{ always() && steps.scratch.outcome == 'success' }}
+        run: python -B -m scripts.tf_int_plan cleanup

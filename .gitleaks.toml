@@ -14,3 +14,13 @@ condition = "AND"
 regexTarget = "line"
 paths = ['''^/source/tests/test_auth_recovery\.py$''']
 regexes = ['''^\n?FROZEN_AUTH01_DDL_SHA256 = '523b1fa864b7e9814e00962fa046eb7f6094c3512eb98824f27757658e1e8c5e'$''']
+
+[[rules.allowlists]]
+description = "Approved public Noble client source-integrity checksums"
+condition = "AND"
+regexTarget = "line"
+paths = ['''^/source/scripts/int_db_acceptance_noble\.py$''']
+regexes = [
+    '''^\n?    "app/auth_db\.py": "7048c96e50cd3349fd19658d44cf3b97ace90d5efe596151fc5a0459e164c745",$''',
+    '''^\n?    "app/auth_migrations\.py": "f8f4aebbb251744116da7fe770e93bb12c3ff2409a2cac730359b0e9ee8f888d",$''',
+]

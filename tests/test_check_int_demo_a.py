@@ -162,6 +162,23 @@ class DemoGate(unittest.TestCase):
     def test_closed_fixture_is_reviewable_only(self):
         self.assertEqual(self.verify(), 1)
 
+    def test_plan_generation_requires_the_closed_roles_and_no_plan_digest(self):
+        self.prepare("plan_generation")
+        self.assertEqual(set(self.review["subjects"]), {"api", "noble_guest", "credential_toolchain"})
+        self.assertIsNone(self.binding["plan_sha256"])
+        self.assertEqual(self.verify(), 1)
+        self.binding["plan_sha256"] = "a" * 64
+        with self.assertRaisesRegex(ValueError, "wrong_plan_binding_for_operation"):
+            self.verify()
+
+    def test_plan_generation_requires_both_locking_and_custody_receipts(self):
+        for required in ("native_plan_generation_and_lock", "private_plan_custody"):
+            with self.subTest(receipt=required):
+                self.prepare("plan_generation")
+                del self.review["subjects"]["credential_toolchain"]["checks"][required]
+                with self.assertRaisesRegex(ValueError, "checks_incomplete:credential_toolchain"):
+                    self.verify()
+
     def test_unknown_oci_config_blocks_reusing_the_report(self):
         api = self.review["subjects"]["api"]
         api["analyses"][0] = self.analysis("api", api["identity"], "trivy_oci", wrong_config=True)

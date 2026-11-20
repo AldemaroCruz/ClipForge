@@ -17,7 +17,7 @@ except ModuleNotFoundError:
     import prepare_ci_scan as scan
 
 
-POLICY_SHA256 = "877be9355eee66e958e1b453bb59c20302a8cd8bdcd8a7eadb791575483dd054"
+POLICY_SHA256 = "e3110f65084df2f2ff1768b6c2f05ae2e6aa8179132043159322897709429169"
 GITLEAKS_VERSION = "8.30.1"
 GITLEAKS_IMAGE = "ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:b109bc5f8f76a38196a3e413704fc5b9e3c32360bce4e4b603bd6f45b3721dbb"
 EXECUTION_SCHEMA = "clipforge-gitleaks-execution-1"
@@ -66,18 +66,25 @@ def validate_policy_structure(value):
             and set(rules[0]) == {"id", "allowlists"} and rules[0]["id"] == "generic-api-key",
             "Only the reviewed default-rule extension is permitted")
     lists = rules[0]["allowlists"]
-    require(type(lists) is list and len(lists) == 1 and type(lists[0]) is dict
-            and set(lists[0]) == {"description", "condition", "regexTarget", "paths", "regexes"},
-            "Unexpected policy classification scope")
-    item = lists[0]
-    require(type(item["description"]) is str and bool(item["description"].strip())
+    require(type(lists) is list and len(lists) == 2 and all(type(item) is dict
+            and set(item) == {"description", "condition", "regexTarget", "paths", "regexes"}
+            and type(item["description"]) is str and bool(item["description"].strip())
             and item["condition"] == "AND" and item["regexTarget"] == "line"
-            and item["paths"] == [r"^/source/tests/test_auth_recovery\.py$"],
-            "Policy classification must bind the exact file and complete line")
-    patterns = item["regexes"]
-    require(type(patterns) is list and len(patterns) == 1 and type(patterns[0]) is str
+            and type(item["regexes"]) is list and all(type(pattern) is str for pattern in item["regexes"])
+            for item in lists),
+            "Unexpected policy classification scope")
+    auth, noble = lists
+    patterns = auth["regexes"]
+    require(auth["paths"] == [r"^/source/tests/test_auth_recovery\.py$"] and len(patterns) == 1
             and re.fullmatch(r"\^\\n\?FROZEN_AUTH01_DDL_SHA256 = '[0-9a-f]{64}'\$", patterns[0]),
             "Policy must classify only one complete checksum assignment")
+    modules = ("auth_db", "auth_migrations")
+    require(noble["paths"] == [r"^/source/scripts/int_db_acceptance_noble\.py$"]
+            and len(noble["regexes"]) == len(modules), "Noble classification must bind the exact file and assignments")
+    for pattern, module in zip(noble["regexes"], modules, strict=True):
+        prefix = r'^\n?    "app/' + module + r'\.py": "'
+        require(re.fullmatch(re.escape(prefix) + HEX.pattern + re.escape('",$'), pattern),
+                "Noble classification must include a complete source checksum")
 
 
 def _validate_policy_bytes(raw):
