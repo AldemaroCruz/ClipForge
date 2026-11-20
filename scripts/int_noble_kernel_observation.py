@@ -10,6 +10,7 @@ from scripts import int_guest_inventory as transport
 from scripts import int_noble_first_observation as first
 from scripts import int_noble_hostkey as host
 from scripts import int_noble_demo_preflight_guest as demo
+from scripts import int_noble_kernel_consumers_guest as consumers
 from scripts import int_noble_kernel_guest as probe
 from scripts import int_noble_postverify as postverify
 
@@ -25,7 +26,8 @@ SUMMARY_SCHEMA = "clipforge-int-noble-kernel-observation-summary-1"
 RECEIPT_SCHEMA = "clipforge-int-noble-kernel-observation-receipt-1"
 INVENTORY_NAME = "inventory.json"
 DEMO_SCOPE = "demo-readiness"
-SCOPES = {"kernel": probe, DEMO_SCOPE: demo}
+CONSUMERS_SCOPE = "demo-kernel-consumers"
+SCOPES = {"kernel": probe, DEMO_SCOPE: demo, CONSUMERS_SCOPE: consumers}
 KERNEL_RUN = "44789936845"
 KERNEL_CONTROLS = "e825a049eee977468bf029cfc71395fa86ffe6bf"
 PINNED_IDS = {"instance_id": "7365414160255801909", "data_disk_id": "7382984635240536620"}
@@ -44,7 +46,7 @@ def check_hosted(env):
 def verify_handoff(github_token, scope="kernel"):
     first.checked_creation_runs(ORIGINAL_APPLY, CONTROLS, github_token, POSTVERIFY_RUN)
     postverify.verify_github_run(INITIAL_RUN, CONTROLS, github_token, first.OBSERVE_PATH, "success")
-    if scope == DEMO_SCOPE:
+    if scope in {DEMO_SCOPE, CONSUMERS_SCOPE}:
         postverify.verify_github_run(KERNEL_RUN, KERNEL_CONTROLS, github_token, WORKFLOW, "success")
 
 
@@ -57,8 +59,8 @@ def checked_inputs(raw, pin_raw):
 def payload_bytes(scope="kernel"):
     require(scope in SCOPES, "NOBLE_READ_SCOPE")
     raw = Path(probe.__file__).read_bytes()
-    if scope == DEMO_SCOPE:
-        extension = Path(demo.__file__).read_bytes()
+    if scope != "kernel":
+        extension = Path(SCOPES[scope].__file__).read_bytes()
         raw = ("import base64, sys, types\n"
                "_noble_kernel_reads = types.ModuleType('_clipforge_noble_kernel_reads')\n"
                "sys.modules[_noble_kernel_reads.__name__] = _noble_kernel_reads\n"

@@ -1,12 +1,16 @@
 from hashlib import sha256
 from io import BytesIO
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import tarfile
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import Mock, patch
+from urllib.error import HTTPError
+from urllib.parse import parse_qs, quote, urlsplit
 
 from scripts import int_demo_a_publish as publish
+from scripts import int_demo_a_receipts as receipts
 
 
 def descriptor(raw, media_type):
@@ -58,7 +62,7 @@ class RestrictedPublisher(unittest.TestCase):
                 publish.archive_inventory(source, pins)
 
     def test_copy_keeps_source_readonly_and_tls_enforced(self):
-        argv = publish.copy_args("sha256:" + "a" * 64, Path("/tmp/layout.tar"), Path("/tmp/auth.json"),
+        argv = publish.copy_args("sha256:" + "a" * 64, PurePosixPath("/tmp/layout.tar"), PurePosixPath("/tmp/auth.json"),
                                  "registry/lab/repo@sha256:" + "b" * 64, user="12345:23456")
         self.assertIn("--mount=type=bind,source=/tmp/layout.tar,target=/input/image.oci.tar,readonly", argv)
         self.assertIn("--mount=type=bind,source=/tmp/auth.json,target=/authorization/auth.json,readonly", argv)
@@ -66,6 +70,67 @@ class RestrictedPublisher(unittest.TestCase):
         self.assertIn("--preserve-digests", argv)
         self.assertIn("--dest-tls-verify=true", argv)
         self.assertNotIn("--all", argv)
+
+
+class DeployCustody(unittest.TestCase):
+    def setUp(self):
+        self.env = {"GITHUB_SHA": "c" * 40, "GITHUB_RUN_ID": "12", "GITHUB_RUN_ATTEMPT": "1"}
+        self.decision_id = "d" * 32
+        self.names = receipts.producer_names(self.env, "publish", self.decision_id)
+        self.intent = self.names["publication-runtime-intent.json"]
+        self.store = receipts.Custody("x" * 32, names=self.names.values())
+
+    def test_immutable_create_reads_exact_generation_and_verifies_hash(self):
+        raw = b'{"status":"fixture"}'
+        response = json.dumps({"name": self.intent, "size": str(len(raw)), "generation": "123"}).encode()
+        network = Mock()
+        network.open.side_effect = [BytesIO(response), BytesIO(raw)]
+        with patch.object(receipts, "build_opener", return_value=network):
+            reference = self.store.create_bytes(self.intent, raw)
+        self.assertEqual(reference, {"name": self.intent, "size": len(raw), "generation": "123", "sha256": sha256(raw).hexdigest()})
+        post, get = [call.args[0] for call in network.open.call_args_list]
+        self.assertEqual(post.method, "POST")
+        self.assertEqual(post.data, raw)
+        self.assertEqual(parse_qs(urlsplit(post.full_url).query), {"uploadType": ["media"], "name": [self.intent],
+                                                                 "ifGenerationMatch": ["0"], "fields": ["name,generation,size"]})
+        self.assertEqual(get.method, "GET")
+        self.assertIsNone(get.data)
+        self.assertTrue(urlsplit(get.full_url).path.endswith("/o/" + quote(self.intent, safe="")))
+        self.assertEqual(parse_qs(urlsplit(get.full_url).query), {"alt": ["media"], "generation": ["123"], "ifGenerationMatch": ["123"]})
+        network.open.side_effect = [BytesIO(response), BytesIO(raw.replace(b"fixt", b"FAIL"))]
+        with patch.object(receipts, "build_opener", return_value=network), self.assertRaisesRegex(ValueError, "demo_a_custody_verified_bytes"):
+            self.store.create_bytes(self.intent, raw)
+
+    def test_operation_bound_names_exclude_backend_other_producers_runs_and_retries(self):
+        secrets = receipts.producer_names(self.env, "secrets", self.decision_id)
+        retry = {**self.env, "GITHUB_RUN_ID": "13"}
+        other_run = receipts.producer_names(retry, "publish", self.decision_id)
+        self.assertEqual(other_run["publication-runtime-intent.json"], self.intent)
+        self.assertNotEqual(other_run["publication-runtime.json"], self.names["publication-runtime.json"])
+        with self.assertRaisesRegex(ValueError, "demo_a_custody_producer_scope"):
+            receipts.producer_names({**self.env, "GITHUB_RUN_ATTEMPT": "2"}, "publish", self.decision_id)
+        with patch.object(receipts, "build_opener") as network:
+            for name in (secrets["secret-versions.json"], other_run["publication-runtime.json"],
+                         "terraform/int/tf-int-01/default.tfstate", "private-plans/int/other/manifest.json"):
+                with self.subTest(name=name), self.assertRaises(ValueError):
+                    self.store.request("GET", name, generation="123")
+            network.assert_not_called()
+
+    def test_existing_intent_conflict_preserves_evidence_without_replacing_or_fetching(self):
+        network = Mock()
+        network.open.side_effect = HTTPError("https://storage.googleapis.com/", 412, "fixture", {}, BytesIO())
+        with patch.object(receipts, "build_opener", return_value=network), self.assertRaises(receipts.transport.Failure) as raised:
+            self.store.create(self.intent, {"status": "fixture"})
+        self.assertEqual(raised.exception.receipt["http_status"], 412)
+        network.open.assert_called_once()
+
+    def test_jobs_have_exactly_ten_distinct_known_slots(self):
+        names = {name for phase, actions in receipts.JOB_OPERATIONS.items() for action in actions
+                 for name in receipts.job_names(phase, action).values()}
+        self.assertEqual(len(names), 10)
+        self.assertTrue(all(name.startswith(receipts.PREFIX + "jobs/") and receipts.NAME.fullmatch(name) for name in names))
+        with self.assertRaisesRegex(ValueError, "demo_a_custody_job_scope"):
+            receipts.job_names("admin", "create")
 
 
 if __name__ == "__main__":

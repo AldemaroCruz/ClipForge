@@ -25,7 +25,7 @@ class LauncherTests(unittest.TestCase):
                     "INT_NOBLE_PROTECTED_GATE_MODE": "global"}
         now = datetime.now(timezone.utc)
         self.proposal = {key: None for key in launcher.PROPOSAL_FIELDS}
-        self.proposal.update(schema="clipforge-int-noble-bootstrap-proposal-1", status="authorized_single_guest_initialization",
+        self.proposal.update(schema="clipforge-int-noble-bootstrap-proposal-2", status="authorized_single_guest_initialization",
                              execution_authorized=True, cloud_writes_authorized=True, VM_operations_authorized=True,
                              SQL_on_INT_authorized=True, risk_acceptance=False, target=launcher.TARGET.copy())
         self.decision = {"schema": "clipforge-db01-activation-decision-1", "status": "authorized_single_guest_initialization",
@@ -120,18 +120,20 @@ class LauncherTests(unittest.TestCase):
     def test_live_permission_errors_are_consolidated_before_os_login(self):
         decision = b"fixture bytes checked out of band"
         self.env["INT_NOBLE_PROTECTED_DECISION_SHA256"] = launcher.transport.sha(decision)
-        ready = {"decision_raw": decision, "gate": "demo-a", "summary": {"candidate": {}}, "pin": {"control_plane": {}}}
+        ready = {"decision_raw": decision, "gate": "demo-a", "summary": {"candidate": {}}, "pin": {"control_plane": {}}, "deploy_policy": {}}
+        policy_error = {"operation": "getIamPolicy", "resource": "account", "http_status": 403}
         with (patch.object(launcher.transport, "_credential_document"), patch.object(launcher.transport, "validate_deploy_credentials"),
               patch.object(launcher.first, "snapshot", return_value={}),
-              patch.object(launcher.iam, "request_json", side_effect=[launcher.iam.CloudError(403), {"permissions": []},
-                                                                     {"permissions": ["iap.tunnelInstances.accessViaIAP"]}]),
+              patch.object(launcher.iam, "request_json", return_value={"permissions": []}) as evaluation,
               patch.object(launcher.release, "require_application_ci") as global_ci, patch.object(launcher.transport.Client, "profile") as profile):
             with self.assertRaises(launcher.transport.Failure) as failure:
-                launcher.check_cloud(self.env, ready, policies=lambda *_: None)
+                launcher.check_cloud(self.env, ready, policies=lambda *_: [policy_error])
         self.assertEqual(failure.exception.receipt["checks"], [
-            {"operation": "testIamPermissions", "resource": "Noble VM", "permissions": ["compute.instances.get", "compute.instances.osAdminLogin"], "http_status": 403},
-            {"operation": "testIamPermissions", "resource": "Noble attached service account", "missing_permissions": ["iam.serviceAccounts.actAs"], "http_status": 200},
+            policy_error,
+            {"operation": "testIamPermissions", "resource": launcher.noble_policy.ACCOUNT, "missing_permissions": ["iam.serviceAccounts.actAs"], "http_status": 200},
         ])
+        evaluation.assert_called_once_with(f"https://iam.googleapis.com/v1/{launcher.noble_policy.ACCOUNT}:testIamPermissions",
+                                           self.env["GCP_ACCESS_TOKEN"], "POST", {"permissions": ["iam.serviceAccounts.actAs"]})
         global_ci.assert_not_called()
         profile.assert_not_called()
 

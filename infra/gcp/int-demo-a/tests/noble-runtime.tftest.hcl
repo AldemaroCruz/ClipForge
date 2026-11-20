@@ -139,6 +139,9 @@ run "noble_demo_only_serves_accounts_and_provisions_admin_job" {
   assert {
     condition = (
       google_cloud_run_v2_service.api[0].iap_enabled &&
+      !google_cloud_run_v2_service.api[0].invoker_iam_disabled &&
+      length(google_iap_web_cloud_run_service_iam_member.pilot_admin) == 0 &&
+      google_cloud_run_v2_service_iam_member.iap_invoker[0].member == "serviceAccount:service-816643438938@gcp-sa-iap.iam.gserviceaccount.com" &&
       contains(google_cloud_run_v2_service.api[0].template[0].containers[0].args, "app.int_demo:app") &&
       toset(keys(google_cloud_run_v2_job.task)) == toset(["bootstrap"]) &&
       toset(keys(google_cloud_run_v2_job_iam_member.protected_operator)) == toset(["bootstrap"]) &&
@@ -153,6 +156,28 @@ run "noble_demo_only_serves_accounts_and_provisions_admin_job" {
       false)])
     )
     error_message = "Only the protected API and admin initializer may be provisioned for the Noble account demo."
+  }
+}
+
+run "noble_demo_explicit_human_iap_binding_uses_exact_service" {
+  command = plan
+  variables {
+    stage                    = "runtime"
+    int_runtime_profile      = "demo-a"
+    demo_source_revision     = "1234567890123456789012345678901234567890"
+    noble_postgres_from_run  = true
+    demo_a_iap_human_enabled = true
+    secret_versions          = { app_password = "12", migrator_password = "13", postgres_ca = "14", bootstrap_admin = "15" }
+  }
+  assert {
+    condition = (
+      google_cloud_run_v2_service.api[0].iap_enabled &&
+      !google_cloud_run_v2_service.api[0].invoker_iam_disabled &&
+      google_iap_web_cloud_run_service_iam_member.pilot_admin[0].cloud_run_service_name == "clipforge-int-api" &&
+      google_iap_web_cloud_run_service_iam_member.pilot_admin[0].member == "user:admin@ixbalam.studio" &&
+      google_iap_web_cloud_run_service_iam_member.pilot_admin[0].role == "roles/iap.httpsResourceAccessor"
+    )
+    error_message = "The second demo phase must retain protected IAP and add only the exact human member."
   }
 }
 

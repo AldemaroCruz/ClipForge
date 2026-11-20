@@ -31,8 +31,8 @@ def modules(values):
     return {"root_module": {"resources": [{"mode": "managed", "address": path, "values": fields} for path, fields in values.items()]}}
 
 
-def initial_plan(versions):
-    old = dict.fromkeys(gate.baseline(), {})
+def initial_plan(versions, deployment_phase=gate.PROTECTED_RUNTIME):
+    old = {path: {} for path in gate.baseline()}
     old["google_compute_disk.noble_boot[0]"] = {"disk_id": "8897353356069952044"}
     old["google_compute_disk.noble_data[0]"] = {"disk_id": "7382984635240536620"}
     old["google_compute_instance.postgres"] = {"instance_id": "1670495097211408131"}
@@ -45,7 +45,8 @@ def initial_plan(versions):
     regional = {"project": gate.PROJECT, "location": gate.REGION}
     job = {**template(True, versions), "max_retries": 0, "timeout": "600s"}
     new = {gate.SERVICE: {**regional, "name": "clipforge-int-api", "deletion_protection": True,
-                           "iap_enabled": True, "ingress": "INGRESS_TRAFFIC_ALL", "template": [template(False, versions)]},
+                           "iap_enabled": True, "invoker_iam_disabled": False, "ingress": "INGRESS_TRAFFIC_ALL",
+                           "template": [template(False, versions)]},
            gate.BOOTSTRAP: {**regional, "name": "clipforge-int-bootstrap", "deletion_protection": True,
                             "template": [{"task_count": 1, "parallelism": 1, "template": [job]}]},
            gate.FIREWALL: {"project": gate.PROJECT, "name": "clipforge-int-db01-noble-postgres-from-run", "network": "clipforge-int-base",
@@ -57,12 +58,24 @@ def initial_plan(versions):
            gate.HUMAN: {**regional, "cloud_run_service_name": "clipforge-int-api", "role": "roles/iap.httpsResourceAccessor",
                         "member": "user:admin@ixbalam.studio"},
            gate.JOB_OPERATOR: {**regional, "name": "clipforge-int-bootstrap", "role": "roles/run.invoker", "member": "serviceAccount:" + account("deploy")}}
+    human = new.pop(gate.HUMAN)
+    if deployment_phase == gate.HUMAN_ACCESS:
+        old.update(new)
+        new = {gate.HUMAN: human}
     all_values = old | new
     return {"terraform_version": "1.15.8", "format_version": "1.2", "complete": True, "applyable": True, "errored": False,
-            "variables": {key: {"value": value} for key, value in gate.planned_variables(versions).items()},
+            "variables": {key: {"value": value} for key, value in gate.planned_variables(versions, deployment_phase=deployment_phase).items()},
             "prior_state": {"values": modules(deepcopy(old))}, "planned_values": modules(deepcopy(all_values)),
             "resource_changes": [{"mode": "managed", "address": key, "change": {"actions": ["no-op"] if key in old else ["create"],
                 "before": deepcopy(old.get(key)), "after": deepcopy(fields)}} for key, fields in all_values.items()]}
+
+
+def protected_apply():
+    return {"deployment_phase": gate.PROTECTED_RUNTIME, "status": "applied_verified", "managed_count": 58,
+            "state_before_generation": gate.STATE["generation"], "plan_sha256": "3" * 64, "iap_verified": True,
+            "firewall_verified": True,
+            "state_after": {**gate.STATE, "generation": str(int(gate.STATE["generation"]) + 1),
+                            "serial": gate.STATE["serial"] + 1, "sha256": "2" * 64}}
 
 
 class NativeScopeTest(unittest.TestCase):
@@ -80,7 +93,62 @@ class NativeScopeTest(unittest.TestCase):
 
     def test_exact_mock_scope_passes_offline(self):
         result = gate.verify_diff(self.plan, self.numbers)
-        self.assertEqual((result["managed_noop"], len(result["managed_create"]), result["managed_total"]), (53, 6, 59))
+        self.assertEqual((result["managed_noop"], len(result["managed_create"]), result["managed_total"]), (53, 5, 58))
+        self.assertNotIn(gate.HUMAN, result["managed_create"])
+
+    def test_human_phase_requires_protected_apply_and_exact_single_member(self):
+        self.plan = initial_plan(self.numbers, gate.HUMAN_ACCESS)
+        with self.assertRaisesRegex(ValueError, "protected_runtime_apply_receipt_required"):
+            gate.verify_diff(self.plan, self.numbers, deployment_phase=gate.HUMAN_ACCESS)
+        receipt = protected_apply()
+        opts = {"deployment_phase": gate.HUMAN_ACCESS, "prior_apply": receipt}
+        result = gate.verify_diff(self.plan, self.numbers, **opts)
+        self.assertEqual((result["managed_noop"], result["managed_create"], result["managed_total"]), (58, [gate.HUMAN], 59))
+        for value in (self.planned(gate.HUMAN), self.change(gate.HUMAN)["after"]):
+            value["member"] = "allAuthenticatedUsers"
+        with self.assertRaisesRegex(ValueError, "protected_iam_binding"):
+            gate.verify_diff(self.plan, self.numbers, **opts)
+        receipt["state_after"]["generation"] = gate.STATE["generation"]
+        with self.assertRaisesRegex(ValueError, "protected_runtime_backend_identity"):
+            gate.verify_diff(self.plan, self.numbers, **opts)
+
+    def test_protected_phase_rejects_disabled_invoker_check_and_wrong_phase(self):
+        for value in (self.planned(gate.SERVICE), self.change(gate.SERVICE)["after"]):
+            value["invoker_iam_disabled"] = True
+        with self.assertRaisesRegex(ValueError, "api_iap_and_invoker_enforced"):
+            gate.verify_diff(self.plan, self.numbers)
+        self.plan = initial_plan(self.numbers, gate.HUMAN_ACCESS)
+        self.plan["variables"]["demo_a_iap_human_enabled"]["value"] = False
+        with self.assertRaisesRegex(ValueError, "exact_prior_and_planned_addresses"):
+            gate.verify_diff(self.plan, self.numbers)
+
+    def test_only_all_nine_receipt_attributed_iam_etags_are_allowed(self):
+        old, new = "before-etag", "after-etag"
+        self.plan["resource_drift"] = []
+        transitions = {}
+        for path in gate.IAM_ETAG_ADDRESSES:
+            transitions[path] = {"before": sha256(gate.canonical(old)).hexdigest(), "after": sha256(gate.canonical(new)).hexdigest()}
+            self.plan["resource_drift"].append({"address": path, "mode": "managed", "change": {
+                "actions": ["update"], "before": {"role": "preserved", "etag": old},
+                "after": {"role": "preserved", "etag": new},
+            }})
+            after = {"role": "preserved", "etag": new}
+            self.planned(path).update(after)
+            self.change(path)["before"].update(after)
+            self.change(path)["after"].update(after)
+            next(row["values"] for row in self.plan["prior_state"]["values"]["root_module"]["resources"]
+                 if row["address"] == path).update(after)
+        gate.verify_diff(self.plan, self.numbers, etag_transitions=transitions)
+        tunnel = next(row for row in self.plan["resource_drift"] if row["address"] == gate.NOBLE_IAM_ETAG_ADDRESSES["tunnel"])
+        self.plan["resource_drift"].remove(tunnel)
+        with self.assertRaisesRegex(ValueError, "missing_attributed_iam_etag_drift"):
+            gate.verify_diff(self.plan, self.numbers, etag_transitions=transitions)
+        self.plan["resource_drift"].append(tunnel)
+        tunnel["change"]["after"]["role"] = "changed"
+        with self.assertRaisesRegex(ValueError, "unexpected_iam_drift_fields"):
+            gate.verify_diff(self.plan, self.numbers, etag_transitions=transitions)
+        with self.assertRaisesRegex(ValueError, "native_drift_deferred_or_action_invocation"):
+            gate.verify_diff(self.plan, self.numbers)
 
     def test_delete_or_replace_disk_is_blocked(self):
         self.change("google_compute_disk.noble_data[0]")["actions"] = ["delete", "create"]
@@ -113,6 +181,7 @@ class NativeScopeTest(unittest.TestCase):
         fake, binary, receipts = b"fixture-json", b"fixture-tfplan", b"fixture-secret-numbers"
         commit = "a" * 40
         proof = {"controls_commit": commit, "iac_patch_sha256": gate.IAC_PATCH_SHA, "environment": "int",
+            "deployment_phase": gate.PROTECTED_RUNTIME,
             "identity": account("terraform"), "operation": "plan-native-demo-a", "completed_steps": gate.GATEWAY[:],
             "run_id": "1", "run_attempt": "2",
             "backend_bucket": gate.BUCKET, "workspace": "default", "backend_pre": gate.STATE, "backend_after_init": gate.STATE,
@@ -120,11 +189,38 @@ class NativeScopeTest(unittest.TestCase):
             "secret_receipt_sha256": sha256(receipts).hexdigest(), "plan_binary_sha256": sha256(binary).hexdigest(),
             "native_json_sha256": sha256(fake).hexdigest()}
         gate.verify_production_receipt(proof, fake, binary, commit, receipts)
+        transitions = {"fixture-address": {"before": "fixture-before", "after": "fixture-after"}}
+        proof["iam_etag_transitions_sha256"] = sha256(gate.canonical(transitions)).hexdigest()
+        gate.verify_production_receipt(proof, fake, binary, commit, receipts, etag_transitions=transitions)
+        with self.assertRaisesRegex(ValueError, "exact_iam_etag_transition_digest"):
+            gate.verify_production_receipt(proof, fake, binary, commit, receipts, etag_transitions={})
+        del proof["iam_etag_transitions_sha256"]
         with self.assertRaisesRegex(ValueError, "native_plan_files_differ"):
             gate.verify_production_receipt(proof, fake, binary + b"altered", commit, receipts)
         proof["completed_steps"].append("terraform_apply")
         with self.assertRaisesRegex(ValueError, "gateway_commands_missing_or_out_of_order"):
             gate.verify_production_receipt(proof, fake, binary, commit, receipts)
+
+    def test_second_gateway_binds_exact_apply_receipt_and_new_backend_generation(self):
+        receipt = protected_apply()
+        plan, binary, versions = b"plan-json", b"plan", b"version-receipt"
+        commit = "a" * 40
+        state = receipt["state_after"]
+        proof = {"controls_commit": commit, "iac_patch_sha256": gate.IAC_PATCH_SHA, "environment": "int",
+                 "deployment_phase": gate.HUMAN_ACCESS, "protected_runtime_receipt_sha256": gate.phase_receipt_sha(receipt),
+                 "identity": account("terraform"), "operation": "plan-native-demo-a", "completed_steps": gate.GATEWAY[:],
+                 "run_id": "1", "run_attempt": "2", "backend_bucket": gate.BUCKET, "workspace": "default",
+                 "backend_pre": state, "backend_after_init": state, "backend_post": state, "lock": True, "native_plan_exit": 2,
+                 "plan_attempted": 1, "secret_receipt_sha256": sha256(versions).hexdigest(),
+                 "plan_binary_sha256": sha256(binary).hexdigest(), "native_json_sha256": sha256(plan).hexdigest()}
+        opts = {"deployment_phase": gate.HUMAN_ACCESS, "prior_apply": receipt}
+        gate.verify_production_receipt(proof, plan, binary, commit, versions, **opts)
+        proof["backend_post"] = gate.STATE
+        with self.assertRaisesRegex(ValueError, "backend_pin_or_lock_differ"):
+            gate.verify_production_receipt(proof, plan, binary, commit, versions, **opts)
+        proof["protected_runtime_receipt_sha256"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "exact_deployment_phase_or_prior_apply"):
+            gate.verify_production_receipt(proof, plan, binary, commit, versions, **opts)
 
     def test_custody_rejects_another_run_prefix(self):
         run = {"controls_commit": "a" * 40, "run_id": "1", "run_attempt": "2"}

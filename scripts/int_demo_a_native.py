@@ -11,10 +11,12 @@ from urllib.request import Request, ProxyHandler, build_opener
 
 from scripts import check_tf_int as contract
 from scripts import check_int_demo_a as activation_gate
+from scripts import int_demo_a_noble_policy as noble_policy
 from scripts import int_demo_a_plan_scope as scope
 from scripts import int_demo_a_receipts as receipts
 from scripts import int_foundation_close as historical
 from scripts import int_foundation_verify as foundation
+from scripts import int_guest_inventory as transport
 from scripts import int_noble_apply as noble
 from scripts import int_noble_bootstrap_payloads as bootstrap_payload
 from scripts import int_noble_write_iam as writer
@@ -50,14 +52,25 @@ LAYERS = ["sha256:" + value for value in (
 POSTVERIFY = {"name": "private-plans/int/d6915938ea056d6df6e15d29457c0f0c1f46a69e/44772432816-1/foundation-state.json",
               "generation": "1795191726103428", "sha256": "cf3236aa512cf30d59136fed3a5209448700be6401c345716db0a38f222288a3", "size": 4089}
 NAMES = {"publish", "versions", "bootstrap", "iac", "stable_write", "postverify"}
+IAM_EVIDENCE = "native_iam"
+PROTECTED_APPLY = "protected_runtime_apply"
+API = "clipforge-int-api"
+IAP_PATH = f"projects/816643438938/iap_web/cloud_run-{scope.REGION}/services/{API}"
+RUN_API = f"https://run.googleapis.com/v2/projects/{scope.PROJECT}/locations/{scope.REGION}/services/{API}"
+IAP_API = f"https://iap.googleapis.com/v1/{IAP_PATH}"
+IAP_AGENT = "serviceAccount:service-816643438938@gcp-sa-iap.iam.gserviceaccount.com"
+IAM_ROLE_PREFIX = "projects/clipforgebeta2/roles/"
+VERSION_ROLE = IAM_ROLE_PREFIX + "clipforgeIntDemoASecretVersionMetadata"
+IAP_ROLE = IAM_ROLE_PREFIX + "clipforgeIntDemoAIapWebPolicy"
+SECRET_POLICY_NAMES = {f"projects/{scope.PROJECT}/secrets/{scope.SECRET_NAMES[slot]}" for slot in ("postgres_ca", "bootstrap_admin")}
 NATIVE_HCL = {
     (MODULE / "runtime.tf").as_posix(): "f573d073f93d5bf2969548f1432a3d4cfa1f99e1030b14ed180dbb8ffea78abb",
     (MODULE / "noble-candidate.tf").as_posix(): "d1c89dfd11d99e68ac0ae9371597446c253c6ccc35de399ea53fd40515d7e8dd",
     (MODULE / ".terraform.lock.hcl").as_posix(): "89e2189a1b882ac5ad3ce74ad17a304e95cf7fa072b9ced86fce09e78b88b5fa",
-    (DEMO_MODULE / "runtime.tf").as_posix(): "39326bfe49d0541ebb13042bd2bb9ecff470a750a215898883af9f32adbf4458",
+    (DEMO_MODULE / "runtime.tf").as_posix(): "23bc7762c952917bb1b2534786da5a180876f9fddabd01a7ea06b62c0b604cf7",
     (DEMO_MODULE / "noble-candidate.tf").as_posix(): "bca3d815083eec680f0faf5210a80a41d82001c987994a9f8d30595a7e4ff6bc",
 }
-SCHEMA = "clipforge-int-demo-a-private-plan-1"
+SCHEMA = "clipforge-int-demo-a-private-plan-2"
 TTL = timedelta(hours=24)
 require = scope.require
 
@@ -120,25 +133,40 @@ def validate_local(phase, env, raw, *, root=ROOT, now=None):
     require(0 < len(raw) <= 65536 and custody.sha256(raw) == env.get("DECISION_SHA") == env.get("PROTECTED_DECISION_SHA"),
             "independently_pinned_owner_decision")
     decision = foundation.decode(raw)
-    names = {"schema", "phase", "owner", "decision_id", "controls_commit", "app_source", "image", "state", "sources", "gate",
+    names = {"schema", "phase", "deployment_phase", "owner", "decision_id", "controls_commit", "app_source", "image", "state", "sources", "gate",
              "issued_utc", "expires_utc", "approvals", "evidence", "publisher_digest", "publisher_controls", "secret_controls"}
     if phase == "apply":
         names |= {"plan_manifest", "plan_binary_sha256"}
     approval = {"native_backend_lock": True, "private_immutable_custody": True, "apply_saved_plan": phase == "apply"}
-    require(set(decision) == names and decision["schema"] == "clipforge-int-demo-a-owner-decision-1" and decision["phase"] == phase
+    require(set(decision) == names and decision["schema"] == "clipforge-int-demo-a-owner-decision-2" and decision["phase"] == phase
             and decision["owner"] == "admin@ixbalam.studio" and re.fullmatch(r"[1-9][0-9]{29}", decision["decision_id"])
-            and decision["controls_commit"] == env["GITHUB_SHA"] and decision["state"] == scope.STATE
+            and decision["controls_commit"] == env["GITHUB_SHA"] and decision["deployment_phase"] in scope.PHASE_CREATES
             and decision["app_source"] == scope.SOURCE and decision["image"] == scope.IMAGE and decision["approvals"] == approval,
             "owner_scope_or_phase")
     issued, deadline = (aware(decision[key]) for key in ("issued_utc", "expires_utc"))
     now = now or datetime.now(timezone.utc)
     require(issued <= now < deadline and deadline - issued <= TTL, "owner_decision_expired")
     evidence = decision["evidence"]
-    require(set(evidence) == NAMES and evidence["postverify"] == POSTVERIFY, "required_source_evidence")
+    evidence_names = NAMES | {IAM_EVIDENCE}
+    if decision["deployment_phase"] == scope.HUMAN_ACCESS:
+        evidence_names.add(PROTECTED_APPLY)
+        require(set(decision["state"]) == set(scope.STATE) and decision["state"]["name"] == scope.STATE_NAME
+                and decision["state"]["lineage"] == scope.STATE["lineage"] and decision["state"]["current_lock_absent"] is True
+                and scope.NUMERIC.fullmatch(decision["state"]["generation"])
+                and int(decision["state"]["generation"]) > int(scope.STATE["generation"]), "second_phase_requires_new_backend_generation")
+    else:
+        require(decision["state"] == scope.STATE, "owner_scope_or_phase")
+    require(set(evidence) == evidence_names and evidence["postverify"] == POSTVERIFY, "required_source_evidence")
     for row in evidence.values():
         reference(row)
     reference(evidence["publish"], suffix="publication-runtime.json")
     reference(evidence["versions"], suffix="secret-versions.json")
+    reference(evidence["bootstrap"], suffix="noble-bootstrap.json")
+    iam_ref = reference(evidence[IAM_EVIDENCE], suffix="int.json")
+    require(iam_ref["name"].split("/")[2] == decision["controls_commit"], "exact_native_iam_receipt_controls")
+    if PROTECTED_APPLY in evidence:
+        previous = reference(evidence[PROTECTED_APPLY], suffix="manifest.json")
+        require(previous["name"].split("/")[2] == decision["controls_commit"], "exact_protected_apply_controls")
     writer.verify_stable_reference(evidence["stable_write"])
     require(re.fullmatch(r"sha256:[a-f0-9]{64}", decision["publisher_digest"])
             and scope.SHA.fullmatch(decision["publisher_controls"]) and scope.SHA.fullmatch(decision["secret_controls"]),
@@ -179,7 +207,7 @@ def verify_activation_gate(phase, env, decision, *, root=ROOT):
             "independent_gate_evidence_hashes")
     operation = "plan_generation" if phase == "plan" else "locked_plan_apply"
     binding = {**activation_gate.BOUNDARY, "source_commit": env["GITHUB_SHA"], "operation": operation,
-               "state_generation": scope.STATE["generation"], "plan_sha256": decision.get("plan_binary_sha256"),
+               "state_generation": decision["state"]["generation"], "plan_sha256": decision.get("plan_binary_sha256"),
                "apply_receipt_sha256": None, "post_apply_generation": None}
     require(activation_gate.closed(binding_raw) == binding and operation in activation_gate.OPERATION_ROLES,
             "exact_demo_gate_operation_binding")
@@ -262,7 +290,7 @@ def verify_receipts(decision, inputs):
     require(all(published.get(key) == value for key, value in expected.items())
             and scope.NUMERIC.fullmatch(published.get("run", "")), "exact_publisher_receipt")
     reference(published["intent"], suffix="publication-runtime-intent.json")
-    publication_root = f"private-plans/int/{decision['publisher_controls']}/{published['run']}-1/"
+    publication_root = f"{receipts.PREFIX}{decision['publisher_controls']}/{published['run']}-1/"
     require(decision["evidence"]["publish"]["name"] == publication_root + "publication-runtime.json", "publisher_receipt_scope")
     require(bootstrap.get("schema") == "clipforge-int-noble-bootstrap-result-1" and
             bootstrap.get("status") == "configured_guest_verified_external_acceptance_pending" and
@@ -274,10 +302,12 @@ def verify_receipts(decision, inputs):
     require(guest["status"] == bootstrap["status"] and guest["disk_id"] == bootstrap_payload.DATA
             and guest["operation_id"] == bootstrap["operation_id"] and guest["operator_sha256"] == bootstrap_payload.GUEST_SHA,
             "exact_bootstrap_guest_receipt")
+    secret_root = f"{receipts.PREFIX}{decision['secret_controls']}/{versions['run']}-1/"
     require(versions.get("status") == "published_and_verified" and versions.get("source_controls") == decision["secret_controls"]
             and scope.NUMERIC.fullmatch(versions.get("run", "")) and versions.get("bootstrap_receipt_sha256") ==
-            decision["evidence"]["bootstrap"]["sha256"] and decision["evidence"]["versions"]["name"] ==
-            f"private-plans/int/{decision['secret_controls']}/{versions['run']}-1/secret-versions.json", "exact_four_secret_receipt_bundle")
+            decision["evidence"]["bootstrap"]["sha256"] and decision["evidence"]["versions"]["name"] == secret_root + "secret-versions.json"
+            and versions["bootstrap_ref"] == decision["evidence"]["bootstrap"]
+            and versions["bootstrap_ref"]["name"] == secret_root + "noble-bootstrap.json", "exact_four_secret_receipt_bundle")
     reference(iac["native_report"], suffix="int.json")
     return scope.versions(versions["versions"])
 
@@ -285,22 +315,128 @@ def verify_receipts(decision, inputs):
 def verify_producer_intents(decision, published, versions):
     def intent(ref, commit, leaf, common):
         reference(ref, suffix=leaf)
-        allowed = custody.PREFIX + re.escape(commit) + r"/decisions/[a-f0-9]{32}/" + re.escape(leaf)
-        require(re.fullmatch(allowed, ref["name"]), "producer_intent_scope")
+        operation = common["operation_id"]
+        require(re.fullmatch(r"[a-f0-9]{32}", operation) and scope.HEX.fullmatch(common["owner_decision_sha256"])
+                and ref["name"] == f"{receipts.PREFIX}{commit}/decisions/{operation}/{leaf}", "producer_intent_scope")
         value = foundation.decode(read_reference(ref))
-        require(all(value.get(key) == item for key, item in common.items()) and
-                scope.HEX.fullmatch(value.get("owner_decision_sha256", "")), "producer_intent_contents")
-        return ref["name"].rsplit("/", 1)[0], value["owner_decision_sha256"]
+        require(all(value.get(key) == item for key, item in common.items()), "producer_intent_contents")
 
-    publication_fields = {key: published[key] for key in ("target", "run", "source_controls", "manifest", "config", "archive_sha256", "layers", "publisher_digest")}
+    publication_fields = {key: published[key] for key in ("target", "run", "source_controls", "manifest", "config", "archive_sha256", "layers",
+                                                         "publisher_digest", "operation_id", "owner_decision_sha256")}
     intent(published["intent"], decision["publisher_controls"], "publication-runtime-intent.json", {**publication_fields, "status": "copy_intended"})
 
     secret_refs = versions["intents"]
     require(set(secret_refs) == set(scope.SECRET_NAMES), "four_secret_intent_references")
-    secret_fields = {key: versions[key] for key in ("source_controls", "run", "bootstrap_receipt_sha256", "bootstrap_run", "bootstrap_artifact", "ca_certificate_sha256")}
-    bindings = {intent(secret_refs[key], decision["secret_controls"], f"secret-{key}-intent.json",
-                       {**secret_fields, "status": "secret_version_intended", "secret": name}) for key, name in scope.SECRET_NAMES.items()}
-    require(len(bindings) == 1, "secret_intents_from_different_operations")
+    secret_fields = {key: versions[key] for key in ("source_controls", "run", "bootstrap_receipt_sha256", "bootstrap_run", "bootstrap_artifact",
+                                                   "ca_certificate_sha256", "operation_id", "owner_decision_sha256")}
+    for key, name in scope.SECRET_NAMES.items():
+        intent(secret_refs[key], decision["secret_controls"], f"secret-{key}-intent.json",
+               {**secret_fields, "status": "secret_version_intended", "secret": name})
+
+
+def verify_role(role, permissions, token):
+    value = get("https://iam.googleapis.com/v1/" + role, token)
+    require(value.get("name") == role and not value.get("deleted") and value.get("stage") == "GA"
+            and sorted(value.get("includedPermissions", [])) == sorted(permissions), "exact_native_iam_role")
+
+
+def direct_policy(value):
+    require(value.get("version", 0) in {0, 1, 3} and isinstance(value.get("etag"), str) and value["etag"]
+            and (value.get("version") == 3 or not any("condition" in row for row in value.get("bindings", []))),
+            "invalid_direct_iam_policy")
+    return writer.iam.canonical_policy({**value, "version": 3, "bindings": value.get("bindings", [])})
+
+
+def verify_binding_delta(before, after, role, member):
+    require(not any(row["role"] == role and "condition" not in row for row in before["bindings"]),
+            "preexisting_unconditional_iam_binding")
+    writer.iam.check_policy_delta(before, after, [{"role": role, "members": [member]}])
+
+
+def verify_protected_apply(decision, env):
+    if decision["deployment_phase"] == scope.PROTECTED_RUNTIME:
+        return None
+    ref = decision["evidence"][PROTECTED_APPLY]
+    raw = read_reference(ref)
+    prior = foundation.decode(raw)
+    verify = scope.phase_state(scope.HUMAN_ACCESS, prior)
+    run = prior.get("run", "")
+    require(custody.sha256(raw) == scope.phase_receipt_sha(prior) and verify == decision["state"]
+            and prior.get("schema") == "clipforge-int-demo-a-result-2" and prior.get("phase") == "apply"
+            and scope.NUMERIC.fullmatch(run) and run != env["GITHUB_RUN_ID"]
+            and prior.get("controls_commit") == decision["controls_commit"]
+            and ref["name"] == f"{custody.PREFIX}{decision['controls_commit']}/{run}-1/manifest.json"
+            and all(prior.get(field) == decision["evidence"][name]["sha256"] for name, field in (
+                ("bootstrap", "bootstrap_receipt_sha256"), ("versions", "secret_receipt_sha256"),
+                ("publish", "publication_receipt_sha256"))), "exact_protected_runtime_apply_receipt")
+    result = get(f"https://api.github.com/repos/{REPOSITORY}/actions/runs/{run}", env["GH_TOKEN"])
+    expected = {"id": int(run), "run_attempt": 1, "status": "completed", "conclusion": "success",
+                "head_sha": decision["controls_commit"], "head_branch": BRANCH, "event": "workflow_dispatch", "path": WORKFLOWS["apply"]}
+    require(all(result.get(key) == value for key, value in expected.items()), "exact_successful_protected_apply_run")
+    return prior
+
+
+def noble_iam_etags(receipt, bootstrap, token, *, root=ROOT):
+    require(isinstance(receipt, dict) and receipt.get("schema") == "clipforge-int-demo-a-noble-policy-receipt-2"
+            and custody.sha256(custody.canonical(receipt)) == bootstrap.get("noble_iam_receipt_sha256"),
+            "exact_bootstrap_noble_iam_receipt")
+    config = foundation.decode((root / noble_policy.CONFIG).read_bytes())
+    expected = noble_policy.expected_policy(config, receipt)
+    require(set(expected) == set(scope.NOBLE_IAM_ETAG_ADDRESSES), "exact_noble_iam_policy_targets")
+    for pair in receipt["policies"].values():
+        role = pair["role"]
+        observed = get("https://iam.googleapis.com/v1/" + role, token)
+        writer.iam.check_role_definition(role, observed, {"definition": pair["role_definition"]})
+    blocked = noble_policy.verify_live(expected, token)
+    if blocked:
+        raise transport.Failure("noble_iam_policy_read_or_etag_changed", {"checks": blocked})
+    return {
+        address: {"before": writer.iam.digest(noble_policy.canonical(receipt["policies"][target]["before"])["etag"]),
+                  "after": writer.iam.digest(expected[target]["etag"])}
+        for target, address in scope.NOBLE_IAM_ETAG_ADDRESSES.items()
+    }
+
+
+def verify_native_iam(decision, change, read_profile, read_proof, previous, bootstrap, token):
+    phase = decision["deployment_phase"]
+    require(set(change) == {"schema", "controls_commit", "deployment_phase", "backend_generation", "read_receipt",
+            "protected_runtime_apply", "noble_policies", "secret_policies", "iap_policy"}
+            and change["schema"] == "clipforge-int-demo-a-native-iam-receipt-1"
+            and change["controls_commit"] == decision["controls_commit"] and change["deployment_phase"] == phase
+            and change["backend_generation"] == decision["state"]["generation"] and change["read_receipt"] == writer.READ_RECEIPT
+            and change["protected_runtime_apply"] == decision["evidence"].get(PROTECTED_APPLY)
+            and set(change["secret_policies"]) == SECRET_POLICY_NAMES, "exact_native_iam_receipt")
+    writer.verify_roles(read_profile["roles"], token)
+    verify_role(VERSION_ROLE, {"secretmanager.versions.get"}, token)
+    etags = {}
+    for target in set(read_profile["policies"]) - set(writer.POLICY_ENDPOINTS):
+        expected = writer.iam.canonical_policy(read_proof["policies"][target]["after"])
+        actual = writer.iam.canonical_policy(writer.iam.get_policy(target, read_profile["policies"][target], token))
+        if target not in SECRET_POLICY_NAMES:
+            require(actual == expected, "unaffected_stable_read_policy_changed")
+            continue
+        pair = change["secret_policies"][target]
+        require(set(pair) == {"before", "after"} and writer.iam.canonical_policy(pair["before"]) == expected
+                and writer.iam.canonical_policy(pair["after"]) == actual, "secret_iam_receipt_policy_changed")
+        verify_binding_delta(expected, actual, VERSION_ROLE, writer.iam.MEMBER)
+        for row in read_profile["policies"][target]["state_etags"]:
+            etags[row["address"]] = {"before": writer.iam.digest(expected["etag"]), "after": writer.iam.digest(actual["etag"])}
+    require(set(etags) == scope.SECRET_IAM_ETAG_ADDRESSES, "exact_secret_iam_etag_attribution")
+    etags.update(noble_iam_etags(change["noble_policies"], bootstrap, token))
+    iap = change["iap_policy"]
+    if phase == scope.PROTECTED_RUNTIME:
+        require(iap is None and previous is None, "premature_human_iap_write")
+        return etags, None
+    require(isinstance(iap, dict) and set(iap) == {"before", "after"}, "exact_iap_iam_receipt")
+    verify_role(IAP_ROLE, {"iap.webServices.getIamPolicy", "iap.webServices.setIamPolicy"}, token)
+    before, after = direct_policy(iap["before"]), direct_policy(iap["after"])
+    require(not before["bindings"] and read_iap_policy(token) == after, "exact_iap_policy_baseline_or_live_changed")
+    verify_binding_delta(before, after, IAP_ROLE, writer.iam.MEMBER)
+    return etags, after
+
+
+def read_iap_policy(token):
+    return direct_policy(writer.iam.request_json(IAP_API + ":getIamPolicy", token, "POST", {"options": {"requestedPolicyVersion": 3}}))
 
 
 def verify_cloud(decision, env):
@@ -311,6 +447,14 @@ def verify_cloud(decision, env):
     wanted = verify_receipts(decision, inputs)
     verify_iac(inputs["iac"], read_reference(inputs["iac"]["native_report"]), decision)
     verify_producer_intents(decision, inputs["publish"], inputs["versions"])
+    previous = verify_protected_apply(decision, env)
+    profile, proof, read_profile, read_proof, _, _ = writer.load_stable_evidence(refs["stable_write"])
+    writer.verify_live_policies(profile, proof, token)
+    receipt = foundation.decode(read_reference(refs[IAM_EVIDENCE]))
+    etags, iap = verify_native_iam(decision, receipt, read_profile, read_proof, previous, inputs["bootstrap"], token)
+    if previous is not None:
+        service = verify_live_iap(scope.PROTECTED_RUNTIME, None, token)
+        require(service == previous["run_service"], "protected_run_service_identity_changed")
     verify_inventory(get("https://us-central1-docker.pkg.dev/v2/clipforgebeta2/clipforge-int/runtime/manifests/" + MANIFEST, token, digest=MANIFEST))
     for key, number in wanted.items():
         secret = scope.SECRET_NAMES[key]
@@ -318,10 +462,7 @@ def verify_cloud(decision, env):
         require(value.get("state") == "ENABLED" and value.get("name") in {
             f"projects/{project}/secrets/{secret}/versions/{number}" for project in ("clipforgebeta2", "816643438938")},
             "secret_metadata_changed_or_disabled")
-    profile, proof, read_profile, read_proof, _, _ = writer.load_stable_evidence(refs["stable_write"])
-    writer.verify_live_policies(profile, proof, token)
-    writer.verify_unaffected_read(read_profile, read_proof, token)
-    return wanted
+    return wanted, {"prior_apply": previous, "etags": etags, "iap": iap}
 
 
 def state_binding():
@@ -344,11 +485,24 @@ def state_binding():
             "sha256": custody.sha256(raw), "size": len(raw), "current_lock_absent": True}, attrs
 
 
-def baseline_state():
+def baseline_state(decision, cloud):
     state, attrs = state_binding()
-    require(state == scope.STATE and set(attrs) == scope.baseline(), "baseline_state_or_lock_changed")
+    phase = decision["deployment_phase"]
+    require(state == decision["state"] == scope.phase_state(phase, cloud["prior_apply"])
+            and set(attrs) == scope.phase_baseline(phase), "baseline_state_or_lock_changed")
     scope.check_pinned_vm(attrs)
+    key = "before" if phase == scope.PROTECTED_RUNTIME else "after"
+    require(set(cloud["etags"]) == scope.IAM_ETAG_ADDRESSES and all(
+        isinstance(attrs[path].get("etag"), str) and attrs[path]["etag"]
+        and writer.iam.digest(attrs[path]["etag"]) == pair[key] for path, pair in cloud["etags"].items()),
+        "native_backend_iam_etags_not_attributable")
     return state, attrs
+
+
+def diff_options(decision, cloud):
+    phase = decision["deployment_phase"]
+    return {"deployment_phase": phase, "prior_apply": cloud["prior_apply"],
+            "etag_transitions": cloud["etags"] if phase == scope.PROTECTED_RUNTIME else None}
 
 
 def store(path, raw):
@@ -382,30 +536,35 @@ def init(decision, work):
     return command
 
 
-def plan(decision, env, work, numbers, report):
+def plan(decision, env, work, numbers, report, cloud):
     env_run = f"{env['GITHUB_SHA']}/{env['GITHUB_RUN_ID']}-1/"
     prefix = custody.PREFIX + env_run
     marker = custody.PREFIX + f"{env['GITHUB_SHA']}/{decision['decision_id']}-1/"
-    state, _ = baseline_state()
+    phase = decision["deployment_phase"]
+    state, _ = baseline_state(decision, cloud)
     terraform = init(decision, work)
-    require(baseline_state()[0] == state, "baseline_changed_after_init")
+    require(baseline_state(decision, cloud)[0] == state, "baseline_changed_after_init")
     flags = ["-input=false", "-no-color", "-lock=true", "-lock-timeout=120s"]
     out, values = work / "int.tfplan", work / "inputs.tfvars.json"
-    inputs = scope.planned_variables(numbers)
+    inputs = scope.planned_variables(numbers, deployment_phase=phase)
     write_new(values, custody.canonical(inputs))
     decision_current(decision)
     report["stage"] = "claim_plan_once"
     report["intent"] = store(marker + "foundation-state.json", custody.canonical({"decision": env["DECISION_SHA"],
-                          "controls_commit": env["GITHUB_SHA"], "run": env["GITHUB_RUN_ID"], "state": state}))
+                          "controls_commit": env["GITHUB_SHA"], "run": env["GITHUB_RUN_ID"], "state": state,
+                          "deployment_phase": phase}))
     report["stage"] = "native_plan"
     code, _ = driver.run(terraform + ["plan", *flags, "-refresh=true", "-detailed-exitcode", "-var-file=" + str(values),
                                       "-out=" + str(out)], "demo_a_native_plan", work, accepted=(2,))
-    terminal, _ = baseline_state()
+    terminal, _ = baseline_state(decision, cloud)
     _, raw = driver.run(terraform + ["show", "-json", str(out)], "demo_a_native_show", work)
     binary = out.read_bytes()
-    report["scope"] = scope.verify_diff(foundation.decode(raw), numbers)
+    report["scope"] = scope.verify_diff(foundation.decode(raw), numbers, **diff_options(decision, cloud))
     report["stage"] = "private_custody"
     binding = {"controls_commit": env["GITHUB_SHA"], "iac_patch_sha256": scope.IAC_PATCH_SHA, "environment": "int",
+               "deployment_phase": phase, "protected_runtime_receipt_sha256": decision["evidence"].get(PROTECTED_APPLY, {}).get("sha256"),
+               "iam_etag_transitions_sha256": custody.sha256(custody.canonical(cloud["etags"]))
+               if phase == scope.PROTECTED_RUNTIME else None,
                "operation": "plan-native-demo-a", "identity": env["GCP_TERRAFORM_SA"], "completed_steps": scope.GATEWAY,
                "run_id": env["GITHUB_RUN_ID"], "run_attempt": "1", "lock": True, "native_plan_exit": code, "plan_attempted": 1,
                "backend_bucket": scope.BUCKET, "workspace": "default", "backend_pre": state, "backend_after_init": state,
@@ -423,14 +582,15 @@ def plan(decision, env, work, numbers, report):
     report.update(status="planned_verified", plan_manifest=receipt, plan_expires_utc=(created + TTL).isoformat())
 
 
-def verified_plan(decision, env, numbers):
+def verified_plan(decision, env, numbers, cloud):
+    phase = decision["deployment_phase"]
     ref = decision["plan_manifest"]
     content = foundation.decode(custody.fetch_verified(ref))
     binding = content["binding"]
     run = binding["run_id"]
     require(scope.NUMERIC.fullmatch(run) and run != env["GITHUB_RUN_ID"] and binding["run_attempt"] == "1"
             and ref["name"] == f"{custody.PREFIX}{env['GITHUB_SHA']}/{run}-1/manifest.json" and content["schema"] == SCHEMA
-            and content["inputs"] == scope.planned_variables(numbers) and content["evidence"] == decision["evidence"]
+            and content["inputs"] == scope.planned_variables(numbers, deployment_phase=phase) and content["evidence"] == decision["evidence"]
             and content["sources"] == decision["sources"] and content["selected_sources"] == selected_sources(decision["sources"]), "saved_plan_provenance")
     issued, expiry = aware(content["created_utc"]), aware(content["expires_utc"])
     require(issued <= datetime.now(timezone.utc) < expiry and expiry - issued == TTL, "saved_plan_expired")
@@ -442,7 +602,7 @@ def verified_plan(decision, env, numbers):
     require(re.fullmatch(r"private-plans/int/" + env["GITHUB_SHA"] + r"/[1-9][0-9]{29}-1/foundation-state\.json", intent["name"])
             and scope.HEX.fullmatch(content["plan_owner_decision_sha256"]), "saved_plan_intent_reference")
     expected_intent = {"decision": content["plan_owner_decision_sha256"], "controls_commit": env["GITHUB_SHA"],
-                       "run": run, "state": scope.STATE}
+                       "run": run, "state": decision["state"], "deployment_phase": phase}
     require(foundation.decode(custody.fetch_verified(intent)) == expected_intent, "saved_plan_intent_contents")
     refs = content["objects"]
     require(set(refs) == {"int.tfplan", "int.json"}, "exact_saved_plan_objects")
@@ -451,8 +611,9 @@ def verified_plan(decision, env, numbers):
     prefix = ref["name"].removesuffix("manifest.json")
     require(all(row["name"] == prefix + name for name, row in refs.items()) and
             custody.sha256(binary) == decision["plan_binary_sha256"], "approved_saved_plan_binary")
-    scope.verify_production_receipt(binding, raw, binary, env["GITHUB_SHA"], read_reference(decision["evidence"]["versions"]))
-    scope.verify_diff(foundation.decode(raw), numbers)
+    scope.verify_production_receipt(binding, raw, binary, env["GITHUB_SHA"], read_reference(decision["evidence"]["versions"]),
+                                    **diff_options(decision, cloud))
+    scope.verify_diff(foundation.decode(raw), numbers, **diff_options(decision, cloud))
     return binary, raw, expiry
 
 
@@ -468,11 +629,37 @@ def verify_live_firewall(token):
             and value.get("logConfig") == {"enable": True, "metadata": "EXCLUDE_ALL_METADATA"}, "live_firewall_changed")
 
 
-def apply(decision, env, work, numbers, report):
-    binary, raw, expiry = verified_plan(decision, env, numbers)
-    state, existing = baseline_state()
+def verify_live_iap(phase, prior_policy, token):
+    service = get(RUN_API + "?fields=name,uid,generation,iapEnabled,invokerIamDisabled", token)
+    require(service.get("name") in {f"projects/{project}/locations/{scope.REGION}/services/{API}"
+                for project in (scope.PROJECT, "816643438938")} and service.get("uid")
+            and scope.NUMERIC.fullmatch(str(service.get("generation", ""))) and service.get("iapEnabled") is True
+            and service.get("invokerIamDisabled", False) is False, "live_service_iap_or_invoker_changed")
+    invokers = get(RUN_API + ":getIamPolicy?options.requestedPolicyVersion=3", token)
+    require(direct_policy(invokers)["bindings"] == [{"role": "roles/run.invoker", "members": [IAP_AGENT]}],
+            "live_run_invoker_policy_changed")
+    if phase == scope.HUMAN_ACCESS:
+        verify_binding_delta(prior_policy, read_iap_policy(token), "roles/iap.httpsResourceAccessor", "user:admin@ixbalam.studio")
+    return {"uid": service["uid"], "generation": str(service["generation"])}
+
+
+def preserved_resources(existing, updated, cloud):
+    for path, before in existing.items():
+        if path not in cloud["etags"]:
+            require(before == updated[path], "apply_poststate_unreconciled")
+            continue
+        after = updated[path]
+        etag = after.get("etag")
+        require(isinstance(etag, str) and etag and before | {"etag": etag} == after
+                and writer.iam.digest(etag) == cloud["etags"][path]["after"], "apply_iam_etag_unreconciled")
+
+
+def apply(decision, env, work, numbers, report, cloud):
+    phase = decision["deployment_phase"]
+    binary, raw, expiry = verified_plan(decision, env, numbers, cloud)
+    state, existing = baseline_state(decision, cloud)
     terraform = init(decision, work)
-    require(baseline_state() == (state, existing), "baseline_changed_after_init")
+    require(baseline_state(decision, cloud) == (state, existing), "baseline_changed_after_init")
     saved = work / "int.tfplan"
     write_new(saved, binary)
     _, reread = driver.run(terraform + ["show", "-json", str(saved)], "demo_a_verify_saved_native", work)
@@ -483,22 +670,31 @@ def apply(decision, env, work, numbers, report):
     report["stage"] = "claim_apply_once"
     marker = plan_ref["name"].removesuffix("manifest.json") + "foundation-state.json"
     report["intent"] = store(marker, custody.canonical({"decision": env["DECISION_SHA"], "plan_manifest": plan_ref,
-                            "apply_run": env["GITHUB_RUN_ID"], "state": state, "binary_sha256": custody.sha256(binary)}))
+                            "deployment_phase": phase, "apply_run": env["GITHUB_RUN_ID"], "state": state,
+                            "binary_sha256": custody.sha256(binary)}))
     report["stage"] = "native_apply"
     driver.run(terraform + ["apply", "-input=false", "-no-color", "-lock=true", "-lock-timeout=120s", str(saved)], noble.NATIVE_OPERATION, work)
     report["stage"] = "post_apply_reconciliation"
     updated, attrs = state_binding()
     require(updated["serial"] > state["serial"] and updated["generation"] != state["generation"] and updated["name"] == state["name"]
-            and set(attrs) == set(existing) | scope.ADDRESSES and all(attrs[path] == value for path, value in existing.items()),
+            and set(attrs) == set(existing) | scope.PHASE_CREATES[phase],
             "apply_poststate_unreconciled")
+    preserved_resources(existing, attrs, cloud)
     scope.check_pinned_vm(attrs)
     scope.check_firewall({**attrs[scope.FIREWALL], "network": attrs[scope.FIREWALL]["network"].rsplit("/", 1)[-1]})
     verify_live_firewall(env["GCP_ACCESS_TOKEN"])
+    service = verify_live_iap(phase, cloud["iap"], env["GCP_ACCESS_TOKEN"])
+    if cloud["prior_apply"] is not None:
+        require(service == cloud["prior_apply"]["run_service"], "protected_run_service_identity_changed")
     refs = decision["evidence"]
     report.update(status="applied_verified", plan_manifest=plan_ref, state_after=updated, managed_count=len(attrs), firewall_verified=True,
+                  iap_verified=True, run_service=service,
                   plan_sha256=custody.sha256(binary), state_before_generation=state["generation"],
                   bootstrap_receipt_sha256=refs["bootstrap"]["sha256"], secret_receipt_sha256=refs["versions"]["sha256"],
                   publication_receipt_sha256=refs["publish"]["sha256"])
+    if phase == scope.HUMAN_ACCESS:
+        report.update(protected_runtime_apply=refs[PROTECTED_APPLY],
+                      protected_runtime_receipt_sha256=refs[PROTECTED_APPLY]["sha256"])
 
 
 def retain_plan_failure(decision, env, work, error):
@@ -522,11 +718,12 @@ def main(argv=None):
     raw = env.pop("INT_DEMO_A_OWNER_DECISION_JSON", "").encode("utf-8")
     os.environ.pop("INT_DEMO_A_OWNER_DECISION_JSON", None)
     work, reports = driver.private_paths()
-    report = {"schema": "clipforge-int-demo-a-result-1", "status": "blocked", "stage": "local_preflight", "phase": args.phase,
+    report = {"schema": "clipforge-int-demo-a-result-2", "status": "blocked", "stage": "local_preflight", "phase": args.phase,
               "controls_commit": env.get("GITHUB_SHA"), "run": env.get("GITHUB_RUN_ID")}
     error = None
     try:
         decision = validate_local(args.phase, env, raw)
+        report["deployment_phase"] = decision["deployment_phase"]
         if args.invocation == "local":
             require(not os.environ.get("GCP_ACCESS_TOKEN") and not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"),
                     "preflight_must_precede_wif")
@@ -536,8 +733,8 @@ def main(argv=None):
             print(json.dumps({"status": "local_preflight_passed", "phase": args.phase}))
             return 0
         report["stage"] = "verify_wif_and_cloud_evidence"
-        numbers = verify_cloud(decision, env)
-        (plan if args.phase == "plan" else apply)(decision, env, work, numbers, report)
+        numbers, cloud = verify_cloud(decision, env)
+        (plan if args.phase == "plan" else apply)(decision, env, work, numbers, report, cloud)
     except Exception as exc:
         error = exc
         if report["stage"] in {"claim_plan_once", "native_plan", "private_custody", "claim_apply_once", "native_apply", "post_apply_reconciliation"}:
@@ -545,6 +742,8 @@ def main(argv=None):
         report["failure"] = str(exc) if type(exc) is ValueError and re.fullmatch(r"[a-z0-9_]+", str(exc)) else type(exc).__name__
         if isinstance(exc, driver.FailedOperation):
             report["native"] = exc.receipt
+        if isinstance(exc, transport.Failure) and str(exc) == "noble_iam_policy_read_or_etag_changed":
+            report.update(failure=str(exc), iam_checks=exc.receipt["checks"])
     finally:
         try:
             if args.invocation == "cloud" and args.phase == "apply" and report["stage"] in {"native_apply", "post_apply_reconciliation"}:

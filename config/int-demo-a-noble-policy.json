@@ -1,0 +1,60 @@
+{
+  "schema": "clipforge-int-demo-a-noble-policy-1",
+  "project": "clipforgebeta2",
+  "principal": "serviceAccount:clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com",
+  "read_roles": {
+    "account": {
+      "name": "projects/clipforgebeta2/roles/clipforgeIntReadPostgresPolicy_20261118T180000Z",
+      "mode": "reuse",
+      "definition": {
+        "title": "ClipForge INT read postgres_sa_policy_read",
+        "description": "Owner-authorized diagnostic read only; binding ends 2026-11-18T18:00:00Z",
+        "stage": "GA",
+        "includedPermissions": ["iam.serviceAccounts.getIamPolicy"]
+      }
+    },
+    "instance": {
+      "name": "projects/clipforgebeta2/roles/clipforgeIntDemoANobleInstancePolicyRead",
+      "mode": "create",
+      "definition": {
+        "title": "ClipForge INT Demo A Noble instance policy reader",
+        "description": "Read the IAM policy of the exact Noble INT instance for bootstrap verification.",
+        "stage": "GA",
+        "includedPermissions": ["compute.instances.getIamPolicy"]
+      }
+    },
+    "tunnel": {
+      "name": "projects/clipforgebeta2/roles/clipforgeIntNobleIapPolicyRead",
+      "mode": "reuse",
+      "definition": {
+        "title": "ClipForge INT Noble IAP policy reader",
+        "description": "Read the IAM policy of the existing INT PostgreSQL IAP tunnel instance.",
+        "stage": "GA",
+        "includedPermissions": ["iap.tunnelInstances.getIamPolicy"]
+      }
+    }
+  },
+  "prior": {
+    "account": {
+      "version": 1,
+      "etag": "BwZgtsI/T/0=",
+      "bindings": [{"role": "roles/iam.serviceAccountUser", "members": ["serviceAccount:clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com"]}]
+    },
+    "instance": {
+      "version": 1,
+      "etag": "BwZgtsQqXrA=",
+      "bindings": [{"role": "roles/compute.osAdminLogin", "members": ["serviceAccount:clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com"]}]
+    },
+    "tunnel": {
+      "version": 3,
+      "etag": "BwZgtsQxfL4=",
+      "bindings": [{
+        "role": "roles/iap.tunnelResourceAccessor",
+        "members": ["serviceAccount:clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com"],
+        "condition": {"title": "db01_noble_ssh_only", "expression": "destination.port == 22"}
+      }]
+    }
+  },
+  "ownership": "external_additive_binding",
+  "authorized": false
+}

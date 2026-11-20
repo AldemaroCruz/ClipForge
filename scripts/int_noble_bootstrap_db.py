@@ -18,8 +18,8 @@ from scripts import int_bootstrap_db as legacy
 from scripts import int_bootstrap_vm as guest_contract
 from scripts import check_int_demo_a as gate
 from scripts import int_db01_noble_read_iam as iam
+from scripts import int_demo_a_noble_policy as noble_policy
 from scripts import int_guest_inventory as transport
-from scripts import int_noble_apply as apply
 from scripts import int_noble_bootstrap_payloads as payloads
 from scripts import int_noble_first_observation as first
 from scripts import int_noble_guest_observation as guest
@@ -42,8 +42,9 @@ MIGRATOR_SHA = "24e4d9ccea365859c6f455c3780c8abe6a0df3f1150e60380e2b2cc73e0dc5b5
 APPROVED_APP_SOURCE = "6c1bf38c92e2bfa1d6949d5e54fb5508d4df83fd"
 PROPOSAL_FIELDS = {"schema", "status", "execution_authorized", "cloud_writes_authorized", "VM_operations_authorized",
                    "SQL_on_INT_authorized", "risk_acceptance", "target", "format_operation", "containment", "controls",
-                   "gate", "operator_sha256", "containment_sha256", "images", "source_sha256"}
+                   "gate", "operator_sha256", "containment_sha256", "images", "source_sha256", "deploy_policy_receipt_sha256"}
 REQUIRED_SOURCES = {WORKFLOW, CONTROL, "scripts/int_noble_bootstrap_db.py", "scripts/int_noble_bootstrap_payloads.py",
+                    noble_policy.CONFIG, "scripts/int_demo_a_noble_policy.py",
                     "scripts/check_int_demo_a.py", "scripts/int_bootstrap_db.py", "scripts/int_bootstrap_vm.py",
                     "scripts/int_bootstrap_containment.py", "scripts/int_guest_inventory.py", "scripts/int_guest_inventory_guest.py",
                     "scripts/int_guest_db_observe.py", "scripts/int_vm_hostkey_guest.py", "scripts/int_noble_guest_observation.py",
@@ -107,7 +108,7 @@ def validate_local(env, bundle, sha, *, root=ROOT, now=None):
     check_window(decision, now=now)
     proposal_raw = exact_local_hash(bundle / "proposal.json", decision["proposal_sha256"], 65536)
     proposal = transport.decode(proposal_raw)
-    require(set(proposal) == PROPOSAL_FIELDS and proposal["schema"] == "clipforge-int-noble-bootstrap-proposal-1"
+    require(set(proposal) == PROPOSAL_FIELDS and proposal["schema"] == "clipforge-int-noble-bootstrap-proposal-2"
             and proposal["status"] == decision["status"] and all(proposal[key] is True for key in
                 ("execution_authorized", "cloud_writes_authorized", "VM_operations_authorized", "SQL_on_INT_authorized"))
             and proposal["risk_acceptance"] is False and proposal["target"] == TARGET, "noble_bootstrap_exact_target")
@@ -132,6 +133,11 @@ def validate_local(env, bundle, sha, *, root=ROOT, now=None):
     require(isinstance(digests, dict) and set(digests) == REQUIRED_SOURCES, "noble_bootstrap_source_closure")
     for filename, digest in digests.items():
         exact_local_hash(root / filename, digest)
+    policy_config = transport.decode(exact_local_hash(root / noble_policy.CONFIG, digests[noble_policy.CONFIG], 65536))
+    policy_raw = exact_local_hash(bundle / "deploy-policy-receipt.json", proposal["deploy_policy_receipt_sha256"], 65536)
+    policy_receipt = transport.decode(policy_raw)
+    require(policy_raw == transport.canonical(policy_receipt), "noble_deploy_policy_receipt_canonical")
+    expected_policy = noble_policy.expected_policy(policy_config, policy_receipt)
     summary, pin = handoff.checked_inputs(exact_local_hash(bundle / "summary.json", handoff.SUMMARY_SHA),
                                          exact_local_hash(bundle / "host-pin.json", handoff.PIN_SHA))
     baseline = transport.decode(exact_local_hash(bundle / "inventory.json", BASELINE_SHA))
@@ -140,10 +146,11 @@ def validate_local(env, bundle, sha, *, root=ROOT, now=None):
     require(linked == baseline and old_proof["guest_read_receipt_sha256"] == BASELINE_SHA, "noble_bootstrap_evidence_relationship")
     operator, stop = payloads.operator_bytes(), payloads.containment_bytes()
     return {"decision": decision, "decision_raw": decision_raw, "proposal_raw": proposal_raw, "pin": pin, "summary": summary,
-            "baseline_proof": old_proof, "baseline": baseline,"gate": proposal["gate"], "operator": operator, "containment": stop}
+            "baseline_proof": old_proof, "baseline": baseline, "gate": proposal["gate"], "operator": operator, "containment": stop,
+            "deploy_policy": expected_policy, "noble_iam_receipt_sha256": proposal["deploy_policy_receipt_sha256"]}
 
 
-def check_cloud(env, ready, *, reader=first.read_compute, policies=apply.verify_new_bindings, client_factory=transport.Client):
+def check_cloud(env, ready, *, reader=first.read_compute, policies=noble_policy.verify_live, client_factory=transport.Client):
     """Pin the effective Deploy identity, permissions and target before key creation."""
     require(env.get("INT_NOBLE_PROTECTED_DECISION_SHA256") == transport.sha(ready["decision_raw"]), "noble_protected_decision_digest")
     transport.validate_deploy_credentials(env, transport._credential_document(env))
@@ -155,27 +162,18 @@ def check_cloud(env, ready, *, reader=first.read_compute, policies=apply.verify_
             release.require_application_ci(env)
         except ValueError:
             raise transport.Blocked("noble_global_application_ci_blocks_activation") from None
-    roles = (
-        (first.VM + "/testIamPermissions", "Noble VM", ["compute.instances.get", "compute.instances.osAdminLogin"]),
-        (f"https://iam.googleapis.com/v1/projects/{TARGET['project_id']}/serviceAccounts/{guest.GUEST_EMAIL}:testIamPermissions",
-         "Noble attached service account", ["iam.serviceAccounts.actAs"]),
-        (f"https://iap.googleapis.com/v1/{apply.IAP_ZONE}/instances/{payloads.INSTANCE}:testIamPermissions",
-         "Noble IAP TCP/22", ["iap.tunnelInstances.accessViaIAP"]),
-    )
-    missing = []
+    # OS Login and port-conditioned IAP are proved by the fresh, pinned SSH read in launch.
+    missing = policies(ready["deploy_policy"], token)
+    permission = "iam.serviceAccounts.actAs"
     try:
-        policies(f"projects/{TARGET['project_id']}/serviceAccounts/{guest.GUEST_EMAIL}", payloads.INSTANCE, token)
+        effective = iam.request_json(f"https://iam.googleapis.com/v1/{noble_policy.ACCOUNT}:testIamPermissions", token,
+                                     "POST", {"permissions": [permission]})
+        if permission not in effective.get("permissions", []):
+            missing.append({"operation": "testIamPermissions", "resource": noble_policy.ACCOUNT,
+                            "missing_permissions": [permission], "http_status": 200})
     except iam.CloudError as error:
-        missing.append({"operation": "getIamPolicy", "resources": [row[1] for row in roles], "http_status": error.status})
-    for url, resource, permissions in roles:
-        try:
-            effective = iam.request_json(url, token, "POST", {"permissions": permissions})
-        except iam.CloudError as error:
-            missing.append({"operation": "testIamPermissions", "resource": resource, "permissions": permissions, "http_status": error.status})
-            continue
-        absent = sorted(set(permissions) - set(effective.get("permissions", [])))
-        if absent:
-            missing.append({"operation": "testIamPermissions", "resource": resource, "missing_permissions": absent, "http_status": 200})
+        missing.append({"operation": "testIamPermissions", "resource": noble_policy.ACCOUNT,
+                        "permissions": [permission], "http_status": error.status})
     if missing:
         raise transport.Failure("noble_deploy_policy_or_permissions_blocked", {"checks": missing})
     client = client_factory(lambda: token)
@@ -321,7 +319,8 @@ def launch(env, ready, work, reports):
                    "import_attempted": False, "key_absent_before_import": False, "profile_name": client.profile_name, "processes": []}
     result = {"schema": "clipforge-int-noble-bootstrap-result-1", "operation_id": journal["operation_id"],
               "owner_decision_sha256": journal["owner_decision_sha256"], "status": "blocked", "runtime_authorized": False,
-              "migrations_applied": False, "external_client_acceptance": False, "oslogin_profile": profile}
+              "migrations_applied": False, "external_client_acceptance": False, "oslogin_profile": profile,
+              "noble_iam_receipt_sha256": ready["noble_iam_receipt_sha256"]}
     transport._save_journal(work, key_journal)
     legacy.phase(work, journal, "preflight", "completed")
     processes = None

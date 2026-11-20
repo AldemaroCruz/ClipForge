@@ -7,9 +7,10 @@ import re
 
 from scripts.check_tf_int import FOUNDATION_ADDRESSES
 from scripts.db01_noble_plan import CREATES
+from scripts.int_release import canonical
 
 BASE_ADDRESSES_SHA = "a25b16aa50bb05c97e5f59dd307f34f2b90a14ebafed8bf2dc9943452069567c"
-IAC_PATCH_SHA = "19a023137053940f79ee364ad1f2e79bb3871d1c834f91c08878cbca4989bcbb"
+IAC_PATCH_SHA = "eca6ab1a972721a7adcf1cdf21e679d5cca6856ffe8487fdc9c2950b1125bfea"
 SOURCE = "6c1bf38c92e2bfa1d6949d5e54fb5508d4df83fd"
 PROJECT = "clipforgebeta2"
 REGION = "us-central1"
@@ -29,6 +30,23 @@ INVOKER = "google_cloud_run_v2_service_iam_member.iap_invoker[0]"
 HUMAN = "google_iap_web_cloud_run_service_iam_member.pilot_admin[0]"
 JOB_OPERATOR = 'google_cloud_run_v2_job_iam_member.protected_operator["bootstrap"]'
 ADDRESSES = {SERVICE, BOOTSTRAP, FIREWALL, INVOKER, HUMAN, JOB_OPERATOR}
+PROTECTED_RUNTIME = "protected_runtime"
+HUMAN_ACCESS = "human_access"
+PHASE_CREATES = {PROTECTED_RUNTIME: ADDRESSES - {HUMAN}, HUMAN_ACCESS: {HUMAN}}
+SECRET_IAM_ETAG_ADDRESSES = {
+    'google_secret_manager_secret_iam_member.runtime["bootstrap_admin"]',
+    'google_secret_manager_secret_iam_member.version_publisher["bootstrap_admin"]',
+    'google_secret_manager_secret_iam_member.runtime["api_ca"]',
+    'google_secret_manager_secret_iam_member.runtime["migrate_ca"]',
+    'google_secret_manager_secret_iam_member.runtime["worker_ca"]',
+    'google_secret_manager_secret_iam_member.version_publisher["postgres_ca"]',
+}
+NOBLE_IAM_ETAG_ADDRESSES = {
+    "instance": "google_compute_instance_iam_member.noble_deploy[0]",
+    "tunnel": "google_iap_tunnel_instance_iam_member.noble_deploy[0]",
+    "account": "google_service_account_iam_member.noble_deploy[0]",
+}
+IAM_ETAG_ADDRESSES = SECRET_IAM_ETAG_ADDRESSES | set(NOBLE_IAM_ETAG_ADDRESSES.values())
 API_ARGS = ["-m", "uvicorn", "app.int_demo:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log", "--proxy-headers", "--forwarded-allow-ips=*"]
 ADMIN_ARGS = ["-m", "app.cloud.bootstrap_admin"]
 RUNTIME_ENV = {"CLIPFORGE_DATABASE_POOL_SIZE": "2", "CLIPFORGE_DATABASE_POOL_OVERFLOW": "1",
@@ -66,6 +84,35 @@ def baseline():
     return set(rows)
 
 
+def phase_baseline(deployment_phase):
+    require(deployment_phase in PHASE_CREATES, "unreviewed_deployment_phase")
+    return baseline() | (PHASE_CREATES[PROTECTED_RUNTIME] if deployment_phase == HUMAN_ACCESS else set())
+
+
+def phase_state(deployment_phase, prior_apply=None):
+    require(deployment_phase in PHASE_CREATES, "unreviewed_deployment_phase")
+    if deployment_phase == PROTECTED_RUNTIME:
+        require(prior_apply is None, "unexpected_prior_apply")
+        return STATE
+    require(isinstance(prior_apply, dict) and prior_apply.get("deployment_phase") == PROTECTED_RUNTIME
+            and prior_apply.get("status") == "applied_verified" and prior_apply.get("state_before_generation") == STATE["generation"]
+            and prior_apply.get("managed_count") == 58 and prior_apply.get("iap_verified") is True
+            and prior_apply.get("firewall_verified") is True and HEX.fullmatch(prior_apply.get("plan_sha256", "")),
+            "protected_runtime_apply_receipt_required")
+    after = prior_apply.get("state_after")
+    require(isinstance(after, dict) and set(after) == set(STATE) and after["name"] == STATE_NAME
+            and after["lineage"] == STATE["lineage"] and after["current_lock_absent"] is True
+            and type(after["serial"]) is int and after["serial"] > STATE["serial"]
+            and NUMERIC.fullmatch(after["generation"]) and int(after["generation"]) > int(STATE["generation"])
+            and HEX.fullmatch(after["sha256"]) and after["sha256"] != STATE["sha256"]
+            and type(after["size"]) is int and after["size"] > 0, "protected_runtime_backend_identity")
+    return after
+
+
+def phase_receipt_sha(prior_apply):
+    return sha256(canonical(prior_apply)).hexdigest()
+
+
 def versions(replies):
     require(set(replies) == set(SECRET_NAMES), "four_version_receipts_required")
     result = {}
@@ -77,11 +124,13 @@ def versions(replies):
     return result
 
 
-def planned_variables(numbers):
+def planned_variables(numbers, *, deployment_phase=PROTECTED_RUNTIME):
+    require(deployment_phase in PHASE_CREATES, "unreviewed_deployment_phase")
     return {"project_id": PROJECT, "machine_type": "e2-micro", "run_subnet_cidr": "10.80.0.0/26",
             "postgres_subnet_cidr": "10.80.1.0/28", "data_disk_gb": 20, "runtime_image": IMAGE,
             "secret_versions": numbers, "stage": "runtime", "int_runtime_profile": "demo-a",
             "demo_source_revision": SOURCE, "noble_postgres_from_run": True,
+            "demo_a_iap_human_enabled": deployment_phase == HUMAN_ACCESS,
             "db01_noble_candidate": {"image_name": "ubuntu-2404-noble-amd64-v20261105", "image_id": "1892012953239034119"}}
 
 
@@ -97,12 +146,34 @@ def live_rows(module):
     return resource
 
 
-def drift_absent(plan):
+def drift_absent(plan, *, etag_transitions=None):
     require(plan.get("terraform_version") == "1.15.8" and plan.get("format_version", "").startswith("1.")
             and plan.get("complete") is True and plan.get("applyable") is True and plan.get("errored") is False,
             "native_plan_incomplete")
-    require(not plan.get("resource_drift") and not plan.get("deferred_changes") and not plan.get("action_invocations"),
+    require(not plan.get("deferred_changes") and not plan.get("action_invocations"),
             "native_drift_deferred_or_action_invocation")
+    drift = plan.get("resource_drift") or []
+    if etag_transitions is None:
+        require(not drift, "native_drift_deferred_or_action_invocation")
+        return {}
+    require(set(etag_transitions) == IAM_ETAG_ADDRESSES, "exact_iam_etag_attribution")
+    observed = {}
+    for row in drift:
+        address, change = row["address"], row["change"]
+        require(address in etag_transitions and address not in observed and row.get("mode") == "managed"
+                and not row.get("previous_address") and not row.get("deposed") and change["actions"] == ["update"]
+                and not change.get("after_unknown") and not change.get("importing") and not change.get("replace_paths"),
+                "unattributed_iam_etag_drift")
+        before, after = change["before"], change["after"]
+        expected = etag_transitions[address]
+        require(all(isinstance(item.get("etag"), str) and item["etag"] for item in (before, after))
+                and before | {"etag": after["etag"]} == after and before["etag"] != after["etag"]
+                and expected == {"before": sha256(canonical(before["etag"])).hexdigest(),
+                                 "after": sha256(canonical(after["etag"])).hexdigest()},
+                "unexpected_iam_drift_fields")
+        observed[address] = after
+    require(set(observed) == set(etag_transitions), "missing_attributed_iam_etag_drift")
+    return observed
 
 
 def check_pinned_vm(prior):
@@ -173,13 +244,20 @@ def verify_runtime(template, secret_versions, *, admin):
                 "runtime_receipt_version_mount")
 
 
-def verify_diff(plan, secret_versions):
-    drift_absent(plan)
-    require({key: row["value"] for key, row in plan["variables"].items()} == planned_variables(secret_versions), "native_plan_variables")
+def verify_diff(plan, secret_versions, *, deployment_phase=PROTECTED_RUNTIME, prior_apply=None, etag_transitions=None):
+    phase_state(deployment_phase, prior_apply)
+    require(deployment_phase == PROTECTED_RUNTIME or etag_transitions is None, "unexpected_second_phase_etag_transitions")
+    refreshed = drift_absent(plan, etag_transitions=etag_transitions)
+    require({key: row["value"] for key, row in plan["variables"].items()} ==
+            planned_variables(secret_versions, deployment_phase=deployment_phase), "native_plan_variables")
     prior = live_rows(plan["prior_state"]["values"]["root_module"])
     planned = live_rows(plan["planned_values"]["root_module"])
-    fixed = baseline()
-    require(set(prior) == fixed and set(planned) == fixed | ADDRESSES, "exact_prior_and_planned_addresses")
+    fixed = phase_baseline(deployment_phase)
+    creates = PHASE_CREATES[deployment_phase]
+    require(set(prior) == fixed and set(planned) == fixed | creates, "exact_prior_and_planned_addresses")
+    for address, expected in refreshed.items():
+        require(prior[address] == expected,
+                "iam_etag_does_not_match_refreshed_prior")
     require(all(prior[path] == planned[path] for path in fixed), "existing_planned_attributes_changed")
     check_pinned_vm(prior)
     seen = set()
@@ -208,7 +286,7 @@ def verify_diff(plan, secret_versions):
     service, job = planned[SERVICE], planned[BOOTSTRAP]
     require(service["name"] == "clipforge-int-api" and service["project"] == PROJECT and service["location"] == REGION
             and service["deletion_protection"] is True and service["iap_enabled"] is True
-            and service["ingress"] == "INGRESS_TRAFFIC_ALL" and not service.get("invoker_iam_disabled"), "api_iap_and_invoker_enforced")
+            and service["ingress"] == "INGRESS_TRAFFIC_ALL" and service.get("invoker_iam_disabled") is False, "api_iap_and_invoker_enforced")
     verify_runtime(single(service["template"], "api_one_template"), secret_versions, admin=False)
     require(job["name"] == "clipforge-int-bootstrap" and job["project"] == PROJECT and job["location"] == REGION
             and job["deletion_protection"] is True, "bootstrap_job_identity")
@@ -219,12 +297,21 @@ def verify_diff(plan, secret_versions):
     verify_runtime(inner, secret_versions, admin=True)
     check_firewall(planned[FIREWALL])
     check_binding(planned[INVOKER], "serviceAccount:service-816643438938@gcp-sa-iap.iam.gserviceaccount.com", "roles/run.invoker", "name", "clipforge-int-api")
-    check_binding(planned[HUMAN], "user:admin@ixbalam.studio", "roles/iap.httpsResourceAccessor", "cloud_run_service_name", "clipforge-int-api")
+    if deployment_phase == HUMAN_ACCESS:
+        check_binding(planned[HUMAN], "user:admin@ixbalam.studio", "roles/iap.httpsResourceAccessor",
+                      "cloud_run_service_name", "clipforge-int-api")
     check_binding(planned[JOB_OPERATOR], "serviceAccount:clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com", "roles/run.invoker", "name", "clipforge-int-bootstrap")
-    return {"managed_noop": len(fixed), "managed_create": sorted(ADDRESSES), "managed_total": len(planned)}
+    return {"managed_noop": len(fixed), "managed_create": sorted(creates), "managed_total": len(planned)}
 
 
-def verify_production_receipt(receipt, plan_raw, binary, commit, secret_receipt_raw):
+def verify_production_receipt(receipt, plan_raw, binary, commit, secret_receipt_raw, *,
+                              deployment_phase=PROTECTED_RUNTIME, prior_apply=None, etag_transitions=None):
+    state = phase_state(deployment_phase, prior_apply)
+    require(receipt.get("deployment_phase") == deployment_phase and receipt.get("protected_runtime_receipt_sha256") ==
+            (phase_receipt_sha(prior_apply) if prior_apply is not None else None), "exact_deployment_phase_or_prior_apply")
+    received_etags = receipt.get("iam_etag_transitions_sha256")
+    require(received_etags == (sha256(canonical(etag_transitions)).hexdigest() if etag_transitions is not None else None),
+            "exact_iam_etag_transition_digest")
     require(SHA.fullmatch(commit) and receipt.get("controls_commit") == commit and receipt.get("iac_patch_sha256") == IAC_PATCH_SHA,
             "approved_plan_source_or_patch_binding")
     require(receipt.get("environment") == "int" and receipt.get("identity") == "clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"
@@ -232,7 +319,7 @@ def verify_production_receipt(receipt, plan_raw, binary, commit, secret_receipt_
             and NUMERIC.fullmatch(receipt.get("run_attempt", "")), "gateway_identity_or_operation")
     require(receipt.get("completed_steps") == GATEWAY, "gateway_commands_missing_or_out_of_order")
     require(receipt.get("backend_bucket") == BUCKET and receipt.get("workspace") == "default"
-            and all(receipt.get(key) == STATE for key in ("backend_pre", "backend_after_init", "backend_post")), "backend_pin_or_lock_differ")
+            and all(receipt.get(key) == state for key in ("backend_pre", "backend_after_init", "backend_post")), "backend_pin_or_lock_differ")
     require(receipt.get("lock") is True and receipt.get("native_plan_exit") == 2 and receipt.get("plan_attempted") == 1,
             "locked_native_plan_once")
     require(receipt.get("secret_receipt_sha256") == sha256(secret_receipt_raw).hexdigest(), "exact_secret_receipt_bundle")
@@ -260,6 +347,9 @@ def main():
     parser.add_argument("--native-receipt", required=True, type=Path)
     parser.add_argument("--versions-from-receipts", required=True, type=Path)
     parser.add_argument("--approved-controls-commit", required=True)
+    parser.add_argument("--deployment-phase", required=True, choices=PHASE_CREATES)
+    parser.add_argument("--protected-runtime-apply-receipt", type=Path)
+    parser.add_argument("--iam-etag-transitions", type=Path)
     parser.add_argument("--custody-receipt", type=Path)
     parser.add_argument("--custody-manifest", type=Path)
     args = parser.parse_args()
@@ -268,8 +358,11 @@ def main():
         receipt_raw = args.versions_from_receipts.read_bytes()
         gateway_receipt = json.loads(args.native_receipt.read_bytes())
         binary = args.native_binary.read_bytes()
-        verify_production_receipt(gateway_receipt, plan_raw, binary, args.approved_controls_commit, receipt_raw)
-        result = verify_diff(json.loads(plan_raw), versions(json.loads(receipt_raw)))
+        prior_apply = json.loads(args.protected_runtime_apply_receipt.read_bytes()) if args.protected_runtime_apply_receipt else None
+        etags = json.loads(args.iam_etag_transitions.read_bytes()) if args.iam_etag_transitions else None
+        phase = {"deployment_phase": args.deployment_phase, "prior_apply": prior_apply, "etag_transitions": etags}
+        verify_production_receipt(gateway_receipt, plan_raw, binary, args.approved_controls_commit, receipt_raw, **phase)
+        result = verify_diff(json.loads(plan_raw), versions(json.loads(receipt_raw)), **phase)
         require(bool(args.custody_manifest) == bool(args.custody_receipt), "both_custody_inputs_required")
         if args.custody_receipt:
             verify_custody(json.loads(args.custody_receipt.read_bytes()), gateway_receipt, plan_raw, binary,

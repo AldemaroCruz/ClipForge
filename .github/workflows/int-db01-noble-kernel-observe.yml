@@ -19,6 +19,7 @@ on:
         options:
           - kernel
           - demo-readiness
+          - demo-kernel-consumers
 
 permissions: {}
 concurrency:

@@ -298,7 +298,7 @@ def main(argv=None):
     parser.add_argument("phase", choices=("local", "preflight", "observe"))
     parser.add_argument("identity", nargs="?", choices=("terraform", "deploy"))
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--mode", choices=("full", "noble_policy"), default="full")
+    parser.add_argument("--mode", choices=("full", "noble_policy", "docker_only"), default="full")
     args = parser.parse_args(argv)
     try:
         token = os.environ.get("GCP_ACCESS_TOKEN", "")
@@ -306,7 +306,8 @@ def main(argv=None):
             hosted_context(os.environ)
             require(not token and args.identity is None and args.output is None, "local_scope_before_wif")
             return 0
-        require(args.identity is not None and (args.mode == "full" or args.identity == "deploy"), "exact_observer_identity_required")
+        require(args.identity is not None and (args.mode == "full" or args.mode == "noble_policy" and args.identity == "deploy"),
+                "exact_observer_identity_required")
         preflight(args.identity, os.environ)
         if args.phase == "preflight":
             require(not token and args.output is None, "preflight_must_precede_wif")

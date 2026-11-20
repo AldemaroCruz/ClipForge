@@ -8,9 +8,9 @@ on:
         type: string
         required: true
       observation:
-        description: Select full inventory or only the two omitted Noble policy reads
+        description: Select full inventory, the two Noble policy reads, or Docker without federation
         type: choice
-        options: [full, noble_policy]
+        options: [full, noble_policy, docker_only]
         default: full
         required: true
 
@@ -50,7 +50,7 @@ jobs:
 
   operator-observation:
     needs: local-guard
-    if: needs.local-guard.result == 'success' && needs.local-guard.outputs.verified_commit == github.sha
+    if: needs.local-guard.result == 'success' && needs.local-guard.outputs.verified_commit == github.sha && inputs.observation != 'docker_only'
     strategy:
       fail-fast: false
       matrix:
@@ -145,3 +145,26 @@ jobs:
       - name: Remove only the owned summary scratch
         if: ${{ always() && steps.scratch.outcome == 'success' }}
         run: rm -f -- "$INT_DEMO_A_WIF_SUMMARY"
+
+  docker-observation-without-federation:
+    needs: local-guard
+    if: needs.local-guard.result == 'success' && needs.local-guard.outputs.verified_commit == github.sha && inputs.observation == 'docker_only'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Identify Docker socket, executable, storage backend, isolation and running kernel
+        run: python -B -m scripts.int_demo_a_docker --output "$RUNNER_TEMP/int-demo-a-docker-toolchain.json"
+      - name: Retain the credential-free inventory
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: int-demo-a-docker-toolchain-${{ github.run_id }}-1
+          path: ${{ runner.temp }}/int-demo-a-docker-toolchain.json
+          if-no-files-found: error
+          retention-days: 7

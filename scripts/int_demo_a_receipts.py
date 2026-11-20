@@ -11,24 +11,40 @@ from scripts import int_release as custody
 
 
 LIMIT = 1024 * 1024
-PREFIX = "private-plans/int/"
+PREFIX = "private-deploy/int/demo-a/v1/"
 GCS = "https://storage.googleapis.com/"
 BUCKET = "clipforgebeta2-tfstate-int"
 SHA = r"[a-f0-9]{64}"
 RUN = r"[1-9][0-9]*"
-FILES = r"(?:publication-(?:runtime|db01-noble-client)|secret-versions|noble-bootstrap|noble-migration|noble-acceptance|demo-a-admin)\.json"
-INTENTS = r"(?:publication-(?:runtime|db01-noble-client)|secret-(?:app_password|migrator_password|postgres_ca|bootstrap_admin)|noble-bootstrap|noble-migration|noble-acceptance|demo-a-admin)-intent\.json"
-NAME = re.compile(PREFIX + r"[a-f0-9]{40}/(?:" + RUN + r"-1/" + FILES + r"|decisions/[a-f0-9]{32}/" + INTENTS + r")")
+PRODUCERS = {
+    "publish": (("publication-runtime.json", "publication-db01-noble-client.json"),
+                ("publication-runtime-intent.json", "publication-db01-noble-client-intent.json")),
+    "secrets": (("noble-bootstrap.json", "secret-versions.json"),
+                ("secret-app_password-intent.json", "secret-migrator_password-intent.json",
+                 "secret-postgres_ca-intent.json", "secret-bootstrap_admin-intent.json")),
+}
+JOB_OPERATIONS = {"migrate": {"create", "run"}, "app": {"create", "run"}, "admin": {"run"}}
+KIND = ("intent", "result")
+FILES = "|".join(re.escape(leaf) for terminal, _ in PRODUCERS.values() for leaf in terminal)
+INTENTS = "|".join(re.escape(leaf) for _, intents in PRODUCERS.values() for leaf in intents)
+NAME = re.compile(re.escape(PREFIX) + r"(?:[a-f0-9]{40}/(?:" + RUN + r"-1/(?:" + FILES
+                  + r")|decisions/[a-f0-9]{32}/(?:" + INTENTS + r"))"
+                  + r"|jobs/(?:(?:migrate|app)/(?:create|run)|admin/run)/(?:intent|result)\.json)")
 require = transport.require
 
 
 class Custody:
-    def __init__(self, token):
+    def __init__(self, token, *, names=None):
         require(re.fullmatch(r"[A-Za-z0-9._~+/=-]{20,16384}", token), "demo_a_custody_token_format")
         self.token = token
+        self.names = None if names is None else frozenset(names)
+        require(self.names is None or bool(self.names) and all(NAME.fullmatch(name) for name in self.names),
+                "demo_a_custody_exact_names")
 
     def request(self, method, name, *, generation=None, payload=None):
         require(isinstance(name, str) and NAME.fullmatch(name), "demo_a_custody_scope")
+        require((self.names is None and method == "GET") or (self.names is not None and name in self.names),
+                "demo_a_custody_not_in_operation")
         headers = {"Authorization": "Bearer " + self.token}
         if method == "POST":
             require(isinstance(payload, bytes) and len(payload) <= LIMIT and generation is None, "demo_a_custody_create_shape")
@@ -74,9 +90,16 @@ class Custody:
         return reference
 
 
-def name_for(env, leaf, *, intent=None):
-    commit = env["GITHUB_SHA"]
-    branch = env["GITHUB_RUN_ID"] + "-1" if intent is None else "decisions/" + intent
-    value = PREFIX + commit + "/" + branch + "/" + leaf
-    require(NAME.fullmatch(value), "demo_a_custody_name")
-    return value
+def producer_names(env, operation, decision_id):
+    commit, run = env.get("GITHUB_SHA", ""), env.get("GITHUB_RUN_ID", "")
+    require(operation in PRODUCERS and env.get("GITHUB_RUN_ATTEMPT") == "1"
+            and re.fullmatch(r"[a-f0-9]{40}", commit) and re.fullmatch(RUN, run)
+            and re.fullmatch(r"[a-f0-9]{32}", decision_id), "demo_a_custody_producer_scope")
+    terminal, intents = PRODUCERS[operation]
+    return {**{leaf: f"{PREFIX}{commit}/{run}-1/{leaf}" for leaf in terminal},
+            **{leaf: f"{PREFIX}{commit}/decisions/{decision_id}/{leaf}" for leaf in intents}}
+
+
+def job_names(phase, action):
+    require(action in JOB_OPERATIONS.get(phase, ()), "demo_a_custody_job_scope")
+    return {kind: f"{PREFIX}jobs/{phase}/{action}/{kind}.json" for kind in KIND}

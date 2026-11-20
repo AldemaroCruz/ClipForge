@@ -1,5 +1,11 @@
 # INT-E2E-01 proposal only. No public principal, KMS/CSEK, service-account key,
 # secret payload, or service-identity data source is introduced by this root.
+variable "demo_a_iap_human_enabled" {
+  description = "Add the reviewed IAP user binding after the protected demo service is verified."
+  type        = bool
+  default     = false
+}
+
 locals {
   demo_a           = var.int_runtime_profile == "demo-a"
   runtime_accounts = { api = "api", worker = "worker", migrate = "migrate", bootstrap = "migrate" }
@@ -185,14 +191,15 @@ resource "google_project_iam_member" "bootstrap_reader" {
 }
 
 resource "google_cloud_run_v2_service" "api" {
-  count               = var.stage == "runtime" ? 1 : 0
-  project             = var.project_id
-  name                = "clipforge-int-api"
-  location            = local.region
-  deletion_protection = true
-  ingress             = "INGRESS_TRAFFIC_ALL"
-  iap_enabled         = true
-  labels              = local.labels
+  count                = var.stage == "runtime" ? 1 : 0
+  project              = var.project_id
+  name                 = "clipforge-int-api"
+  location             = local.region
+  deletion_protection  = true
+  ingress              = "INGRESS_TRAFFIC_ALL"
+  iap_enabled          = true
+  invoker_iam_disabled = local.demo_a ? false : null
+  labels               = local.labels
   template {
     service_account                  = data.google_service_account.existing["api"].email
     max_instance_request_concurrency = 8
@@ -272,7 +279,7 @@ resource "google_cloud_run_v2_service_iam_member" "iap_invoker" {
   member   = "serviceAccount:service-816643438938@gcp-sa-iap.iam.gserviceaccount.com"
 }
 resource "google_iap_web_cloud_run_service_iam_member" "pilot_admin" {
-  count                  = var.stage == "runtime" ? 1 : 0
+  count                  = var.stage == "runtime" && (!local.demo_a || var.demo_a_iap_human_enabled) ? 1 : 0
   project                = var.project_id
   location               = local.region
   cloud_run_service_name = google_cloud_run_v2_service.api[0].name

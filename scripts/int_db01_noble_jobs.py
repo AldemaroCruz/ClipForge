@@ -1,6 +1,6 @@
 """Prepare, create and execute exactly one reviewed Noble database Job."""
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -14,6 +14,8 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 from scripts import int_db_acceptance_noble as client
 from scripts import int_release
+from scripts import int_demo_a_receipts as receipts
+from scripts import int_demo_a_plan_scope as scope
 from scripts import int_noble_bootstrap_payloads as payloads
 from scripts import check_int_demo_a as evidence_gate
 from scripts.check_tf_int import BUCKET
@@ -26,6 +28,7 @@ WORKFLOW = ".github/workflows/int-db01-noble-jobs.yml"
 PROJECT = "clipforgebeta2"
 PROJECT_NUMBER = "816643438938"
 DEPLOY = "clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com"
+TERRAFORM = "clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"
 LOCATION = f"projects/{PROJECT}/locations/us-central1"
 RUN = "https://run.googleapis.com/v2/"
 SOURCE_SHA256 = "57a7ceb9c4da47ac5c5b33a829f1c13be6bc0be2c2b4d8a97e404d7b71db82bb"
@@ -58,7 +61,12 @@ MIGRATION_REVISIONS = ["auth01_0001", "auth02_0002", "cloud01_0001"]
 SUCCESS = "configured_guest_verified_external_acceptance_pending"
 READ_LIMIT = 1024 * 1024
 STATE_NAME = "terraform/int/tf-int-01/default.tfstate"
+LOCK_NAME = "terraform/int/tf-int-01/default.tflock"
 STATE_LINEAGE = "813c84a2-2ef1-ceb3-177e-3a2c3b815066"
+MAX_BACKEND_AGE = timedelta(minutes=2)
+RESOURCE_MANAGER = f"https://cloudresourcemanager.googleapis.com/v1/projects/{PROJECT}:testIamPermissions"
+IAM = f"https://iam.googleapis.com/v1/projects/{PROJECT}/serviceAccounts/"
+COMPUTE = f"https://compute.googleapis.com/compute/v1/projects/{PROJECT}/zones/us-central1-a/"
 FIELDS = {"schema", "status", "owner", "source_controls", "action", "phase", "operation_id",
           "issued_utc", "expires_utc", "receipts", "definition_sha256", "gate"}
 
@@ -120,9 +128,9 @@ def publication_receipt(value, *, image=client.NOBLE_IMAGE, config=CONFIG, archi
     source_run(value)
     leaf = image.split("@")[0].rsplit("/", 1)[1]
     intent = value["intent"]
-    intent_path = f"private-plans/int/{value['source_controls']}/decisions/"
+    intent_path = f"{receipts.PREFIX}{value['source_controls']}/decisions/{value['operation_id']}/publication-{leaf}-intent.json"
     require(isinstance(intent, dict) and set(intent) == {"name", "generation", "sha256", "size"}
-            and re.fullmatch(re.escape(intent_path) + r"[0-9a-f]{32}/publication-" + re.escape(leaf) + r"-intent\.json", intent["name"])
+            and hex_id(value["operation_id"], 32) and hex_id(value["owner_decision_sha256"]) and intent["name"] == intent_path
             and number(intent["generation"]) and hex_id(intent["sha256"]) and type(intent["size"]) is int and intent["size"] > 0,
             "publication_intent_scope_mismatch")
     require(value["status"] == "published_and_verified" and value["target"] == image
@@ -142,20 +150,47 @@ def secret_receipt(value, bootstrap_sha):
     return {key: item["version"] for key, item in value["versions"].items()}
 
 
-def apply_receipt(value, bootstrap_sha, secrets_sha):
-    require(value["schema"] == "clipforge-int-demo-a-result-1" and value["phase"] == "apply"
-            and value["status"] == "applied_verified" and hex_id(value["controls_commit"], 40)
-            and number(value["run"]) and value["managed_count"] == 59 and value["firewall_verified"] is True
-            and value["bootstrap_receipt_sha256"] == bootstrap_sha and value["secret_receipt_sha256"] == secrets_sha
-            and value["state_after"]["name"] == STATE_NAME and value["state_after"]["lineage"] == STATE_LINEAGE
-            and value["state_after"]["current_lock_absent"] is True and number(value["state_after"]["generation"])
-            and hex_id(value["state_after"]["sha256"]) and type(value["state_after"]["size"]) is int
-            and value["state_after"]["size"] > 0
-            and hex_id(value["plan_manifest"]["sha256"]), "demo_a_apply_firewall_not_verified")
+def apply_reference(ref, commit):
+    require(isinstance(ref, dict) and set(ref) == {"name", "generation", "sha256", "size"}
+            and number(ref["generation"]) and hex_id(ref["sha256"]) and type(ref["size"]) is int
+            and 0 < ref["size"] <= int_release.LIMIT, "invalid_demo_a_private_apply_reference")
+    path = re.fullmatch(re.escape(f"{int_release.PREFIX}{commit}/") + r"([1-9][0-9]*)-1/manifest\.json", ref["name"])
+    require(path is not None, "invalid_demo_a_private_apply_reference")
+    return path[1]
+
+
+def apply_receipt(value, prior, refs):
+    commit, service = value["controls_commit"], value["run_service"]
+    require(hex_id(commit, 40) and isinstance(service, dict) and set(service) == {"uid", "generation"}
+            and isinstance(service["uid"], str) and bool(service["uid"]) and number(service["generation"]),
+            "demo_a_apply_service_or_controls_not_verified")
+    plan_runs = []
+    for receipt in (prior, value):
+        require(receipt["schema"] == "clipforge-int-demo-a-result-2" and receipt["phase"] == "apply"
+                and receipt["status"] == "applied_verified" and receipt["controls_commit"] == commit
+                and number(receipt["run"]) and receipt["firewall_verified"] is True and receipt["iap_verified"] is True
+                and receipt["bootstrap_receipt_sha256"] == refs["bootstrap"] and receipt["secret_receipt_sha256"] == refs["secrets"]
+                and all(hex_id(receipt[key]) for key in ("plan_sha256", "publication_receipt_sha256"))
+                and receipt["run_service"] == service,
+                "demo_a_apply_firewall_not_verified")
+        plan_runs.append(apply_reference(receipt["plan_manifest"], commit))
+    before = scope.phase_state(scope.HUMAN_ACCESS, prior)
+    after = value["state_after"]
+    prior_ref = value.get("protected_runtime_apply")
+    require(value["deployment_phase"] == scope.HUMAN_ACCESS and value["managed_count"] == 59
+            and len({value["run"], prior["run"], *plan_runs}) == 4 and value["plan_sha256"] != prior["plan_sha256"]
+            and value["publication_receipt_sha256"] == prior["publication_receipt_sha256"]
+            and apply_reference(prior_ref, commit) == prior["run"] and prior_ref["sha256"] == refs["protected-runtime-apply"]
+            and prior_ref["sha256"] == value["protected_runtime_receipt_sha256"] == scope.phase_receipt_sha(prior)
+            and prior_ref["size"] == len(canonical(prior)), "demo_a_final_apply_chain_not_verified")
+    require(value["state_before_generation"] == before["generation"] and set(after) == set(before)
+            and after["name"] == before["name"] and after["lineage"] == before["lineage"] and after["current_lock_absent"] is True
+            and number(after["generation"]) and int(after["generation"]) > int(before["generation"])
+            and type(after["serial"]) is int and after["serial"] > before["serial"] and type(after["size"]) is int and after["size"] > 0
+            and hex_id(after["sha256"]) and after["sha256"] != before["sha256"], "demo_a_final_apply_state_not_reconciled")
 
 
 def validate_admin_predecessors(values, refs, versions):
-    from scripts import int_demo_a_plan_scope as scope
     publication_receipt(values["runtime-publication"], image=scope.IMAGE, config=ADMIN_CONFIG, archive=ADMIN_ARCHIVE, layers=ADMIN_LAYERS)
     require(values["apply"]["publication_receipt_sha256"] == refs["runtime-publication"], "admin_runtime_apply_mismatch")
     accepted = values["acceptance"]
@@ -163,7 +198,8 @@ def validate_admin_predecessors(values, refs, versions):
             and accepted["phase"] == "app" and accepted["action"] == "run"
             and accepted["effect"] == "tls_and_dml_without_data_changes"
             and all(accepted["receipts"].get(key) == refs[key]
-                    for key in ("bootstrap", "publication", "secrets", "apply", "tls", "migration")), "admin_external_acceptance_not_verified")
+                    for key in ("bootstrap", "publication", "secrets", "protected-runtime-apply", "apply", "tls", "migration")),
+            "admin_external_acceptance_not_verified")
     mounts = {"database": "migrator_password", "postgres-ca": "postgres_ca", "admin": "bootstrap_admin"}
     env = {**scope.RUNTIME_ENV, "CLIPFORGE_DATABASE_USER": "clipforge_migrator",
            "CLIPFORGE_BOOTSTRAP_ADMIN_FILE": "/secrets/admin/value"}
@@ -196,7 +232,7 @@ def decision_bundle(directory, expected_sha, env, action, phase, *, now=None):
     issued, expires = client.utc(decision["issued_utc"]), client.utc(decision["expires_utc"])
     require(issued <= at and 0 < (expires - issued).total_seconds() <= 3600
             and (expires - at).total_seconds() >= (720 if action == "run" else 300), "job_decision_expired")
-    refs = {"bootstrap", "publication", "secrets", "apply", "tls"}
+    refs = {"bootstrap", "publication", "secrets", "protected-runtime-apply", "apply", "tls"}
     if decision["gate"] == "demo-a":
         refs |= {"review", "binding"}
     if phase == "admin":
@@ -215,7 +251,7 @@ def decision_bundle(directory, expected_sha, env, action, phase, *, now=None):
     bootstrap_receipt(values["bootstrap"])
     publication_receipt(values["publication"])
     versions = secret_receipt(values["secrets"], bootstrap_sha)
-    apply_receipt(values["apply"], bootstrap_sha, decision["receipts"]["secrets"])
+    apply_receipt(values["apply"], values["protected-runtime-apply"], decision["receipts"])
     tls = values["tls"]
     require(tls["status"] == "verified" and tls["bootstrap_receipt_sha256"] == bootstrap_sha
             and tls["host"] == client.NOBLE_SCOPE["database_host"] and tls["mode"] == "verify-full"
@@ -227,7 +263,8 @@ def decision_bundle(directory, expected_sha, env, action, phase, *, now=None):
                 and migration["action"] == "run" and migration["phase"] == "migrate"
                 and migration["database_revisions"] == MIGRATION_REVISIONS
                 and all(migration["receipts"].get(key) == decision["receipts"][key]
-                        for key in ("bootstrap", "publication", "secrets", "apply", "tls")), "noble_migration_not_verified")
+                        for key in ("bootstrap", "publication", "secrets", "protected-runtime-apply", "apply", "tls")),
+                "noble_migration_not_verified")
     if phase == "admin":
         spec = validate_admin_predecessors(values, decision["receipts"], versions)
         require(digest(canonical(spec)) == decision["definition_sha256"], "admin_job_definition_mismatch")
@@ -282,6 +319,7 @@ def check_security(directory, decision, applied, env, decision_sha, *, protected
     evidence_gate.hosted_binding(binding, env)
     admin = decision["phase"] == "admin"
     require(binding["operation"] == ("admin_job" if admin else "migration_job") and binding["source_commit"] == decision["source_controls"]
+            and digest(canonical(applied)) == refs["apply"]
             and binding["plan_sha256"] == applied["plan_sha256"] and binding["state_generation"] == applied["state_before_generation"]
             and binding["post_apply_generation"] == applied["state_after"]["generation"],
             "job_gate_apply_binding_mismatch")
@@ -298,32 +336,37 @@ def admin_image():
     return int_demo_a_plan_scope.IMAGE
 
 
+def request_json(opener, token, method, url, value=None, *, missing=False):
+    raw = None if value is None else canonical(value)
+    req = Request(url, data=raw, method=method, headers={"Authorization": "Bearer " + token,
+                  "Content-Type": "application/json", "Accept": "application/json"})
+    try:
+        with opener.open(req, timeout=30) as response:
+            body = response.read(READ_LIMIT + 1)
+        require(0 < len(body) <= READ_LIMIT, "cloud_response_size")
+        return client.decode(body.decode("utf-8"))
+    except HTTPError as error:
+        status = error.code
+        error.close()
+        if missing and status == 404:
+            return None
+        raise ValueError("cloud_http_" + str(status)) from None
+
+
 class Transport:
-    def __init__(self, token):
+    def __init__(self, token, phase, action):
         self.token = token
         self.opener = build_opener(ProxyHandler({}), NoRedirect())
+        self.names = receipts.job_names(phase, action)
+        self.custody = receipts.Custody(token, names=self.names.values())
 
     def call(self, method, url, value=None, *, missing=False):
-        raw = None if value is None else canonical(value)
-        req = Request(url, data=raw, method=method, headers={"Authorization": "Bearer " + self.token,
-                      "Content-Type": "application/json", "Accept": "application/json"})
-        try:
-            with self.opener.open(req, timeout=30) as response:
-                body = response.read(READ_LIMIT + 1)
-            require(0 < len(body) <= READ_LIMIT, "cloud_response_size")
-            return client.decode(body.decode("utf-8"))
-        except HTTPError as error:
-            if missing and error.code == 404:
-                return None
-            raise ValueError("cloud_http_" + str(error.code)) from None
+        require(method in {"GET", "POST"} and (url == RESOURCE_MANAGER or url.startswith((RUN + LOCATION + "/", IAM, COMPUTE))),
+                "deploy_job_api_scope")
+        return request_json(self.opener, self.token, method, url, value, missing=missing)
 
-    def retain(self, action, phase, kind, value):
-        raw = canonical(value)
-        path = f"private-plans/int/noble-jobs/{phase}/{action}/{kind}.json"
-        query = urlencode({"uploadType": "media", "name": path, "ifGenerationMatch": "0", "fields": "name,generation,size"})
-        reply = self.call("POST", f"https://storage.googleapis.com/upload/storage/v1/b/{BUCKET}/o?{query}", value)
-        require(reply["name"] == path and number(reply["generation"]) and str(reply["size"]) == str(len(raw)), "custody_receipt_mismatch")
-        return {"name": path, "generation": reply["generation"], "size": len(raw), "sha256": digest(raw)}
+    def retain(self, kind, value):
+        return self.custody.create(self.names[kind], value)
 
 
 def verify_job_definition(actual, expected):
@@ -400,28 +443,76 @@ def verify_execution(transport, name, execution, spec, body):
     require(comparable_task(row["template"], admin=admin) == comparable_task(expected, admin=admin), "noble_execution_template_drift")
 
 
-def verify_live_scope(transport, state):
+def backend_binding(env, decision, applied, decision_sha):
+    run = env.get("GITHUB_RUN_ID", "")
+    attempt = env.get("GITHUB_RUN_ATTEMPT")
+    require(number(run) and attempt == "1" and hex_id(decision_sha), "invalid_backend_observation_dispatch")
+    state = applied["state_after"]
+    return {"schema": "clipforge-int-noble-job-backend-observation-1", "identity": TERRAFORM,
+            "controls_commit": decision["source_controls"], "run": run, "attempt": attempt,
+            "action": decision["action"], "phase": decision["phase"], "operation_id": decision["operation_id"],
+            "decision_sha256": decision_sha, "apply_receipt_sha256": decision["receipts"]["apply"],
+            "phase2_plan_sha256": applied["plan_sha256"], "phase2_state_before_generation": applied["state_before_generation"],
+            "protected_runtime_apply_sha256": decision["receipts"]["protected-runtime-apply"],
+            "bucket": BUCKET, "state": {key: state[key] for key in ("name", "generation", "size")},
+            "lock": {"name": LOCK_NAME, "http_status": 404}}
+
+
+def observe_backend(token, binding, *, opener=None, clock=lambda: datetime.now(timezone.utc)):
+    opener = opener or build_opener(ProxyHandler({}), NoRedirect())
     base = f"https://storage.googleapis.com/storage/v1/b/{BUCKET}/o/"
-    current = transport.call("GET", base + quote(STATE_NAME, safe="") + "?fields=name,generation,size")
-    lock = transport.call("GET", base + quote(STATE_NAME.removesuffix(".tfstate") + ".tflock", safe="") + "?fields=name", missing=True)
-    require(current["name"] == state["name"] and current["generation"] == state["generation"]
-            and str(current["size"]) == str(state["size"]) and lock is None, "apply_backend_or_lock_changed")
-    vm = transport.call("GET", f"https://compute.googleapis.com/compute/v1/projects/{PROJECT}/zones/us-central1-a/instances/clipforge-int-db01-noble")
+    state_url = base + quote(STATE_NAME, safe="") + "?fields=name,generation,size"
+    lock_url = base + quote(LOCK_NAME, safe="") + "?fields=name"
+    legacy_intent = f"private-plans/int/noble-jobs/{binding['phase']}/{binding['action']}/intent.json"
+    legacy = request_json(opener, token, "GET", base + quote(legacy_intent, safe="") + "?fields=name", missing=True)
+    require(legacy is None, "legacy_noble_job_intent_requires_reconciliation")
+    started = clock()
+    before = request_json(opener, token, "GET", state_url)
+    lock = request_json(opener, token, "GET", lock_url, missing=True)
+    observed = clock()
+    after = request_json(opener, token, "GET", state_url)
+    expected = {**binding["state"], "size": str(binding["state"]["size"])}
+    require(before == after == expected and lock is None, "apply_backend_or_lock_changed")
+    finished = clock()
+    require(started <= observed <= finished <= started + MAX_BACKEND_AGE, "backend_observation_window")
+    return {**binding, "lock_observed_utc": observed.isoformat(), "completed_utc": finished.isoformat(), "legacy_intent_http_status": 404}
+
+
+def verify_backend_observation(proof, binding, *, now):
+    require(isinstance(proof, dict) and set(proof) == set(binding) | {"lock_observed_utc", "completed_utc", "legacy_intent_http_status"}
+            and all(proof[key] == value for key, value in binding.items()) and proof["legacy_intent_http_status"] == 404,
+            "job_backend_observation_binding")
+    observed = client.utc(proof["lock_observed_utc"])
+    completed = client.utc(proof["completed_utc"])
+    require(observed <= completed <= now <= observed + MAX_BACKEND_AGE, "job_backend_observation_expired_or_future")
+
+
+def backend_path(path, env):
+    runner = Path(env["RUNNER_TEMP"]).resolve(strict=True)
+    require(path is not None and path.name == "backend.json" and path.parent.parent == runner
+            and path.parent.is_dir() and path.parent.resolve() == path.parent
+            and re.fullmatch(r"clipforge-noble-backend\.[a-zA-Z0-9]{8}", path.parent.name),
+            "restricted_backend_observation_path")
+    return path
+
+
+def verify_live_scope(transport):
+    vm = transport.call("GET", COMPUTE + "instances/clipforge-int-db01-noble")
     require(vm["id"] == client.NOBLE_SCOPE["instance_id"] and vm["status"] == "RUNNING"
             and len(vm["networkInterfaces"]) == 1 and vm["networkInterfaces"][0]["networkIP"] == client.NOBLE_SCOPE["database_host"]
             and not vm["networkInterfaces"][0].get("accessConfigs"), "noble_instance_or_private_network_changed")
     attached = [row for row in vm["disks"] if row["deviceName"] == "clipforge-noble-pg-data"]
     require(len(attached) == 1 and attached[0]["source"].endswith("/disks/clipforge-int-db01-noble-data")
             and attached[0]["autoDelete"] is False and attached[0]["boot"] is False, "noble_data_attachment_changed")
-    disk = transport.call("GET", f"https://compute.googleapis.com/compute/v1/projects/{PROJECT}/zones/us-central1-a/disks/clipforge-int-db01-noble-data")
+    disk = transport.call("GET", COMPUTE + "disks/clipforge-int-db01-noble-data")
     require(disk["id"] == client.NOBLE_SCOPE["data_disk_id"], "noble_data_disk_changed")
 
 
 def verify_permissions(transport, action, job, phase):
     project_permissions = ["run.operations.get"] + (["run.jobs.create"] if action == "create" else [])
-    scopes = [(f"https://cloudresourcemanager.googleapis.com/v1/projects/{PROJECT}:testIamPermissions", project_permissions, "project")]
+    scopes = [(RESOURCE_MANAGER, project_permissions, "project")]
     if action == "create":
-        scopes.append((f"https://iam.googleapis.com/v1/projects/{PROJECT}/serviceAccounts/{client.ACCOUNTS[phase]}:testIamPermissions",
+        scopes.append((IAM + client.ACCOUNTS[phase] + ":testIamPermissions",
                        ["iam.serviceAccounts.actAs"], "job_service_account"))
     else:
         run_permission = "run.jobs.run" if phase == "admin" else "run.jobs.runWithOverrides"
@@ -432,14 +523,16 @@ def verify_permissions(transport, action, job, phase):
         require(not missing, f"permissions_missing_{label}:" + ",".join(missing))
 
 
-def execute(transport, ready, *, notice, wait=time.sleep):
-    decision, spec, body, created, applied = ready
+def execute(transport, ready, proof, binding, *, notice, wait=time.sleep, clock=lambda: datetime.now(timezone.utc)):
+    decision, spec, body, created, _ = ready
     action, phase = decision["action"], decision["phase"]
     job = spec["name"]
     report = {"schema": "clipforge-int-noble-job-result-1", "action": action, "phase": phase, "job": job,
               "operation_id": decision["operation_id"], "controls_commit": decision["source_controls"],
-              "definition_sha256": decision["definition_sha256"], "receipts": decision["receipts"]}
-    verify_live_scope(transport, applied["state_after"])
+              "definition_sha256": decision["definition_sha256"], "receipts": decision["receipts"],
+              "backend_observation": proof, "backend_observation_sha256": digest(canonical(proof))}
+    verify_backend_observation(proof, binding, now=clock())
+    verify_live_scope(transport)
     verify_permissions(transport, action, job, phase)
     actual = transport.call("GET", RUN + job, missing=True)
     if action == "create":
@@ -455,7 +548,10 @@ def execute(transport, ready, *, notice, wait=time.sleep):
             require(created["uid"] == actual["uid"] and created["generation"] == actual["generation"]
                     and created["etag"] == actual["etag"], "noble_job_create_receipt_drift")
         route, payload = RUN + job + ":run", {**body, "etag": actual["etag"]}
-    intent = transport.retain(action, phase, "intent", {**report, "status": "intent_recorded"})
+    verify_backend_observation(proof, binding, now=clock())
+    intent = transport.retain("intent", {**report, "status": "intent_recorded"})
+    notice({**report, "status": "intent_recorded", "intent": intent})
+    verify_backend_observation(proof, binding, now=clock())
     notice({**report, "status": "mutation_pending_reconciliation", "intent": intent})
     response = transport.call("POST", route, payload)
     name = resource_name(response.get("name", ""))
@@ -481,7 +577,7 @@ def execute(transport, ready, *, notice, wait=time.sleep):
         report.update(status="execution_verified", execution=execution, revision_evidence="exact_executed_client_contract", effect=effect)
         if phase == "migrate":
             report["database_revisions"] = MIGRATION_REVISIONS
-    custody = transport.retain(action, phase, "result", report)
+    custody = transport.retain("result", report)
     return {**report, "custody": custody}
 
 
@@ -494,24 +590,39 @@ def hosted(env):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("step", choices=("preflight", "execute"))
+    parser.add_argument("step", choices=("preflight", "observe-backend", "execute"))
     parser.add_argument("--action", choices=("create", "run"), required=True)
     parser.add_argument("--phase", choices=(*client.NOBLE_JOBS, "admin"), required=True)
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--decision-sha256", required=True)
     parser.add_argument("--protected", action="store_true")
+    parser.add_argument("--backend-observation", type=Path)
     args = parser.parse_args()
     try:
         hosted(os.environ)
         ready = decision_bundle(args.bundle, args.decision_sha256, os.environ, args.action, args.phase)
         check_security(args.bundle, ready[0], ready[4], os.environ, args.decision_sha256,
-                       protected=args.protected or args.step == "execute")
+                       protected=args.protected or args.step != "preflight")
         if args.step == "preflight":
             print(json.dumps({"status": "preflight_verified", "job": ready[1]["name"], "activation_authorized": False}))
             return 0
         int_release.hosted_context(os.environ)
-        require(os.environ.get("NOBLE_JOBS_DEPLOY_EMAIL") == DEPLOY, "job_wif_identity_mismatch")
-        output = execute(Transport(os.environ["GCP_ACCESS_TOKEN"]), ready, notice=lambda value: print(json.dumps(value), flush=True))
+        path = backend_path(args.backend_observation, os.environ)
+        binding = backend_binding(os.environ, ready[0], ready[4], args.decision_sha256)
+        if args.step == "observe-backend":
+            require(os.environ.get("NOBLE_JOBS_TERRAFORM_EMAIL") == TERRAFORM and not os.environ.get("NOBLE_JOBS_DEPLOY_EMAIL"),
+                    "job_backend_wif_identity_mismatch")
+            observation = observe_backend(os.environ["GCP_ACCESS_TOKEN"], binding)
+            os.umask(0o077)
+            with path.open("xb") as stream:
+                stream.write(canonical(observation))
+            print(json.dumps({"status": "backend_observation_verified", **observation}))
+            return 0
+        require(os.environ.get("NOBLE_JOBS_DEPLOY_EMAIL") == DEPLOY and not os.environ.get("NOBLE_JOBS_TERRAFORM_EMAIL"),
+                "job_wif_identity_mismatch")
+        proof = client.decode(local(path.parent, path.name).decode("ascii"))
+        output = execute(Transport(os.environ["GCP_ACCESS_TOKEN"], args.phase, args.action), ready, proof, binding,
+                         notice=lambda value: print(json.dumps(value), flush=True))
         print(json.dumps(output))
         return 0
     except (AttributeError, KeyError, TypeError, ValueError, OSError) as error:

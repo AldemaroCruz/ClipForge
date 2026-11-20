@@ -83,26 +83,27 @@ def add_version(key, value, token):
 
 def execute(bundle, env, decision, approval_hash, values, bootstrap):
     token = preflight.deploy_after_wif(env, decision)
-    cloud = receipts.Custody(token)
+    names = receipts.producer_names(env, "secrets", decision["operation_id"])
+    cloud = receipts.Custody(token, names=names.values())
     refs = {}
     versions = {}
     status = {"status": "preflight_complete", "intent": refs, "versions": versions}
     inputs = decision["inputs"]
     evidence = {"bootstrap_receipt_sha256": inputs["bootstrap_receipt_sha256"], "source_controls": env["GITHUB_SHA"],
+                "operation_id": decision["operation_id"], "owner_decision_sha256": approval_hash,
                 "run": env["GITHUB_RUN_ID"], "bootstrap_run": inputs["bootstrap_run"], "bootstrap_artifact": inputs["bootstrap_artifact"],
                 "ca_certificate_sha256": inputs["ca_certificate_sha256"]}
     try:
         raw = transport._local_bytes(bundle / "bootstrap.json", 65536)
         require(transport.sha(raw) == inputs["bootstrap_receipt_sha256"], "demo_a_bootstrap_bytes_changed")
-        status["bootstrap_receipt"] = cloud.create_bytes(receipts.name_for(env, "noble-bootstrap.json"), raw)
+        status["bootstrap_receipt"] = cloud.create_bytes(names["noble-bootstrap.json"], raw)
         for key in TARGETS:
             status.update(phase=key, status="secret_version_intent_pending")
-            name = receipts.name_for(env, f"secret-{key}-intent.json", intent=decision["operation_id"])
-            refs[key] = cloud.create(name, {**evidence, "status": "secret_version_intended",
-                                           "secret": TARGETS[key], "owner_decision_sha256": approval_hash})
+            name = names[f"secret-{key}-intent.json"]
+            refs[key] = cloud.create(name, {**evidence, "status": "secret_version_intended", "secret": TARGETS[key]})
             status["status"] = "secret_version_outcome_requires_reconciliation"
             versions[key] = add_version(key, values[key], token)
-        name = receipts.name_for(env, "secret-versions.json")
+        name = names["secret-versions.json"]
         reference = {"status": "published_and_verified", **evidence, "versions": versions, "intents": refs,
                      "bootstrap_operation": bootstrap["operation_id"], "bootstrap_ref": status["bootstrap_receipt"]}
         status["receipt"] = cloud.create(name, reference)

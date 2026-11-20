@@ -32,7 +32,7 @@ CREDENTIAL_CHECKS = {
     "guest_safety": ("guest_package_scope_and_recovery",),
     "bootstrap": ("controlled_bootstrap_and_stop", "scoped_iam_and_protected_inputs"),
     "secret_versions": ("secret_target_and_version_receipt_protocol",),
-    "oci_publication": ("oci_bytes_before_wif", "registry_digest_and_custody"),
+    "oci_publication": ("oci_bytes_before_wif", "registry_digest_and_custody", "pinned_docker_engine_runner"),
     "plan_generation": ("native_plan_generation_and_lock", "private_plan_custody"),
     "locked_plan_apply": ("native_plan_exact_and_locking",),
     "migration_job": ("pinned_job_identity_and_numeric_secrets",),
@@ -78,6 +78,7 @@ BOOTSTRAP_WORKFLOW = ".github/workflows/int-db01-noble-bootstrap.yml"
 REQUIRED_BOOTSTRAP_SOURCES = {
     BOOTSTRAP_WORKFLOW, "scripts/check_int_demo_a.py", "scripts/int_noble_bootstrap_db.py",
     "scripts/int_bootstrap_containment.py", "scripts/int_guest_inventory.py", "scripts/int_noble_first_observation.py",
+    "scripts/int_demo_a_noble_policy.py", "config/int-demo-a-noble-policy.json",
 }
 REPO = Path(__file__).resolve().parents[1]
 

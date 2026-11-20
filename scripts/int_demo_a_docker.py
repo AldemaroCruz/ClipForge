@@ -14,7 +14,7 @@ from tempfile import TemporaryDirectory
 DOCKER = "/usr/bin/docker"
 SOCKET = "/run/docker.sock"
 BINARIES = (DOCKER, "/usr/bin/dockerd", "/usr/bin/containerd", "/usr/bin/containerd-shim-runc-v2", "/usr/bin/runc")
-SCHEMA = "clipforge-int-demo-a-docker-toolchain-1"
+SCHEMA = "clipforge-int-demo-a-docker-toolchain-2"
 
 
 def require(condition, error):
@@ -59,13 +59,40 @@ def inventory(env=os.environ):
     with TemporaryDirectory(prefix="docker-int-a-identity.") as work:
         cli = endpoint(work)
         reported = json.loads(run(cli + ["version", "--format", "{{json .}}"], work))
+        info_format = ('{"driver":{{json .Driver}},"driver_status":{{json .DriverStatus}},'
+                       '"security":{{json .SecurityOptions}},"default_runtime":{{json .DefaultRuntime}},'
+                       '"cgroup_version":{{json .CgroupVersion}}}')
+        settings = json.loads(run(cli + ["info", "--format", info_format], work))
         pid = run(["/usr/bin/systemctl", "show", "--property=MainPID", "--value", "docker.service"], work)
         require(re.fullmatch(r"[1-9][0-9]*", pid), "docker_running_service_required")
         exe = run(["/usr/bin/sudo", "-n", "/usr/bin/readlink", f"/proc/{pid}/exe"], work)
         require(exe == files["/usr/bin/dockerd"]["path"], "docker_running_executable_changed")
+        kernel = os.uname().release
+        require(re.fullmatch(r"[0-9][A-Za-z0-9._+-]{2,95}", kernel), "docker_kernel_identity")
+        package = "linux-image-" + kernel
+        installed = run(["/usr/bin/dpkg-query", "-W", "-f=${db:Status-Status} ${Version}", package], work).split()
+        require(len(installed) == 2 and installed[0] == "installed" and re.fullmatch(r"[A-Za-z0-9:._+~-]{1,120}", installed[1]),
+                "docker_running_kernel_package_identity")
     versions, components = native_versions(reported)
     return {"schema": SCHEMA, "runner_image": env["ImageVersion"], "image_os": "ubuntu24", "socket": SOCKET,
-            "files": files, "native": versions, "components": components}
+            "files": files, "native": versions, "components": components, "engine_settings": engine_settings(settings),
+            "kernel": {"release": kernel, "package": package, "version": installed[1]}}
+
+
+def engine_settings(value):
+    require(set(value) == {"driver", "driver_status", "security", "default_runtime", "cgroup_version"}
+            and value["default_runtime"] == "runc" and value["cgroup_version"] in {"1", "2"}
+            and isinstance(value["driver"], str) and re.fullmatch(r"[a-z0-9_-]{1,32}", value["driver"])
+            and isinstance(value["security"], list) and 0 < len(value["security"]) <= 20
+            and all(isinstance(item, str) and re.fullmatch(r"[A-Za-z0-9 ,._:=/-]{1,120}", item) for item in value["security"]),
+            "docker_engine_security_settings")
+    status = value["driver_status"] or []
+    require(isinstance(status, list) and all(isinstance(item, list) and len(item) == 2 for item in status), "docker_engine_driver_status")
+    backend = [item[1] for item in status if item[0] == "driver-type"]
+    require(len(backend) <= 1 and all(isinstance(item, str) and re.fullmatch(r"[a-z0-9._-]{1,80}", item) for item in backend),
+            "docker_engine_snapshotter")
+    return {"driver": value["driver"], "snapshotter": backend[0] if backend else None,
+            "security": sorted(value["security"]), "default_runtime": value["default_runtime"], "cgroup_version": value["cgroup_version"]}
 
 
 def native_versions(reported):

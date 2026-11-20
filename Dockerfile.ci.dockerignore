@@ -73,6 +73,7 @@
 !config/int-db01-noble-read-iam.json
 !config/int-db01-noble-bootstrap.json
 !config/int-db01-noble-write-iam.json
+!config/int-demo-a-noble-policy.json
 !config/int-e2e01-decisions.json
 !config/int-foundation-close.json
 !config/int-foundation-contract.json

@@ -27,3 +27,12 @@ class DockerToolchain(unittest.TestCase):
         self.assertEqual(set(components), {"Engine", "containerd", "runc"})
         with self.assertRaisesRegex(ValueError, "docker_native_ambiguous_version"):
             docker.native_versions({"Client": cli, "Server": {**server, "ApiVersion": "1.51"}})
+
+    def test_engine_settings_bind_runtime_and_report_only_the_snapshotter_type(self):
+        info = {"driver": "overlayfs", "driver_status": [["driver-type", "io.containerd.snapshotter.v1"], ["private", "/ignored"]],
+                "security": ["name=seccomp,profile=builtin"], "default_runtime": "runc", "cgroup_version": "2"}
+        settings = docker.engine_settings(info)
+        self.assertEqual(settings["snapshotter"], "io.containerd.snapshotter.v1")
+        self.assertNotIn("/ignored", str(settings))
+        with self.assertRaisesRegex(ValueError, "docker_engine_security_settings"):
+            docker.engine_settings({**info, "default_runtime": "different"})

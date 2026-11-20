@@ -16,6 +16,7 @@ import time
 from urllib.error import HTTPError
 from urllib.request import HTTPSHandler, ProxyHandler, Request, build_opener
 
+from scripts import int_demo_a_docker as docker_identity
 from scripts import int_demo_a_preflight as preflight
 from scripts import int_demo_a_receipts as receipts
 from scripts import int_guest_inventory as transport
@@ -119,10 +120,10 @@ def archive_inventory(path, expected):
             "config": descriptor(manifest["config"]), "layers": [descriptor(layer) for layer in manifest["layers"]]}
 
 
-def copy_args(image_id, archive, authfile, destination, *, network=None, trust=None, user=None):
+def copy_args(image_id, archive, authfile, destination, *, network=None, trust=None, user=None, engine=None):
     require(DIGEST.fullmatch(image_id), "demo_a_local_publisher_config_digest")
     user = user or f"{os.getuid()}:{os.getgid()}"
-    argv = ["docker", "run", "--rm", "--pull=never", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
+    argv = [*(engine or ["docker"]), "run", "--rm", "--pull=never", "--init=false", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
             "--user=" + user, "--tmpfs=/tmp:rw,nosuid,nodev,noexec,size=384m",
             "--mount=type=bind,source=" + str(archive) + ",target=/input/image.oci.tar,readonly",
             "--mount=type=bind,source=" + str(authfile) + ",target=/authorization/auth.json,readonly"]
@@ -243,11 +244,14 @@ def verify_tool(bundle, proof):
 
 def stage(bundle, env, image_id, images):
     work = preflight.runtime_scratch(env)
-    command_env = {"PATH": env["PATH"], "HOME": str(work)}
-    command = ["docker", "load", "--input", str(bundle / "publisher.oci.tar")]
+    config = work / "docker-config"
+    config.mkdir(mode=0o700)
+    engine = docker_identity.endpoint(config)
+    command_env = {"PATH": "/usr/bin:/bin", "HOME": str(work)}
+    command = [*engine, "load", "--input", str(bundle / "publisher.oci.tar")]
     require(subprocess.run(command, env=command_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                            timeout=180, check=False).returncode == 0, "demo_a_load_verified_publisher")
-    result = subprocess.run(["docker", "image", "inspect", "--format={{.Id}}", image_id], env=command_env, capture_output=True, timeout=10, check=False)
+    result = subprocess.run([*engine, "image", "inspect", "--format={{.Id}}", image_id], env=command_env, capture_output=True, timeout=10, check=False)
     require(result.returncode == 0 and result.stdout.decode().strip() == image_id, "demo_a_staged_publisher_changed")
     for target, expected in images.items():
         verified_staging_archive(bundle / (target + ".oci.tar"), work / (target + ".oci.tar"), expected, os.getuid(), os.getgid())
@@ -256,8 +260,12 @@ def stage(bundle, env, image_id, images):
 def execute(bundle, env, decision, approval_hash, tool, images):
     work = preflight.runtime_scratch(env)
     token = preflight.deploy_after_wif(env, decision)
-    cloud = receipts.Custody(token)
-    command_env = {"PATH": env["PATH"], "HOME": str(work)}
+    names = receipts.producer_names(env, "publish", decision["operation_id"])
+    cloud = receipts.Custody(token, names=names.values())
+    config = work / "docker-config"
+    require(config.is_dir() and not config.is_symlink() and not any(config.iterdir()), "demo_a_empty_docker_config")
+    engine = docker_identity.endpoint(config)
+    command_env = {"PATH": "/usr/bin:/bin", "HOME": str(work)}
     report = {"status": "publication_pending", "references": {}, "intent": {}, "operation_id": decision["operation_id"]}
     auth = work / "publisher-auth.json"
     creds = {"auths": {HOST: {"auth": base64.b64encode(("oauth2accesstoken:" + token).encode()).decode()}}}
@@ -274,21 +282,22 @@ def execute(bundle, env, decision, approval_hash, tool, images):
             report.update(phase=target, status="intent_pending")
             run = env["GITHUB_RUN_ID"]
             metadata = {"target": destination, "run": run, "source_controls": env["GITHUB_SHA"], "manifest": image["manifest"],
+                        "operation_id": decision["operation_id"], "owner_decision_sha256": approval_hash,
                         "config": image["config"][0], "archive_sha256": image["archive_sha256"], "layers": [row[0] for row in image["layers"]],
                         "publisher_digest": tool["manifest"]}
             at = time.time()
             started = env.get("INT_DEMO_A_AUTH_STARTED_EPOCH", "")
             require(re.fullmatch(r"[1-9][0-9]{9,11}", started) and 0 <= at - int(started) <= 900 - 300, "demo_a_publisher_credential_margin")
-            intent_name = receipts.name_for(env, "publication-" + target + "-intent.json", intent=decision["operation_id"])
-            report["intent"][target] = cloud.create(intent_name, {**metadata, "status": "copy_intended", "owner_decision_sha256": approval_hash})
+            intent_name = names["publication-" + target + "-intent.json"]
+            report["intent"][target] = cloud.create(intent_name, {**metadata, "status": "copy_intended"})
             report["status"] = "copy_outcome_requires_reconciliation"
-            code = subprocess.run(copy_args(tool["config"], staged, auth, destination), env=command_env,
+            code = subprocess.run(copy_args(tool["config"], staged, auth, destination, engine=engine), env=command_env,
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=360, check=False).returncode
             report["native_exit"] = code
             require(code == 0, "demo_a_copy_failed_review_before_retry")
             verify_registry(destination, image, "Bearer " + token)
             require(digest_file(artifact) == image["archive_sha256"], "demo_a_oci_source_changed")
-            receipt_name = receipts.name_for(env, "publication-" + target + ".json")
+            receipt_name = names["publication-" + target + ".json"]
             report["references"][target] = cloud.create(receipt_name, {**metadata, "status": "published_and_verified", "intent": report["intent"][target]})
         report["status"] = "published_and_verified"
         return report
@@ -317,9 +326,13 @@ def main(argv=None):
     try:
         decision = preflight.local_decision(args.bundle, args.decision_sha256, OPERATION, WORKFLOW, env, protected=args.phase != "local")
         inputs = decision["inputs"]
-        require(set(inputs) == {"publisher", "targets"} and inputs["targets"] == list(TARGETS), "demo_a_two_targets_bound")
+        require(set(inputs) == {"publisher", "targets", "docker_toolchain_sha256"} and inputs["targets"] == list(TARGETS), "demo_a_two_targets_bound")
+        engine_proof = preflight.json_bytes(args.bundle, "docker-toolchain.json", inputs["docker_toolchain_sha256"], limit=65536)
+        require(engine_proof["schema"] == docker_identity.SCHEMA, "demo_a_docker_proof_schema")
         tool = verify_tool(args.bundle, inputs["publisher"])
         images = {target: archive_inventory(args.bundle / (target + ".oci.tar"), approved) for target, approved in TARGETS.items()}
+        if args.phase != "local":
+            docker_identity.verify(engine_proof)
         if args.phase == "stage":
             stage(args.bundle, env, tool["config"], images)
         if args.phase != "execute":
