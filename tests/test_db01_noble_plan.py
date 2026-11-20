@@ -79,7 +79,8 @@ def backend_fixture():
 
 
 def planned_report():
-    prefix = plan.custody.PREFIX + "1" * 40 + "/12345-1/"
+    commit = "1" * 40
+    prefix = plan.custody.PREFIX + commit + "/12345-1/"
     references = {
         kind: {"name": prefix + filename, "generation": str(index), "sha256": str(index) * 64, "size": 64}
         for index, (kind, filename) in enumerate(
@@ -91,8 +92,114 @@ def planned_report():
                   network={"subnet": plan.SUBNET, "nat": "clipforge-int-base-maintenance",
                            "private_ip": plan.ADDRESS, "observed_available": True},
                   actions=plan.action_summary(actions()), plan_exit_code=2,
+                  iam_refresh={
+                      "receipt": {**references["manifest"], "name": plan.stable_iam.proof_name(commit)},
+                      "profile_sha256": plan.digest("synthetic profile"),
+                      "owner_approval_sha256": plan.digest("synthetic approval"),
+                      "policies_checked": 6, "etag_only_addresses": [],
+                  },
                   private_plan={"bucket": plan.contract.BUCKET, **references, "expires_utc": "2026-11-20T18:00:00+00:00"})
     return report
+
+
+class NobleStableIamTests(unittest.TestCase):
+    def test_proof_reference_has_fixed_destination_and_size(self):
+        commit = "a" * 40
+        ref = {"name": plan.stable_iam.proof_name(commit), "generation": "3",
+               "sha256": plan.digest("synthetic reference"), "size": 120}
+        plan.verify_iam_reference(ref, commit)
+        for changed in ({"size": plan.IAM_PROOF_LIMIT + 1}, {"size": True}, {"generation": 3},
+                        {"name": plan.stable_iam.proof_name("b" * 40)}, {"sha256": "not-a-digest"}):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                plan.verify_iam_reference({**ref, **changed}, commit)
+
+    def test_iam_phase_reports_only_safe_type_status_and_stage(self):
+        with self.assertRaises(plan.Blocked) as error:
+            with plan.guarded_phase("test_iam_phase"):
+                raise plan.stable_iam.CloudError(403)
+        self.assertEqual((error.exception.operation, error.exception.status, error.exception.error_type),
+                         ("test_iam_phase", 403, "CloudError"))
+
+    def native_iam_refresh(self):
+        native = actions()
+        address = "google_iap_tunnel_instance_iam_member.protected_bootstrap"
+        row = next(row for row in native["resource_changes"] if row["address"] == address)
+        row["type"] = address.split(".")[0]
+        before = {"etag": "original-state-etag", "role": "roles/iap.tunnelResourceAccessor", "condition": {"example": True}}
+        after = {**before, "etag": "verified-live-etag"}
+        row["change"].update(before=copy.deepcopy(after), after=after, after_unknown={})
+        native["resource_drift"] = [{**row, "change": {"actions": ["update"], "before": before, "after": copy.deepcopy(after)}}]
+        return native, address, {address: (plan.digest(before["etag"]), plan.digest(after["etag"]))}
+
+    def test_only_verified_etag_drift_preserves_exact_42_noops_and_11_creates(self):
+        native, address, etags = self.native_iam_refresh()
+        summary = plan.action_summary(native, etags)
+        self.assertEqual(summary["counts"], {"no-op": 42, "create": 11})
+        self.assertEqual(summary["refresh_drift"], {address: ["update"]})
+        plan.validate_action_scope(summary, 2, [address])
+        with self.assertRaisesRegex(ValueError, "additive scope"):
+            plan.validate_action_scope(summary, 2)
+
+    def test_native_drift_needs_exact_attribution_and_complete_noop_values(self):
+        for change in ("unrelated_attribute", "original_etag", "live_etag", "missing", "duplicate", "unknown", "planned_update", "foreign"):
+            native, address, etags = self.native_iam_refresh()
+            drift = native["resource_drift"][0]
+            managed = next(row for row in native["resource_changes"] if row["address"] == address)
+            if change == "unrelated_attribute":
+                drift["change"]["before"]["condition"] = {"example": 1}
+            elif change == "original_etag":
+                drift["change"]["before"]["etag"] = "unreviewed-old-etag"
+            elif change == "live_etag":
+                managed["change"]["before"]["etag"] = managed["change"]["after"]["etag"] = "unreviewed-live-etag"
+                drift["change"]["after"]["etag"] = "unreviewed-live-etag"
+            elif change == "missing":
+                native["resource_drift"].clear()
+            elif change == "duplicate":
+                native["resource_drift"].append(drift)
+            elif change == "unknown":
+                managed["change"]["after_unknown"] = {"condition": {"example": True}}
+            elif change == "planned_update":
+                managed["change"]["actions"] = ["update"]
+            else:
+                drift["address"] = "google_compute_instance.postgres"
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                plan.action_summary(native, etags)
+
+    def test_policy_proof_rejects_unrelated_delta_and_live_drift(self):
+        native, address, etags = self.native_iam_refresh()
+        del native
+        commit = "a" * 40
+        old = {"version": 3, "bindings": [{"role": "roles/example.reader", "members": ["user:reader@example.test"]}],
+               "etag": "before-etag"}
+        added = {"role": "projects/clipforgebeta2/roles/ExampleIapReader",
+                 "members": ["serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"]}
+        new = {**old, "bindings": [added, *old["bindings"]], "etag": "verified-live-etag"}
+        profile = {"policies": {IAP_INSTANCE: {"baseline_policy_sha256": plan.digest(old),
+                                               "baseline_etag_sha256": plan.digest(old["etag"]),
+                                               "add_bindings": [added], "state_etags": [{"address": address, "sha256": etags[address][0]}]}},
+                   "roles": {}}
+        proof = {"schema": "clipforge-db01-noble-stable-read-receipt-1", "commit": commit,
+                 "profile_sha256": plan.digest(profile), "owner_approval_sha256": plan.digest("synthetic approval"),
+                 "issued_utc": "2026-11-19T18:00:00+00:00", "policies": {IAP_INSTANCE: {"before": old, "after": new}}}
+        raw = plan.custody.canonical(proof)
+        ref = {"name": plan.stable_iam.proof_name(commit), "generation": "223",
+               "sha256": plan.custody.sha256(raw), "size": len(raw)}
+        environ = {"GITHUB_SHA": commit, "DB01_NOBLE_IAM_RECEIPT": json.dumps(ref)}
+        with (
+            patch.object(plan.stable_iam, "load_profile", return_value=(profile, plan.digest(profile))),
+            patch.object(plan.custody, "fetch_verified", return_value=raw) as fetch,
+        ):
+            self.assertEqual(plan.load_iam_evidence(environ)[2], etags)
+            fetch.assert_called_once_with(ref)
+            unrelated = copy.deepcopy(proof)
+            unrelated["policies"][IAP_INSTANCE]["after"]["bindings"][1]["members"].append("user:unreviewed@example.test")
+            fetch.return_value = plan.custody.canonical(unrelated)
+            with self.assertRaises(ValueError):
+                plan.load_iam_evidence(environ)
+        with patch.object(plan.stable_iam, "get_policy", side_effect=[new, {**new, "etag": "raced"}]):
+            plan.verify_live_iam(profile, proof, "synthetic")
+            with self.assertRaises(ValueError):
+                plan.verify_live_iam(profile, proof, "synthetic")
 
 
 class NoblePlanTests(unittest.TestCase):
@@ -308,7 +415,8 @@ class NobleSummaryTests(unittest.TestCase):
             self.assertIn(report["private_plan"][kind]["name"], markdown)
 
     def test_incomplete_plan_cannot_report_planning_success(self):
-        for changed in ("bad_exit", "missing_actions", "wrong_addresses", "drift", "missing_custody", "incomplete_reference"):
+        for changed in ("bad_exit", "missing_actions", "wrong_addresses", "drift", "missing_iam_evidence",
+                        "wrong_iam_commit", "missing_custody", "incomplete_reference"):
             report = planned_report()
             if changed == "bad_exit":
                 report["plan_exit_code"] = 0
@@ -318,6 +426,10 @@ class NobleSummaryTests(unittest.TestCase):
                 report["actions"]["preserved_addresses"][0] = "google_compute_instance.unreviewed"
             elif changed == "drift":
                 report["actions"]["refresh_drift"] = {"google_compute_instance.postgres": ["update"]}
+            elif changed == "missing_iam_evidence":
+                del report["iam_refresh"]
+            elif changed == "wrong_iam_commit":
+                report["iam_refresh"]["receipt"]["name"] = plan.stable_iam.proof_name("a" * 40)
             elif changed == "missing_custody":
                 del report["private_plan"]["manifest"]
             else:

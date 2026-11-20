@@ -2,6 +2,7 @@
 
 import argparse
 from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from ipaddress import ip_address, ip_network
 import json
@@ -17,6 +18,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 from scripts import check_tf_int as contract
 from scripts import db01_noble_diagnostic as native_diagnostic
 from scripts import int_foundation_verify as foundation
+from scripts import int_db01_noble_read_iam as stable_iam
 from scripts import int_release as custody
 from scripts import int_release_state as state_reader
 from scripts import tf_int_plan as driver
@@ -63,6 +65,7 @@ HELPERS = ("scripts/int_vm_hostkey_guest.py", "scripts/int_noble_hostkey.py")
 SCHEMA = "clipforge-db01-noble-private-plan-1"
 SUMMARY_SCHEMA = "clipforge-db01-noble-plan-summary-1"
 BACKEND_FIELDS = {*foundation.STATE_PIN, "managed_addresses", "current_lock_absent"}
+IAM_PROOF_LIMIT = 256 * 1024
 PRIVATE_FILES = {"binary": "int.tfplan", "json": "int.json", "manifest": "manifest.json"}
 SUMMARY_SECTIONS = {
     "checks": "Checks",
@@ -70,6 +73,7 @@ SUMMARY_SECTIONS = {
     "image": "Verified Noble image",
     "backend": "Observed backend evidence",
     "network": "Observed candidate network",
+    "iam_refresh": "Verified stable IAM policy delta and native refresh",
     "plan_exit_code": "Native detailed exit code",
     "actions": "Observed managed actions",
     "private_plan": "Private object receipts",
@@ -80,9 +84,10 @@ REQUIRE = contract.require
 
 
 class Blocked(ValueError):
-    def __init__(self, operation, status=None):
+    def __init__(self, operation, status=None, error_type=None):
         self.operation = operation
         self.status = status
+        self.error_type = error_type
         super().__init__(operation)
 
 
@@ -208,11 +213,116 @@ def snapshot(work):
     return binding
 
 
-def action_summary(plan):
+def digest(value):
+    return custody.sha256(custody.canonical(value))
+
+
+def verify_iam_reference(reference, commit):
+    REQUIRE(isinstance(reference, dict) and reference.keys() == {"name", "generation", "sha256", "size"}
+            and all(isinstance(reference[key], str) for key in ("name", "generation", "sha256"))
+            and reference["name"] == stable_iam.proof_name(commit)
+            and re.fullmatch(r"[1-9][0-9]*", reference["generation"])
+            and re.fullmatch(r"[a-f0-9]{64}", reference["sha256"])
+            and type(reference["size"]) is int and 0 < reference["size"] <= IAM_PROOF_LIMIT,
+            "Invalid stable READ proof reference")
+
+
+@contextmanager
+def guarded_phase(operation):
+    try:
+        yield
+    except Exception as error:
+        if isinstance(error, HTTPError):
+            status = error.code
+        elif isinstance(error, stable_iam.CloudError):
+            status = error.status
+        else:
+            status = None
+        raise Blocked(operation, status, type(error).__name__) from None
+
+
+def load_iam_evidence(environ):
+    profile, profile_sha256 = stable_iam.load_profile()
+    commit = environ["GITHUB_SHA"]
+    reference = foundation.decode(environ["DB01_NOBLE_IAM_RECEIPT"])
+    verify_iam_reference(reference, commit)
+    proof = foundation.decode(custody.fetch_verified(reference))
+    REQUIRE(proof.keys() == {"schema", "commit", "profile_sha256", "owner_approval_sha256", "issued_utc", "policies"}
+            and proof["schema"] == "clipforge-db01-noble-stable-read-receipt-1"
+            and proof["commit"] == commit and proof["profile_sha256"] == profile_sha256
+            and re.fullmatch(r"[a-f0-9]{64}", proof["owner_approval_sha256"])
+            and datetime.fromisoformat(proof["issued_utc"]).utcoffset() == timedelta(0)
+            and proof["policies"].keys() == profile["policies"].keys(), "Unrecognized stable READ policy proof")
+    etags = {}
+    for resource, spec in profile["policies"].items():
+        policy = proof["policies"][resource]
+        REQUIRE(policy.keys() == {"before", "after"} and digest(policy["before"]) == spec["baseline_policy_sha256"]
+                and digest(policy["before"]["etag"]) == spec["baseline_etag_sha256"],
+                "Stable READ proof baseline differs from reviewed policy")
+        stable_iam.check_policy_delta(policy["before"], policy["after"], spec["add_bindings"])
+        for entry in spec["state_etags"]:
+            address, saved_etag_sha256 = entry["address"], entry["sha256"]
+            REQUIRE(address in EXISTING and address not in etags, "Unrecognized managed IAM etag address")
+            etags[address] = saved_etag_sha256, digest(policy["after"]["etag"])
+    receipt = {"receipt": reference, "profile_sha256": profile_sha256,
+               "owner_approval_sha256": proof["owner_approval_sha256"], "policies_checked": len(profile["policies"])}
+    return profile, proof, etags, receipt
+
+
+def verify_live_iam(profile, proof, token):
+    for role, spec in profile["roles"].items():
+        stable_iam.check_role_definition(role, stable_iam.get_role(role, token), spec)
+    for resource, spec in profile["policies"].items():
+        live = stable_iam.get_policy(resource, spec, token)
+        REQUIRE(digest(stable_iam.canonical_policy(live))
+                == digest(stable_iam.canonical_policy(proof["policies"][resource]["after"])),
+                "Live IAM policy differs from the verified stable READ result")
+
+
+def has_unknown(value):
+    if isinstance(value, dict):
+        return any(has_unknown(item) for item in value.values())
+    if isinstance(value, list):
+        return any(has_unknown(item) for item in value)
+    return value is not False and value is not None
+
+
+def verify_iam_refresh(rows, managed, etags):
+    REQUIRE(isinstance(rows, list), "Malformed native refresh evidence")
+    expected_drift = {address for address, (saved, live) in etags.items() if saved != live}
+    observed = set()
+    for address, (_, live) in etags.items():
+        row = managed[address]
+        change = row["change"]
+        before, after = change.get("before"), change.get("after")
+        REQUIRE(row.get("type") == address.split(".")[0] and change.get("actions") == ["no-op"]
+                and isinstance(before, dict) and isinstance(after, dict)
+                and isinstance(after.get("etag"), str) and digest(after["etag"]) == live
+                and digest(before) == digest(after) and not has_unknown(change.get("after_unknown"))
+                and not change.get("replace_paths"),
+                "Native plan does not preserve the verified live IAM resource as a complete no-op")
+    for row in rows:
+        address, change = row["address"], row["change"]
+        REQUIRE(address in expected_drift and address not in observed and row["mode"] == "managed"
+                and row.get("type") == managed[address]["type"] and not row.get("deposed")
+                and not row.get("previous_address") and "importing" not in row and "importing" not in change
+                and change.get("actions") == ["update"] and not change.get("replace_paths")
+                and not has_unknown(change.get("after_unknown")), "Unrecognized native resource drift")
+        before, after = change.get("before"), change.get("after")
+        REQUIRE(isinstance(before, dict) and isinstance(after, dict)
+                and isinstance(before.get("etag"), str) and digest(before["etag"]) == etags[address][0]
+                and digest({**before, "etag": after.get("etag")}) == digest(after)
+                and digest(after) == digest(managed[address]["change"]["after"]),
+                "Native refresh differs from the reviewed IAM etag transition")
+        observed.add(address)
+    REQUIRE(observed == expected_drift, "Native plan omitted a reviewed IAM etag transition")
+
+
+def action_summary(plan, iam_etags=None):
     REQUIRE(plan.get("complete") is True and plan.get("applyable") is True
             and plan.get("errored") is False and not plan.get("deferred_changes")
             and not plan.get("action_invocations"), "Native plan is incomplete, errored or deferred")
-    actions = {}
+    actions, managed = {}, {}
     for row in plan.get("resource_changes", []):
         if row["mode"] == "data":
             continue
@@ -222,7 +332,11 @@ def action_summary(plan):
         REQUIRE(address not in actions and not row.get("previous_address") and not row.get("deposed")
                 and "importing" not in change and "importing" not in row, "Move, import, deposed or duplicate resource")
         actions[address] = change["actions"]
-    drift = {row["address"]: row["change"]["actions"] for row in plan.get("resource_drift", [])}
+        managed[address] = row
+    refresh = plan.get("resource_drift", [])
+    if iam_etags is not None:
+        verify_iam_refresh(refresh, managed, iam_etags)
+    drift = {row["address"]: row["change"]["actions"] for row in refresh}
     deviations = {path: actions.get(path, ["missing"]) for path in sorted(EXISTING | CREATES | actions.keys())
                   if actions.get(path) != (["no-op"] if path in EXISTING else ["create"] if path in CREATES else None)}
     counts = dict(Counter("/".join(value) for value in actions.values()))
@@ -231,13 +345,13 @@ def action_summary(plan):
             "deviations": deviations, "refresh_drift": drift}
 
 
-def validate_action_scope(actions, exit_code):
+def validate_action_scope(actions, exit_code, verified_iam_addresses=()):
     REQUIRE(exit_code == 2 and actions == {
         "counts": {"no-op": len(EXISTING), "create": len(CREATES)},
         "preserved_addresses": sorted(EXISTING),
         "candidate_addresses": sorted(CREATES),
         "deviations": {},
-        "refresh_drift": {},
+        "refresh_drift": {address: ["update"] for address in verified_iam_addresses},
     }, "Native plan differs from the reviewed additive scope")
 
 
@@ -252,6 +366,7 @@ def retain(work, report, sources):
                 "terraform_version": "1.15.8", "provider_version": "8.11.0",
                 "inputs": {"machine_type": "e2-micro", "stage": "foundation", "db01_noble_candidate": report["image"]},
                 "source_sha256": sources, "backend": report["backend"], "actions": report["actions"],
+                "iam_refresh": report["iam_refresh"],
                 "apply_authorized": False}
     report["private_plan"] = {"bucket": contract.BUCKET}
     for kind, path in (("binary", "int.tfplan"), ("json", "private-plan.json")):
@@ -314,17 +429,22 @@ def check(work, report):
 def real_plan(work, report):
     custody.hosted_context(os.environ)
     adc = Path(os.environ["GOOGLE_APPLICATION_CREDENTIALS"])
-    REQUIRE(adc.is_file() and adc.name.startswith("gha-creds-") and adc.suffix == ".json"
+    REQUIRE(os.environ.get("GITHUB_RUN_ATTEMPT") == "1"
+            and adc.is_file() and adc.name.startswith("gha-creds-") and adc.suffix == ".json"
             and os.environ.get("TF_WORKSPACE", "default") == "default", "Protected WIF ADC and default workspace required")
     REQUIRE(set(report["checks"]) == {"fmt", "validate_init", "validate", "noble_native_mock", "noble_iac_security"},
             "Missing checks from this attempt")
     report["image"] = resolve_image()
     report["backend"] = state_identity()
     report["network"] = preflight_network()
+    with guarded_phase("noble_iam_receipt"):
+        profile, proof, etags, iam_receipt = load_iam_evidence(os.environ)
     binary = driver.terraform_binary()
     driver.run([binary, "init", "-input=false", "-lockfile=readonly", "-reconfigure", "-no-color",
                 "-backend-config=backend-int.hcl"], "noble_backend_init", work)
     REQUIRE(state_identity() == report["backend"], "State changed before native plan")
+    with guarded_phase("noble_iam_precheck"):
+        verify_live_iam(profile, proof, os.environ["GCP_ACCESS_TOKEN"])
     image = report["image"]
     var = json.dumps({"image_name": image["name"], "image_id": str(image["id"])}, separators=(",", ":"))
     path = work / "int.tfplan"
@@ -334,9 +454,14 @@ def real_plan(work, report):
                           "-var=db01_noble_candidate=" + var, "-out=" + str(path)], "noble_native_plan", work, accepted=(0, 2))
     REQUIRE(state_identity() == report["backend"], "State changed across native plan")
     _, raw = driver.run([binary, "show", "-json", str(path)], "noble_private_show", work)
-    report["actions"] = action_summary(json.loads(raw))
     report["plan_exit_code"] = code
-    validate_action_scope(report["actions"], code)
+    verified_iam_addresses = sorted(address for address, (saved, live) in etags.items() if saved != live)
+    with guarded_phase("noble_native_scope"):
+        report["actions"] = action_summary(json.loads(raw), etags)
+        validate_action_scope(report["actions"], code, verified_iam_addresses)
+    with guarded_phase("noble_iam_postcheck"):
+        verify_live_iam(profile, proof, os.environ["GCP_ACCESS_TOKEN"])
+    report["iam_refresh"] = {**iam_receipt, "etag_only_addresses": verified_iam_addresses}
     (work / "private-plan.json").write_bytes(raw)
     sources = json.loads((work / "source-sha256.json").read_text(encoding="utf-8"))
     REQUIRE(all(custody.sha256((work / "source" / name).read_bytes()) == sha for name, sha in sources.items()),
@@ -358,7 +483,16 @@ def validate_summary(report):
     REQUIRE(BACKEND_FIELDS == backend.keys() and isinstance(report.get("image"), dict)
             and isinstance(report.get("network"), dict) and report["network"].get("observed_available") is True
             and "diagnostic" not in report and "summary_error" not in report, "Missing Noble planning evidence")
-    validate_action_scope(report.get("actions"), report.get("plan_exit_code"))
+    iam_refresh = report.get("iam_refresh")
+    REQUIRE(isinstance(iam_refresh, dict) and iam_refresh.keys() ==
+            {"receipt", "profile_sha256", "owner_approval_sha256", "policies_checked", "etag_only_addresses"}
+            and iam_refresh["policies_checked"] == 6
+            and isinstance(iam_refresh["etag_only_addresses"], list)
+            and iam_refresh["etag_only_addresses"] == sorted(set(iam_refresh["etag_only_addresses"]))
+            and set(iam_refresh["etag_only_addresses"]) <= EXISTING
+            and all(re.fullmatch(r"[a-f0-9]{64}", iam_refresh[field]) for field in ("profile_sha256", "owner_approval_sha256")),
+            "Missing verified IAM refresh evidence")
+    validate_action_scope(report.get("actions"), report.get("plan_exit_code"), iam_refresh["etag_only_addresses"])
     references = report.get("private_plan")
     REQUIRE(isinstance(references, dict) and references.keys() == {"bucket", "expires_utc", *PRIVATE_FILES}
             and references["bucket"] == contract.BUCKET
@@ -375,6 +509,8 @@ def validate_summary(report):
                             + re.escape(filename), ref["name"])
         REQUIRE(name and (prefix is None or prefix == name[1]), "Private receipts do not bind the same attempt")
         prefix = name[1]
+    commit = prefix[len(custody.PREFIX):].split("/", 1)[0]
+    verify_iam_reference(iam_refresh["receipt"], commit)
 
 
 def summary_markdown(report, sections):
@@ -451,6 +587,8 @@ def main(argv=None):
         report.update(status="blocked", diagnostic=native_diagnostic.operation_receipt(work, error.receipt))
     except Blocked as error:
         report.update(status="blocked", diagnostic={"operation": error.operation, "http_status": error.status})
+        if error.error_type:
+            report["diagnostic"]["error_type"] = error.error_type
     except Exception as error:
         report.update(status="blocked", diagnostic={"operation": command, "error_type": type(error).__name__})
     return save_summary(reports, report)

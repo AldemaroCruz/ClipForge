@@ -1,95 +1,87 @@
-# DB-01-NOBLE-PLAN · propuesta READ para revisión
+# DB-01-NOBLE-PLAN · Perfil operativo de lectura
 
-**Propuesta pendiente.** El run 44601130050 del commit `679f826f65937b6b0af1bf640634f5c96c6f37a3` confirmó cuatro denegaciones durante el refresh. La autorización siguiente debe identificar el SHA de este expediente, las tuplas aprobadas y la ventana exacta. La [matriz consolidada](DB-01-noble-read-matrix.md) conserva las demás lecturas, su dependencia y su vigencia. Una fila pendiente requiere una comprobación como Terraform antes de incorporarla al manifiesto. [Run y artefacto](https://github.com/AldemaroCruz/ClipForge/actions/runs/44601130050/artifacts/14569165724)
+**Decisión única pendiente de ejecución.** Aprobar el delta versionado de IAM para `serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com` y una ejecución posterior del plan Noble con ese delta verificado. El acceso es operativo y estable. Esta propuesta sustituye la ventana del 20 al 24 de noviembre. Conserva WIF, los tokens de corta duración y la aprobación manual de `int`. Cada cuenta existente mantiene su función. Los accesos excepcionales de administración y guest conservan sus condiciones y sus vencimientos. [Matriz consolidada](DB-01-noble-read-matrix.md) · [Manifiesto operativo](../config/int-db01-noble-read-iam.json)
 
-## Decisión propuesta
+## Evidencia y reutilización
 
-El único beneficiario del paquete es `serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com`. El propietario aprueba la selección y la ventana. `admin@ixbalam.studio` materializa y retira los bindings mediante su contexto administrativo existente. El controlador comprueba respuestas con la cuenta Terraform y el canal WIF protegido de `int`. Una lectura administrativa puede verificar definiciones y políticas, mientras que la comprobación efectiva usa la identidad beneficiaria.
+La observación `44608046539`, intento 1, commit `5c7bba01c77fd6b1ddbe1660cb84a9a7f72bce9d`, verificó 36 lecturas y confirmó 11 denegaciones HTTP 403 en ocho recursos. El ZIP corresponde a SHA-256 `6c13aac23fa06096bfa10e1579d3e9048ff8ba3fdfc116f26a0634cd6df41800`. El postcheck del mismo run verificó serial 7, generación `1795030868572779`, 42 direcciones, SHA-256 `aa2d7bf8d15d0fe3fb8461483483be2aa49ccede18c94d67a1f5a5a723ef13ce` y ausencia de lock el 19/11/2026 a las 14:36:33 de Guatemala. [Recibo WIF](https://github.com/AldemaroCruz/ClipForge/actions/runs/44608046539/artifacts/14570974972)
 
-Ventana nueva propuesta, **20/11/2026 08:00 inclusive a 23/11/2026 18:00 exclusivo de Guatemala**. En UTC, `2026-11-20T14:00:00Z <= request.time < 2026-11-24T00:00:00Z`. Abarca dos jornadas hábiles para verificar propagación, revisar los recibos y obtener la aprobación manual de `int`. Durante la ventana, el controlador puede volver a leer los mismos recursos con credenciales WIF nuevas de vida corta para cada observación autorizada. El coordinador confirma que queda tiempo suficiente para ejecutar el job de 30 minutos y revisar el resultado antes de programar el plan. Al completar la etapa o abortarla, el administrador retira los bindings exactos. Si se agota la ventana, la condición deja de conceder los permisos y una ventana nueva requiere otra autorización. La caducidad de la custodia del plan se calcula por separado. [Workflow Noble](../.github/workflows/int-db01-noble-plan.yml) · [Condiciones de tiempo](https://docs.cloud.google.com/iam/docs/conditions-attribute-reference#date-time)
+El 19/11/2026 a las 17:58 de Guatemala, `admin@ixbalam.studio` leyó las seis políticas afectadas y las definiciones completas. La revisión de políticas directas y la búsqueda de políticas del proyecto identificaron, para los ocho roles de lectura reutilizados, únicamente la cuenta Terraform mediante bindings históricos ya vencidos. Todos son roles personalizados en etapa GA de un solo permiso. Sus descripciones históricas se conservan. El vencimiento procede de las condiciones de los bindings anteriores. Añadir un binding operativo con condición propia conserva el alcance histórico y no modifica las definiciones ni los destinatarios anteriores. [Recibos históricos](../config/int-foundation-verification.json) · [Condiciones de IAM](https://docs.cloud.google.com/iam/docs/conditions-overview)
 
-`T` es el siguiente CEL común. `B` añade los dos predicados de bucket a `T`.
+El rol compartido `clipforgeIntBootstrapReader` conserva su binding sin condición a Deploy y sus cuatro permisos `compute.disks.get`, `compute.instances.get`, `compute.projects.get` y `run.operations.get`. El rol histórico `clipforgeIntRecoveryIapPolicy_20261118T044838Z` incluye `iap.tunnelInstances.getIamPolicy` e `iap.tunnelInstances.setIamPolicy`. La lectura administrativa de las 18:01 de Guatemala devolvió HTTP 404 para el ID nuevo `clipforgeIntNobleIapPolicyRead`. El paquete crea esa única definición con `iap.tunnelInstances.getIamPolicy`, cuyo destinatario será Terraform en la instancia numérica fijada. [HCL de bootstrap](../infra/gcp/int-base/runtime.tf) · [Soporte de roles personalizados](https://docs.cloud.google.com/iam/docs/custom-roles-permissions-support)
 
-```cel
-request.time >= timestamp("2026-11-20T14:00:00Z") &&
-request.time < timestamp("2026-11-24T00:00:00Z")
-```
+## Delta IAM propuesto
 
-```cel
-resource.type == "logging.googleapis.com/LogBucket" &&
-resource.name == "projects/clipforgebeta2/locations/us-central1/buckets/clipforge-int-access"
-```
+La columna de rol indica el ID bajo `projects/clipforgebeta2/roles/`. Cada fila enumera todos los permisos de su rol. El delta añade **11 bindings en seis políticas**, con el principal Terraform como único miembro en cada binding nuevo. La escritura se agrupa por política. Los bindings observados y sus condiciones se conservan. Los bindings operativos carecen de condición salvo los dos predicados de recurso de Logging. El manifiesto fija las condiciones completas y la huella de la política base por destino. [Definiciones, bindings y orden](../config/int-db01-noble-read-iam.json)
 
-| ID | Política donde se añade el binding | Permiso único y definición de rol | Condición |
-| --- | --- | --- | --- |
-| `logbucket` | `projects/clipforgebeta2`, limitado al bucket exacto `clipforge-int-access` | `logging.buckets.get` mediante `projects/clipforgebeta2/roles/clipforgeIntReadLogBucket_20261118T180000Z` | B |
-| `ca` | `projects/clipforgebeta2/secrets/clipforge-int-postgres-ca` | `secretmanager.secrets.get` mediante `projects/clipforgebeta2/roles/clipforgeIntReadSecretMetadata_20261118T180000Z` | T |
-| `bootstrap` | `projects/clipforgebeta2/secrets/clipforge-int-bootstrap-admin` | El mismo rol de metadatos de Secret Manager | T |
-| `iap` | `projects/816643438938/iap_tunnel/zones/us-central1-a/instances/1670495097211408131` | `iap.tunnelInstances.getIamPolicy` mediante el nuevo `projects/clipforgebeta2/roles/clipforgeIntNobleIapRead_20261124T000000Z` | T |
-
-Los dos roles existentes se reutilizan sólo si la descripción actual confirma el conjunto exacto de permisos y que las definiciones están activas. Las concesiones históricas vencieron el 18/11 a las 20:15Z y la de gestión IAP fue retirada. El rol IAP histórico incluye `iap.tunnelInstances.setIamPolicy`. La definición IAP propuesta contiene sólo el permiso `getIamPolicy`, que Google admite en roles personalizados. La creación de esa definición es una operación futura del administrador, sujeta a la autorización del paquete. Una colisión de nombre suspende la operación para revisar la definición. El acceso al contenido de logs o secretos, creación de recursos, `actAs`, conexión por IAP, escritura de políticas por Terraform y cambios de WIF quedan fuera de las cuatro tuplas. [Recibos de la fundación](../config/int-foundation-verification.json) · [Niveles de soporte en roles personalizados](https://docs.cloud.google.com/iam/docs/custom-roles-permissions-support) · [Políticas de instancia IAP](https://docs.cloud.google.com/iap/docs/managing-access)
-
-Para cerrar una sola autorización, incorporar a la selección sólo los faltantes que acredite la observación Terraform. Los siguientes roles de una sola lectura del expediente anterior permiten preparar esas filas sin modificar definiciones. Su disponibilidad, permisos vigentes y necesidad se verifican de forma independiente. [Definiciones y ámbitos históricos](../config/int-foundation-verification.json)
-
-| Lectura por comprobar | Recurso | Ámbito mínimo comprobado históricamente y rol reutilizable |
+| Rol | Permisos completos | Política de concesión y límite efectivo |
 | --- | --- | --- |
-| `logging.sinks.get` | `projects/clipforgebeta2/sinks/clipforge-int-access` | Proyecto + T, `clipforgeIntReadLogSink_20261118T180000Z`. IAM documenta atributos de bucket y vista para Logging. El grant de sink histórico abarca metadatos de sinks del proyecto durante T. |
-| `logging.views.get` | `projects/clipforgebeta2/locations/us-central1/buckets/clipforge-int-access/views/pilot-access` | Proyecto + T, tipo `logging.googleapis.com/LogView` y nombre exacto. `clipforgeIntReadLogView_20261118T180000Z`. |
-| `logging.views.getIamPolicy` | La misma vista exacta | Política de la vista + T, `clipforgeIntReadLogViewPolicy_20261118T180000Z`. |
-| `secretmanager.secrets.getIamPolicy` | Las políticas exactas de `clipforge-int-postgres-ca` y `clipforge-int-bootstrap-admin`, por separado | Política del secreto que falle + T, `clipforgeIntReadSecretPolicy_20261118T180000Z`. Las demás lecturas de Secret Manager, incluidos los dos secretos referenciados, se resuelven por la matriz y por evidencia de cada recurso. |
-| `iam.serviceAccounts.getIamPolicy` | `projects/clipforgebeta2/serviceAccounts/clipforge-postgres-int@clipforgebeta2.iam.gserviceaccount.com` | Política de esa cuenta + T, `clipforgeIntReadPostgresPolicy_20261118T180000Z`. |
-| `iam.roles.get` | `projects/clipforgebeta2/roles/clipforgeIntBootstrapReader` | Proyecto + T, `clipforgeIntReadRoleMetadata_20261118T180000Z`. La condición por nombre de custom role carece de soporte documentado. El grant permite leer metadatos de roles del proyecto durante T. |
+| `clipforgeIntReadLogBucket_20261118T180000Z` | `logging.buckets.get` | Proyecto `clipforgebeta2`, con `resource.type == "logging.googleapis.com/LogBucket" && resource.name == "projects/clipforgebeta2/locations/us-central1/buckets/clipforge-int-access"`. |
+| `clipforgeIntReadLogSink_20261118T180000Z` | `logging.sinks.get` | Proyecto `clipforgebeta2`. Abarca los metadatos de sinks del proyecto. El sink del grafo es `clipforge-int-access`. |
+| `clipforgeIntReadLogView_20261118T180000Z` | `logging.views.get` | Proyecto `clipforgebeta2`, con `resource.type == "logging.googleapis.com/LogView" && resource.name == "projects/clipforgebeta2/locations/us-central1/buckets/clipforge-int-access/views/pilot-access"`. |
+| `clipforgeIntReadLogViewPolicy_20261118T180000Z` | `logging.views.getIamPolicy` | Política de `projects/clipforgebeta2/locations/us-central1/buckets/clipforge-int-access/views/pilot-access`. |
+| `clipforgeIntReadSecretMetadata_20261118T180000Z` | `secretmanager.secrets.get` | Políticas directas de `projects/clipforgebeta2/secrets/clipforge-int-bootstrap-admin` y `projects/clipforgebeta2/secrets/clipforge-int-postgres-ca`. |
+| `clipforgeIntReadSecretPolicy_20261118T180000Z` | `secretmanager.secrets.getIamPolicy` | Las mismas dos políticas de Secret Manager, cada una por separado. |
+| `clipforgeIntReadPostgresPolicy_20261118T180000Z` | `iam.serviceAccounts.getIamPolicy` | Política de `projects/clipforgebeta2/serviceAccounts/clipforge-postgres-int@clipforgebeta2.iam.gserviceaccount.com`. |
+| `clipforgeIntReadRoleMetadata_20261118T180000Z` | `iam.roles.get` | Proyecto `clipforgebeta2`. Abarca GET de metadatos de roles personalizados del proyecto. El objeto del grafo es `clipforgeIntBootstrapReader`. |
+| `clipforgeIntNobleIapPolicyRead` | `iap.tunnelInstances.getIamPolicy` | Política de `projects/816643438938/iap_tunnel/zones/us-central1-a/instances/1670495097211408131`. |
 
-Los casos de sink y rol tienen un ámbito efectivo más amplio que un único objeto. Ese ámbito debe figurar literalmente en el manifiesto si se confirma un faltante. Cada rol de la tabla se resuelve en `projects/clipforgebeta2/roles/`. Para una fila de proyecto se usa el comando de proyecto de abajo, y el comando específico de secreto, Logging View o cuenta de servicio para una fila directa. [Atributos de recurso de IAM](https://docs.cloud.google.com/iam/docs/conditions-resource-attributes) · [Binding de vista](https://docs.cloud.google.com/sdk/gcloud/reference/logging/views/add-iam-policy-binding) · [Binding de cuenta de servicio](https://docs.cloud.google.com/sdk/gcloud/reference/iam/service-accounts/add-iam-policy-binding)
+Los métodos `logging.sinks.get` e `iam.roles.get` requieren el ámbito de proyecto para este perfil. IAM Conditions documenta nombres de buckets y vistas de Logging, y no ofrece predicados de nombre equivalentes para un sink o un rol personalizado. Mantener esos dos roles de un solo permiso acota el alcance efectivo. La vista admite política directa para su lectura IAM. El paquete excluye el acceso a entradas de Logging y payloads de Secret Manager, cambios de política por Terraform y permisos de creación o borrado de infraestructura. [Atributos de recurso IAM](https://docs.cloud.google.com/iam/docs/conditions-resource-attributes) · [Política directa de vista](https://docs.cloud.google.com/logging/docs/reference/v2/rest/v2/locations.buckets.views/getIamPolicy) · [Política de instancia IAP](https://docs.cloud.google.com/iap/docs/managing-access#managing_access_via_the_api)
 
-## Materialización y comandos para la autorización posterior
+## Reconciliación de políticas y plan
 
-Usar el patrón de [administrador, recibos y guardas](../scripts/propose_int_foundation_iam.ps1) del paquete anterior con la selección de esta tabla. Sus modos históricos contienen roles y recursos propios de la fundación. Para la propuesta Noble, revisar que el manifiesto exacto contenga proyecto/número, actor, miembro, filas, fechas, huellas de condiciones y división entre rol existente y definición nueva. Preservar el índice de recibos fuera de Git. Cada recibo liga operación, ID, ámbito, rol, condición, UTC, estado HTTP o salida nativa y resultado. Guardar las políticas y credenciales sólo en memoria. Los cuatro archivos de condiciones y el rol propuesto van en una carpeta privada del administrador para esta autorización.
+La lectura administrativa halló que los `etag` de **11 direcciones** gestionadas en **seis políticas** difieren del serial 7 antes del grant. La aprobación identifica las huellas de política previas y los `etag` fijados en el estado. El operador añade el delta exacto, protege cada escritura con el `etag` vigente y relee los destinos. La comprobación conserva la política previa, el delta y el resultado exactos con custodia privada. El uso operativo se limita a esas diferencias y preserva todos los bindings ajenos, condiciones y auditoría. [Manifiesto operativo](../config/int-db01-noble-read-iam.json) · [Semántica de versiones y etag IAM](https://docs.cloud.google.com/iam/docs/policies)
 
-Antes de cualquier escritura, comprobar vigencia, proyecto, autoridad administrativa, ausencia de impersonación y de overrides del CLI, definiciones con `gcloud iam roles describe` y políticas de los cuatro destinos con versión solicitada 3. Usar un `etag` actual para el cambio y verificar que cada tupla aún falta y el cambio deja iguales todos los bindings ajenos y `auditConfigs`. Repetir comprobaciones de identidad, selección y tiempo antes de cada mutación. Coordinar con los otros controladores del mismo estado para que el grant, la planificación y la retirada queden serializados.
+La guarda Noble acepta únicamente la deriva de metadato `etag` de una dirección vinculada a una política aprobada, con coincidencia exacta de huella de origen y resultado y con los demás atributos íntegros. La acción nativa de la dirección sigue siendo `no-op`. Cualquier otra deriva, recurso desconocido, cambio de política ajeno, contenido no comprobado, importación, actualización, eliminación o reemplazo bloquea el plan. Los otros controles de backend, imagen, red, estado y custodia continúan vigentes. [Guarda Noble](../scripts/db01_noble_plan.py) · [Lectura IAM del proveedor 8.11.0](https://raw.githubusercontent.com/hashicorp/terraform-provider-google/v8.11.0/google/tpgiamresource/resource_iam_member.go)
 
-La siguiente receta fija las condiciones que se materializarían como `condition-logbucket.json`, `condition-ca.json`, `condition-bootstrap.json` y `condition-iap.json`. Usar para cada archivo el título `clipforge-int-db01-noble-read-<ID>-20261124T000000Z`, la descripción `DB-01 Noble Terraform READ 2026-11-20T14:00:00Z to 2026-11-24T00:00:00Z` y `expression` igual a `T` o `(T) && B`, donde los símbolos se sustituyen por las expresiones CEL completas. Para IAP, la definición `role-iap.json` es exactamente:
+## Secuencia de ejecución sujeta a aprobación
 
-```json
-{
-  "title": "ClipForge INT Noble IAP policy read",
-  "description": "Read the IAM policy for the existing INT tunnel instance",
-  "stage": "GA",
-  "includedPermissions": ["iap.tunnelInstances.getIamPolicy"]
-}
-```
+1. Fijar el SHA publicado del expediente y la huella del manifiesto. El administrador `admin@ixbalam.studio` verifica proyecto/número, autoridad original del operador, definiciones reutilizadas, ausencia del rol nuevo y vigencia de las seis políticas base. Una divergencia, una definición que ya exista o un destinatario ajeno requiere conciliar la evidencia antes de aplicar.
+2. El administrador aplica el delta exacto con el operador versionado. Se conservan metadatos de entrada, política previa, delta por destino y política resultante en custodia privada. Ante un fallo parcial o un resultado indeterminado se releen únicamente las políticas y la definición afectadas. Las escrituras se detienen mientras exista incertidumbre.
+3. En el workflow protegido, el paso WIF verifica las once lecturas nuevas con la identidad Terraform. El controlador fija la generación, hash y tamaño del comprobante IAM privado, relee las seis políticas y verifica el backend. Cualquier denegación, recurso inesperado, lock o cambio de serial, generación, huella o direcciones conserva el bloqueo. La aprobación manual de `int` protege el workflow y sus lecturas.
+4. Con todas las verificaciones satisfechas, el controlador ejecuta un único plan Noble, sin repetir refresh fuera de su ejecución. El resultado requerido es salida nativa 2, **11 altas y 42 no-op**, con los tres recibos privados de custodia. El resumen conserva evidencia de cada comprobación. [Workflow Noble](../.github/workflows/int-db01-noble-plan.yml)
 
-En PowerShell, después de comprobar el paquete autorizado, `$gcloud` apunta al ejecutable instalado y `$bundle` al directorio de los archivos revisados. Ejecutar cada comando por separado, capturar el código de salida y verificar el recibo antes del siguiente comando.
+El operador exige un archivo JSON regular y privado con los campos siguientes, materializado a partir de la decisión final real del propietario. Esta propuesta todavía carece de ese archivo. El operador conserva la huella del JSON en el recibo privado. La protección de `int` sigue vigente en GitHub.
+
+| Campo | Valor requerido |
+| --- | --- |
+| `schema` | `clipforge-db01-noble-stable-read-approval-1` |
+| `decision` | `apply_exact_stable_read_and_plan_once_with_scoped_rollback` |
+| `reviewed_commit` | SHA completo del commit publicado objeto de la decisión |
+| `package_sha256` | SHA-256 canónico emitido por `describe` para ese paquete |
+| `source_observation` | Objeto exacto del manifiesto para el run WIF `44608046539`, intento 1, con su commit y el SHA-256 del ZIP |
+| `approval_ref` | Referencia real a la decisión del propietario, de 1 a 500 caracteres |
+
+Desde el checkout exacto, ejecutar en PowerShell sólo cuando exista esa decisión. `$reviewedCommit` es el SHA completo publicado y `$approvalFile` es la ruta absoluta al JSON privado. Conservar el archivo de aprobación fuera del repositorio. Usar también dos rutas nuevas fuera del repo para la evidencia privada.
 
 ```powershell
-$admin = 'admin@ixbalam.studio'
-$project = 'clipforgebeta2'
-$member = 'serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com'
-$roles = 'projects/clipforgebeta2/roles'
+$description = python -B -m scripts.int_db01_noble_read_iam describe
+if ($LASTEXITCODE -ne 0) { throw 'Comprobar el manifiesto READ versionado' }
+$packageSha = ($description | ConvertFrom-Json).package_sha256
+$preflightReceipts = Join-Path ([IO.Path]::GetTempPath()) ('noble-read-preflight-' + [Guid]::NewGuid().ToString('N'))
+$applicationReceipts = Join-Path ([IO.Path]::GetTempPath()) ('noble-read-apply-' + [Guid]::NewGuid().ToString('N'))
+$publishedCommit = gh api repos/AldemaroCruz/ClipForge/branches/ci/bootstrap-sec03 --jq '.commit.sha'
+if ($LASTEXITCODE -ne 0 -or $publishedCommit -ne $reviewedCommit) { throw 'El SHA revisado difiere de la rama publicada' }
+$existing = gh run list --repo AldemaroCruz/ClipForge --workflow int-db01-noble-plan.yml --commit $reviewedCommit --event workflow_dispatch --json databaseId,status
+if ($LASTEXITCODE -ne 0 -or @($existing | ConvertFrom-Json).Count -ne 0) { throw 'Comprobar el único dispatch Noble antes de continuar' }
 
-& $gcloud iam roles describe clipforgeIntReadLogBucket_20261118T180000Z --project=$project --account=$admin --format='json(name,stage,deleted,includedPermissions)'
-& $gcloud iam roles describe clipforgeIntReadSecretMetadata_20261118T180000Z --project=$project --account=$admin --format='json(name,stage,deleted,includedPermissions)'
+python -B -m scripts.int_db01_noble_read_iam preflight --reviewed-commit $reviewedCommit --package-sha256 $packageSha --receipt-dir $preflightReceipts
+if ($LASTEXITCODE -ne 0) { throw 'Preflight READ bloqueado' }
 
-# Mutaciones futuras, únicamente con el manifiesto exacto autorizado.
-& $gcloud iam roles create clipforgeIntNobleIapRead_20261124T000000Z --project=$project --account=$admin --file="$bundle/role-iap.json" --quiet --format=none
-& $gcloud projects add-iam-policy-binding $project --project=$project --account=$admin --member=$member --role="$roles/clipforgeIntReadLogBucket_20261118T180000Z" --condition-from-file="$bundle/condition-logbucket.json" --quiet --format=none
-& $gcloud secrets add-iam-policy-binding clipforge-int-postgres-ca --project=$project --account=$admin --member=$member --role="$roles/clipforgeIntReadSecretMetadata_20261118T180000Z" --condition-from-file="$bundle/condition-ca.json" --quiet --format=none
-& $gcloud secrets add-iam-policy-binding clipforge-int-bootstrap-admin --project=$project --account=$admin --member=$member --role="$roles/clipforgeIntReadSecretMetadata_20261118T180000Z" --condition-from-file="$bundle/condition-bootstrap.json" --quiet --format=none
+python -B -m scripts.int_db01_noble_read_iam apply --reviewed-commit $reviewedCommit --package-sha256 $packageSha --receipt-dir $applicationReceipts --approval $approvalFile
+if ($LASTEXITCODE -ne 0) { throw 'Aplicación READ bloqueada. Conservar sus recibos.' }
+$iamReceipt = Get-Content -Raw -LiteralPath (Join-Path $applicationReceipts 'iam-receipt-reference.json')
+
+$existing = gh run list --repo AldemaroCruz/ClipForge --workflow int-db01-noble-plan.yml --commit $reviewedCommit --event workflow_dispatch --json databaseId,status
+if ($LASTEXITCODE -ne 0 -or @($existing | ConvertFrom-Json).Count -ne 0) { throw 'Comprobar el único dispatch Noble antes de continuar' }
+$dispatchInputs = @{ approved_commit = $reviewedCommit; iam_receipt = $iamReceipt.Trim() }
+$dispatchInputs | ConvertTo-Json -Compress | gh workflow run int-db01-noble-plan.yml --repo AldemaroCruz/ClipForge --ref ci/bootstrap-sec03 --json
 ```
 
-La cuarta escritura usa el procedimiento `Invoke-IapBinding` del emisor histórico con la tupla de la fila `iap`. Hacer `POST https://iap.googleapis.com/v1/projects/816643438938/iap_tunnel/zones/us-central1-a/instances/1670495097211408131:getIamPolicy` con cuerpo `{"options":{"requestedPolicyVersion":3}}`. Exigir `etag` y que el rol/condición nuevos estén ausentes. Añadir un solo binding con `role` igual al rol IAP propuesto, `members` igual a una lista de un elemento con el principal Terraform y `condition` igual al contenido de `condition-iap.json`. Enviar `POST` a la misma ruta con sufijo `:setIamPolicy`, cuerpo `{"policy": ...}`, versión 3 y el `etag` leído. Releer y comprobar el cambio exacto y la preservación del binding funcional de Deploy. El administrador ejecuta ese Set con su autoridad existente. [Crear rol](https://docs.cloud.google.com/sdk/gcloud/reference/iam/roles/create) · [Binding proyecto](https://docs.cloud.google.com/sdk/gcloud/reference/projects/add-iam-policy-binding) · [Binding de secreto](https://docs.cloud.google.com/sdk/gcloud/reference/secrets/add-iam-policy-binding) · [API IAP](https://docs.cloud.google.com/iap/docs/reference/rest/v1/TopLevel/setIamPolicy)
+El recibo de `apply` es la referencia JSON con `name`, `generation`, `sha256` y `size` de un objeto inmutable en la custodia de planes existente. El nombre vincula el commit aprobado y la observación de origen. Se usan los permisos de custodia ya concedidos sobre ese bucket. El despacho entrega a GitHub sólo la referencia, mediante la entrada JSON de `gh`. [Manual de GitHub CLI](https://cli.github.com/manual/gh_workflow_run)
 
-La retirada usa `remove-iam-policy-binding` con los mismos argumentos de cada comando de proyecto/secreto. Para IAP, releer versión 3 y `etag`, retirar sólo el miembro del binding de condición/rol exactos y conservar cualquier otro miembro. Retirar la fila sólo si el recibo de grant o una lectura posterior acredita que está presente. Tras conflicto o resultado indeterminado, usar una sola lectura de comprobación de la tupla y detener escrituras hasta aclarar el resultado. La definición IAP queda inerte al retirar su último binding y cualquier eliminación de la definición requiere su propia decisión. No volver a conceder durante la retirada.
+Para revertir, usar la carpeta de la aplicación original. El operador relee las políticas con versión 3 y usa sus `etag` actuales. Elimina únicamente el miembro Terraform en las tuplas exactas incorporadas por este paquete. Preserva los otros miembros, roles y condiciones. La definición IAP nueva queda sin asignación al retirar el binding del paquete. La reversión deja evidencia independiente de lo que efectivamente retiró. [Operador IAM estable](../scripts/int_db01_noble_read_iam.py)
 
-## Secuencia para validar y autorizar el siguiente plan
-
-1. Consolidar el resultado de cada consulta independiente con la cuenta Terraform antes de firmar la selección. Reutilizar las lecturas fijas históricas y el IAP numérico. Conservar método, recurso, estatus, hora de cada operación y la identificación del run. La observación Noble usa WIF vigente y mantiene `int` manual, con entrega del token efímero al único paso de lecturas acotadas. IAP y Secret Manager documentan `cloud-platform` incluso para consultar sus políticas. El alcance de lectura procede de los métodos y endpoints fijados, y el permiso efectivo sigue sujeto a IAM. Un fallo de emisión se conserva como bloqueo de observación. [Lecturas históricas fijas](../scripts/int_iap_diagnostic.py) · [OAuth IAP](https://docs.cloud.google.com/iap/docs/reference/rest/v1/TopLevel/getIamPolicy#authorization-scopes) · [OAuth Secret Manager](https://docs.cloud.google.com/secret-manager/docs/reference/rest/v1/projects.secrets/getIamPolicy#authorization-scopes)
-2. El administrador materializa únicamente la selección autorizada. Tras propagación, la misma identidad Terraform confirma el acceso a todos los endpoints requeridos, incluidos los que no recibieron grant. Una respuesta 403, 404, otro error o falta de recibo mantiene el bloqueo. Validar también generación, SHA, serial, direcciones y lock por sólo lectura con el comprobador de estado Noble. [Verificador de estado](../scripts/db01_noble_plan.py)
-3. **Resolver antes del despacho la compatibilidad con la guarda de deriva.** Los grants de proyecto pueden modificar el `etag` de la policy que el provider 8.11.0 copia a `google_project_iam_audit_config.storage_access` y `google_project_iam_member.bootstrap_reader`. Los grants directos sobre secretos e IAP pueden cambiar los `etag` de sus respectivos miembros gestionados. El retiro anterior de IAP también pudo causar una diferencia que el run bloqueado aún no ha caracterizado. Comparar en memoria los `etag` actuales de las políticas afectadas con los atributos de los recursos exactos del estado fijado y conservar sólo el resultado booleano por dirección. El cierre anterior documentó deriva de este tipo a pesar de acciones `no-op`. El validador Noble exige `refresh_drift == {}`. Si hay divergencia, documentar el alcance y exigir una decisión separada y explícita para reconciliarlo mediante una verificación semántica completa. Esta propuesta mantiene vigente la guarda y el estado de fundación. [Cierre y clasificación históricos](../config/int-foundation-close.json) · [Provider 8.11.0, Read de audit config](https://raw.githubusercontent.com/hashicorp/terraform-provider-google/v8.11.0/google/tpgiamresource/resource_iam_audit_config.go) · [Provider 8.11.0, Read de IAM member](https://raw.githubusercontent.com/hashicorp/terraform-provider-google/v8.11.0/google/tpgiamresource/resource_iam_member.go)
-4. Con lecturas verificadas, postcheck vigente, guarda satisfecha, ventana suficiente y revisión del SHA exacto, despachar una sola vez:
-
-   ```powershell
-   gh workflow run int-db01-noble-plan.yml --repo AldemaroCruz/ClipForge --ref ci/bootstrap-sec03 -f "approved_commit=$reviewedCommit"
-   ```
-
-   GitHub solicita aprobación manual de `int`. El único resultado aprobable para revisión de plan debe registrar salida nativa 2, 42 `no-op`, 11 creaciones, comprobaciones exigidas y los tres recibos de custodia. Un resultado bloqueado conserva el informe, el estado y la incertidumbre. Retirar el acceso READ conforme al paso de cierre sin programar otro intento.
+```powershell
+python -B -m scripts.int_db01_noble_read_iam rollback --reviewed-commit $reviewedCommit --package-sha256 $packageSha --receipt-dir $applicationReceipts --approval $approvalFile
+```

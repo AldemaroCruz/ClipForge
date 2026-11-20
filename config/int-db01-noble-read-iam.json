@@ -1,0 +1,289 @@
+{
+  "schema": "clipforge-db01-noble-stable-read-iam-1",
+  "lifetime": "stable_operational",
+  "administrator": "admin@ixbalam.studio",
+  "principal": "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com",
+  "source_observation": {
+    "run_id": 44608046539,
+    "attempt": 1,
+    "commit": "5c7bba01c77fd6b1ddbe1660cb84a9a7f72bce9d",
+    "artifact_sha256": "6c13aac23fa06096bfa10e1579d3e9048ff8ba3fdfc116f26a0634cd6df41800"
+  },
+  "roles": {
+    "projects/clipforgebeta2/roles/clipforgeIntReadLogBucket_20261118T180000Z": {
+      "mode": "reuse",
+      "definition": {
+        "title": "ClipForge INT read logging_bucket_read",
+        "description": "Owner-authorized diagnostic read only; binding ends 2026-11-18T18:00:00Z",
+        "stage": "GA",
+        "includedPermissions": [
+          "logging.buckets.get"
+        ]
+      }
+    },
+    "projects/clipforgebeta2/roles/clipforgeIntReadLogSink_20261118T180000Z": {
+      "mode": "reuse",
+      "definition": {
+        "title": "ClipForge INT read logging_sink_read",
+        "description": "Owner-authorized diagnostic read only; binding ends 2026-11-18T18:00:00Z",
+        "stage": "GA",
+        "includedPermissions": [
+          "logging.sinks.get"
+        ]
+      }
+    },
+    "projects/clipforgebeta2/roles/clipforgeIntReadLogView_20261118T180000Z": {
+      "mode": "reuse",
+      "definition": {
+        "title": "ClipForge INT read logging_view_read",
+        "description": "Owner-authorized diagnostic read only; binding ends 2026-11-18T18:00:00Z",
+        "stage": "GA",
+        "includedPermissions": [
+          "logging.views.get"
+        ]
+      }
+    },
+    "projects/clipforgebeta2/roles/clipforgeIntReadLogViewPolicy_20261118T180000Z": {
+      "mode": "reuse",
+      "definition": {
+        "title": "ClipForge INT read logging_view_policy_read",
+        "description": "Owner-authorized diagnostic read only; binding ends 2026-11-18T18:00:00Z",
+        "stage": "GA",
+        "includedPermissions": [
+          "logging.views.getIamPolicy"
+        ]
+      }
+    },
+    "projects/clipforgebeta2/roles/clipforgeIntReadPostgresPolicy_20261118T180000Z": {
+      "mode": "reuse",
+      "definition": {
+        "title": "ClipForge INT read postgres_sa_policy_read",
+        "description": "Owner-authorized diagnostic read only; binding ends 2026-11-18T18:00:00Z",
+        "stage": "GA",
+        "includedPermissions": [
+          "iam.serviceAccounts.getIamPolicy"
+        ]
+      }
+    },
+    "projects/clipforgebeta2/roles/clipforgeIntReadRoleMetadata_20261118T180000Z": {
+      "mode": "reuse",
+      "definition": {
+        "title": "ClipForge INT read custom_role_metadata_read",
+        "description": "Owner-authorized diagnostic read only; binding ends 2026-11-18T18:00:00Z",
+        "stage": "GA",
+        "includedPermissions": [
+          "iam.roles.get"
+        ]
+      }
+    },
+    "projects/clipforgebeta2/roles/clipforgeIntReadSecretMetadata_20261118T180000Z": {
+      "mode": "reuse",
+      "definition": {
+        "title": "ClipForge INT read secret_metadata_read",
+        "description": "Owner-authorized diagnostic read only; binding ends 2026-11-18T18:00:00Z",
+        "stage": "GA",
+        "includedPermissions": [
+          "secretmanager.secrets.get"
+        ]
+      }
+    },
+    "projects/clipforgebeta2/roles/clipforgeIntReadSecretPolicy_20261118T180000Z": {
+      "mode": "reuse",
+      "definition": {
+        "title": "ClipForge INT read secret_policy_read",
+        "description": "Owner-authorized diagnostic read only; binding ends 2026-11-18T18:00:00Z",
+        "stage": "GA",
+        "includedPermissions": [
+          "secretmanager.secrets.getIamPolicy"
+        ]
+      }
+    },
+    "projects/clipforgebeta2/roles/clipforgeIntNobleIapPolicyRead": {
+      "mode": "create",
+      "definition": {
+        "title": "ClipForge INT Noble IAP policy reader",
+        "description": "Read the IAM policy of the existing INT PostgreSQL IAP tunnel instance.",
+        "stage": "GA",
+        "includedPermissions": [
+          "iap.tunnelInstances.getIamPolicy"
+        ]
+      }
+    }
+  },
+  "policies": {
+    "projects/clipforgebeta2": {
+      "api": "project",
+      "baseline_policy_sha256": "b9170b2e3da34b2819bfb7c56e989271a9ebdc0102f3f6bfee1bb9ae3472b2bf",
+      "baseline_etag_sha256": "f71d830cf105009627b9cb3a52d3080df6e330e3adbdd71ec468d7b58f86c386",
+      "add_bindings": [
+        {
+          "role": "projects/clipforgebeta2/roles/clipforgeIntReadLogBucket_20261118T180000Z",
+          "members": [
+            "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"
+          ],
+          "condition": {
+            "title": "clipforge_int_terraform_operational_log_bucket",
+            "description": "Stable operational Terraform refresh of the exact INT Logging resource",
+            "expression": "resource.type == \"logging.googleapis.com/LogBucket\" && resource.name == \"projects/clipforgebeta2/locations/us-central1/buckets/clipforge-int-access\""
+          }
+        },
+        {
+          "role": "projects/clipforgebeta2/roles/clipforgeIntReadLogSink_20261118T180000Z",
+          "members": [
+            "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"
+          ]
+        },
+        {
+          "role": "projects/clipforgebeta2/roles/clipforgeIntReadLogView_20261118T180000Z",
+          "members": [
+            "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"
+          ],
+          "condition": {
+            "title": "clipforge_int_terraform_operational_log_view",
+            "description": "Stable operational Terraform refresh of the exact INT Logging resource",
+            "expression": "resource.type == \"logging.googleapis.com/LogView\" && resource.name == \"projects/clipforgebeta2/locations/us-central1/buckets/clipforge-int-access/views/pilot-access\""
+          }
+        },
+        {
+          "role": "projects/clipforgebeta2/roles/clipforgeIntReadRoleMetadata_20261118T180000Z",
+          "members": [
+            "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"
+          ]
+        }
+      ],
+      "state_etags": [
+        {
+          "address": "google_project_iam_audit_config.storage_access",
+          "sha256": "2c65b2b68643bd492900bde47be1ac96dc1846d059b75c49561f7eaf806a267f"
+        },
+        {
+          "address": "google_project_iam_member.bootstrap_reader",
+          "sha256": "2c65b2b68643bd492900bde47be1ac96dc1846d059b75c49561f7eaf806a267f"
+        }
+      ]
+    },
+    "projects/clipforgebeta2/locations/us-central1/buckets/clipforge-int-access/views/pilot-access": {
+      "api": "logging_view",
+      "baseline_policy_sha256": "b41c98faae7b0472812bf39de7d2bab0d19486aeb8ea9ec2b7bbd007a0a77e12",
+      "baseline_etag_sha256": "e2d0f5b2523802dc61f7cb4d5a053144bd8d74779d069cc265d0f30d119d33c4",
+      "add_bindings": [
+        {
+          "role": "projects/clipforgebeta2/roles/clipforgeIntReadLogViewPolicy_20261118T180000Z",
+          "members": [
+            "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"
+          ]
+        }
+      ],
+      "state_etags": [
+        {
+          "address": "google_logging_log_view_iam_member.audit_reader",
+          "sha256": "b9aa186b7a9936ab82e0c235dc439e2d375299bef60b16154870f5559f29acae"
+        }
+      ]
+    },
+    "projects/clipforgebeta2/secrets/clipforge-int-bootstrap-admin": {
+      "api": "secret",
+      "baseline_policy_sha256": "5b6ab61ae6487ebc494e8d204508a29b053b067bf04634d4c55f00ba1a1b0db6",
+      "baseline_etag_sha256": "7f02cf258711a60f541e2f3f8e0153dfec4cc63f07b2c4a53e012933c8240715",
+      "add_bindings": [
+        {
+          "role": "projects/clipforgebeta2/roles/clipforgeIntReadSecretMetadata_20261118T180000Z",
+          "members": [
+            "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"
+          ]
+        },
+        {
+          "role": "projects/clipforgebeta2/roles/clipforgeIntReadSecretPolicy_20261118T180000Z",
+          "members": [
+            "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"
+          ]
+        }
+      ],
+      "state_etags": [
+        {
+          "address": "google_secret_manager_secret_iam_member.runtime[\"bootstrap_admin\"]",
+          "sha256": "e626359627d8a5009dcd0331eb31f78ba5c11f405682475eeb59500bdefa0f90"
+        },
+        {
+          "address": "google_secret_manager_secret_iam_member.version_publisher[\"bootstrap_admin\"]",
+          "sha256": "e626359627d8a5009dcd0331eb31f78ba5c11f405682475eeb59500bdefa0f90"
+        }
+      ]
+    },
+    "projects/clipforgebeta2/secrets/clipforge-int-postgres-ca": {
+      "api": "secret",
+      "baseline_policy_sha256": "4dd9d631b00262b87e303f1de8a1e1dc3e9f514f105d6e723eb5f4d0d1132a56",
+      "baseline_etag_sha256": "d0d604bdaf724e93cf403753b0b2474da065bb3e70fac1ecf9fba40dbb1f0183",
+      "add_bindings": [
+        {
+          "role": "projects/clipforgebeta2/roles/clipforgeIntReadSecretMetadata_20261118T180000Z",
+          "members": [
+            "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"
+          ]
+        },
+        {
+          "role": "projects/clipforgebeta2/roles/clipforgeIntReadSecretPolicy_20261118T180000Z",
+          "members": [
+            "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"
+          ]
+        }
+      ],
+      "state_etags": [
+        {
+          "address": "google_secret_manager_secret_iam_member.runtime[\"api_ca\"]",
+          "sha256": "8e5548cf8a1081d4d3d9918920465e67691270af5514ae35e4d871fc97e09571"
+        },
+        {
+          "address": "google_secret_manager_secret_iam_member.runtime[\"migrate_ca\"]",
+          "sha256": "8e5548cf8a1081d4d3d9918920465e67691270af5514ae35e4d871fc97e09571"
+        },
+        {
+          "address": "google_secret_manager_secret_iam_member.runtime[\"worker_ca\"]",
+          "sha256": "8e5548cf8a1081d4d3d9918920465e67691270af5514ae35e4d871fc97e09571"
+        },
+        {
+          "address": "google_secret_manager_secret_iam_member.version_publisher[\"postgres_ca\"]",
+          "sha256": "8e5548cf8a1081d4d3d9918920465e67691270af5514ae35e4d871fc97e09571"
+        }
+      ]
+    },
+    "projects/clipforgebeta2/serviceAccounts/clipforge-postgres-int@clipforgebeta2.iam.gserviceaccount.com": {
+      "api": "service_account",
+      "baseline_policy_sha256": "8b9b2b5ac45f018c24bce39079b62b00e36bca07e93935e8821582de0a9085e1",
+      "baseline_etag_sha256": "2de3c5f9b511eaabf60420e1b6a957bf84f14b9c6aca089bb50bccb9d3e662fa",
+      "add_bindings": [
+        {
+          "role": "projects/clipforgebeta2/roles/clipforgeIntReadPostgresPolicy_20261118T180000Z",
+          "members": [
+            "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"
+          ]
+        }
+      ],
+      "state_etags": [
+        {
+          "address": "google_service_account_iam_member.protected_bootstrap",
+          "sha256": "a6a9cc0ca739d9dfe7d786a090277a6a114c22af95571e5eddf20c079a10fd47"
+        }
+      ]
+    },
+    "projects/816643438938/iap_tunnel/zones/us-central1-a/instances/1670495097211408131": {
+      "api": "iap",
+      "baseline_policy_sha256": "bbfbff7a60aae9e5a66874b1df098c7ecd28b47351fa9e2789db2ba842278972",
+      "baseline_etag_sha256": "2c0b0d5ae8eed45b504b563479d841e43111f8fd63dd6da64cc5f86107fcac6c",
+      "add_bindings": [
+        {
+          "role": "projects/clipforgebeta2/roles/clipforgeIntNobleIapPolicyRead",
+          "members": [
+            "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"
+          ]
+        }
+      ],
+      "state_etags": [
+        {
+          "address": "google_iap_tunnel_instance_iam_member.protected_bootstrap",
+          "sha256": "30ad2b80bfa0c2a292237366d9c2b8083e52845bc7a08804c00c1931a54b0bca"
+        }
+      ]
+    }
+  }
+}

@@ -7,6 +7,10 @@ on:
         description: Exact reviewed DB-01 Noble plan controls SHA
         type: string
         required: true
+      iam_receipt:
+        description: Immutable stable READ IAM custody reference JSON
+        type: string
+        required: true
 
 permissions: {}
 concurrency:
@@ -31,6 +35,7 @@ jobs:
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
       TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
       DB01_NOBLE_APPROVED_COMMIT: ${{ inputs.approved_commit }}
+      DB01_NOBLE_IAM_RECEIPT: ${{ inputs.iam_receipt }}
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - name: Check out the exact dispatch commit without retained credentials
@@ -47,6 +52,7 @@ jobs:
           umask 077
           test "$GITHUB_SHA" = "$DB01_NOBLE_APPROVED_COMMIT"
           test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$GITHUB_RUN_ATTEMPT" = 1
           git check-ignore --no-index --quiet gha-creds-db01-noble.json
           test -z "$(git ls-files -- ':(glob)**/gha-creds-*.json')"
           printf 'TF_INT_WORK_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/clipforge-tf-int01.XXXXXXXX")" >> "$GITHUB_ENV"
@@ -65,7 +71,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -B -m unittest tests.test_db01_noble_plan
+          python -B -m unittest tests.test_db01_noble_plan tests.test_db01_noble_read
           python -B -m scripts.db01_noble_plan checks
 
       - name: Authenticate the existing Terraform account through protected WIF
@@ -81,7 +87,16 @@ jobs:
           export_environment_variables: true
           cleanup_credentials: true
 
-      - name: Resolve Noble, verify current state and generate one private native plan
+      - name: Verify the eleven stable read operations with the Terraform identity
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DB01_NOBLE_READ_REPORT="$TF_INT_REPORT_DIR/iam-read-preflight.json"
+          python -B -m scripts.db01_noble_read stable-precheck
+
+      - name: Verify the exact IAM delta and state, then generate one private native plan
         env:
           GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
         run: python -B -m scripts.db01_noble_plan plan
@@ -94,6 +109,7 @@ jobs:
           path: |
             ${{ env.TF_INT_REPORT_DIR }}/summary.json
             ${{ env.TF_INT_REPORT_DIR }}/summary.md
+            ${{ env.TF_INT_REPORT_DIR }}/iam-read-preflight.json
           if-no-files-found: warn
           retention-days: 7
           include-hidden-files: false

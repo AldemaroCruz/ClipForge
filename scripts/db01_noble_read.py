@@ -1,6 +1,7 @@
 """Observe the exact Noble refresh reads and serial-7 state without invoking Terraform."""
 
 from concurrent.futures import ThreadPoolExecutor
+import argparse
 from datetime import datetime, timezone
 import json
 import os
@@ -37,10 +38,13 @@ def policy(permission, resource, url):
     return permission, resource, "POST", url + ":getIamPolicy", POLICY_BODY
 
 
-PROBES = (
+STABLE_PROBES = (
     *((permission, resource, method, url, body) for _, method, url, body, permission, resource in historical.READ_TARGETS),
     policy("iap.tunnelInstances.getIamPolicy", historical.ROUTES["numeric"],
            "https://iap.googleapis.com/v1/" + historical.ROUTES["numeric"]),
+)
+PROBES = (
+    *STABLE_PROBES,
     get("resourcemanager.projects.get", PROJECT, "https://cloudresourcemanager.googleapis.com/v1/" + PROJECT),
     get("resourcemanager.projects.get", PROJECT, "https://cloudbilling.googleapis.com/v1/" + PROJECT + "/billingInfo",
         "?fields=projectId,billingEnabled"),
@@ -160,26 +164,36 @@ def state_postcheck():
     return {**state, "observed_utc": timestamp()}
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("operation", nargs="?", choices=("observe", "stable-precheck"), default="observe")
+    operation = parser.parse_args(argv).operation
     noble.custody.hosted_context(os.environ)
     C.validate_variables(os.environ)
     commit = os.environ["GITHUB_SHA"]
     run = os.environ["GITHUB_RUN_ID"]
     attempt = os.environ["GITHUB_RUN_ATTEMPT"]
+    stable = operation == "stable-precheck"
+    workflow = "int-db01-noble-plan.yml" if stable else "int-db01-noble-read.yml"
     C.require(os.environ.get("GITHUB_WORKFLOW_REF") ==
-              "AldemaroCruz/ClipForge/.github/workflows/int-db01-noble-read.yml@refs/heads/ci/bootstrap-sec03"
+              f"AldemaroCruz/ClipForge/.github/workflows/{workflow}@refs/heads/ci/bootstrap-sec03"
               and re.fullmatch(r"[a-f0-9]{40}", commit) and commit == os.environ["DB01_NOBLE_APPROVED_COMMIT"]
               and all(re.fullmatch(r"[1-9][0-9]*", value) for value in (run, attempt)), "Exact protected read dispatch required")
     path = Path(os.environ["DB01_NOBLE_READ_REPORT"])
     token = os.environ["GCP_ACCESS_TOKEN"]
-    state = state_postcheck()
+    targets = STABLE_PROBES if stable else PROBES
+    state = None if stable else state_postcheck()
     with ThreadPoolExecutor(max_workers=4) as workers:
-        results = list(workers.map(lambda target: probe(target, token, f"DB01 Noble READ {run} {attempt}"), PROBES))
-    report = {"schema": "clipforge-db01-noble-read-1", "commit": commit, "run_id": run, "attempt": attempt,
+        results = list(workers.map(lambda target: probe(target, token, f"DB01 Noble READ {run} {attempt}"), targets))
+    report = {"schema": "clipforge-db01-noble-stable-precheck-1" if stable else "clipforge-db01-noble-read-1",
+              "commit": commit, "run_id": run, "attempt": attempt,
               "principal": historical.TF_SA, "authentication": "protected_wif_access_token",
-              "state_postcheck": state, "reads": results, "plan_executed": False, "mutations_executed": False}
+              "reads": results, "plan_executed": False, "mutations_executed": False}
+    if state is not None:
+        report["state_postcheck"] = state
     path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    return int(state["result"] != "verified" or any(row["required_for_refresh"] and row["result"] != "allowed" for row in results))
+    return int((state is not None and state["result"] != "verified")
+               or any(row["required_for_refresh"] and row["result"] != "allowed" for row in results))
 
 
 if __name__ == "__main__":
