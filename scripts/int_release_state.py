@@ -47,17 +47,24 @@ def private_current_state(bucket):
     c.require(not any(o["name"].endswith(".tflock") for o in scoped), "A current Terraform lock blocks phase-two inspection")
     c.require(len(scoped) == 1 and scoped[0]["name"] == driver.STATE_NAME, "Unknown current backend object/workspace")
     obj = scoped[0]
-    params = {"alt": "media", "generation": obj["generation"], "ifGenerationMatch": obj["generation"]}
-    url = "https://storage.googleapis.com/storage/v1/b/" + c.BUCKET + "/o/" + quote(driver.STATE_NAME, safe="") + "?" + urlencode(params)
-    request = Request(url, headers={"Authorization": "Bearer " + os.environ["GCP_ACCESS_TOKEN"]})
-    with build_opener(ProxyHandler({}), driver.NoRedirect()).open(request, timeout=60) as response:
-        raw = response.read(r.LIMIT + 1)
-    c.require(len(raw) <= r.LIMIT and len(raw) == int(obj["size"]), "Private state payload exceeds bound or differs from metadata")
+    raw = read_state_generation(obj["generation"], int(obj["size"]))
     live_ids = {(o["name"], o["generation"]) for o in inventory["live"]}
     summary = {"bucket": c.BUCKET, "prefix": c.PREFIX, "workspace": "default", "live": inventory["live"],
                "historical": [o for o in inventory["versions"] if (o["name"], o["generation"]) not in live_ids],
                "soft_deleted": inventory["soft_deleted"]}
     return raw, obj, summary
+
+
+def read_state_generation(generation, size):
+    c.require(isinstance(generation, str) and re.fullmatch(r"[1-9][0-9]*", generation)
+              and type(size) is int and 0 < size <= r.LIMIT, "Exact state generation and bounded size required")
+    params = {"alt": "media", "generation": generation, "ifGenerationMatch": generation}
+    url = "https://storage.googleapis.com/storage/v1/b/" + c.BUCKET + "/o/" + quote(driver.STATE_NAME, safe="") + "?" + urlencode(params)
+    request = Request(url, headers={"Authorization": "Bearer " + os.environ["GCP_ACCESS_TOKEN"]})
+    with build_opener(ProxyHandler({}), driver.NoRedirect()).open(request, timeout=60) as response:
+        raw = response.read(r.LIMIT + 1)
+    c.require(len(raw) == size, "Private state payload differs from its pinned size")
+    return raw
 
 
 def verify_parent(receipt, parent, module, environ):

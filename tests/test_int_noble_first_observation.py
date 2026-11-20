@@ -16,17 +16,22 @@ from tests import test_int_noble_guest as fixtures
 
 
 CONTROLS = "a" * 40
+PRODUCER = "c302dcc366ed450f91c1693072eb9008e7975e4c"
+PLAN_RUN = "90"
 RUN = "91"
 
 
-def summary_fixture():
+def summary_fixture(*, producer=PRODUCER, image_name="ubuntu-2404-noble-amd64-v20261105", image_id="1892012953239034119"):
     vm, boot, data, project, approval = fixtures.native_gets()
     target = {**observer.CANDIDATE_CONSTANTS,
               **{key: approval[key] for key in (*observer.CANDIDATE_IDS, *observer.CANDIDATE_TIMES, "startup_sha256")},
-              "hostkey_nonce": fixtures.NONCE}
-    boot.update(sourceImage=observer.API + observer.guest.IMAGE_PATH + observer.IMAGE, sourceImageId=observer.IMAGE_ID)
-    summary = {"schema": observer.CREATION_SCHEMA, "status": "created_verified", "producer_commit": observer.PRODUCER,
-               "controls_commit": CONTROLS, "apply_run_id": RUN, "candidate": target, "approval": {"observation": True},
+              "hostkey_nonce": fixtures.NONCE, "image_name": image_name, "image_id": image_id}
+    boot.update(sourceImage=observer.API + observer.guest.IMAGE_PATH + image_name, sourceImageId=image_id)
+    manifest = {"name": f"private-plans/int/{producer}/{PLAN_RUN}-1/manifest.json",
+                "generation": "101", "sha256": "f" * 64, "size": 200}
+    summary = {"schema": observer.CREATION_SCHEMA, "status": "created_verified", "producer_commit": producer,
+               "producer_run": PLAN_RUN, "controls_commit": CONTROLS, "apply_run_id": RUN, "candidate": target,
+               "approval": {"observation": True, "plan_manifest": manifest},
                "native_apply_completed": True, "debian_preserved": True,
                "state": {**observer.STATE_PIN, "generation": "111", "serial": 8, "managed_address_count": 53,
                          "preserved_address_count": 42, "current_lock_absent": True},
@@ -49,7 +54,7 @@ class NobleFirstObservation(unittest.TestCase):
             observer.checked_apply_run(RUN, CONTROLS, "synthetic-test-header")
             req = opener.return_value.open.call_args.args[0]
             self.assertEqual(req.full_url, f"https://api.github.com/repos/AldemaroCruz/ClipForge/actions/runs/{RUN}")
-            for change in ({"head_sha": observer.PRODUCER}, {"run_attempt": 2}, {"conclusion": "failure"}):
+            for change in ({"head_sha": PRODUCER}, {"run_attempt": 2}, {"conclusion": "failure"}):
                 opener.return_value.open.return_value = BytesIO(transport.canonical({**identity, **change}))
                 with self.subTest(change=change), self.assertRaisesRegex(ValueError, "NOBLE_APPLY_RUN_UNVERIFIED"):
                     observer.checked_apply_run(RUN, CONTROLS, "synthetic-test-header")
@@ -70,6 +75,18 @@ class NobleFirstObservation(unittest.TestCase):
         self.assertNotIn(b'"contents"', raw_pin)
         with self.assertRaisesRegex(ValueError, "NOBLE_PIN_APPLY_BINDING"):
             observer.check_pin(raw_pin, host.sha(raw_pin), {**summary, "apply_run_id": "92"}, digest)
+
+    def test_renewed_plan_on_same_commit_binds_new_exact_image_and_producer(self):
+        summary, readings = summary_fixture(producer=CONTROLS, image_name="ubuntu-2404-noble-amd64-v20261118a",
+                                            image_id="1892012953239034118")
+        raw = transport.canonical(summary)
+        digest = host.sha(raw)
+        self.assertEqual(observer.exact_summary(raw, digest, CONTROLS, RUN), summary)
+        pin = observer.make_pin(summary, digest, readings.__getitem__)
+        self.assertEqual(pin["producer_commit"], CONTROLS)
+        readings[observer.BOOT]["sourceImageId"] = "1892012953239034119"
+        with self.assertRaisesRegex(ValueError, "NOBLE_OBSERVER_IMAGE_OR_DATA_SOURCE"):
+            observer.make_pin(summary, digest, readings.__getitem__)
 
     def test_restarted_vm_or_missing_serial_record_blocks(self):
         summary, readings = summary_fixture()
@@ -92,7 +109,11 @@ class NobleFirstObservation(unittest.TestCase):
         variants = (
             {**summary, "status": "partial"},
             {**summary, "approval": {"observation": False}},
-            {**summary, "candidate": {**summary["candidate"], "image_id": "300"}},
+            {**summary, "producer_run": RUN},
+            {**summary, "producer_run": "99"},
+            {**summary, "producer_commit": "ci/bootstrap-sec03"},
+            {**summary, "candidate": {**summary["candidate"], "image_name": "debian-13-fixture"}},
+            {**summary, "candidate": {**summary["candidate"], "image_id": "name-not-id"}},
             {**summary, "receipt": {**summary["receipt"], "name": "private-plans/int/unrelated"}},
             {**summary, "state": {**summary["state"], "managed_address_count": 52}},
         )

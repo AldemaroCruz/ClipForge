@@ -120,6 +120,35 @@ class NobleStableIamTests(unittest.TestCase):
         self.assertEqual((error.exception.operation, error.exception.status, error.exception.error_type),
                          ("test_iam_phase", 403, "CloudError"))
 
+    def test_stable_write_changes_only_the_etags_with_proved_shared_policy(self):
+        project = "projects/clipforgebeta2"
+        project_address = "google_project_iam_member.example"
+        other_address = "google_iap_tunnel_instance_iam_member.example"
+        historical = {project_address: ("saved", "read"), other_address: ("old", "unchanged")}
+        read_profile = {"policies": {
+            project: {"state_etags": [{"address": project_address, "sha256": "saved"}]},
+            IAP_INSTANCE: {"state_etags": [{"address": other_address, "sha256": "old"}]},
+        }}
+        stable_proof = {"policies": {project: {"after": {"etag": "stable"}}}}
+        self.assertEqual(plan.stable_iam_etags(read_profile, historical, stable_proof), {
+            project_address: ("saved", plan.digest("stable")), other_address: ("old", "unchanged"),
+        })
+        self.assertEqual(historical[project_address], ("saved", "read"))
+        with self.assertRaisesRegex(ValueError, "Unproved state IAM etag"):
+            plan.stable_iam_etags(read_profile, {**historical, project_address: ("wrong", "read")}, stable_proof)
+
+    def test_effective_policies_still_match_the_complete_proved_iam_chain(self):
+        project = "projects/clipforgebeta2"
+        read_profile = {"roles": {}, "policies": {project: {"record": 1}, IAP_INSTANCE: {"record": 2}}}
+        read_proof = {"policies": {project: {"after": {}}, IAP_INSTANCE: {"after": {}}}}
+        write_profile = {"policies": {project: {}}}
+        write_proof = {"policies": {project: {"after": {}}}}
+        with (patch.object(plan, "verify_live_iam") as read,
+              patch.object(plan.write_iam, "verify_live_policies") as write):
+            plan.verify_live_stable_iam(write_profile, write_proof, read_profile, read_proof, "fixture")
+        read.assert_called_once_with({"roles": {}, "policies": {IAP_INSTANCE: {"record": 2}}}, read_proof, "fixture")
+        write.assert_called_once_with(write_profile, write_proof, "fixture")
+
     def native_iam_refresh(self):
         native = actions()
         address = "google_iap_tunnel_instance_iam_member.protected_bootstrap"
@@ -203,6 +232,39 @@ class NobleStableIamTests(unittest.TestCase):
 
 
 class NoblePlanTests(unittest.TestCase):
+    def test_verified_successor_binds_fresh_backend_generation_and_serial(self):
+        archived = {"serial": 7, "lineage": plan.foundation.STATE_PIN["lineage"], "resources": ["preserved"]}
+        archived_raw = plan.custody.canonical(archived)
+        current = {**archived, "serial": 8}
+        current_raw = plan.custody.canonical(current)
+        pin = {**plan.foundation.STATE_PIN, "size": len(archived_raw),
+               "sha256": plan.custody.sha256(archived_raw)}
+        new_meta = {"name": pin["name"], "generation": str(int(pin["generation"]) + 1),
+                    "size": str(len(current_raw))}
+        proof = {"serial": 8, "managed_addresses": sorted(plan.EXISTING)}
+        with (patch.object(plan.foundation, "STATE_PIN", pin),
+              patch.object(plan.state_reader, "state_contract", return_value=proof)):
+            reference = plan.preserved_foundation_successor(current_raw, new_meta, archived_raw)
+            self.assertEqual(reference["serial"], 8)
+            self.assertEqual(reference["generation"], new_meta["generation"])
+            self.assertEqual(reference["sha256"], plan.custody.sha256(current_raw))
+            changed = plan.custody.canonical({**current, "resources": ["foreign"]})
+            with self.assertRaisesRegex(ValueError, "changed approved foundation content"):
+                plan.preserved_foundation_successor(changed, new_meta, archived_raw)
+            with self.assertRaises(ValueError):
+                plan.preserved_foundation_successor(current_raw, new_meta, current_raw)
+
+    def test_on_demand_summary_requires_exact_historical_read_receipt_and_stable_reference(self):
+        report = planned_report()
+        write = {**report["private_plan"]["manifest"], "name": plan.write_iam.stable_proof_name("2" * 40)}
+        report["stable_write_receipt"] = write
+        with self.assertRaisesRegex(ValueError, "exact historical READ receipt"):
+            plan.validate_summary(report)
+        report["iam_refresh"]["receipt"] = plan.write_iam.READ_RECEIPT
+        self.assertIn("Verified stable WRITE migration receipt", plan.render_summary(report))
+        with self.assertRaises(ValueError):
+            plan.validate_summary({**report, "stable_write_receipt": {**write, "name": report["private_plan"]["manifest"]["name"]}})
+
     def test_receipt_binds_exact_public_standard_image(self):
         image = candidate_image()
         with patch.object(plan, "compute_get", side_effect=[image, image]) as get:

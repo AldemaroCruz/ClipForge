@@ -1,6 +1,6 @@
 # DB-01 Noble · propuesta de creación y primera observación
 
-**Estado de la decisión.** El paquete READ estable y la planificación Noble concluyeron. Esta preparación conserva sus recibos y deja pendientes los permisos de escritura que hagan falta, el apply y la primera observación. Fundación y GUEST-01 mantienen su cierre. [Plan exitoso](https://github.com/AldemaroCruz/ClipForge/actions/runs/44650537240) · [Resumen permitido y comprobación WIF](https://github.com/AldemaroCruz/ClipForge/actions/runs/44650537240/artifacts/14590397506) · [Paquete READ estable](DB-01-noble-read-package.md)
+El run `44660649764` de `e5f4943ca6a67a257f8d09666abaad54822f1ee1` terminó en `blocked_preflight` con `noble_apply_write_window_unavailable` y `native_apply_attempted: false`. El flujo bajo demanda usa el perfil WRITE estable y verifica el estado real y las políticas antes de cualquier migración. Fundación y GUEST-01 mantienen su cierre. [Run anterior](https://github.com/AldemaroCruz/ClipForge/actions/runs/44660649764) · [Artefacto original del apply](https://github.com/AldemaroCruz/ClipForge/actions/runs/44660649764/artifacts/14604555083)
 
 ## Plan de origen y autoridad
 
@@ -11,8 +11,7 @@
 | Estado previo | Workspace `default`, `terraform/int/tf-int-01/default.tfstate`, generación `1795030868572779`, serial 7, lineage `813c84a2-2ef1-ceb3-177e-3a2c3b815066`, 110.325 bytes y SHA-256 `aa2d7bf8d15d0fe3fb8461483483be2aa49ccede18c94d67a1f5a5a723ef13ce`. El plan acreditó 42 direcciones. |
 | Imagen | `ubuntu-os-cloud/ubuntu-2404-noble-amd64-v20261105`, ID `1892012953239034119`, familia `ubuntu-2404-lts-amd64`, READY, licencia estándar Ubuntu 24.04 LTS, X86_64. |
 | Resultado y plazo | Código nativo de plan 2, once altas, 42 `no-op`. Vencimiento original `2026-11-21T01:05:19.179283+00:00`, 20 de noviembre de 2026 a las 19:05:19 de Guatemala. |
-| Controles y aprobación | Un commit posterior de controles se vincula por SHA completo. El propietario identifica ese SHA, el productor, el plan exacto, las decisiones de seguridad y el delta IAM en una decisión explícita nueva. El manifiesto del plan conserva `apply_authorized: false`. |
-| Ventana WRITE autorizada | 19 de noviembre de 2026, 20:17:40–22:17:40 de Guatemala (`2026-11-20T02:17:40Z` inclusive a `2026-11-20T04:17:40Z` exclusivo). El apply debe iniciar antes de las 21:57:40 de Guatemala (`2026-11-20T03:57:40Z`) para conservar el margen exigido de 20 minutos. Se requiere una nueva revisión si la fase privilegiada queda fuera de la ventana. |
+| Controles y aprobación | El SHA del ejecutor y el del productor se identifican por separado. Una decisión explícita vincula el plan exacto, su artefacto de revisión, las decisiones IaC y el recibo WRITE estable. El manifiesto de planificación conserva `apply_authorized: false`. |
 
 Los objetos se conservan bajo `gs://clipforgebeta2-tfstate-int/private-plans/int/c302dcc366ed450f91c1693072eb9008e7975e4c/`. Las referencias identifican originales de sólo lectura y se verifican por generación, bytes y SHA-256. [Recibo del run](https://github.com/AldemaroCruz/ClipForge/actions/runs/44650537240/artifacts/14590397506)
 
@@ -23,7 +22,7 @@ Los objetos se conservan bajo `gs://clipforgebeta2-tfstate-int/private-plans/int
 | `44650537240-1/manifest.json` | `1795136719671258` | 10.100 | `6ca0f88d6345b2f77e3a28ace8c0cc8051544a23b259054f49ec24bdf2a9d4ff` |
 | `44608046539-1/manifest.json` · recibo READ estable | `1795136476328109` | 43.427 | `e495bd6cca23fa19ecbd2c0ead3876273f4d9f797793d41afbea44475833af48` |
 
-La [matriz WRITE consolidada](DB-01-noble-create-permissions.md) y su [alcance versionado](../config/int-db01-noble-write-iam.json) documentan autoridad existente, propuesta y comprobaciones pendientes. La decisión conserva las definiciones y políticas READ. Cualquier política que reciba permisos temporales deberá reconciliarse por versión, huella y lectura posterior, con el delta exacto como único cambio admitido.
+La matriz WRITE documenta el alcance vigente de los cuatro bindings y la cadena de recibos hasta las políticas efectivas. [Matriz WRITE](DB-01-noble-create-permissions.md) · [Perfil versionado](../config/int-db01-noble-write-iam.json)
 
 ## Once altas y conservación de Debian
 
@@ -62,7 +61,7 @@ El alcance de SCA de este paso abarca metadatos de paquetes y la correlación de
 
 ## Hallazgos IaC para esta decisión
 
-El run informó nueve LOW y dos MEDIUM en la raíz que contiene Noble habilitado. Cuatro LOW corresponden a la candidata. La decisión del propietario debe identificar los cuatro por dirección y objeto. Debe optar por autorizar el diseño de cifrado predeterminado de Google para esa candidata y esa ventana, o exigir un diseño de claves de cliente y un nuevo plan. Las protecciones de borrado, red privada, cuenta dedicada y prohibición de datos reducen otras exposiciones. La custodia independiente, revocación y separación de acceso a claves de cliente seguirían pendientes. [Hallazgos del run](https://github.com/AldemaroCruz/ClipForge/actions/runs/44650537240/artifacts/14590397506) · [Cifrado de discos](https://docs.cloud.google.com/compute/docs/disks/disk-encryption)
+El run informó nueve LOW y dos MEDIUM en la raíz que contiene Noble habilitado. Cuatro LOW corresponden a la candidata. La decisión del propietario debe identificar los cuatro por dirección y objeto. Debe optar por autorizar el diseño de cifrado predeterminado de Google para la candidata del plan elegido o exigir un diseño de claves de cliente y un nuevo plan. Las protecciones de borrado, red privada, cuenta dedicada y prohibición de datos reducen otras exposiciones. La custodia independiente, revocación y separación de acceso a claves de cliente seguirían pendientes. [Hallazgos del run](https://github.com/AldemaroCruz/ClipForge/actions/runs/44650537240/artifacts/14590397506) · [Cifrado de discos](https://docs.cloud.google.com/compute/docs/disks/disk-encryption)
 
 | ID | Severidad | Instancia del hallazgo | Decisión pendiente |
 | --- | --- | --- | --- |
@@ -94,33 +93,16 @@ Coexistencia estimada **USD 6,65**. Si NAT asigna una IPv4 adicional durante sie
 | Resultado | Respuesta prevista |
 | --- | --- |
 | Permiso, presupuesto, huella, estado o plazo discrepante antes del apply | Detener el runner antes de invocar Terraform y conservar el diagnóstico. Diferenciar permiso observado, soporte documentado y permiso efectivo futuro sobre la nueva identidad. Conciliar las políticas previas, el delta WRITE autorizado y las políticas resultantes, preservando el recibo READ original. |
-| Ventana vencida o cambio material | Mantener íntegros referencias, objetos y evidencia. La renovación requiere una nueva decisión de planificación, preflight actual y un plan con nuevas referencias y plazo propio. Publicar los controles por sí solo mantiene el plan existente y su TTL original. |
+| Plan vencido o cambio material | Mantener íntegros referencias, objetos y evidencia. Generar un plan con referencias propias, preflight actual y comparación de alcance, imagen y hallazgos antes de aprobarlo. El recibo WRITE estable se reutiliza previa comprobación de las políticas. |
 | Apply parcial, error nativo, cancelación o recibo ausente | Mantener la intención, salida nativa y lecturas del backend. Preservar el estado y conciliar por GET las direcciones efectivas, candidatos observados, operación pendiente y cualquier lock. Cerrar como parcial o indeterminado hasta conciliarlo. La recuperación automática por reintento, unlock forzado, importación, reversión de infra o borrado queda fuera. |
 | Apply completo | Registrar de forma separada la generación y huella posteriores, 53 direcciones, 42 preservadas e IDs de las once altas. Emitir el recibo de creación con los insumos mínimos para observar Noble. |
 | Arranque o host key fallidos | Capturar sólo evidencia acotada y autenticada de Compute y del arranque. Una publicación truncada, repetida, ausente tras el plazo o ligada a otro arranque impide usar SSH. Una remediación, reinicio o canal alternativo requiere otra decisión. |
 | Fallo de IAP/SSH, de retirada de clave, de disco o de inactividad PostgreSQL | Detener acciones posteriores, conservar la prueba del paso exacto y verificar por lectura los recursos y la entrada propia de OS Login. Terminar procesos propios y retirar sólo la clave pública creada cuando se pueda determinar el resultado. Mantener el TTL de seguridad y registrar resultados indeterminados. |
 | SCA sin cobertura verificable o findings pendientes | Cerrar inventario y SCA en recibos separados. Conservar hallazgos y versiones observadas. Mantener activación y despliegue sujetos a decisiones posteriores. |
 
-## Decisión única a presentar al propietario
+## Decisión del plan y primera observación
 
-La decisión operativa pendiente debe identificar la huella del ZIP de revisión, el SHA completo publicado de los controles indicado en el paquete, el productor `c302dcc366ed450f91c1693072eb9008e7975e4c`, el run `44650537240`, los cuatro objetos de custodia con sus generaciones y huellas, el vencimiento original y el coste de coexistencia. El perfil WRITE exacto tiene SHA-256 canónico `61f1abf24d45b5f1d0dcf432100c5b32a7ef3d188df034a22dd55a361488fe08`. Las referencias de los emisores y los recibos deben ser verificables. [Perfil WRITE](../config/int-db01-noble-write-iam.json) · [Matriz WRITE](DB-01-noble-create-permissions.md)
-
-**Tres definiciones nuevas.** El administrador crearía estos roles de proyecto en etapa `GA`, con los títulos y descripciones exactos del perfil WRITE.
-
-| Rol en `projects/clipforgebeta2/roles/` | Permisos exactos |
-| --- | --- |
-| `clipforgeIntNobleSaCreateAttach` | `iam.serviceAccounts.actAs`, `iam.serviceAccounts.create`, `iam.serviceAccounts.get`, `iam.serviceAccounts.getIamPolicy` |
-| `clipforgeIntNobleSaBindDeploy` | `iam.serviceAccounts.setIamPolicy` |
-| `clipforgeIntNobleIapZoneRead` | `iap.tunnelZones.getIamPolicy` |
-
-**Cuatro bindings temporales.** Todos tienen un único miembro, `serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com`, y rigen desde `2026-11-20T02:17:40Z` inclusive hasta `2026-11-20T04:17:40Z` exclusivo, el 19 de noviembre de 2026 de 20:17:40 a 22:17:40 en Guatemala.
-
-| Rol | Política y alcance efectivo |
-| --- | --- |
-| `clipforgeIntNobleSaCreateAttach` | `projects/clipforgebeta2`. Creación de SA en el proyecto y acceso para consultar, leer políticas y adjuntar SA del proyecto. El alcance efectivo incluye otras SA. |
-| `clipforgeIntNobleSaBindDeploy` | `projects/clipforgebeta2`. Escritura de políticas de SA del proyecto condicionada a `api.getAttribute("iam.googleapis.com/modifiedGrantsByRole", []).hasOnly(["roles/iam.serviceAccountUser"])`. La condición limita el rol modificado. El binario fija la SA Noble y el miembro Deploy. |
-| `clipforgeIntRecoveryIapPolicy_20261118T044838Z` | `projects/816643438938/iap_tunnel/zones/us-central1-a`. Reutiliza la definición vigente de `iap.tunnelInstances.getIamPolicy` y `iap.tunnelInstances.setIamPolicy`. Su alcance efectivo incluye los túneles de instancias de la zona, incluido Debian. El controlador verifica el binding de Deploy para el ID numérico de Noble y preserva la política Debian. |
-| `clipforgeIntNobleIapZoneRead` | `projects/816643438938/iap_tunnel/zones/us-central1-a`. Lectura de la política IAP de esa zona para verificar el delta. |
+La decisión operativa vincula los SHA del productor y de los controles, el run e intento del productor, el ID y la huella del artefacto de revisión, las tres referencias privadas, el vencimiento del plan, el recibo WRITE estable y las decisiones IaC individuales. El coste de coexistencia se revisa para el plan elegido. [Matriz WRITE](DB-01-noble-create-permissions.md)
 
 **Cuatro decisiones IaC individuales.** Cada fila requiere la decisión `reviewed_for_this_noble_creation` y su propia justificación. Los índices 8 a 11 se toman del orden fijado en los hallazgos del productor.
 
@@ -133,38 +115,45 @@ La decisión operativa pendiente debe identificar la huella del ZIP de revisión
 
 **Ejecución y comprobaciones propuestas.** La decisión debe cubrir los siguientes pasos con recibos diferenciados.
 
-1. Aplicar una sola vez el binario original `44650537240-1/int.tfplan`, con aprobación manual de `int` y locking nativo. El binario fija once altas, 42 `no-op` y el startup previsto. Conciliar estado y postchecks antes de continuar.
-2. Retirar exactamente los cuatro bindings temporales con los `etag` vigentes y comprobación de políticas completas. Verificar la conservación de READ, los bindings preexistentes y los tres bindings de Deploy creados por el binario. Las definiciones nuevas quedan sin los bindings temporales.
+1. Aplicar una sola vez el binario aprobado, con aprobación manual de `int` y locking nativo. El binario fija once altas, 42 `no-op` y el startup previsto. Conciliar estado y postchecks antes de continuar.
+2. Verificar las políticas WRITE y READ completas y los tres bindings de Deploy creados por el binario. El delta WRITE estable queda disponible para el flujo protegido.
 3. Observar por primera vez el guest nuevo con Deploy por WIF, IAP al puerto 22 y pin estricto de la clave de host. Retirar la clave pública efímera propia de OS Login y verificar su ausencia. Su TTL es de 900 segundos.
 4. Verificar y conservar el inventario del guest observado, incluidos los paquetes binarios y fuente, el kernel activo, el disco de datos vacío y PostgreSQL inactivo. Ligar el recibo al ID de VM, discos y primer arranque.
 5. Escanear fuera del guest el SBOM de ese inventario con Trivy y una base identificada. Conservar el informe nativo, la cobertura y las huellas del scanner, la base y sus insumos.
 6. Revisar los resultados del scan y su cobertura por componente. Contrastar los avisos de Canonical y PGDG con las versiones observadas, comprobar la aplicabilidad al kernel activo y documentar las brechas pendientes.
 
-La secuencia propuesta empieza con la conciliación de IAM y la aprobación manual de `int` para el [apply Noble](../.github/workflows/int-db01-noble-apply.yml). El [controlador](../scripts/int_noble_apply.py) valida fuentes y custodia con el SHA productor y fija aparte el SHA que ejecuta. Antes de Terraform registra una intención create-only en la ruta antes libre `44650537240-1/foundation-state.json` del prefijo original. La intención vincula el binario y el run de apply, y queda como evidencia si la ejecución se cancela. Una segunda reclamación se bloquea incluso desde otro SHA de controles. Los tres objetos originales del plan y el recibo READ conservan sus nombres y generaciones.
+El controlador valida fuentes y custodia del productor y fija aparte el SHA que ejecuta. Antes de Terraform registra una intención create-only de la creación Noble en la ruta reservada `44650537240-1/foundation-state.json`. La intención vincula el binario elegido y el run de apply. Una segunda reclamación de la creación se bloquea aunque use otro plan o SHA de controles. [Controlador](../scripts/int_noble_apply.py)
 
-### Materialización posterior a la decisión
+### Migración administrativa única
 
-Los siguientes pasos son para la ejecución futura. El único mensaje de revisión del propietario debe identificar el SHA de controles, este plan exacto, el perfil WRITE y sus alcances efectivos, el coste y las cuatro decisiones IaC. De ese mensaje se derivan dos documentos privados con la misma referencia textual `owner_approval_ref`. Los archivos completos y el journal quedan fuera del repositorio.
-
-- El primero se ajusta a `clipforge-db01-noble-write-authorization-1` y a la acción `authorize_exact_write_delta_for_noble_create_observe`. Sus demás campos son `owner_approval_ref`, `producer_commit`, `producer_run`, `controls_commit`, `profile_sha256` y `plan_manifest_sha256`. El operador verifica el estado anterior sin lock y ambas políticas antes de ejecutar el delta. [Operador WRITE](../scripts/int_noble_write_iam.py)
-- El segundo se ajusta a `clipforge-db01-noble-create-observe-decision-1` y a la acción `exact_noble_creation_and_first_observation_authorized`. Incluye `owner_approval_ref`, `issued_utc`, `producer_commit`, `producer_run`, `controls_commit`, `project`, `plan` con las tres referencias completas, `expires_utc` exacto `2026-11-21T01:05:19.179283+00:00`, `write_profile_sha256`, `write_receipt`, `iac_findings_sha256` e `iac_decisions`. El hash de hallazgos fija las once filas originales en orden. Los índices nuevos **8, 9, 10 y 11** requieren filas individuales `finding_index`, `decision=reviewed_for_this_noble_creation` y `rationale` real. [Campos, huellas y guardas](../scripts/int_noble_apply.py)
-
-Desde un checkout limpio del SHA publicado, el administrador usa los directorios privados y archivos obtenidos de esa autorización. `$ownerApply` sólo queda completo cuando existe la referencia del recibo WRITE verificado por el operador. Comprobar el código de salida y el recibo de cada comando antes de avanzar. Si un despacho queda indeterminado, consultar Actions por el SHA y conservar su resultado.
+El administrador usa un checkout limpio del SHA publicado y un journal privado fuera del repositorio. La autorización `clipforge-db01-noble-stable-write-authorization-1` identifica la acción `replace_exact_temporal_noble_write_with_stable`, `owner_approval_ref`, `controls_commit`, `profile_sha256` y la referencia completa `temporary_receipt`. El preflight comprueba lock, estado y políticas. Un fallo parcial se concilia a partir de las intenciones y las políticas completas del mismo journal. La revocación deliberada usa una autorización propia y los `etag` vigentes. [Operador WRITE](../scripts/int_noble_write_iam.py)
 
 ```powershell
 $Profile = (python -B -m scripts.int_noble_write_iam describe | ConvertFrom-Json).profile_sha256
 $Controls = (git rev-parse HEAD).Trim()
 $Common = @('--controls-commit', $Controls, '--profile-sha256', $Profile)
-python -B -m scripts.int_noble_write_iam preflight @Common --receipt-dir $privatePreflight
-python -B -m scripts.int_noble_write_iam grant @Common --receipt-dir $privateJournal --approval $ownerWrite
-python -B -m scripts.int_noble_write_iam publish-decision @Common --receipt-dir $privateJournal --approval $ownerWrite --decision $ownerApply
-$OwnerRef = (Get-Content -Raw -LiteralPath (Join-Path $privateJournal 'owner-decision-reference.json')).Trim()
-@{ approved_control_commit = $Controls; owner_decision = $OwnerRef } |
+python -B -m scripts.int_noble_write_iam preflight @Common --receipt-dir $privateJournal
+python -B -m scripts.int_noble_write_iam migrate @Common --receipt-dir $privateJournal --approval $ownerWrite
+```
+
+`stable-receipt-reference.json` identifica la instalación que se reutiliza al planificar y aplicar. Para revocarla de forma deliberada, usar `revoke` con la acción `revoke_exact_stable_noble_write`, campo `stable_receipt` y journal de revocación independiente. Para revertir una migración parcial, usar `revoke-partial --source-journal` con el journal original, la acción `revoke_exact_partial_noble_write` y los campos `temporary_receipt` y `migration_controls_commit`. Ambas operaciones cotejan el estado vivo antes de tocar políticas. [Contrato de revocación](../scripts/int_noble_write_iam.py)
+
+### Solicitar un plan y aprobar su apply
+
+1. Usar el plan original mientras siga vigente y el backend y sus fuentes coincidan. Para renovar, despachar `int-db01-noble-plan.yml` desde `ci/bootstrap-sec03` con `approved_commit` y `stable_write_receipt`, el JSON del recibo inmutable de cuatro campos.
+2. Revisar el run de planificación exitoso, el artefacto permitido y el resumen de sus acciones. Si es un plan nuevo, comparar imagen, estado, direcciones y hallazgos con el original. Las justificaciones IaC pertenecen al artefacto revisado.
+3. Preparar la decisión privada `clipforge-db01-noble-create-observe-decision-2` con acción `exact_noble_creation_and_first_observation_authorized`. Incluye `owner_approval_ref`, `issued_utc`, `producer_commit`, `producer_run`, `controls_commit`, `project`, `plan` con referencias `binary`, `json` y `manifest`, `expires_utc`, `plan_artifact` con `id` y `sha256`, `write_profile_sha256`, `write_receipt`, `iac_findings_sha256` e `iac_decisions` con una justificación para cada hallazgo aplicable.
+4. Publicar la decisión verificada en custodia privada, despachar el apply con las referencias seleccionadas y revisar esos datos al aprobar `int`. Ante respuesta de despacho indeterminada, consultar los runs de Actions por SHA y workflow.
+
+```powershell
+python -B -m scripts.int_noble_apply publish-decision --controls $Controls --decision $ownerApply --output $ownerRefFile
+$OwnerRef = (Get-Content -Raw -LiteralPath $ownerRefFile).Trim()
+@{ approved_control_commit = $Controls; owner_decision = $OwnerRef;
+   producer_commit = $Producer; producer_run = $PlanRun; plan_manifest = $PlanManifest;
+   plan_artifact_id = $ArtifactId; plan_artifact_sha256 = $ArtifactSha256 } |
     ConvertTo-Json -Compress |
     gh workflow run int-db01-noble-apply.yml --repo AldemaroCruz/ClipForge --ref ci/bootstrap-sec03 --json
 ```
-
-Tras el resultado de Terraform y la conciliación, retirar sólo los cuatro bindings temporales con `python -B -m scripts.int_noble_write_iam withdraw @Common --receipt-dir $privateJournal --approval $ownerWrite`. La retirada requiere las políticas esperadas y sus `etag` actuales. Si difieren, conservar evidencia y detener escrituras.
 
 El resumen exitoso identifica el run y la referencia del objeto privado de creación. El lector autorizado verifica su procedencia y obtiene el pin autenticado del primer arranque. El archivo contiene únicamente la identidad y la clave pública válidas para esa observación. `$ApplySummaryHash` y `$HostPinHash` son las huellas de bytes exactos de los archivos verificados.
 

@@ -54,6 +54,8 @@ class CIContextTests(unittest.TestCase):
                     "config/int-foundation-history/5800b4c-recovery-contract.json",
                     "infra/gcp/int-base/versions.tf", "infra/gcp/int-base/postgres-install.sh",
                     ".github/workflows/ci.yml", ".gitleaks.toml",
+                    ".github/workflows/int-db01-noble-apply.yml", ".github/workflows/int-db01-noble-observe.yml",
+                    ".github/workflows/int-db01-noble-plan.yml",
                     "tests/fixtures/int_foundation_close/d67e581-sast-review.json"}
         self.assertTrue(expected <= ci.SUPPORT_FILES)
         self.prepare()
@@ -61,6 +63,29 @@ class CIContextTests(unittest.TestCase):
         self.assertTrue(ci.SUPPORT_FILES <= names)
         for name in ci.SUPPORT_FILES:
             self.assertEqual((self.destination / name).read_bytes(), (self.source / name).read_bytes())
+
+    def test_noble_workflows_keep_manual_environment_and_exact_plan_binding(self):
+        workflows = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+        plan = (workflows / "int-db01-noble-plan.yml").read_text(encoding="utf-8")
+        apply = (workflows / "int-db01-noble-apply.yml").read_text(encoding="utf-8")
+        observe = (workflows / "int-db01-noble-observe.yml").read_text(encoding="utf-8")
+        for source in (plan, apply, observe):
+            self.assertIn("on:\n  workflow_dispatch:", source)
+            self.assertIn("    environment: int\n", source)
+            self.assertIn("cancel-in-progress: false", source)
+            self.assertIn("github.repository == 'AldemaroCruz/ClipForge'", source)
+            self.assertIn("github.ref == 'refs/heads/ci/bootstrap-sec03'", source)
+            self.assertIn("github.event_name == 'workflow_dispatch'", source)
+        for source in (plan, apply):
+            self.assertIn("group: clipforge-int-terraform-state", source)
+            self.assertIn("service_account: ${{ vars.GCP_TERRAFORM_SA }}", source)
+            self.assertIn("workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}", source)
+        self.assertIn("DB01_NOBLE_STABLE_WRITE_RECEIPT: ${{ inputs.stable_write_receipt }}", plan)
+        self.assertIn("DB01_NOBLE_PLAN_MANIFEST: ${{ inputs.plan_manifest }}", apply)
+        self.assertIn("DB01_NOBLE_OWNER_DECISION: ${{ inputs.owner_decision }}", apply)
+        self.assertIn('[[ "$DB01_NOBLE_PRODUCER_COMMIT" =~ ^[0-9a-f]{40}$ ]]', apply)
+        self.assertIn("ref: ${{ steps.binding.outputs.producer }}", apply)
+        self.assertIn("service_account: ${{ vars.GCP_DEPLOY_SA }}", observe)
 
     def test_missing_public_contract_is_rejected_instead_of_silently_omitted(self):
         (self.source / "config/int-foundation-contract.json").unlink()

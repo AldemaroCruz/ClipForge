@@ -29,6 +29,7 @@ PRIVATE_IP = "10.80.1.3"
 GUEST_EMAIL = "clipforge-db01-noble-int@clipforgebeta2.iam.gserviceaccount.com"
 SCOPE = "https://www.googleapis.com/auth/userinfo.email"
 IMAGE_PATH = "projects/ubuntu-os-cloud/global/images/"
+IMAGE_NAME_PATTERN = r"ubuntu-2404-noble-amd64-v[0-9]{8}[a-z]?"
 BOOT_DISK = host.INSTANCE + "-boot"
 DATA_DISK = host.INSTANCE + "-data"
 SECURITY_METADATA = {"enable-oslogin": "TRUE", "block-project-ssh-keys": "TRUE",
@@ -75,7 +76,7 @@ def control_snapshot(vm, boot, data, project, approved):
     require(isinstance(approved, dict) and set(approved) == fields
             and all(isinstance(approved[key], str) and re.fullmatch(host.NUMBER, approved[key]) for key in ids)
             and len({approved[key] for key in ids}) == len(ids) and not LEGACY_IDS.intersection(approved.values())
-            and re.fullmatch(r"ubuntu-2404-noble-amd64-v[0-9]{8}", approved["image_name"])
+            and re.fullmatch(IMAGE_NAME_PATTERN, approved["image_name"])
             and re.fullmatch(host.HEX, approved["startup_sha256"]), "NOBLE_OBSERVER_APPROVED_TARGET")
     require(vm["name"] == host.INSTANCE and str(vm["id"]) == approved["instance_id"]
             and link_is(vm["selfLink"], INSTANCE_PATH) and vm["status"] == "RUNNING"

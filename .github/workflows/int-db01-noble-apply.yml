@@ -1,10 +1,31 @@
 name: ClipForge INT exact DB-01 Noble creation
+run-name: Noble apply for plan run ${{ inputs.producer_run }} (artifact ${{ inputs.plan_artifact_id }})
 
 on:
   workflow_dispatch:
     inputs:
       approved_control_commit:
         description: Exact execution controls SHA in the separate owner authorization
+        type: string
+        required: true
+      producer_commit:
+        description: Full commit SHA of the reviewed Noble plan producer
+        type: string
+        required: true
+      producer_run:
+        description: GitHub run ID of the reviewed Noble plan
+        type: string
+        required: true
+      plan_manifest:
+        description: Immutable private manifest reference JSON from the reviewed plan
+        type: string
+        required: true
+      plan_artifact_id:
+        description: GitHub artifact ID of the reviewed plan summary
+        type: string
+        required: true
+      plan_artifact_sha256:
+        description: SHA-256 of the reviewed plan summary artifact
         type: string
         required: true
       owner_decision:
@@ -36,41 +57,64 @@ jobs:
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
       TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
       DB01_NOBLE_APPROVED_CONTROL_COMMIT: ${{ inputs.approved_control_commit }}
+      DB01_NOBLE_PRODUCER_COMMIT: ${{ inputs.producer_commit }}
+      DB01_NOBLE_PRODUCER_RUN: ${{ inputs.producer_run }}
+      DB01_NOBLE_PLAN_MANIFEST: ${{ inputs.plan_manifest }}
+      DB01_NOBLE_PLAN_ARTIFACT_ID: ${{ inputs.plan_artifact_id }}
+      DB01_NOBLE_PLAN_ARTIFACT_SHA256: ${{ inputs.plan_artifact_sha256 }}
       DB01_NOBLE_OWNER_DECISION: ${{ inputs.owner_decision }}
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
-      - name: Check out exact creation controls without retained credentials
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 1
-
-      - name: Check out immutable Noble plan sources separately
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: c302dcc366ed450f91c1693072eb9008e7975e4c
-          path: plan-source
-          persist-credentials: false
-          fetch-depth: 1
-
-      - name: Verify exact execution sources and allocate private scratch
+      - name: Allocate private scratch
         id: scratch
         shell: bash
         run: |
           set -euo pipefail
           umask 077
+          printf 'TF_INT_WORK_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/clipforge-tf-int01.XXXXXXXX")" >> "$GITHUB_ENV"
+          printf 'TF_INT_REPORT_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/clipforge-tf-report.XXXXXXXX")" >> "$GITHUB_ENV"
+
+      - name: Check out exact creation controls without retained credentials
+        id: controls
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Bind the approved controls and exact producer SHA
+        id: binding
+        shell: bash
+        run: |
+          set -euo pipefail
           test "$GITHUB_SHA" = "$DB01_NOBLE_APPROVED_CONTROL_COMMIT"
           test "$GITHUB_RUN_ATTEMPT" = 1
           test "$RUNNER_ENVIRONMENT" = github-hosted
-          test "$(git -C plan-source rev-parse HEAD)" = c302dcc366ed450f91c1693072eb9008e7975e4c
+          [[ "$DB01_NOBLE_PRODUCER_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          printf 'producer=%s\n' "$DB01_NOBLE_PRODUCER_COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: Check out immutable Noble plan sources separately
+        id: producer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.binding.outputs.producer }}
+          path: plan-source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify exact execution sources
+        id: checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C plan-source rev-parse HEAD)" = "$DB01_NOBLE_PRODUCER_COMMIT"
           git check-ignore --no-index --quiet gha-creds-db01-noble-apply.json
           test -z "$(git ls-files -- ':(glob)**/gha-creds-*.json')"
           python -B -m scripts.int_noble_apply check
           python -B -m unittest tests.test_int_noble_apply
-          printf 'TF_INT_WORK_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/clipforge-tf-int01.XXXXXXXX")" >> "$GITHUB_ENV"
-          printf 'TF_INT_REPORT_DIR=%s\n' "$(mktemp -d "$RUNNER_TEMP/clipforge-tf-report.XXXXXXXX")" >> "$GITHUB_ENV"
 
       - name: Prepare the exact Terraform release
+        id: terraform
         uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: 1.15.8
@@ -90,10 +134,58 @@ jobs:
           cleanup_credentials: true
 
       - name: Verify authorization, apply saved Noble binary once, and reconcile by read
+        id: apply
         env:
           GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           GH_TOKEN: ${{ github.token }}
         run: python -B -m scripts.int_noble_apply apply
+
+      - name: Record a sanitized diagnosis if the controller could not write its summary
+        if: ${{ always() && steps.scratch.outcome == 'success' }}
+        env:
+          STEP_CONTROLS: ${{ steps.controls.outcome }}
+          STEP_BINDING: ${{ steps.binding.outcome }}
+          STEP_PRODUCER: ${{ steps.producer.outcome }}
+          STEP_CHECKS: ${{ steps.checks.outcome }}
+          STEP_TERRAFORM: ${{ steps.terraform.outcome }}
+          STEP_AUTH: ${{ steps.auth.outcome }}
+          STEP_APPLY: ${{ steps.apply.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          python -B - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          target = Path(os.environ["TF_INT_REPORT_DIR"]) / "summary.json"
+          if target.is_file():
+              raise SystemExit(0)
+          phases = (
+              ("checkout_controls", "STEP_CONTROLS"), ("bind_approved_plan", "STEP_BINDING"),
+              ("checkout_producer", "STEP_PRODUCER"), ("verify_execution_sources", "STEP_CHECKS"),
+              ("setup_terraform", "STEP_TERRAFORM"), ("federate_terraform_wif", "STEP_AUTH"),
+              ("apply_controller", "STEP_APPLY"),
+          )
+          operation, outcome = next(
+              ((name, os.environ[key]) for name, key in phases if os.environ[key] in {"failure", "cancelled"}),
+              ("missing_controller_summary", "unknown"),
+          )
+          blocked = os.environ["STEP_APPLY"] == "skipped"
+          report = {
+              "schema": "clipforge-db01-noble-creation-receipt-1", "operation": operation,
+              "controls_commit": os.environ["GITHUB_SHA"], "apply_run_id": os.environ["GITHUB_RUN_ID"],
+              "status": "blocked_preflight" if blocked else "apply_outcome_unconfirmed",
+              "native_apply_attempted": False if blocked else None,
+              "native_apply_completed": False if blocked else None,
+              "diagnostic": {"operation": operation, "status": outcome},
+              "bootstrap_authorized": False, "application_authorized": False,
+          }
+          target.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+          print(f"::error title=DB-01 Noble::{operation}: {outcome}")
+          raise SystemExit(1)
+          PY
 
       - name: Retain only the sanitized creation or reconciliation summary
         if: ${{ always() && steps.scratch.outcome == 'success' }}

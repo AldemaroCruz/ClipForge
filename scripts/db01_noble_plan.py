@@ -19,6 +19,7 @@ from scripts import check_tf_int as contract
 from scripts import db01_noble_diagnostic as native_diagnostic
 from scripts import int_foundation_verify as foundation
 from scripts import int_db01_noble_read_iam as stable_iam
+from scripts import int_noble_write_iam as write_iam
 from scripts import int_release as custody
 from scripts import int_release_state as state_reader
 from scripts import tf_int_plan as driver
@@ -74,6 +75,7 @@ SUMMARY_SECTIONS = {
     "backend": "Observed backend evidence",
     "network": "Observed candidate network",
     "iam_refresh": "Verified stable IAM policy delta and native refresh",
+    "stable_write_receipt": "Verified stable WRITE migration receipt",
     "plan_exit_code": "Native detailed exit code",
     "actions": "Observed managed actions",
     "private_plan": "Private object receipts",
@@ -189,11 +191,50 @@ def preflight_network():
 
 
 def state_identity():
+    return current_origin()[0]
+
+
+def verify_backend_reference(reference):
+    pin = foundation.STATE_PIN
+    REQUIRE(isinstance(reference, dict) and reference.keys() == BACKEND_FIELDS
+            and reference["name"] == pin["name"] and reference["lineage"] == pin["lineage"]
+            and reference["terraform_version"] == pin["terraform_version"]
+            and type(reference["serial"]) is int and reference["serial"] >= pin["serial"]
+            and isinstance(reference["generation"], str) and re.fullmatch(r"[1-9][0-9]*", reference["generation"])
+            and int(reference["generation"]) >= int(pin["generation"])
+            and type(reference["size"]) is int and 0 < reference["size"] <= custody.LIMIT
+            and stable_iam.valid_digest(reference["sha256"])
+            and reference["managed_addresses"] == sorted(EXISTING) and reference["current_lock_absent"] is True,
+            "Invalid immutable reference to an approved foundation backend")
+
+
+def preserved_foundation_successor(raw, obj, archived_raw):
+    pin = foundation.STATE_PIN
+    archived = foundation.verified(archived_raw, pin)
+    current = foundation.decode(raw)
+    proof = state_reader.state_contract(raw, lineage=pin["lineage"])
+    REQUIRE({**current, "serial": pin["serial"]} == archived,
+            "Current state changed approved foundation content")
+    reference = {**pin, "generation": obj["generation"], "name": obj["name"], "size": len(raw),
+                 "sha256": custody.sha256(raw), "serial": proof["serial"],
+                 "managed_addresses": proof["managed_addresses"], "current_lock_absent": True}
+    REQUIRE(str(obj["size"]) == str(len(raw))
+            and reference["generation"] != pin["generation"], "Unverified successor generation")
+    verify_backend_reference(reference)
+    return reference
+
+
+def current_origin(*, allow_successor=False):
     bucket = driver.metadata("/b/" + contract.BUCKET,
                              {"fields": "name,projectNumber,iamConfiguration,versioning,softDeletePolicy"})
+    foundation.validate_bucket(bucket, {"backend": {"bucket": contract.BUCKET}, "project_number": "816643438938"})
     raw, obj, summary = state_reader.private_current_state(bucket)
-    scoped = [item for item in summary["live"] if item["name"].startswith(contract.PREFIX + "/")]
-    return foundation.validate_current_state(raw, obj, {"items": scoped}, {"state": foundation.STATE_PIN})
+    original = foundation.STATE_PIN
+    if not allow_successor or obj["generation"] == original["generation"]:
+        scoped = [item for item in summary["live"] if item["name"].startswith(contract.PREFIX + "/")]
+        return foundation.validate_current_state(raw, obj, {"items": scoped}, {"state": original}), raw
+    archived_raw = state_reader.read_state_generation(original["generation"], original["size"])
+    return preserved_foundation_successor(raw, obj, archived_raw), raw
 
 
 def snapshot(work):
@@ -277,6 +318,26 @@ def verify_live_iam(profile, proof, token):
         REQUIRE(digest(stable_iam.canonical_policy(live))
                 == digest(stable_iam.canonical_policy(proof["policies"][resource]["after"])),
                 "Live IAM policy differs from the verified stable READ result")
+
+
+def stable_iam_etags(read_profile, historical_etags, stable_write_proof):
+    """Keep the saved etag and use the proved installed etag on shared policies."""
+    etags = dict(historical_etags)
+    for target in read_profile["policies"].keys() & stable_write_proof["policies"].keys():
+        live = digest(stable_write_proof["policies"][target]["after"]["etag"])
+        for row in read_profile["policies"][target]["state_etags"]:
+            address = row["address"]
+            REQUIRE(etags[address][0] == row["sha256"], "Unproved state IAM etag")
+            etags[address] = (row["sha256"], live)
+    return etags
+
+
+def verify_live_stable_iam(write_profile, stable_write_proof, read_profile, read_proof, token):
+    # The WRITE chain has verified the same READ baseline for the shared policy.
+    other_reads = read_profile["policies"].keys() - stable_write_proof["policies"].keys()
+    verify_live_iam({**read_profile, "policies": {target: read_profile["policies"][target] for target in other_reads}},
+                    read_proof, token)
+    write_iam.verify_live_policies(write_profile, stable_write_proof, token)
 
 
 def has_unknown(value):
@@ -367,6 +428,7 @@ def retain(work, report, sources):
                 "inputs": {"machine_type": "e2-micro", "stage": "foundation", "db01_noble_candidate": report["image"]},
                 "source_sha256": sources, "backend": report["backend"], "actions": report["actions"],
                 "iam_refresh": report["iam_refresh"],
+                "stable_write_receipt": report["stable_write_receipt"],
                 "apply_authorized": False}
     report["private_plan"] = {"bucket": contract.BUCKET}
     for kind, path in (("binary", "int.tfplan"), ("json", "private-plan.json")):
@@ -430,21 +492,28 @@ def real_plan(work, report):
     custody.hosted_context(os.environ)
     adc = Path(os.environ["GOOGLE_APPLICATION_CREDENTIALS"])
     REQUIRE(os.environ.get("GITHUB_RUN_ATTEMPT") == "1"
+            and os.environ.get("GITHUB_WORKFLOW_REF") ==
+            "AldemaroCruz/ClipForge/.github/workflows/int-db01-noble-plan.yml@refs/heads/ci/bootstrap-sec03"
             and adc.is_file() and adc.name.startswith("gha-creds-") and adc.suffix == ".json"
             and os.environ.get("TF_WORKSPACE", "default") == "default", "Protected WIF ADC and default workspace required")
     REQUIRE(set(report["checks"]) == {"fmt", "validate_init", "validate", "noble_native_mock", "noble_iac_security"},
             "Missing checks from this attempt")
     report["image"] = resolve_image()
-    report["backend"] = state_identity()
+    report["backend"] = current_origin(allow_successor=True)[0]
     report["network"] = preflight_network()
     with guarded_phase("noble_iam_receipt"):
-        profile, proof, etags, iam_receipt = load_iam_evidence(os.environ)
+        write_reference = foundation.decode(os.environ["DB01_NOBLE_STABLE_WRITE_RECEIPT"])
+        write_profile, write_proof, read_profile, read_proof, historical_etags, iam_receipt = (
+            write_iam.load_stable_evidence(write_reference)
+        )
+        etags = stable_iam_etags(read_profile, historical_etags, write_proof)
+        report["stable_write_receipt"] = write_reference
     binary = driver.terraform_binary()
     driver.run([binary, "init", "-input=false", "-lockfile=readonly", "-reconfigure", "-no-color",
                 "-backend-config=backend-int.hcl"], "noble_backend_init", work)
-    REQUIRE(state_identity() == report["backend"], "State changed before native plan")
+    REQUIRE(current_origin(allow_successor=True)[0] == report["backend"], "State changed before native plan")
     with guarded_phase("noble_iam_precheck"):
-        verify_live_iam(profile, proof, os.environ["GCP_ACCESS_TOKEN"])
+        verify_live_stable_iam(write_profile, write_proof, read_profile, read_proof, os.environ["GCP_ACCESS_TOKEN"])
     image = report["image"]
     var = json.dumps({"image_name": image["name"], "image_id": str(image["id"])}, separators=(",", ":"))
     path = work / "int.tfplan"
@@ -452,7 +521,7 @@ def real_plan(work, report):
                           "-detailed-exitcode", "-refresh=true", "-var=stage=foundation", "-var=machine_type=e2-micro",
                           "-var=runtime_image=" + RUNTIME_PLACEHOLDER, "-var=secret_versions=null",
                           "-var=db01_noble_candidate=" + var, "-out=" + str(path)], "noble_native_plan", work, accepted=(0, 2))
-    REQUIRE(state_identity() == report["backend"], "State changed across native plan")
+    REQUIRE(current_origin(allow_successor=True)[0] == report["backend"], "State changed across native plan")
     _, raw = driver.run([binary, "show", "-json", str(path)], "noble_private_show", work)
     report["plan_exit_code"] = code
     verified_iam_addresses = sorted(address for address, (saved, live) in etags.items() if saved != live)
@@ -460,7 +529,7 @@ def real_plan(work, report):
         report["actions"] = action_summary(json.loads(raw), etags)
         validate_action_scope(report["actions"], code, verified_iam_addresses)
     with guarded_phase("noble_iam_postcheck"):
-        verify_live_iam(profile, proof, os.environ["GCP_ACCESS_TOKEN"])
+        verify_live_stable_iam(write_profile, write_proof, read_profile, read_proof, os.environ["GCP_ACCESS_TOKEN"])
     report["iam_refresh"] = {**iam_receipt, "etag_only_addresses": verified_iam_addresses}
     (work / "private-plan.json").write_bytes(raw)
     sources = json.loads((work / "source-sha256.json").read_text(encoding="utf-8"))
@@ -483,6 +552,7 @@ def validate_summary(report):
     REQUIRE(BACKEND_FIELDS == backend.keys() and isinstance(report.get("image"), dict)
             and isinstance(report.get("network"), dict) and report["network"].get("observed_available") is True
             and "diagnostic" not in report and "summary_error" not in report, "Missing Noble planning evidence")
+    verify_backend_reference(backend)
     iam_refresh = report.get("iam_refresh")
     REQUIRE(isinstance(iam_refresh, dict) and iam_refresh.keys() ==
             {"receipt", "profile_sha256", "owner_approval_sha256", "policies_checked", "etag_only_addresses"}
@@ -510,7 +580,12 @@ def validate_summary(report):
         REQUIRE(name and (prefix is None or prefix == name[1]), "Private receipts do not bind the same attempt")
         prefix = name[1]
     commit = prefix[len(custody.PREFIX):].split("/", 1)[0]
-    verify_iam_reference(iam_refresh["receipt"], commit)
+    if "stable_write_receipt" in report:
+        write_iam.verify_stable_reference(report["stable_write_receipt"])
+        REQUIRE(iam_refresh["receipt"] == write_iam.READ_RECEIPT,
+                "On-demand plan must attest the exact historical READ receipt")
+    else:
+        verify_iam_reference(iam_refresh["receipt"], commit)
 
 
 def summary_markdown(report, sections):

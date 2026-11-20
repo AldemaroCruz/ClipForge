@@ -7,8 +7,8 @@ on:
         description: Exact reviewed DB-01 Noble plan controls SHA
         type: string
         required: true
-      iam_receipt:
-        description: Immutable stable READ IAM custody reference JSON
+      stable_write_receipt:
+        description: Immutable stable WRITE migration receipt reference JSON
         type: string
         required: true
 
@@ -35,7 +35,7 @@ jobs:
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
       TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
       DB01_NOBLE_APPROVED_COMMIT: ${{ inputs.approved_commit }}
-      DB01_NOBLE_IAM_RECEIPT: ${{ inputs.iam_receipt }}
+      DB01_NOBLE_STABLE_WRITE_RECEIPT: ${{ inputs.stable_write_receipt }}
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - name: Check out the exact dispatch commit without retained credentials

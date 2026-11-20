@@ -1,11 +1,9 @@
 {
-  "schema": "clipforge-db01-noble-write-iam-1",
+  "schema": "clipforge-db01-noble-write-iam-2",
   "principal": "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com",
-  "not_before_utc": "2026-11-20T02:17:40Z",
-  "expires_utc": "2026-11-20T04:17:40Z",
   "roles": {
     "projects/clipforgebeta2/roles/clipforgeIntNobleSaCreateAttach": {
-      "mode": "create",
+      "mode": "reuse",
       "definition": {
         "title": "INT Noble service account create and attach",
         "description": "Temporary service-account creation, lookup, policy read and attachment for the reviewed Noble saved plan.",
@@ -19,7 +17,7 @@
       }
     },
     "projects/clipforgebeta2/roles/clipforgeIntNobleSaBindDeploy": {
-      "mode": "create",
+      "mode": "reuse",
       "definition": {
         "title": "INT Noble service account policy setter",
         "description": "Temporary permission for the reviewed serviceAccountUser IAM membership in the Noble saved plan.",
@@ -28,7 +26,7 @@
       }
     },
     "projects/clipforgebeta2/roles/clipforgeIntNobleIapZoneRead": {
-      "mode": "create",
+      "mode": "reuse",
       "definition": {
         "title": "INT Noble zonal IAP policy read",
         "description": "Temporary verification of the us-central1-a IAP zone policy before and after the saved plan.",
@@ -52,20 +50,15 @@
       "add_bindings": [
         {
           "role": "projects/clipforgebeta2/roles/clipforgeIntNobleSaCreateAttach",
-          "members": ["serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"],
-          "condition": {
-            "title": "clipforge_int_noble_sa_attach_20261120T041740Z",
-            "description": "Time-limited Noble saved-plan creation and service-account attachment in INT",
-            "expression": "request.time >= timestamp(\"2026-11-20T02:17:40Z\") && request.time < timestamp(\"2026-11-20T04:17:40Z\")"
-          }
+          "members": ["serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"]
         },
         {
           "role": "projects/clipforgebeta2/roles/clipforgeIntNobleSaBindDeploy",
           "members": ["serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"],
           "condition": {
-            "title": "clipforge_int_noble_sa_member_20261120T041740Z",
-            "description": "Time-limited service-account policy edits, limited to serviceAccountUser",
-            "expression": "request.time >= timestamp(\"2026-11-20T02:17:40Z\") && request.time < timestamp(\"2026-11-20T04:17:40Z\") && api.getAttribute(\"iam.googleapis.com/modifiedGrantsByRole\", []).hasOnly([\"roles/iam.serviceAccountUser\"])"
+            "title": "clipforge_int_noble_sa_member_stable",
+            "description": "Noble service-account policy edits limited to serviceAccountUser",
+            "expression": "api.getAttribute(\"iam.googleapis.com/modifiedGrantsByRole\", []).hasOnly([\"roles/iam.serviceAccountUser\"])"
           }
         }
       ]
@@ -75,21 +68,11 @@
       "add_bindings": [
         {
           "role": "projects/clipforgebeta2/roles/clipforgeIntRecoveryIapPolicy_20261118T044838Z",
-          "members": ["serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"],
-          "condition": {
-            "title": "clipforge_int_noble_iap_instance_20261120T041740Z",
-            "description": "Time-limited management of tunnel-instance policies in us-central1-a",
-            "expression": "request.time >= timestamp(\"2026-11-20T02:17:40Z\") && request.time < timestamp(\"2026-11-20T04:17:40Z\")"
-          }
+          "members": ["serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"]
         },
         {
           "role": "projects/clipforgebeta2/roles/clipforgeIntNobleIapZoneRead",
-          "members": ["serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"],
-          "condition": {
-            "title": "clipforge_int_noble_iap_zone_read_20261120T041740Z",
-            "description": "Time-limited independent verification of the exact IAP zone IAM delta",
-            "expression": "request.time >= timestamp(\"2026-11-20T02:17:40Z\") && request.time < timestamp(\"2026-11-20T04:17:40Z\")"
-          }
+          "members": ["serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"]
         }
       ]
     }

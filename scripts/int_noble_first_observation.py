@@ -27,9 +27,6 @@ from scripts.int_foundation_verify import STATE_PIN
 from scripts import db01_guest_sca as sca
 
 
-PRODUCER = "c302dcc366ed450f91c1693072eb9008e7975e4c"
-IMAGE = "ubuntu-2404-noble-amd64-v20261105"
-IMAGE_ID = "1892012953239034119"
 APPLY_PATH = ".github/workflows/int-db01-noble-apply.yml"
 OBSERVE_PATH = ".github/workflows/int-db01-noble-observe.yml"
 PIN_SCHEMA = "clipforge-db01-noble-first-boot-pin-1"
@@ -47,24 +44,39 @@ SNAPSHOT_ROUTES = (VM, BOOT, DATA, PROJECT)
 CANDIDATE_CONSTANTS = {
     "instance_name": host.INSTANCE, "boot_disk": guest.BOOT_DISK, "data_disk": guest.DATA_DISK,
     "data_device": guest.DEVICE_NAME, "private_ip": guest.PRIVATE_IP, "service_email": guest.GUEST_EMAIL,
-    "image_name": IMAGE, "image_id": IMAGE_ID,
 }
 CANDIDATE_IDS = ("instance_id", "boot_disk_id", "data_disk_id")
+CANDIDATE_IMAGES = ("image_name", "image_id")
 CANDIDATE_HASHES = ("hostkey_nonce", "startup_sha256")
 CANDIDATE_TIMES = ("creation_timestamp", "first_boot_timestamp")
 require = host.require
 
 
+def valid_reference(value, name, limit):
+    return (isinstance(value, dict) and value.keys() == {"name", "generation", "sha256", "size"}
+            and value["name"] == name
+            and isinstance(value["generation"], str) and re.fullmatch(host.NUMBER, value["generation"])
+            and isinstance(value["sha256"], str) and re.fullmatch(host.HEX, value["sha256"])
+            and type(value["size"]) is int and 0 < value["size"] <= limit)
+
+
 def exact_summary(raw, expected_sha, controls, run):
-    require(re.fullmatch(r"[0-9a-f]{40}", controls or "") and controls != PRODUCER
+    require(re.fullmatch(r"[0-9a-f]{40}", controls or "")
             and re.fullmatch(host.NUMBER, run or "") and re.fullmatch(host.HEX, expected_sha or "")
             and 0 < len(raw) <= 262144 and host.sha(raw) == expected_sha, "NOBLE_APPLY_SUMMARY_HASH")
     summary = host.closed_json(raw)
     require(isinstance(summary, dict) and summary.get("schema") == CREATION_SCHEMA and summary.get("status") == "created_verified"
-            and summary.get("producer_commit") == PRODUCER and summary.get("controls_commit") == controls
-            and str(summary.get("apply_run_id")) == run and summary["approval"].get("observation") is True
-            and summary["native_apply_completed"] is True and summary["debian_preserved"] is True,
+            and summary.get("controls_commit") == controls and str(summary.get("apply_run_id")) == run
+            and summary.get("native_apply_completed") is True and summary.get("debian_preserved") is True,
             "NOBLE_APPLY_SUMMARY_ORIGIN")
+    producer, producer_run = summary.get("producer_commit"), summary.get("producer_run")
+    require(isinstance(producer, str) and re.fullmatch(r"[0-9a-f]{40}", producer)
+            and isinstance(producer_run, str) and re.fullmatch(host.NUMBER, producer_run) and producer_run != run,
+            "NOBLE_PLAN_PRODUCER")
+    approval = summary.get("approval")
+    require(isinstance(approval, dict) and approval.get("observation") is True
+            and valid_reference(approval.get("plan_manifest"), f"{custody.PREFIX}{producer}/{producer_run}-1/manifest.json",
+                                custody.LIMIT), "NOBLE_PLAN_MANIFEST_OR_APPROVAL")
     state = summary["state"]
     require(state["name"] == STATE_PIN["name"] and state["lineage"] == STATE_PIN["lineage"]
             and state["generation"] != STATE_PIN["generation"] and re.fullmatch(host.NUMBER, state["generation"])
@@ -72,21 +84,19 @@ def exact_summary(raw, expected_sha, controls, run):
             and state["managed_address_count"] == 53 and state["preserved_address_count"] == 42
             and state["current_lock_absent"] is True, "NOBLE_APPLY_SUMMARY_BACKEND")
     candidate = summary["candidate"]
-    require(isinstance(candidate, dict) and candidate.keys() == (set(CANDIDATE_CONSTANTS) | set(CANDIDATE_IDS)
+    require(isinstance(candidate, dict) and candidate.keys() == (set(CANDIDATE_CONSTANTS) | set(CANDIDATE_IDS) | set(CANDIDATE_IMAGES)
             | set(CANDIDATE_HASHES) | set(CANDIDATE_TIMES))
             and all(candidate[k] == v for k, v in CANDIDATE_CONSTANTS.items())
+            and isinstance(candidate["image_name"], str) and re.fullmatch(guest.IMAGE_NAME_PATTERN, candidate["image_name"])
+            and isinstance(candidate["image_id"], str) and re.fullmatch(host.NUMBER, candidate["image_id"])
             and all(isinstance(candidate[k], str) and re.fullmatch(host.NUMBER, candidate[k]) for k in CANDIDATE_IDS)
             and len({candidate[k] for k in CANDIDATE_IDS}) == 3
             and not guest.LEGACY_IDS.intersection(candidate[k] for k in CANDIDATE_IDS)
             and all(isinstance(candidate[k], str) and re.fullmatch(host.HEX, candidate[k]) for k in CANDIDATE_HASHES)
             and guest.timestamp(candidate["first_boot_timestamp"]) >= guest.timestamp(candidate["creation_timestamp"]),
             "NOBLE_APPLY_SUMMARY_TARGET")
-    ref = summary["receipt"]
-    require(isinstance(ref, dict) and ref.keys() == {"name", "generation", "sha256", "size"}
-            and ref["name"] == f"{custody.PREFIX}{controls}/{run}-1/foundation-state.json"
-            and isinstance(ref["generation"], str) and re.fullmatch(host.NUMBER, ref["generation"])
-            and isinstance(ref["sha256"], str) and re.fullmatch(host.HEX, ref["sha256"])
-            and type(ref["size"]) is int and 0 < ref["size"] <= 262144, "NOBLE_CREATION_RECEIPT_REFERENCE")
+    require(valid_reference(summary.get("receipt"), f"{custody.PREFIX}{controls}/{run}-1/foundation-state.json", 262144),
+            "NOBLE_CREATION_RECEIPT_REFERENCE")
     return summary
 
 
@@ -143,7 +153,7 @@ def make_pin(summary, summary_sha, reader):
     after = snapshot(reader, cand)
     pin = guest.host_receipt(serial, before=before, after=after, nonce=cand["hostkey_nonce"],
                              publisher_sha256=PUBLISHER_SHA256)
-    return {"schema": PIN_SCHEMA, "producer_commit": PRODUCER, "controls_commit": summary["controls_commit"],
+    return {"schema": PIN_SCHEMA, "producer_commit": summary["producer_commit"], "controls_commit": summary["controls_commit"],
             "apply_run_id": str(summary["apply_run_id"]), "apply_summary_sha256": summary_sha,
             "creation_receipt": summary["receipt"], "pin": pin}
 
@@ -154,7 +164,7 @@ def check_pin(raw, expected_sha, summary, summary_sha):
     envelope = host.closed_json(raw)
     require(isinstance(envelope, dict) and envelope.keys() == {"schema", "producer_commit", "controls_commit",
             "apply_run_id", "apply_summary_sha256", "creation_receipt", "pin"}
-            and envelope["schema"] == PIN_SCHEMA and envelope["producer_commit"] == PRODUCER
+            and envelope["schema"] == PIN_SCHEMA and envelope["producer_commit"] == summary["producer_commit"]
             and envelope["controls_commit"] == summary["controls_commit"]
             and envelope["apply_run_id"] == str(summary["apply_run_id"])
             and envelope["apply_summary_sha256"] == summary_sha and envelope["creation_receipt"] == summary["receipt"],
@@ -214,7 +224,8 @@ def collect(env, work, reports, summary, pin, *, reader, client, runner=None):
                "import_attempted": False, "key_absent_before_import": False, "profile_name": None, "processes": []}
     transport._save_journal(work, journal)
     result = {"schema": "clipforge-db01-noble-first-observation-1", "status": "blocked",
-              "producer_commit": PRODUCER, "controls_commit": env["GITHUB_SHA"],
+              "producer_commit": summary["producer_commit"], "producer_run": summary["producer_run"],
+              "controls_commit": env["GITHUB_SHA"],
               "apply_run_id": str(summary["apply_run_id"]), "observation_run_id": env["GITHUB_RUN_ID"],
               "creation_receipt": summary["receipt"], "runtime_authorized": False, "database_initialized": False}
     stage, previous_signals = "control_plane_before", {}
