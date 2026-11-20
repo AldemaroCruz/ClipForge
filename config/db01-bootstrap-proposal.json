@@ -103,7 +103,7 @@
     },
     {
       "path": "scripts/int_guest_inventory.py",
-      "sha256": "c73e70ec0cdb59715a051d78520de3b3e63d41227e600ca4ece7f0d7400d54eb"
+      "sha256": "dffba9c87f63ccefbabcaa5fe1641f3af3840c77090a8d8a4041f1e2931ee9de"
     },
     {
       "path": "scripts/int_guest_inventory_guest.py",
