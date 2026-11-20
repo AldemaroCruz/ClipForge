@@ -17,3 +17,13 @@ class DockerToolchain(unittest.TestCase):
         for field, value in (("runner_image", "20261120.1.1"), ("socket", "tcp://remote"), ("files", {})):
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, "docker_credentialed_toolchain_differs"):
                 docker.verify(expected, inspect=lambda: {**expected, field: value})
+
+    def test_native_docker_versions_are_canonical_across_client_server_json_casing(self):
+        cli = {"Version": "29.0.0", "ApiVersion": "1.52", "GitCommit": "hash", "Os": "linux", "Arch": "amd64"}
+        server = {"Version": "29.0.0", "APIVersion": "1.52", "GitCommit": "hash", "OS": "linux", "Arch": "amd64",
+                  "Components": [{"Name": name, "Version": "1.2.3"} for name in ("Engine", "containerd", "runc")]}
+        versions, components = docker.native_versions({"Client": cli, "Server": server})
+        self.assertEqual(versions["client"], versions["server"])
+        self.assertEqual(set(components), {"Engine", "containerd", "runc"})
+        with self.assertRaisesRegex(ValueError, "docker_native_ambiguous_version"):
+            docker.native_versions({"Client": cli, "Server": {**server, "ApiVersion": "1.51"}})

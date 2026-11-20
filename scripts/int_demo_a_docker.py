@@ -63,20 +63,29 @@ def inventory(env=os.environ):
         require(re.fullmatch(r"[1-9][0-9]*", pid), "docker_running_service_required")
         exe = run(["/usr/bin/sudo", "-n", "/usr/bin/readlink", f"/proc/{pid}/exe"], work)
         require(exe == files["/usr/bin/dockerd"]["path"], "docker_running_executable_changed")
+    versions, components = native_versions(reported)
+    return {"schema": SCHEMA, "runner_image": env["ImageVersion"], "image_os": "ubuntu24", "socket": SOCKET,
+            "files": files, "native": versions, "components": components}
+
+
+def native_versions(reported):
     try:
         client, server = reported["Client"], reported["Server"]
-        fields = ("Version", "ApiVersion", "GitCommit", "Os", "Arch")
-        versions = {key: {field: source[field] for field in fields} for key, source in (("client", client), ("server", server))}
+        fields = ("version", "apiversion", "gitcommit", "os", "arch")
+        versions = {}
+        for key, source in (("client", client), ("server", server)):
+            normalized = {field.casefold(): value for field, value in source.items()}
+            require(len(normalized) == len(source), "docker_native_ambiguous_version")
+            versions[key] = {field: normalized[field] for field in fields}
         for item in versions.values():
-            require(item["Os"] == "linux" and item["Arch"] == "amd64" and all(
+            require(item["os"] == "linux" and item["arch"] == "amd64" and all(
                 isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._+-]{1,80}", value) for value in item.values()), "docker_native_versions")
         components = {item["Name"]: {key: item[key] for key in ("Version", "Name")} for item in server["Components"]}
         require({"Engine", "containerd", "runc"} <= set(components) and all(re.fullmatch(r"[A-Za-z0-9._+ -]{1,80}", item[field])
                 for item in components.values() for field in ("Name", "Version")), "docker_native_components")
-    except (KeyError, TypeError) as error:
+    except (AttributeError, KeyError, TypeError) as error:
         raise ValueError("docker_version_schema") from error
-    return {"schema": SCHEMA, "runner_image": env["ImageVersion"], "image_os": "ubuntu24", "socket": SOCKET,
-            "files": files, "native": versions, "components": components}
+    return versions, components
 
 
 def verify(expected, *, inspect=None):
