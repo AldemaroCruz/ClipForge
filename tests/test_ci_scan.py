@@ -21,6 +21,13 @@ class CIScanTests(unittest.TestCase):
                  ".github/workflows/int-e2e-apply.yml"]
         self.assertEqual(scan.validate_paths(names), sorted(names))
 
+    def test_int_demo_admits_only_exact_build_metadata(self):
+        names = ["Dockerfile.int-demo", "requirements-int-demo-apt.tsv", "requirements-int-demo.lock"]
+        self.assertEqual(scan.validate_paths(names), sorted(names))
+        for name in ("Dockerfile.int-demo.local", "requirements-int-demo-private.tsv", "requirements-int-demo.local.lock"):
+            with self.subTest(name=name), self.assertRaises(scan.ScanError):
+                scan.validate_paths([name])
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="clipforge-ci-scan-")
         self.addCleanup(self.temporary.cleanup)

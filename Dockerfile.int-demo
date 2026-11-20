@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1@sha256:572cebbc2b15e6f84c077742952674889cb63cd5e9b80abdffcbe587b6f19183
+# Build only from the verified INT demo context, with local packages and wheels.
+FROM docker.io/library/ubuntu:24.04@sha256:77eb101c607d6e3d4f5ad0c8a02c2136c689b98aba1f359e6502ba517e5c57ec
+
+ENV LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PSYCOPG_IMPL=python PATH=/opt/clipforge/venv/bin:$PATH CLIPFORGE_RUNTIME_PROFILE=int-demo-a \
+    CLIPFORGE_STORAGE_BACKEND=local
+
+COPY requirements-int-demo-apt.tsv requirements-int-demo.lock /opt/clipforge-custody/
+RUN --network=none --mount=type=bind,source=debs,target=/debs <<'PACKAGES'
+set -eu
+export DEBIAN_FRONTEND=noninteractive
+while IFS="$(printf '\t')" read -r package version architecture digest url; do
+    file="/debs/${url##*/}"
+    printf '%s  %s\n' "$digest" "$file" | sha256sum -c -
+    test "$(dpkg-deb -f "$file" Package)" = "$package"
+    test "$(dpkg-deb -f "$file" Version)" = "$version"
+    test "$(dpkg-deb -f "$file" Architecture)" = "$architecture"
+done < /opt/clipforge-custody/requirements-int-demo-apt.tsv
+test "$(find /debs -maxdepth 1 -name '*.deb' -type f | wc -l)" -eq "$(wc -l < /opt/clipforge-custody/requirements-int-demo-apt.tsv)"
+dpkg --unpack /debs/*.deb
+dpkg --configure --pending
+apt-get check
+dpkg-query -W -f='${binary:Package}\t${Version}\t${Architecture}\t${source:Package}\t${source:Version}\t${db:Status-Abbrev}\n' > /opt/clipforge-custody/packages.tsv
+groupadd --gid 10001 clipforge
+useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin clipforge
+PACKAGES
+
+RUN --network=none --mount=type=bind,source=wheels,target=/wheels \
+    python3.12 -m venv /opt/clipforge/venv \
+ && python -m pip --isolated install --no-index --no-cache-dir --require-hashes --only-binary=:all: \
+      --find-links=/wheels -r /opt/clipforge-custody/requirements-int-demo.lock \
+ && python -m pip check
+
+WORKDIR /app
+COPY app/__init__.py app/auth.py app/auth_db.py app/auth_models.py app/auth_migrations.py app/environment.py app/int_demo.py /app/app/
+COPY app/cloud/__init__.py app/cloud/migrate.py app/cloud/bootstrap_admin.py /app/app/cloud/
+COPY app/static/account.css app/static/account.html app/static/account.js app/static/auth.js \
+     app/static/login.html app/static/recover.html app/static/recover.js /app/app/static/
+USER 10001:10001
+
+RUN --network=none python -c 'import app.int_demo, importlib.util, psycopg, shutil; assert psycopg.pq.__impl__ == "python"; assert not any(shutil.which(command) for command in ("ffmpeg", "ffprobe")); assert not any(importlib.util.find_spec(name) for name in ("app.main", "app.cloud.worker", "app.cloud.router", "av", "faster_whisper", "onnxruntime", "ctranslate2"))'
+EXPOSE 8080
+CMD ["python", "-m", "uvicorn", "app.int_demo:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log", "--workers", "1"]
