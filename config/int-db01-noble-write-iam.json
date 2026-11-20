@@ -1,8 +1,8 @@
 {
   "schema": "clipforge-db01-noble-write-iam-1",
   "principal": "serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com",
-  "not_before_utc": "2026-11-20T22:00:00Z",
-  "expires_utc": "2026-11-21T00:00:00Z",
+  "not_before_utc": "2026-11-20T02:17:40Z",
+  "expires_utc": "2026-11-20T04:17:40Z",
   "roles": {
     "projects/clipforgebeta2/roles/clipforgeIntNobleSaCreateAttach": {
       "mode": "create",
@@ -54,18 +54,18 @@
           "role": "projects/clipforgebeta2/roles/clipforgeIntNobleSaCreateAttach",
           "members": ["serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"],
           "condition": {
-            "title": "clipforge_int_noble_sa_attach_20261121T000000Z",
+            "title": "clipforge_int_noble_sa_attach_20261120T041740Z",
             "description": "Time-limited Noble saved-plan creation and service-account attachment in INT",
-            "expression": "request.time >= timestamp(\"2026-11-20T22:00:00Z\") && request.time < timestamp(\"2026-11-21T00:00:00Z\")"
+            "expression": "request.time >= timestamp(\"2026-11-20T02:17:40Z\") && request.time < timestamp(\"2026-11-20T04:17:40Z\")"
           }
         },
         {
           "role": "projects/clipforgebeta2/roles/clipforgeIntNobleSaBindDeploy",
           "members": ["serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"],
           "condition": {
-            "title": "clipforge_int_noble_sa_member_20261121T000000Z",
+            "title": "clipforge_int_noble_sa_member_20261120T041740Z",
             "description": "Time-limited service-account policy edits, limited to serviceAccountUser",
-            "expression": "request.time >= timestamp(\"2026-11-20T22:00:00Z\") && request.time < timestamp(\"2026-11-21T00:00:00Z\") && api.getAttribute(\"iam.googleapis.com/modifiedGrantsByRole\", []).hasOnly([\"roles/iam.serviceAccountUser\"])"
+            "expression": "request.time >= timestamp(\"2026-11-20T02:17:40Z\") && request.time < timestamp(\"2026-11-20T04:17:40Z\") && api.getAttribute(\"iam.googleapis.com/modifiedGrantsByRole\", []).hasOnly([\"roles/iam.serviceAccountUser\"])"
           }
         }
       ]
@@ -77,18 +77,18 @@
           "role": "projects/clipforgebeta2/roles/clipforgeIntRecoveryIapPolicy_20261118T044838Z",
           "members": ["serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"],
           "condition": {
-            "title": "clipforge_int_noble_iap_instance_20261121T000000Z",
+            "title": "clipforge_int_noble_iap_instance_20261120T041740Z",
             "description": "Time-limited management of tunnel-instance policies in us-central1-a",
-            "expression": "request.time >= timestamp(\"2026-11-20T22:00:00Z\") && request.time < timestamp(\"2026-11-21T00:00:00Z\")"
+            "expression": "request.time >= timestamp(\"2026-11-20T02:17:40Z\") && request.time < timestamp(\"2026-11-20T04:17:40Z\")"
           }
         },
         {
           "role": "projects/clipforgebeta2/roles/clipforgeIntNobleIapZoneRead",
           "members": ["serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com"],
           "condition": {
-            "title": "clipforge_int_noble_iap_zone_read_20261121T000000Z",
+            "title": "clipforge_int_noble_iap_zone_read_20261120T041740Z",
             "description": "Time-limited independent verification of the exact IAP zone IAM delta",
-            "expression": "request.time >= timestamp(\"2026-11-20T22:00:00Z\") && request.time < timestamp(\"2026-11-21T00:00:00Z\")"
+            "expression": "request.time >= timestamp(\"2026-11-20T02:17:40Z\") && request.time < timestamp(\"2026-11-20T04:17:40Z\")"
           }
         }
       ]

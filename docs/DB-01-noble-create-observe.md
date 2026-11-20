@@ -12,7 +12,7 @@
 | Imagen | `ubuntu-os-cloud/ubuntu-2404-noble-amd64-v20261105`, ID `1892012953239034119`, familia `ubuntu-2404-lts-amd64`, READY, licencia estándar Ubuntu 24.04 LTS, X86_64. |
 | Resultado y plazo | Código nativo de plan 2, once altas, 42 `no-op`. Vencimiento original `2026-11-21T01:05:19.179283+00:00`, 20 de noviembre de 2026 a las 19:05:19 de Guatemala. |
 | Controles y aprobación | Un commit posterior de controles se vincula por SHA completo. El propietario identifica ese SHA, el productor, el plan exacto, las decisiones de seguridad y el delta IAM en una decisión explícita nueva. El manifiesto del plan conserva `apply_authorized: false`. |
-| Ventana WRITE propuesta, pendiente | 20 de noviembre de 2026, 16:00–18:00 de Guatemala (`2026-11-20T22:00:00Z`–`2026-11-21T00:00:00Z`). Queda dentro del plazo del plan. Se requiere una nueva revisión si no se puede terminar la fase privilegiada dentro de la ventana. |
+| Ventana WRITE autorizada | 19 de noviembre de 2026, 20:17:40–22:17:40 de Guatemala (`2026-11-20T02:17:40Z` inclusive a `2026-11-20T04:17:40Z` exclusivo). El apply debe iniciar antes de las 21:57:40 de Guatemala (`2026-11-20T03:57:40Z`) para conservar el margen exigido de 20 minutos. Se requiere una nueva revisión si la fase privilegiada queda fuera de la ventana. |
 
 Los objetos se conservan bajo `gs://clipforgebeta2-tfstate-int/private-plans/int/c302dcc366ed450f91c1693072eb9008e7975e4c/`. Las referencias identifican originales de sólo lectura y se verifican por generación, bytes y SHA-256. [Recibo del run](https://github.com/AldemaroCruz/ClipForge/actions/runs/44650537240/artifacts/14590397506)
 
@@ -103,7 +103,7 @@ Coexistencia estimada **USD 6,65**. Si NAT asigna una IPv4 adicional durante sie
 
 ## Decisión única a presentar al propietario
 
-La decisión operativa pendiente debe identificar la huella del ZIP de revisión, el SHA completo publicado de los controles indicado en el paquete, el productor `c302dcc366ed450f91c1693072eb9008e7975e4c`, el run `44650537240`, los cuatro objetos de custodia con sus generaciones y huellas, el vencimiento original y el coste de coexistencia. El perfil WRITE exacto tiene SHA-256 canónico `7c804755a3f0c3af58a1d17bdea7bf2ea46c8cdf709dba85f99a74c3c9ccea7c`. Las referencias de los emisores y los recibos deben ser verificables. [Perfil WRITE](../config/int-db01-noble-write-iam.json) · [Matriz WRITE](DB-01-noble-create-permissions.md)
+La decisión operativa pendiente debe identificar la huella del ZIP de revisión, el SHA completo publicado de los controles indicado en el paquete, el productor `c302dcc366ed450f91c1693072eb9008e7975e4c`, el run `44650537240`, los cuatro objetos de custodia con sus generaciones y huellas, el vencimiento original y el coste de coexistencia. El perfil WRITE exacto tiene SHA-256 canónico `61f1abf24d45b5f1d0dcf432100c5b32a7ef3d188df034a22dd55a361488fe08`. Las referencias de los emisores y los recibos deben ser verificables. [Perfil WRITE](../config/int-db01-noble-write-iam.json) · [Matriz WRITE](DB-01-noble-create-permissions.md)
 
 **Tres definiciones nuevas.** El administrador crearía estos roles de proyecto en etapa `GA`, con los títulos y descripciones exactos del perfil WRITE.
 
@@ -113,7 +113,7 @@ La decisión operativa pendiente debe identificar la huella del ZIP de revisión
 | `clipforgeIntNobleSaBindDeploy` | `iam.serviceAccounts.setIamPolicy` |
 | `clipforgeIntNobleIapZoneRead` | `iap.tunnelZones.getIamPolicy` |
 
-**Cuatro bindings temporales.** Todos tienen un único miembro, `serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com`, y rigen desde `2026-11-20T22:00:00Z` inclusive hasta `2026-11-21T00:00:00Z` exclusivo, el 20 de noviembre de 2026 de 16:00 a 18:00 en Guatemala.
+**Cuatro bindings temporales.** Todos tienen un único miembro, `serviceAccount:clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com`, y rigen desde `2026-11-20T02:17:40Z` inclusive hasta `2026-11-20T04:17:40Z` exclusivo, el 19 de noviembre de 2026 de 20:17:40 a 22:17:40 en Guatemala.
 
 | Rol | Política y alcance efectivo |
 | --- | --- |

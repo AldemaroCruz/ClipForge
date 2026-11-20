@@ -36,8 +36,8 @@ ROLE_PERMISSIONS = {
     ),
 }
 IAM_SET_CONDITION = ' && api.getAttribute("iam.googleapis.com/modifiedGrantsByRole", []).hasOnly(["roles/iam.serviceAccountUser"])'
-WINDOW_START = "2026-11-20T22:00:00Z"
-WINDOW_END = "2026-11-21T00:00:00Z"
+WINDOW_START = "2026-11-20T02:17:40Z"
+WINDOW_END = "2026-11-20T04:17:40Z"
 REQUIRE = iam.contract.require
 
 

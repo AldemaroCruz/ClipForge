@@ -1,4 +1,5 @@
 from copy import deepcopy
+from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -23,6 +24,21 @@ class NobleWriteIAMTests(unittest.TestCase):
             path.write_bytes(write.iam.custody.canonical(changed))
             with self.assertRaisesRegex(ValueError, "binding"):
                 write.load_profile(Path(tmp))
+
+    def test_grant_respects_inclusive_start_and_exclusive_end(self):
+        start = datetime.fromisoformat(self.profile["not_before_utc"])
+        end = datetime.fromisoformat(self.profile["expires_utc"])
+        tick = timedelta(seconds=1)
+        self.assertEqual(end - start, timedelta(hours=2))
+        with patch.object(write, "datetime", wraps=datetime) as clock:
+            for now in (start - tick, end):
+                clock.now.return_value = now
+                with self.subTest(now=now), self.assertRaisesRegex(ValueError, "Outside approved WRITE window"):
+                    write.check_grant_window()
+            for now in (start, end - tick):
+                clock.now.return_value = now
+                with self.subTest(now=now):
+                    self.assertEqual(write.check_grant_window(), now.isoformat())
 
     def test_iap_empty_baseline_is_fully_preserved_except_exact_grants(self):
         original = {"etag": "empty-etag"}

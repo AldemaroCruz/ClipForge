@@ -10,9 +10,9 @@ from scripts import int_noble_apply as apply
 
 
 CONTROLS = "a" * 40
-NOW = datetime.fromisoformat("2026-11-20T22:15:00+00:00")
+NOW = datetime.fromisoformat("2026-11-20T02:32:40+00:00")
 CLOCK = {"created_utc": "2026-11-20T01:05:19.179283+00:00", "expires_utc": apply.PLAN_EXPIRY}
-PROFILE = {"not_before_utc": "2026-11-20T22:00:00Z", "expires_utc": "2026-11-21T00:00:00Z"}
+PROFILE = {"not_before_utc": "2026-11-20T02:17:40Z", "expires_utc": "2026-11-20T04:17:40Z"}
 
 
 def decision(profile=PROFILE):
@@ -38,7 +38,7 @@ def iam_fixture():
     read_proof = {"policies": {project: {"after": policy("read-etag")}}}
     zone_empty = {"etag": "empty-etag"}
     additions = [{"role": "projects/clipforgebeta2/roles/fixture", "members": [apply.iam.MEMBER],
-                  "condition": {"title": "temporary", "expression": "request.time < timestamp('2026-11-21T00:00:00Z')"}}]
+                  "condition": {"title": "temporary", "expression": f"request.time < timestamp('{PROFILE['expires_utc']}')"}}]
     before = {project: read_proof["policies"][project]["after"], zone: zone_empty}
     profile = {**PROFILE, "policies": {
         name: {"baseline_policy_sha256": apply.noble.digest(value), "add_bindings": additions}
@@ -78,8 +78,12 @@ class NobleApplyTests(unittest.TestCase):
     def test_expiry_and_insufficient_write_window_block_before_native_apply(self):
         with self.assertRaisesRegex(ValueError, "original_plan_expired"):
             apply.verify_window(CLOCK, PROFILE, apply.utc(apply.PLAN_EXPIRY))
-        with self.assertRaisesRegex(ValueError, "write_window_unavailable"):
-            apply.verify_window(CLOCK, PROFILE, apply.utc(PROFILE["expires_utc"]) - timedelta(minutes=19), must_fit_apply=True)
+        end = apply.utc(PROFILE["expires_utc"])
+        last_boundary = end - timedelta(minutes=20)
+        apply.verify_window(CLOCK, PROFILE, last_boundary - timedelta(seconds=1), must_fit_apply=True)
+        for now in (last_boundary, end):
+            with self.subTest(now=now), self.assertRaisesRegex(ValueError, "write_window_unavailable"):
+                apply.verify_window(CLOCK, PROFILE, now, must_fit_apply=True)
         with self.assertRaises(ValueError):
             apply.verify_window({**CLOCK, "expires_utc": "2026-11-22T01:05:19.179283+00:00"}, PROFILE, NOW)
 
