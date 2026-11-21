@@ -298,7 +298,7 @@ def main(argv=None):
     parser.add_argument("phase", choices=("local", "preflight", "observe"))
     parser.add_argument("identity", nargs="?", choices=("terraform", "deploy"))
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--mode", choices=("full", "noble_policy", "docker_only"), default="full")
+    parser.add_argument("--mode", choices=("full", "noble_policy", "docker_only", "docker_prepare"), default="full")
     args = parser.parse_args(argv)
     try:
         token = os.environ.get("GCP_ACCESS_TOKEN", "")

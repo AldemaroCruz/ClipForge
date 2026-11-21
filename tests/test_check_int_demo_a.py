@@ -9,6 +9,9 @@ import unittest
 from unittest.mock import patch
 
 from scripts import check_int_demo_a as gate
+from scripts import int_demo_a_docker as docker
+from scripts import int_demo_a_docker_prepare as docker_prepare
+from test_int_demo_a_docker import fixture_receipt
 
 
 AT = datetime(2026, 11, 20, 18, 0, tzinfo=timezone.utc)
@@ -114,14 +117,33 @@ class DemoGate(unittest.TestCase):
             path.write_bytes(raw)
             self.publication_sources[name] = gate.digest(raw)
         sources = self.write("pub-sources.json", {"binding": self.binding, "files": self.publication_sources})
-        self.docker_ref = self.write("fixture-docker-toolchain.json", {
-            "schema": "clipforge-int-demo-a-docker-toolchain-2", "runner_image": "20261120.1.2", "image_os": "ubuntu24", "socket": "/run/docker.sock",
-            "files": {name: {"path": name, "sha256": "3" * 64, "bytes": 100} for name in gate.DOCKER_BINARIES},
-            "native": {"client": {}, "server": {}}, "components": {"Engine": {}, "containerd": {}, "runc": {}}, "engine_settings": {},
-            "kernel": {"release": "7.0.0-1111-aws", "package": "linux-image-7.0.0-1111-aws", "version": "fixture"}})
+        runtime = fixture_receipt()
+        runtime["runner_image"] = "20261120.1.2"
+        observed = runtime["observation"]
+        for path, (size, digest) in docker_prepare.BINARIES.items():
+            runtime["files"][path].update(bytes=size, sha256=digest)
+            observed["files"][path]["bytes"] = size
+        for unit, path in docker.SERVICE_BINARIES.items():
+            runtime["services"][unit] = dict(runtime["files"][path])
+            observed["processes"][unit]["executable"] = docker.live_from_file(observed["files"][path])
+        self.docker_ref = self.write("fixture-docker-toolchain.json", runtime)
+        projection = docker.projection_sha256(runtime)
+        preparation = self.write("fixture-prepare.json", {"schema": docker_prepare.SCHEMA, "profile": "evaluate", "status": "prepared_verified",
+            "publication_eligibility": "eligible", "cloud_credentials_used": False, "oidc_job_capability": False, "run": observed["run"],
+            "attempt": observed["attempt"], "commit": observed["source_commit"], "after": {"toolchain": runtime},
+            "comparison": {"after": {"toolchain": docker.stable_projection(runtime)}}})
+        rehearsal = self.write("fixture-rehearsal.json", {"schema": "clipforge-int-demo-a-publisher-rehearsal-1", "status": "tls_copy_verified",
+            **{name: observed[name] for name in ("source_commit", "run", "attempt", "job", "boot_id")},
+            "source_sha256": self.publication_sources[gate.PUBLISHER_LAB_SOURCE],
+            "docker_toolchain_sha256": self.docker_ref["sha256"], "docker_projection_sha256": projection, "preparation_sha256": preparation["sha256"],
+            "publisher_manifest": gate.PUBLISHER_MANIFEST, "publisher_config": gate.PUBLISHER_CONFIG, "images": gate.PUBLICATION_IMAGES,
+            "registry_image": "sha256:" + "e" * 64, "cloud_credentials_used": False,
+            **dict.fromkeys(("isolated_network", "source_unchanged", "unknown_ca_rejected", "wrong_hostname_rejected",
+                             "manifest_config_layers_verified", "owned_resources_removed"), True)})
         self.docker_targets = {target: ["target"] for target in gate.DOCKER_BINARIES | {"runner_kernel"}}
         return self.write("pub.json", {"binding": self.binding, "sources": sources, "docker_runtime": self.docker_ref,
-                                       "docker_targets": self.docker_targets})
+                                       "docker_targets": self.docker_targets, "docker_projection_sha256": projection,
+                                       "preparation": preparation, "rehearsal": rehearsal})
 
     def guest_control(self, action):
         self.guest_plane = {key: gate.NOBLE_TARGET[key] for key in ("instance_id", "data_disk_id", "boot_disk_id")}
@@ -362,6 +384,45 @@ class DemoGate(unittest.TestCase):
         receipt["native_sha256"] = scan["native"]["sha256"]
         scan["receipt"] = self.write("bandit-omitted-receipt.json", receipt)
         with self.assertRaisesRegex(ValueError, "publication_docker_sast_findings_missing"):
+            self.verify()
+
+    def test_publication_rehearsal_must_come_from_observed_host(self):
+        subject = self.review["subjects"]["credential_toolchain"]
+        proof = gate.evidence(self.root, subject["publication"])
+        lab = gate.evidence(self.root, proof["rehearsal"])
+        lab["boot_id"] = "99999999-8888-7777-6666-555555555555"
+        proof["rehearsal"] = self.write("other-host-rehearsal.json", lab)
+        subject["publication"] = self.write("other-host-publication.json", proof)
+        with self.assertRaisesRegex(ValueError, "publication_rehearsal_receipt_unbound"):
+            self.verify()
+
+    def test_publication_cannot_claim_projection_or_preparation_from_other_bytes(self):
+        subject = self.review["subjects"]["credential_toolchain"]
+        proof = gate.evidence(self.root, subject["publication"])
+        subject["publication"] = self.write("foreign-projection.json", {**proof, "docker_projection_sha256": "4" * 64})
+        with self.assertRaisesRegex(ValueError, "publication_runner_or_artifact_mismatch"):
+            self.verify()
+        prepared = gate.evidence(self.root, proof["preparation"])
+        prepared["oidc_job_capability"] = True
+        proof["preparation"] = self.write("credentialed-preparation.json", prepared)
+        subject["publication"] = self.write("foreign-preparation.json", proof)
+        with self.assertRaisesRegex(ValueError, "publication_preparation_receipt_unbound"):
+            self.verify()
+
+    def test_publication_rehearsal_requires_exact_reviewed_source(self):
+        subject = self.review["subjects"]["credential_toolchain"]
+        proof = gate.evidence(self.root, subject["publication"])
+        source = gate.evidence(self.root, proof["sources"])
+        del source["files"][gate.PUBLISHER_LAB_SOURCE]
+        foreign = {**proof, "sources": self.write("without-rehearsal-source.json", source)}
+        subject["publication"] = self.write("without-rehearsal-publication.json", foreign)
+        with self.assertRaisesRegex(ValueError, "missing_publication_source"):
+            self.verify()
+        lab = gate.evidence(self.root, proof["rehearsal"])
+        lab["source_sha256"] = "a" * 64
+        foreign = {**proof, "rehearsal": self.write("other-tool-rehearsal.json", lab)}
+        subject["publication"] = self.write("other-tool-publication.json", foreign)
+        with self.assertRaisesRegex(ValueError, "publication_rehearsal_source_mismatch"):
             self.verify()
 
     def test_toolchain_high_row_remains_blocking_for_a_rejected_identifier(self):

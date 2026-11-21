@@ -17,6 +17,7 @@ from urllib.error import HTTPError
 from urllib.request import HTTPSHandler, ProxyHandler, Request, build_opener
 
 from scripts import int_demo_a_docker as docker_identity
+from scripts import int_demo_a_docker_prepare as docker_prepare
 from scripts import int_demo_a_preflight as preflight
 from scripts import int_demo_a_receipts as receipts
 from scripts import int_guest_inventory as transport
@@ -257,7 +258,7 @@ def stage(bundle, env, image_id, images):
         verified_staging_archive(bundle / (target + ".oci.tar"), work / (target + ".oci.tar"), expected, os.getuid(), os.getgid())
 
 
-def execute(bundle, env, decision, approval_hash, tool, images):
+def execute(bundle, env, decision, approval_hash, tool, images, *, verify_host):
     work = preflight.runtime_scratch(env)
     token = preflight.deploy_after_wif(env, decision)
     names = receipts.producer_names(env, "publish", decision["operation_id"])
@@ -285,6 +286,7 @@ def execute(bundle, env, decision, approval_hash, tool, images):
                         "operation_id": decision["operation_id"], "owner_decision_sha256": approval_hash,
                         "config": image["config"][0], "archive_sha256": image["archive_sha256"], "layers": [row[0] for row in image["layers"]],
                         "publisher_digest": tool["manifest"]}
+            verify_host()
             at = time.time()
             started = env.get("INT_DEMO_A_AUTH_STARTED_EPOCH", "")
             require(re.fullmatch(r"[1-9][0-9]{9,11}", started) and 0 <= at - int(started) <= 900 - 300, "demo_a_publisher_credential_margin")
@@ -302,7 +304,7 @@ def execute(bundle, env, decision, approval_hash, tool, images):
         report["status"] = "published_and_verified"
         return report
     except (transport.Failure, ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
-        report["error_code"] = str(error) if isinstance(error, transport.Blocked) else type(error).__name__
+        report["error_code"] = str(error) if isinstance(error, (transport.Blocked, docker_identity.ToolchainBlocked)) else type(error).__name__
         if isinstance(error, transport.Failure):
             report["failure"] = error.receipt
         return report
@@ -316,36 +318,87 @@ def execute(bundle, env, decision, approval_hash, tool, images):
                     report["status"] = "publication_verified_cleanup_failed"
 
 
+def checked_host_inputs(bundle, decision):
+    inputs = decision["inputs"]
+    require(set(inputs) == {"publisher", "targets", "docker_toolchain_sha256", "docker_preparation_sha256", "docker_rehearsal_sha256"}
+            and inputs["targets"] == list(TARGETS), "demo_a_two_targets_and_preparation_bound")
+    engine_proof = preflight.json_bytes(bundle, "docker-toolchain.json", inputs["docker_toolchain_sha256"], limit=65536)
+    require(engine_proof["schema"] == docker_identity.SCHEMA, "demo_a_docker_proof_schema")
+    review = preflight.json_bytes(bundle, "review.json", decision["review_sha256"])
+    subject = review["subjects"]["credential_toolchain"]
+    require(subject["identity"] == "sha256:" + inputs["docker_toolchain_sha256"], "demo_a_docker_gate_inventory_unbound")
+    coverage = subject["publication"]
+    scope = preflight.json_bytes(bundle, coverage["path"], coverage["sha256"])
+    require(scope["docker_projection_sha256"] == docker_identity.projection_sha256(engine_proof)
+            and scope["preparation"] == {"path": "docker-prepare.json", "sha256": inputs["docker_preparation_sha256"]}
+            and scope["rehearsal"] == {"path": "publisher-rehearsal.json", "sha256": inputs["docker_rehearsal_sha256"]},
+            "demo_a_docker_gate_preparation_unbound")
+    docker_identity.verify_maintained(engine_proof)
+    return inputs, engine_proof
+
+
+def prepare(bundle, env, inputs):
+    path = Path(env["RUNNER_TEMP"]) / "int-demo-a-docker-prepare.json"
+    result = docker_prepare.main(["--profile", "protected", "--approved-commit", env["GITHUB_SHA"], "--report", str(path),
+                                  "--expected", str(bundle / "docker-prepare.json"),
+                                  "--expected-sha256", inputs["docker_preparation_sha256"]])
+    require(result == 0, "demo_a_reproducible_docker_preparation_blocked")
+
+
+def verify_prepared_host(env, current):
+    path = Path(env["RUNNER_TEMP"]) / "int-demo-a-docker-prepare.json"
+    proof = transport.decode(transport._local_bytes(path, docker_prepare.MAX_RECEIPT))
+    require(proof["schema"] == docker_prepare.SCHEMA and proof["profile"] == "protected"
+            and proof["status"] == "prepared_verified" and proof["publication_eligibility"] == "eligible"
+            and proof["cloud_credentials_used"] is False and proof["oidc_job_capability"] is True
+            and all(proof[key] == env[name] for key, name in (("run", "GITHUB_RUN_ID"), ("attempt", "GITHUB_RUN_ATTEMPT"),
+                                                            ("commit", "GITHUB_SHA"))), "demo_a_current_docker_preparation_unbound")
+    docker_identity.verify_same_host(proof["after"]["toolchain"], current)
+
+
+def preauth_checkpoint(env, expected):
+    work = preflight.runtime_scratch(env)
+    current = docker_identity.verify(expected)
+    snapshot = transport.decode(transport._local_bytes(work / "docker-toolchain-before-auth.json", 65536))
+    docker_identity.verify_same_host(snapshot, current)
+    return current
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("local", "stage", "execute"))
+    parser.add_argument("phase", choices=("local", "prepare", "stage", "execute"))
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--decision-sha256", required=True)
     args = parser.parse_args(argv)
     env = os.environ
     try:
-        if args.phase == "stage":
+        if args.phase in {"prepare", "stage"}:
             require(not env.get("GCP_ACCESS_TOKEN") and not env.get("GOOGLE_APPLICATION_CREDENTIALS"),
                     "demo_a_docker_staging_precedes_google_credentials")
         decision = preflight.local_decision(args.bundle, args.decision_sha256, OPERATION, WORKFLOW, env, protected=args.phase != "local")
-        inputs = decision["inputs"]
-        require(set(inputs) == {"publisher", "targets", "docker_toolchain_sha256"} and inputs["targets"] == list(TARGETS), "demo_a_two_targets_bound")
-        engine_proof = preflight.json_bytes(args.bundle, "docker-toolchain.json", inputs["docker_toolchain_sha256"], limit=65536)
-        require(engine_proof["schema"] == docker_identity.SCHEMA, "demo_a_docker_proof_schema")
-        review = preflight.json_bytes(args.bundle, "review.json", decision["review_sha256"])
-        require(review["subjects"]["credential_toolchain"]["identity"] == "sha256:" + inputs["docker_toolchain_sha256"],
-                "demo_a_docker_gate_inventory_unbound")
-        docker_identity.verify_maintained(engine_proof)
+        inputs, engine_proof = checked_host_inputs(args.bundle, decision)
+        if args.phase == "prepare":
+            prepare(args.bundle, env, inputs)
+            return 0
         tool = verify_tool(args.bundle, inputs["publisher"])
         images = {target: archive_inventory(args.bundle / (target + ".oci.tar"), approved) for target, approved in TARGETS.items()}
-        if args.phase != "local":
-            docker_identity.verify(engine_proof)
         if args.phase == "stage":
+            before = docker_identity.verify(engine_proof)
+            verify_prepared_host(env, before)
             stage(args.bundle, env, tool["config"], images)
+            current = docker_identity.verify(engine_proof)
+            docker_identity.verify_same_host(before, current)
+            work = preflight.runtime_scratch(env)
+            with os.fdopen(os.open(work / "docker-toolchain-before-auth.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as record:
+                record.write(transport.canonical(current))
         if args.phase != "execute":
             print(json.dumps({"status": "validated", "targets": list(images), "activation_authorized": False}))
             return 0
-        report = execute(args.bundle, env, decision, args.decision_sha256, tool, images)
+        current = preauth_checkpoint(env, engine_proof)
+        work = preflight.runtime_scratch(env)
+        with os.fdopen(os.open(work / "docker-toolchain-before-publication.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as record:
+            record.write(transport.canonical(current))
+        report = execute(args.bundle, env, decision, args.decision_sha256, tool, images, verify_host=lambda: preauth_checkpoint(env, engine_proof))
         print(json.dumps(report))
         return int(report["status"] != "published_and_verified")
     except (transport.Blocked, ValueError, TypeError, OSError, KeyError, tarfile.TarError, subprocess.SubprocessError) as error:

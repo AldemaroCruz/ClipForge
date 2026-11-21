@@ -136,17 +136,26 @@ class DeployCustody(unittest.TestCase):
 class PublicationHostGate(unittest.TestCase):
     def test_stage_binds_gate_to_docker_receipt_and_verifies_live_before_docker_load(self):
         digest = "a" * 64
-        decision = {"inputs": {"publisher": {}, "targets": list(publish.TARGETS), "docker_toolchain_sha256": digest},
+        decision = {"inputs": {"publisher": {}, "targets": list(publish.TARGETS), "docker_toolchain_sha256": digest,
+                               "docker_preparation_sha256": "e" * 64, "docker_rehearsal_sha256": "f" * 64},
                     "review_sha256": "b" * 64}
         report = {"schema": publish.docker_identity.SCHEMA}
-        subject = {"identity": "sha256:" + "c" * 64}
+        subject = {"identity": "sha256:" + "c" * 64, "publication": {"path": "publisher-scope.json", "sha256": "b" * 64}}
         review = {"subjects": {"credential_toolchain": subject}}
+        scope = {"docker_projection_sha256": digest, "preparation": {"path": "docker-prepare.json", "sha256": "e" * 64},
+                 "rehearsal": {"path": "publisher-rehearsal.json", "sha256": "f" * 64}}
         steps = Mock()
-        with patch.dict(publish.os.environ, {}, clear=True), patch.object(publish.preflight, "local_decision", return_value=decision), \
+        steps.live.return_value = report
+        with TemporaryDirectory() as work, patch.dict(publish.os.environ, {}, clear=True), \
+                patch.object(publish.preflight, "runtime_scratch", return_value=Path(work)), \
+                patch.object(publish.preflight, "local_decision", return_value=decision), \
                 patch.object(publish.preflight, "json_bytes", side_effect=lambda _, name, *args, **kwargs:
-                             {"docker-toolchain.json": report, "review.json": review}[name]), \
+                             {"docker-toolchain.json": report, "review.json": review, "publisher-scope.json": scope}[name]), \
+                patch.object(publish.docker_identity, "projection_sha256", return_value=digest), \
                 patch.object(publish.docker_identity, "verify_maintained", steps.maintained), \
                 patch.object(publish.docker_identity, "verify", steps.live), \
+                patch.object(publish.docker_identity, "verify_same_host", steps.continuity), \
+                patch.object(publish, "verify_prepared_host", steps.prepared), \
                 patch.object(publish, "verify_tool", return_value={"config": "fixture"}), \
                 patch.object(publish, "archive_inventory", return_value={}), patch.object(publish, "stage", steps.stage), \
                 patch.object(publish, "execute", steps.execute), patch("builtins.print"):
@@ -155,11 +164,29 @@ class PublicationHostGate(unittest.TestCase):
             self.assertFalse(steps.mock_calls)
             subject["identity"] = "sha256:" + digest
             self.assertEqual(publish.main(args), 0)
-            self.assertEqual([call[0] for call in steps.mock_calls], ["maintained", "live", "stage"])
+            self.assertEqual([call[0] for call in steps.mock_calls], ["maintained", "live", "prepared", "stage", "live", "continuity"])
+            self.assertEqual(json.loads((Path(work) / "docker-toolchain-before-auth.json").read_bytes()), report)
             steps.reset_mock()
             steps.live.side_effect = publish.docker_identity.ToolchainBlocked("docker_credentialed_toolchain_differs")
             self.assertEqual(publish.main(args), 1)
             self.assertEqual([call[0] for call in steps.mock_calls], ["maintained", "live"])
+
+    def test_same_host_checkpoint_uses_the_actual_before_auth_receipt(self):
+        expected = {"fixture": "review"}
+        actual = {"fixture": "current"}
+        before = {"fixture": "pre-auth"}
+        with TemporaryDirectory() as directory:
+            work = Path(directory)
+            (work / "docker-toolchain-before-auth.json").write_bytes(json.dumps(before).encode())
+            with patch.object(publish.preflight, "runtime_scratch", return_value=work), \
+                    patch.object(publish.docker_identity, "verify", return_value=actual) as verify, \
+                    patch.object(publish.docker_identity, "verify_same_host") as same:
+                self.assertEqual(publish.preauth_checkpoint({}, expected), actual)
+                verify.assert_called_once_with(expected)
+                same.assert_called_once_with(before, actual)
+                same.side_effect = publish.docker_identity.ToolchainBlocked("docker_boot_changed")
+                with self.assertRaisesRegex(ValueError, "docker_boot_changed"):
+                    publish.preauth_checkpoint({}, expected)
 
     def test_stage_rejects_ambient_google_credentials_without_exercising_the_host(self):
         with patch.dict(publish.os.environ, {"GOOGLE_APPLICATION_CREDENTIALS": "fixture"}, clear=True), \

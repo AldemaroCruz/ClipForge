@@ -84,9 +84,20 @@ REQUIRED_BOOTSTRAP_SOURCES = {
 }
 PUBLICATION_WORKFLOW = ".github/workflows/int-demo-a-publish.yml"
 DOCKER_SOURCE = "scripts/int_demo_a_docker.py"
-PUBLICATION_SOURCES = {PUBLICATION_WORKFLOW, DOCKER_SOURCE, "scripts/int_demo_a_publish.py", "scripts/check_int_demo_a.py",
+DOCKER_PREPARE_SOURCE = "scripts/int_demo_a_docker_prepare.py"
+PUBLISHER_LAB_SOURCE = "scripts/int_demo_a_publisher_lab.py"
+PUBLICATION_SOURCES = {PUBLICATION_WORKFLOW, DOCKER_SOURCE, DOCKER_PREPARE_SOURCE, PUBLISHER_LAB_SOURCE,
+                       "scripts/int_demo_a_publish.py", "scripts/check_int_demo_a.py",
                        "scripts/int_demo_a_preflight.py", "scripts/int_demo_a_receipts.py"}
 DOCKER_BINARIES = {"/usr/bin/docker", "/usr/bin/dockerd", "/usr/bin/containerd", "/usr/bin/containerd-shim-runc-v2", "/usr/bin/runc"}
+PUBLISHER_MANIFEST = "sha256:edb24ff2219bd534b34896b0c675d890808372fd10387ec3c4deab70fd309dc1"
+PUBLISHER_CONFIG = "sha256:b158a942e646a94736ec8ce0c6d0557b9de406e0c145116d13003b6d7e2ca70c"
+PUBLICATION_IMAGES = {
+    "runtime": ["sha256:40a22f3fcceccfe163958d9c22882fc22070807bd061de836ce94b9a7d805e15",
+                "4ccaa2ffe0a1b718641dfb71ef5745cf754713b43b293b92d7b455ad97247040"],
+    "db01-noble-client": ["sha256:24e4d9ccea365859c6f455c3780c8abe6a0df3f1150e60380e2b2cc73e0dc5b5",
+                         "350d9623e3920455052f9274f34cb2136c68c82f48ff7396126a599d3d20f8d4"],
+}
 DOCKER_SAST_CONTROLS = {"B404": "subprocess_import_bounded_by_reviewed_callers",
                         "B603": "fixed_argv_absolute_tools_pinned_local_daemon"}
 NOBLE_TARGET = {"instance_id": BOUNDARY["instance_id"], "data_disk_id": BOUNDARY["data_disk_id"],
@@ -248,7 +259,13 @@ def verify_sources(source_root, rows, required, scope):
         raw = local_regular(path)
         require(digest(raw) == expected, "changed_" + scope + "_source")
         if path.suffix == ".py":
-            for statement in ast.walk(ast.parse(raw, filename=name)):
+            tree = ast.parse(raw, filename=name)
+            publication_local = set()
+            if scope == "bootstrap" and name == "scripts/check_int_demo_a.py":
+                # These local imports run only in the publication verifier. The gate source itself remains scanned.
+                publication_local = {node for function in tree.body if isinstance(function, ast.FunctionDef)
+                                     and function.name == "verify_publication_sources" for node in ast.walk(function)}
+            for statement in ast.walk(tree):
                 imports = []
                 if isinstance(statement, ast.Import):
                     imports = [item.name for item in statement.names]
@@ -258,6 +275,8 @@ def verify_sources(source_root, rows, required, scope):
                 for module in imports:
                     if module.startswith("scripts."):
                         imported = module.replace(".", "/") + ".py"
+                        if statement in publication_local and imported in {DOCKER_SOURCE, DOCKER_PREPARE_SOURCE}:
+                            continue
                         require(imported in rows, "missing_" + scope + "_import")
 
 
@@ -312,24 +331,48 @@ def verify_bootstrap_toolchain(root, subject, binding, at, runner_version, sourc
 
 
 def verify_publication_sources(root, subject, binding, source_root, entrypoint, runner_version):
-    proof = exact(evidence(root, subject["publication"]), "binding sources docker_runtime docker_targets", "publication_scope_fields")
+    from scripts import int_demo_a_docker as docker_identity
+    from scripts import int_demo_a_docker_prepare as docker_prepare
+
+    proof = exact(evidence(root, subject["publication"]),
+                  "binding sources docker_runtime docker_targets docker_projection_sha256 preparation rehearsal", "publication_scope_fields")
     runtime_ref = proof["docker_runtime"]
-    runtime = exact(evidence(root, runtime_ref), "schema runner_image image_os socket files native components engine_settings kernel",
-                    "publication_docker_receipt_fields")
+    runtime = evidence(root, runtime_ref)
+    portable = docker_identity.stable_projection(runtime)
+    projection_sha = docker_identity.projection_sha256(runtime)
     require(proof["binding"] == binding and subject["identity"] == "sha256:" + runtime_ref["sha256"]
-            and runtime["schema"] == "clipforge-int-demo-a-docker-toolchain-2" and runtime["image_os"] == "ubuntu24"
-            and runtime["socket"] == "/run/docker.sock" and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", runtime["runner_image"])
+            and proof["docker_projection_sha256"] == projection_sha
             and (runner_version is None or runtime["runner_image"] == runner_version), "publication_runner_or_artifact_mismatch")
-    require(set(runtime["files"]) == DOCKER_BINARIES and set(runtime["native"]) == {"client", "server"}
-            and {"Engine", "containerd", "runc"} <= set(runtime["components"])
-            and all(row["path"].startswith("/usr/bin/") and HEX.fullmatch(row["sha256"]) and type(row["bytes"]) is int and row["bytes"] > 0
-                    for row in runtime["files"].values())
-            and runtime["kernel"]["package"] == "linux-image-" + runtime["kernel"]["release"]
-            and runtime["kernel"]["version"], "publication_docker_or_kernel_closure")
+    docker_identity.verify_maintained(runtime)
+    require(all((runtime["files"][path]["bytes"], runtime["files"][path]["sha256"]) == identity
+                for path, identity in docker_prepare.BINARIES.items()), "publication_docker_authenticated_executable_mismatch")
+    prepared = evidence(root, proof["preparation"])
+    observed = runtime["observation"]
+    require(prepared["schema"] == docker_prepare.SCHEMA and prepared["profile"] == "evaluate"
+            and prepared["status"] == "prepared_verified" and prepared["publication_eligibility"] == "eligible"
+            and prepared["cloud_credentials_used"] is False and prepared["oidc_job_capability"] is False
+            and prepared["run"] == observed["run"] and prepared["attempt"] == observed["attempt"] and prepared["commit"] == observed["source_commit"]
+            and prepared["comparison"]["after"]["toolchain"] == portable, "publication_preparation_receipt_unbound")
+    docker_identity.verify_same_host(prepared["after"]["toolchain"], runtime)
+    rehearsal = exact(evidence(root, proof["rehearsal"]),
+                      "schema status source_commit source_sha256 run attempt job boot_id docker_toolchain_sha256 docker_projection_sha256 preparation_sha256 "
+                      "publisher_manifest publisher_config images registry_image isolated_network source_unchanged unknown_ca_rejected "
+                      "wrong_hostname_rejected manifest_config_layers_verified cloud_credentials_used owned_resources_removed",
+                      "publication_rehearsal_fields")
+    require(rehearsal["schema"] == "clipforge-int-demo-a-publisher-rehearsal-1" and rehearsal["status"] == "tls_copy_verified"
+            and all(rehearsal[name] == observed[name] for name in ("source_commit", "run", "attempt", "job", "boot_id"))
+            and rehearsal["docker_toolchain_sha256"] == runtime_ref["sha256"] and rehearsal["docker_projection_sha256"] == projection_sha
+            and rehearsal["preparation_sha256"] == proof["preparation"]["sha256"] and rehearsal["publisher_manifest"] == PUBLISHER_MANIFEST
+            and rehearsal["publisher_config"] == PUBLISHER_CONFIG and rehearsal["images"] == PUBLICATION_IMAGES
+            and re.fullmatch(r"(?:[a-z0-9_./:-]+@)?sha256:[a-f0-9]{64}", rehearsal["registry_image"])
+            and rehearsal["cloud_credentials_used"] is False and all(rehearsal[key] is True for key in ("isolated_network", "source_unchanged",
+                "unknown_ca_rejected", "wrong_hostname_rejected", "manifest_config_layers_verified", "owned_resources_removed")),
+            "publication_rehearsal_receipt_unbound")
     manifest = exact(evidence(root, proof["sources"]), "binding files", "publication_source_manifest_fields")
     files = manifest["files"]
     require(manifest["binding"] == binding, "publication_source_manifest_mismatch")
     verify_sources(source_root, files, PUBLICATION_SOURCES, "publication")
+    require(rehearsal["source_sha256"] == files[PUBLISHER_LAB_SOURCE], "publication_rehearsal_source_mismatch")
     require(files[PUBLICATION_WORKFLOW] == entrypoint, "publication_promotion_entrypoint_mismatch")
     scopes = {row["kind"]: evidence(root, evidence(root, row["receipt"])["scope"]) for row in subject["analyses"]}
     require(all(scopes["bandit"]["sha256_by_source_path"].get(name) == sha for name, sha in files.items() if name.endswith(".py"))

@@ -80,7 +80,7 @@ jobs:
     if: needs.local-preflight.result == 'success' && needs.local-preflight.outputs.verified_commit == github.sha
     environment: int
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     permissions:
       contents: read
       actions: read
@@ -93,6 +93,7 @@ jobs:
       GCP_DEPLOY_SA: ${{ vars.GCP_DEPLOY_SA }}
       INT_DEMO_A_PROTECTED_DECISION_SHA256: ${{ vars.INT_DEMO_A_PUBLISH_DECISION_SHA256 }}
       INT_DEMO_A_PROTECTED_GATE_MODE: ${{ vars.INT_DEMO_A_GATE_MODE || 'global' }}
+      INT_DOCKER_PREP_ENVIRONMENT: int
     steps:
       - name: Check out the exact controls
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -100,6 +101,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
       - name: Check the environment approval and allocate private scratch
+        id: scratch
         shell: bash
         run: |
           set -euo pipefail
@@ -121,6 +123,8 @@ jobs:
           path: ${{ env.INT_DEMO_A_BUNDLE }}
           merge-multiple: true
       # The protected job has OIDC permission. This step precedes the Google credentials exchange.
+      - name: Reproduce the reviewed Docker preparation before Google auth
+        run: python -B -m scripts.int_demo_a_publish prepare --bundle "$INT_DEMO_A_BUNDLE" --decision-sha256 "$DECISION_SHA"
       - name: Verify the live Docker toolchain and stage the reviewed publisher before Google auth
         run: python -B -m scripts.int_demo_a_publish stage --bundle "$INT_DEMO_A_BUNDLE" --decision-sha256 "$DECISION_SHA"
       - name: Record the start of the short WIF credential budget
@@ -143,3 +147,14 @@ jobs:
           GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           GH_TOKEN: ${{ github.token }}
         run: python -B -m scripts.int_demo_a_publish execute --bundle "$INT_DEMO_A_BUNDLE" --decision-sha256 "$DECISION_SHA"
+      - name: Preserve the bounded preparation and host observation receipts
+        if: ${{ always() && steps.scratch.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: int-demo-a-publication-toolchain-${{ github.run_id }}-1
+          path: |
+            ${{ runner.temp }}/int-demo-a-docker-prepare.json
+            ${{ env.INT_DEMO_A_WORK }}/docker-toolchain-before-auth.json
+            ${{ env.INT_DEMO_A_WORK }}/docker-toolchain-before-publication.json
+          if-no-files-found: warn
+          retention-days: 7
