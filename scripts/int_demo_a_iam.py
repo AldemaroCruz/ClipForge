@@ -6,6 +6,9 @@ import json
 import os
 from pathlib import Path
 import re
+from urllib.error import HTTPError
+from urllib.parse import quote, urlencode
+from urllib.request import ProxyHandler, Request, build_opener
 
 from scripts import int_db01_noble_read_iam as iam
 from scripts import int_demo_a_native as native
@@ -168,6 +171,25 @@ def authority(value, commit, command):
             and ((value["operation"] == "withdraw") == iam.valid_digest(value["withdraw_from"])), "iam_authority_phase_binding")
     valid_now(value)
     return value
+
+
+def fetch_protected_manifest(reference, token, *, opener=None):
+    ref = native.reference(reference, suffix="manifest.json")
+    iam.custody.object_name(ref["name"])
+    generation = ref["generation"]
+    query = urlencode({"alt": "media", "generation": generation, "ifGenerationMatch": generation})
+    name = quote(ref["name"], safe="")
+    url = f"{receipts.GCS}storage/v1/b/{receipts.BUCKET}/o/{name}?{query}"
+    opener = opener or build_opener(ProxyHandler({}), iam.driver.NoRedirect())
+    request = Request(url, headers={"Authorization": "Bearer " + token}, method="GET")
+    try:
+        with opener.open(request, timeout=30) as response:
+            raw = response.read(ref["size"] + 1)
+    except HTTPError as error:
+        error.close()
+        raise iam.CloudError(error.code) from None
+    require(len(raw) == ref["size"] and sha(raw) == ref["sha256"], "iam_protected_manifest_bytes_changed")
+    return raw
 
 
 def verify_protected_service(commit, reference, raw, token, read_run, read_service):
@@ -334,8 +356,7 @@ def main(argv=None):
         protected = gate = None
         if phase == "after_protected_service":
             ref = decision["protected_apply"]
-            native.reference(ref, suffix="manifest.json")
-            raw = iam.custody.fetch_verified(ref, token=token)
+            raw = fetch_protected_manifest(ref, token)
             protected = verify_protected_service(args.commit, ref, raw, token, github_run, native.verify_live_iap)
             def gate():
                 require(native.verify_live_iap(scope.PROTECTED_RUNTIME, None, token) == protected["run_service"],

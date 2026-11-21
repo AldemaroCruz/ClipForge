@@ -77,12 +77,12 @@ def object_name(name):
     return name
 
 
-def request(method, name, *, generation=None, payload=None, token=None):
+def request(method, name, *, generation=None, payload=None):
     """Restricted Storage JSON API; create-only uploads and generation-pinned reads."""
     from scripts.tf_int_plan import NoRedirect
     object_name(name)
     c.require(method in {"GET", "POST"}, "Plan custody forbids replacement, deletion and state writes")
-    headers = {"Authorization": "Bearer " + (os.environ["GCP_ACCESS_TOKEN"] if token is None else token)}
+    headers = {"Authorization": "Bearer " + os.environ["GCP_ACCESS_TOKEN"]}
     if method == "POST":
         c.require(payload is not None and len(payload) <= LIMIT, "Private plan exceeds the upload bound")
         url = "https://storage.googleapis.com/upload/storage/v1/b/" + c.BUCKET + "/o?" + urlencode(
@@ -133,10 +133,10 @@ def retain_plan(work, backend, environ):
             "apply_requires": "new manual INT approval, current application CI success, reviewed findings and exact digest publication"}
 
 
-def fetch_verified(reference, *, token=None):
+def fetch_verified(reference):
     c.require(set(reference) == {"name", "generation", "sha256", "size"}, "Unexpected private object reference")
     c.require(bool(re.fullmatch(r"[a-f0-9]{64}", reference["sha256"])), "Expected SHA-256 is required")
-    raw = request("GET", reference["name"], generation=reference["generation"], token=token)
+    raw = request("GET", reference["name"], generation=reference["generation"])
     c.require(len(raw) == reference["size"] and sha256(raw) == reference["sha256"], "Private object generation or SHA-256 mismatch")
     return raw
 

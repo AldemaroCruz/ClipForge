@@ -2,10 +2,12 @@
 
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from scripts import int_demo_a_iam as delta
 
@@ -143,12 +145,18 @@ class ScopedIamTests(unittest.TestCase):
         raw = b'{"manifest":"fixture"}'
         reference = {"name": f"private-plans/int/{COMMIT}/123456-1/manifest.json", "generation": "24",
                      "size": len(raw), "sha256": delta.sha(raw)}
-        with patch.object(delta.iam.custody, "request", return_value=raw) as request:
-            self.assertEqual(delta.iam.custody.fetch_verified(reference, token=TOKEN), raw)
-            request.assert_called_once_with("GET", reference["name"], generation="24", token=TOKEN)
-        with patch.object(delta.iam.custody, "request", return_value=raw + b"\n"):
-            with self.assertRaisesRegex(ValueError, "generation or SHA-256 mismatch"):
-                delta.iam.custody.fetch_verified(reference, token=TOKEN)
+        opener = Mock()
+        opener.open.return_value = BytesIO(raw)
+        self.assertEqual(delta.fetch_protected_manifest(reference, TOKEN, opener=opener), raw)
+        request = opener.open.call_args.args[0]
+        url = urlsplit(request.full_url)
+        self.assertEqual((request.get_method(), request.get_header("Authorization"), url.scheme, url.hostname),
+                         ("GET", "Bearer " + TOKEN, "https", "storage.googleapis.com"))
+        self.assertTrue(unquote(url.path).endswith("/o/" + reference["name"]))
+        self.assertEqual(parse_qs(url.query), {"alt": ["media"], "generation": ["24"], "ifGenerationMatch": ["24"]})
+        opener.open.return_value = BytesIO(raw + b"\n")
+        with self.assertRaisesRegex(ValueError, "iam_protected_manifest_bytes_changed"):
+            delta.fetch_protected_manifest(reference, TOKEN, opener=opener)
 
     def test_for_phase_two_exact_native_apply_and_live_iap_identity_are_required(self):
         deployment = delta.scope
