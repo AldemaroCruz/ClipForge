@@ -36,3 +36,30 @@ class DockerToolchain(unittest.TestCase):
         self.assertNotIn("/ignored", str(settings))
         with self.assertRaisesRegex(ValueError, "docker_engine_security_settings"):
             docker.engine_settings({**info, "default_runtime": "different"})
+
+    def test_publication_requires_maintained_engine_components_and_booted_noble_aws_package(self):
+        expected = {
+            "image_os": "ubuntu24",
+            "native": {"client": {"version": "29.10.0"}, "server": {"version": "29.10.0"}},
+            "components": {"Engine": {"Version": "29.10.0"}, "containerd": {"Version": "v2.4.2"}, "runc": {"Version": "1.5.3"}},
+            "kernel": {"release": "7.0.0-1017-aws", "package": "linux-image-7.0.0-1017-aws", "version": "7.0.0-1017.18~24.04.1"},
+        }
+        docker.verify_maintained(expected)
+        old = deepcopy(expected)
+        old["native"]["client"]["version"] = old["native"]["server"]["version"] = old["components"]["Engine"]["Version"] = "28.0.4"
+        with self.assertRaisesRegex(ValueError, "docker_engine_publication_maintenance_floor"):
+            docker.verify_maintained(old)
+        old["native"]["client"]["version"] = "29.10.0"
+        with self.assertRaisesRegex(ValueError, "docker_client_server_engine_version_mismatch"):
+            docker.verify_maintained(old)
+        for package in ("linux-image-7.0.0-1014-aws", "linux-image-7.0.0-1017-gcp"):
+            changed = {**expected, "kernel": {**expected["kernel"], "package": package}}
+            with self.subTest(package=package), self.assertRaisesRegex(ValueError, "docker_noble_aws_kernel_security_floor"):
+                docker.verify_maintained(changed)
+        old = {**expected, "kernel": {"release": "7.0.0-1014-aws", "package": "linux-image-7.0.0-1014-aws",
+                                      "version": "7.0.0-1014.14~24.04.1"}}
+        with self.assertRaisesRegex(ValueError, "docker_noble_aws_kernel_security_floor"):
+            docker.verify_maintained(old)
+        expected["components"]["runc"]["Version"] = "1.5.2"
+        with self.assertRaisesRegex(ValueError, "docker_component_publication_maintenance_floor"):
+            docker.verify_maintained(expected)

@@ -1,0 +1,197 @@
+name: ClipForge INT Noble protected APT or kmod intervention
+
+on:
+  workflow_dispatch:
+    inputs:
+      approved_commit:
+        description: Exact approved SHA of the Noble intervention controls
+        required: true
+        type: string
+      review_run_id:
+        description: Run owning the private operation decision artifact
+        required: true
+        type: string
+      review_artifact_id:
+        description: Exact private operation decision artifact ID
+        required: true
+        type: string
+      decision_sha256:
+        description: SHA256 of the independently approved operation decision
+        required: true
+        type: string
+      review_sha256:
+        description: SHA256 of the exact intervention security review
+        required: true
+        type: string
+      binding_sha256:
+        description: SHA256 of the independently approved intervention binding
+        required: true
+        type: string
+
+permissions: {}
+concurrency:
+  group: clipforge-int-db01-noble
+  cancel-in-progress: false
+
+env:
+  INT_APPROVED_COMMIT: ${{ inputs.approved_commit }}
+  OWNER_ARTIFACT: ${{ inputs.review_artifact_id }}
+  OWNER_RUN: ${{ inputs.review_run_id }}
+  DECISION_SHA: ${{ inputs.decision_sha256 }}
+  REVIEW_SHA: ${{ inputs.review_sha256 }}
+  BINDING_SHA: ${{ inputs.binding_sha256 }}
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  local-preflight:
+    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      verified_commit: ${{ steps.verify.outputs.verified_commit }}
+    steps:
+      - name: Check out the exact intervention code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Verify the requested commit and exact artifact references
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_SHA" = "$INT_APPROVED_COMMIT"
+          [[ "$OWNER_ARTIFACT" =~ ^[1-9][0-9]*$ && "$OWNER_RUN" =~ ^[1-9][0-9]*$ ]]
+          [[ "$DECISION_SHA" =~ ^[a-f0-9]{64}$ && "$REVIEW_SHA" =~ ^[a-f0-9]{64}$ && "$BINDING_SHA" =~ ^[a-f0-9]{64}$ ]]
+          umask 077
+          echo "BUNDLE=$(mktemp -d "$RUNNER_TEMP/clipforge-noble-intervention-review.XXXXXXXX")" >> "$GITHUB_ENV"
+      - name: Receive the pinned private decision and evidence
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          artifact-ids: ${{ inputs.review_artifact_id }}
+          run-id: ${{ inputs.review_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ env.BUNDLE }}
+          merge-multiple: true
+      - name: Validate the operation without OIDC or cloud credentials
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B -m scripts.int_noble_guest_intervention local --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA"
+          echo "verified_commit=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
+  intervene:
+    needs: local-preflight
+    if: needs.local-preflight.outputs.verified_commit == github.sha
+    environment: int
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      GUEST_APPROVED_COMMIT: ${{ inputs.approved_commit }}
+      GUEST_ENVIRONMENT: int
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+      INT_DEMO_A_PROTECTED_DECISION_SHA256: ${{ vars.INT_NOBLE_INTERVENTION_DECISION_SHA256 }}
+      INT_DEMO_A_PROTECTED_GATE_MODE: ${{ vars.INT_NOBLE_INTERVENTION_GATE_MODE || 'global' }}
+      INT_NOBLE_INTERVENTION_REVIEW_SHA256: ${{ vars.INT_NOBLE_INTERVENTION_REVIEW_SHA256 }}
+      INT_NOBLE_INTERVENTION_BINDING_SHA256: ${{ vars.INT_NOBLE_INTERVENTION_BINDING_SHA256 }}
+    steps:
+      - name: Check out the same reviewed controls
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Allocate private guest and report scratch
+        id: scratch
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          git check-ignore --no-index --quiet gha-creds-noble-intervention.json
+          test -z "$(git ls-files -- ':(glob)**/gha-creds-*.json')"
+          work="$(mktemp -d "$RUNNER_TEMP/clipforge-guest-inventory.XXXXXXXX")"
+          reports="$(mktemp -d "$RUNNER_TEMP/clipforge-guest-report.XXXXXXXX")"
+          bundle="$(mktemp -d "$RUNNER_TEMP/clipforge-noble-intervention-review.XXXXXXXX")"
+          backend="$(mktemp -d "$RUNNER_TEMP/clipforge-noble-backend.XXXXXXXX")"
+          printf 'BUNDLE=%s\nBACKEND_DIR=%s\nGUEST_WORK=%s\nGUEST_REPORTS=%s\nCLOUDSDK_CONFIG=%s/gcloud\nCLOUDSDK_CORE_DISABLE_PROMPTS=1\n' "$bundle" "$backend" "$work" "$reports" "$work" >> "$GITHUB_ENV"
+      - name: Receive the same pinned private operation inputs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          artifact-ids: ${{ inputs.review_artifact_id }}
+          run-id: ${{ inputs.review_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ env.BUNDLE }}
+          merge-multiple: true
+      - name: Prepare the reviewed Cloud SDK version
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+        with:
+          version: 582.0.0
+      - name: Revalidate the independent int approval before Google authentication
+        run: python -B -m scripts.int_noble_guest_intervention protected-local --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA"
+      - name: Federate as the existing Terraform identity for one metadata observation
+        id: backend-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_TERRAFORM_SA }}
+          token_format: access_token
+          access_token_lifetime: 300s
+          create_credentials_file: false
+          export_environment_variables: false
+      - name: Observe only state metadata and current absence of lock
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.backend-auth.outputs.access_token }}
+          GCP_TERRAFORM_SA: ${{ vars.GCP_TERRAFORM_SA }}
+        run: python -B -m scripts.int_noble_guest_intervention observe-backend --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA" --backend-observation "$BACKEND_DIR/backend.json"
+      - name: Verify freshness of the local proof before the Deploy exchange
+        run: python -B -m scripts.int_noble_guest_intervention protected-local --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA" --backend-observation "$BACKEND_DIR/backend.json"
+      - name: Record the start of the short credential budget
+        run: echo "INT_GCP_AUTH_STARTED_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
+      - name: Federate solely as the existing Deploy service account
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+          token_format: access_token
+          access_token_lifetime: 900s
+          access_token_scopes: https://www.googleapis.com/auth/cloud-platform
+          create_credentials_file: true
+          export_environment_variables: true
+          cleanup_credentials: true
+      - name: Verify live policy and pinned guest and execute the exact authorization once
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          GCP_DEPLOY_SA: ${{ vars.GCP_DEPLOY_SA }}
+          GH_TOKEN: ${{ github.token }}
+        run: python -B -m scripts.int_noble_guest_intervention run --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA" --backend-observation "$BACKEND_DIR/backend.json"
+      - name: Confirm absence of only the key owned by this attempt
+        if: always() && steps.scratch.outcome == 'success' && steps.auth.outcome == 'success'
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          GCP_DEPLOY_SA: ${{ vars.GCP_DEPLOY_SA }}
+        run: python -B -m scripts.int_noble_guest_intervention cleanup
+      - name: Retain sanitized status and cleanup without credentials
+        if: always() && steps.scratch.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: noble-intervention-result-${{ github.sha }}-${{ github.run_id }}-1
+          path: |
+            ${{ env.GUEST_REPORTS }}/intervention-result.json
+            ${{ env.GUEST_REPORTS }}/intervention-failure.json
+            ${{ env.GUEST_REPORTS }}/cleanup.json
+          if-no-files-found: warn
+          retention-days: 7

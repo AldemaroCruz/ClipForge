@@ -30,6 +30,7 @@ DATA_DISK = "7382984635240536620"
 READINESS = "63406f8a35d85e89ae83dacc437e76e922dd19b58eb820716ae5251df930000f"
 ROOT = Path("/root")
 INTENT = ROOT / "clipforge-noble-apt-6.8.0-151.151.intent.json"
+RECEIPT = ROOT / "clipforge-noble-apt-6.8.0-151.151.receipt.json"
 INPUT = "clipforge-int-noble-apt-input-1"
 APT_COMMAND = ["/usr/bin/apt-get", *apt_checks.APT_NO_CACHE, "--no-download",
                "--no-install-recommends", "--no-remove", "--only-upgrade"]
@@ -159,8 +160,8 @@ def observed_packages():
     return target[0], sha256(canonical(rows)).hexdigest()
 
 
-def save_intent(value):
-    fd = os.open(INTENT, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+def save_record(path, value):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "wb") as stream:
         stream.write(canonical(value) + b"\n")
         stream.flush()
@@ -170,6 +171,10 @@ def save_intent(value):
         os.fsync(disk)
     finally:
         os.close(disk)
+
+
+def save_intent(value):
+    save_record(INTENT, value)
 
 
 def execute(value):
@@ -182,7 +187,7 @@ def execute(value):
     result = None
     try:
         guest_identity()
-        require(not os.path.lexists(INTENT), "apt_intent_exists_reconcile")
+        require(not os.path.lexists(INTENT) and not os.path.lexists(RECEIPT), "apt_intent_exists_reconcile")
         version, rest = observed_packages()
         require(version == apt_checks.CURRENT, "apt_not_at_reviewed_installed_version")
         with apt_scratch(package_bytes()) as (deb, env):
@@ -192,10 +197,14 @@ def execute(value):
             receipt["simulation"] = apt_checks.upgrade(result, version)
             require(receipt["simulation"]["exact_upgrade"], "apt_scope_not_exact")
             require(observed_packages() == (version, rest) and sha256(deb.read_bytes()).hexdigest() == DIGEST, "apt_drift_after_simulation")
-            save_intent({"request_sha256": receipt["request_sha256"], "simulation": receipt["simulation"],
-                         "operation_id": value["operation_id"], "package_sha256": DIGEST, "boot_id": GUEST_BOOT})
+            intent = {"schema": "clipforge-int-noble-apt-intent-1", "request_sha256": receipt["request_sha256"],
+                      "approved_commit": value["approved_commit"], "owner_decision_sha256": value["owner_decision_sha256"],
+                      "simulation": receipt["simulation"], "operation_id": value["operation_id"], "package_sha256": DIGEST,
+                      "boot_id": GUEST_BOOT, "other_package_states_sha256": rest}
+            save_intent(intent)
             receipt["launch_intent"] = True
             receipt["status"] = "install_outcome_unknown_reconcile"
+            receipt["intent_sha256"] = sha256(canonical(intent) + b"\n").hexdigest()
             # APT validates the delta. dpkg's native lock then protects installation of only this local archive.
             result = apt_checks.run_diagnostic(["/usr/bin/dpkg", "--install", str(deb)], budget=120, environment=env)
             receipt["install"] = {"tool": "dpkg", **apt_checks.sanitized(result, INSTALL_ERRORS)}
@@ -203,11 +212,13 @@ def execute(value):
             later, rest_after = observed_packages()
             guest_identity()
             receipt["postcheck"] = {"installed": later, "other_package_states_equal": rest == rest_after,
-                                    "dpkg_clean": True, "same_boot_and_kernel": True}
+                                    "other_package_states_sha256": rest_after, "dpkg_clean": True, "same_boot_and_kernel": True}
             require(later == apt_checks.TARGET and rest == rest_after, "apt_postcheck_scope_mismatch")
         receipt["temp_released"] = not deb.parent.exists()
         require(receipt["temp_released"], "apt_tmpfs_cleanup_unconfirmed")
-        receipt["status"] = "updated_exact_package"
+        verified = {**receipt, "status": "updated_exact_package"}
+        save_record(RECEIPT, verified)
+        return verified
     except (OSError, UnicodeError, http.client.HTTPException, ValueError) as error:
         receipt["error"] = str(error) if isinstance(error, Blocked) else type(error).__name__
         if receipt["temp_released"] is False and 'deb' in locals():

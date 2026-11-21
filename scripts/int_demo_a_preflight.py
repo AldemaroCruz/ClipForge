@@ -25,7 +25,7 @@ def json_bytes(bundle, filename, expected=None, *, limit=32 * 1024 * 1024):
     return transport.decode(raw)
 
 
-def local_decision(bundle, digest, operation, workflow, env, *, protected=False, now=None):
+def local_decision(bundle, digest, operation, workflow, env, *, protected=False, now=None, guest_action=None):
     """Check the static scope in the job that has no OIDC permission."""
     expected = {"GITHUB_REPOSITORY": REPO, "GITHUB_REF": "refs/heads/" + BRANCH,
                 "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_RUN_ATTEMPT": "1", "RUNNER_ENVIRONMENT": "github-hosted",
@@ -50,9 +50,12 @@ def local_decision(bundle, digest, operation, workflow, env, *, protected=False,
         require(env.get("INT_DEMO_A_PROTECTED_DECISION_SHA256") == digest
                 and env.get("INT_DEMO_A_PROTECTED_GATE_MODE", "global") == value["gate_mode"], "demo_a_independent_protected_approval")
     json_bytes(bundle, "binding.json", value["binding_sha256"], limit=65536)
-    require(gate.main(["--review", str(bundle / "review.json"), "--review-sha256", value["review_sha256"],
-                       "--binding", str(bundle / "binding.json"), "--operation", operation]) == 0,
-            "demo_a_operation_evidence_blocked")
+    review_args = ["--review", str(bundle / "review.json"), "--review-sha256", value["review_sha256"],
+                   "--binding", str(bundle / "binding.json"), "--operation", operation]
+    if guest_action is not None:
+        require(value["inputs"]["action"] == guest_action, "demo_a_guest_action_mismatch")
+        review_args.extend(("--guest-action", guest_action))
+    require(gate.main(review_args) == 0, "demo_a_operation_evidence_blocked")
     return value
 
 

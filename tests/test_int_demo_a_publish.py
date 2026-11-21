@@ -133,5 +133,41 @@ class DeployCustody(unittest.TestCase):
             receipts.job_names("admin", "create")
 
 
+class PublicationHostGate(unittest.TestCase):
+    def test_stage_binds_gate_to_docker_receipt_and_verifies_live_before_docker_load(self):
+        digest = "a" * 64
+        decision = {"inputs": {"publisher": {}, "targets": list(publish.TARGETS), "docker_toolchain_sha256": digest},
+                    "review_sha256": "b" * 64}
+        report = {"schema": publish.docker_identity.SCHEMA}
+        subject = {"identity": "sha256:" + "c" * 64}
+        review = {"subjects": {"credential_toolchain": subject}}
+        steps = Mock()
+        with patch.dict(publish.os.environ, {}, clear=True), patch.object(publish.preflight, "local_decision", return_value=decision), \
+                patch.object(publish.preflight, "json_bytes", side_effect=lambda _, name, *args, **kwargs:
+                             {"docker-toolchain.json": report, "review.json": review}[name]), \
+                patch.object(publish.docker_identity, "verify_maintained", steps.maintained), \
+                patch.object(publish.docker_identity, "verify", steps.live), \
+                patch.object(publish, "verify_tool", return_value={"config": "fixture"}), \
+                patch.object(publish, "archive_inventory", return_value={}), patch.object(publish, "stage", steps.stage), \
+                patch.object(publish, "execute", steps.execute), patch("builtins.print"):
+            args = ["stage", "--bundle", "fixture", "--decision-sha256", "d" * 64]
+            self.assertEqual(publish.main(args), 1)
+            self.assertFalse(steps.mock_calls)
+            subject["identity"] = "sha256:" + digest
+            self.assertEqual(publish.main(args), 0)
+            self.assertEqual([call[0] for call in steps.mock_calls], ["maintained", "live", "stage"])
+            steps.reset_mock()
+            steps.live.side_effect = publish.docker_identity.ToolchainBlocked("docker_credentialed_toolchain_differs")
+            self.assertEqual(publish.main(args), 1)
+            self.assertEqual([call[0] for call in steps.mock_calls], ["maintained", "live"])
+
+    def test_stage_rejects_ambient_google_credentials_without_exercising_the_host(self):
+        with patch.dict(publish.os.environ, {"GOOGLE_APPLICATION_CREDENTIALS": "fixture"}, clear=True), \
+                patch.object(publish.preflight, "local_decision") as local, patch.object(publish, "stage") as stage, patch("builtins.print"):
+            self.assertEqual(publish.main(["stage", "--bundle", "fixture", "--decision-sha256", "d" * 64]), 1)
+            local.assert_not_called()
+            stage.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

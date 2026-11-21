@@ -324,11 +324,18 @@ def main(argv=None):
     args = parser.parse_args(argv)
     env = os.environ
     try:
+        if args.phase == "stage":
+            require(not env.get("GCP_ACCESS_TOKEN") and not env.get("GOOGLE_APPLICATION_CREDENTIALS"),
+                    "demo_a_docker_staging_precedes_google_credentials")
         decision = preflight.local_decision(args.bundle, args.decision_sha256, OPERATION, WORKFLOW, env, protected=args.phase != "local")
         inputs = decision["inputs"]
         require(set(inputs) == {"publisher", "targets", "docker_toolchain_sha256"} and inputs["targets"] == list(TARGETS), "demo_a_two_targets_bound")
         engine_proof = preflight.json_bytes(args.bundle, "docker-toolchain.json", inputs["docker_toolchain_sha256"], limit=65536)
         require(engine_proof["schema"] == docker_identity.SCHEMA, "demo_a_docker_proof_schema")
+        review = preflight.json_bytes(args.bundle, "review.json", decision["review_sha256"])
+        require(review["subjects"]["credential_toolchain"]["identity"] == "sha256:" + inputs["docker_toolchain_sha256"],
+                "demo_a_docker_gate_inventory_unbound")
+        docker_identity.verify_maintained(engine_proof)
         tool = verify_tool(args.bundle, inputs["publisher"])
         images = {target: archive_inventory(args.bundle / (target + ".oci.tar"), approved) for target, approved in TARGETS.items()}
         if args.phase != "local":
@@ -342,7 +349,7 @@ def main(argv=None):
         print(json.dumps(report))
         return int(report["status"] != "published_and_verified")
     except (transport.Blocked, ValueError, TypeError, OSError, KeyError, tarfile.TarError, subprocess.SubprocessError) as error:
-        code = str(error) if isinstance(error, transport.Blocked) else type(error).__name__
+        code = str(error) if isinstance(error, (transport.Blocked, docker_identity.ToolchainBlocked)) else type(error).__name__
         print(json.dumps({"status": "blocked", "error_code": code}))
         return 1
 

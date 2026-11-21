@@ -15,11 +15,17 @@ DOCKER = "/usr/bin/docker"
 SOCKET = "/run/docker.sock"
 BINARIES = (DOCKER, "/usr/bin/dockerd", "/usr/bin/containerd", "/usr/bin/containerd-shim-runc-v2", "/usr/bin/runc")
 SCHEMA = "clipforge-int-demo-a-docker-toolchain-2"
+SEMVER = re.compile(r"v?([0-9]+)\.([0-9]+)\.([0-9]+)")
+AWS_NOBLE_KERNEL = re.compile(r"7\.0\.0-([0-9]+)\.([0-9]+)~24\.04\.([0-9]+)")
+
+
+class ToolchainBlocked(ValueError):
+    """A fixed diagnostic code for the staged publisher."""
 
 
 def require(condition, error):
     if not condition:
-        raise ValueError(error)
+        raise ToolchainBlocked(error)
 
 
 def run(args, home, *, timeout=12):
@@ -118,6 +124,29 @@ def native_versions(reported):
 def verify(expected, *, inspect=None):
     inspect = inspect or inventory
     require(inspect() == expected, "docker_credentialed_toolchain_differs")
+
+
+def verify_maintained(expected):
+    """Restrict publication to the reviewed maintained Noble AWS and Docker lines."""
+    native = expected["native"]
+    engine = native["server"]["version"]
+    components = expected["components"]
+    require(native["client"]["version"] == engine == components["Engine"]["Version"],
+            "docker_client_server_engine_version_mismatch")
+    # Docker 28 is out of maintenance. The exact reviewed alternative starts at 29.10.0.
+    engine_version = SEMVER.fullmatch(engine)
+    require(engine_version and int(engine_version[1]) == 29 and int(engine_version[2]) >= 10,
+            "docker_engine_publication_maintenance_floor")
+    for component, required in (("containerd", (2, 4, 2)), ("runc", (1, 5, 3))):
+        version = SEMVER.fullmatch(components[component]["Version"])
+        numbers = tuple(map(int, version.groups())) if version else ()
+        require(numbers[:2] == required[:2] and numbers >= required, "docker_component_publication_maintenance_floor")
+    kernel = expected["kernel"]
+    version = AWS_NOBLE_KERNEL.fullmatch(kernel["version"])
+    # This floor is for Noble AWS 7.0 only. Other variants require their own reviewed policy.
+    require(expected["image_os"] == "ubuntu24" and version
+            and kernel["release"] == f"7.0.0-{version[1]}-aws" and kernel["package"] == "linux-image-" + kernel["release"]
+            and tuple(map(int, version.groups())) >= (1017, 18, 1), "docker_noble_aws_kernel_security_floor")
 
 
 def main(argv=None):

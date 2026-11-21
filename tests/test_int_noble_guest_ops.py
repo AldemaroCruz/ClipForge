@@ -45,7 +45,7 @@ class AptTests(unittest.TestCase):
             apt.request(apt.canonical({**complete, "data_disk_id": "6427691858848206684"}), operator)
 
     def test_exact_plan_before_one_write_and_audit(self):
-        intent = Mock()
+        intent, terminal = Mock(), Mock()
         def native(argv, **kwargs):
             self.assertEqual(kwargs["environment"], {"APT_CONFIG": "fixture"})
             if "-s" in argv:
@@ -60,17 +60,22 @@ class AptTests(unittest.TestCase):
         with (patch.object(apt, "guest_identity") as checked, patch.object(apt.os.path, "lexists", return_value=False),
               patch.object(apt, "observed_packages", side_effect=[OLD, OLD, NEW]), patch.object(apt, "package_bytes"),
               patch.object(apt, "apt_scratch", disposable_apt_scratch), patch.object(apt, "save_intent", intent),
+              patch.object(apt, "save_record", terminal),
               patch.object(apt, "DIGEST", apt.sha256(b"synthetic fixture").hexdigest()),
               patch.object(apt.apt_checks, "run_diagnostic", side_effect=native) as runner):
             receipt = apt.execute(VALUE)
         self.assertEqual(receipt["status"], "updated_exact_package")
         self.assertTrue(receipt["temp_released"])
         self.assertTrue(receipt["postcheck"]["other_package_states_equal"])
+        self.assertEqual(intent.call_args.args[0]["other_package_states_sha256"], OTHER)
+        self.assertEqual(receipt["postcheck"]["other_package_states_sha256"], OTHER)
+        self.assertEqual(receipt["intent_sha256"], apt.sha256(apt.canonical(intent.call_args.args[0]) + b"\n").hexdigest())
+        terminal.assert_called_once_with(apt.RECEIPT, receipt)
         self.assertEqual(checked.call_count, 2)
         self.assertEqual(runner.call_count, 2)
 
     def test_scope_mismatch_and_replay_never_install(self):
-        with (patch.object(apt, "guest_identity"), patch.object(apt.os.path, "lexists", side_effect=[False, True]),
+        with (patch.object(apt, "guest_identity"), patch.object(apt.os.path, "lexists", side_effect=[False, False, True]),
               patch.object(apt, "observed_packages", return_value=OLD), patch.object(apt, "package_bytes") as fetch,
               patch.object(apt, "apt_scratch", disposable_apt_scratch), patch.object(apt, "save_intent") as intent,
               patch.object(apt.apt_checks, "run_diagnostic", return_value=("exited", 0, SIMULATED[2] + "Remv other\n", "")) as run):
@@ -90,6 +95,22 @@ class AptTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "install_outcome_unknown_reconcile")
         self.assertTrue(receipt["launch_intent"])
         self.assertTrue(receipt["temp_released"])
+
+    def test_lost_terminal_write_keeps_intent_and_refuses_replay(self):
+        intent = Mock()
+        with (patch.object(apt, "guest_identity"), patch.object(apt.os.path, "lexists", side_effect=[False, False, True]),
+              patch.object(apt, "observed_packages", side_effect=[OLD, OLD, NEW]), patch.object(apt, "package_bytes"),
+              patch.object(apt, "apt_scratch", disposable_apt_scratch), patch.object(apt, "save_intent", intent),
+              patch.object(apt, "save_record", side_effect=OSError("fixture terminal write lost")),
+              patch.object(apt, "DIGEST", apt.sha256(b"synthetic fixture").hexdigest()),
+              patch.object(apt.apt_checks, "run_diagnostic", side_effect=[SIMULATED, ("exited", 0, "", "")]) as native):
+            outcome = apt.execute(VALUE)
+            replay = apt.execute(VALUE)
+        self.assertEqual(outcome["status"], "install_outcome_unknown_reconcile")
+        self.assertEqual(outcome["error"], "OSError")
+        self.assertEqual(replay["error"], "apt_intent_exists_reconcile")
+        self.assertEqual(intent.call_args.args[0]["other_package_states_sha256"], OTHER)
+        self.assertEqual(native.call_count, 2)
 
 
 class HumanTests(unittest.TestCase):

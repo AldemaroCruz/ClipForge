@@ -120,7 +120,8 @@ jobs:
           github-token: ${{ github.token }}
           path: ${{ env.INT_DEMO_A_BUNDLE }}
           merge-multiple: true
-      - name: Verify and load only the reviewed local publisher image
+      # The protected job has OIDC permission. This step precedes the Google credentials exchange.
+      - name: Verify the live Docker toolchain and stage the reviewed publisher before Google auth
         run: python -B -m scripts.int_demo_a_publish stage --bundle "$INT_DEMO_A_BUNDLE" --decision-sha256 "$DECISION_SHA"
       - name: Record the start of the short WIF credential budget
         run: echo "INT_DEMO_A_AUTH_STARTED_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
