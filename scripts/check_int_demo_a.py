@@ -87,8 +87,15 @@ DOCKER_SOURCE = "scripts/int_demo_a_docker.py"
 DOCKER_PREPARE_SOURCE = "scripts/int_demo_a_docker_prepare.py"
 PUBLISHER_LAB_SOURCE = "scripts/int_demo_a_publisher_lab.py"
 PUBLICATION_SOURCES = {PUBLICATION_WORKFLOW, DOCKER_SOURCE, DOCKER_PREPARE_SOURCE, PUBLISHER_LAB_SOURCE,
-                       "scripts/int_demo_a_publish.py", "scripts/check_int_demo_a.py",
+                       "scripts/int_demo_a_publish.py", "scripts/int_demo_a_publish_common.py", "scripts/check_int_demo_a.py",
                        "scripts/int_demo_a_preflight.py", "scripts/int_demo_a_receipts.py"}
+NATIVE_PUBLISHER = "scripts/int_demo_a_native_skopeo.py"
+NATIVE_HOST = "scripts/int_demo_a_publication_host.py"
+NATIVE_PUBLICATION_SOURCES = {PUBLICATION_WORKFLOW, NATIVE_PUBLISHER, NATIVE_HOST,
+                              "scripts/int_demo_a_native_publication.py", "scripts/int_demo_a_publish_common.py",
+                              "scripts/int_demo_a_publication_input.py",
+                              "scripts/check_int_demo_a.py", "scripts/int_demo_a_preflight.py", "scripts/int_demo_a_receipts.py"}
+NATIVE_PUBLICATION_CHECKS = ("private_oci_before_write_wif", "registry_digest_and_custody", "native_runner_and_skopeo_continuity")
 DOCKER_BINARIES = {"/usr/bin/docker", "/usr/bin/dockerd", "/usr/bin/containerd", "/usr/bin/containerd-shim-runc-v2", "/usr/bin/runc"}
 PUBLISHER_MANIFEST = "sha256:edb24ff2219bd534b34896b0c675d890808372fd10387ec3c4deab70fd309dc1"
 PUBLISHER_CONFIG = "sha256:b158a942e646a94736ec8ce0c6d0557b9de406e0c145116d13003b6d7e2ca70c"
@@ -119,9 +126,12 @@ GUEST_BASELINES = {
 REPO = Path(__file__).resolve().parents[1]
 
 
-def role_contract(operation, role):
+def role_contract(operation, role, publication_profile="docker"):
     analyses, checks = ROLES[role]
-    return analyses, checks + (CREDENTIAL_CHECKS[operation] if role == "credential_toolchain" else ())
+    if role != "credential_toolchain":
+        return analyses, checks
+    credential_checks = NATIVE_PUBLICATION_CHECKS if publication_profile == "native-skopeo" else CREDENTIAL_CHECKS[operation]
+    return analyses, checks + credential_checks
 
 
 def require(condition, code):
@@ -260,11 +270,16 @@ def verify_sources(source_root, rows, required, scope):
         require(digest(raw) == expected, "changed_" + scope + "_source")
         if path.suffix == ".py":
             tree = ast.parse(raw, filename=name)
-            publication_local = set()
-            if scope == "bootstrap" and name == "scripts/check_int_demo_a.py":
-                # These local imports run only in the publication verifier. The gate source itself remains scanned.
-                publication_local = {node for function in tree.body if isinstance(function, ast.FunctionDef)
-                                     and function.name == "verify_publication_sources" for node in ast.walk(function)}
+            local_imports = {}
+            if name == "scripts/check_int_demo_a.py":
+                # The complete gate source is scanned. Only imports on the active verifier branch are runtime dependencies.
+                conditional = {"verify_publication_sources": ("publication", {DOCKER_SOURCE, DOCKER_PREPARE_SOURCE}),
+                               "verify_native_publication_sources": ("native_publication", {NATIVE_HOST, NATIVE_PUBLISHER})}
+                for function in tree.body:
+                    if isinstance(function, ast.FunctionDef) and function.name in conditional:
+                        active_scope, allowed = conditional[function.name]
+                        if scope != active_scope:
+                            local_imports.update((node, allowed) for node in ast.walk(function))
             for statement in ast.walk(tree):
                 imports = []
                 if isinstance(statement, ast.Import):
@@ -275,7 +290,7 @@ def verify_sources(source_root, rows, required, scope):
                 for module in imports:
                     if module.startswith("scripts."):
                         imported = module.replace(".", "/") + ".py"
-                        if statement in publication_local and imported in {DOCKER_SOURCE, DOCKER_PREPARE_SOURCE}:
+                        if imported in local_imports.get(statement, ()):
                             continue
                         require(imported in rows, "missing_" + scope + "_import")
 
@@ -394,6 +409,70 @@ def verify_publication_sources(root, subject, binding, source_root, entrypoint, 
            and node.func.value.id == "subprocess" and node.func.attr == "run" for node in ast.walk(docker)):
         rules.add("B603")
     return rules
+
+
+def verify_native_publication_sources(root, subject, binding, source_root, entrypoint, runner_version):
+    from scripts import int_demo_a_native_skopeo as skopeo
+    from scripts import int_demo_a_publication_host as host
+
+    proof = exact(evidence(root, subject["publication"]),
+                  "binding sources host rehearsal runner_targets", "native_publication_scope_fields")
+    host_ref = proof["host"]
+    runtime = host.checked(evidence(root, host_ref))
+    require(proof["binding"] == binding and subject["identity"] == "sha256:" + host_ref["sha256"]
+            and (runner_version is None or runtime["image_version"] == runner_version), "native_publication_runner_unbound")
+    source_proof = exact(evidence(root, proof["sources"]), "binding files", "native_publication_sources")
+    files = source_proof["files"]
+    require(source_proof["binding"] == binding, "native_publication_sources_unbound")
+    verify_sources(source_root, files, NATIVE_PUBLICATION_SOURCES, "native_publication")
+    require(not {DOCKER_SOURCE, DOCKER_PREPARE_SOURCE, PUBLISHER_LAB_SOURCE, "scripts/int_demo_a_publish.py"} & set(files),
+            "native_publication_docker_source_participates")
+    require(files[PUBLICATION_WORKFLOW] == entrypoint, "native_publication_entrypoint_mismatch")
+    checks = ("native_skopeo_without_docker", "bad_authority_rejected", "wrong_hostname_rejected",
+              "manifest_config_layers_verified", "source_unchanged")
+    rehearsal = exact(evidence(root, proof["rehearsal"]),
+                      "schema status reviewed_adapter_sha256 publisher_manifest publisher_archive_sha256 publisher_files images "
+                      "cloud_credentials_used comparison fixture fixture_tls_protocol uid gid registry "
+                      + " ".join(checks), "native_publication_rehearsal_fields")
+    require(rehearsal["schema"] == "clipforge-int-demo-a-standalone-skopeo-rehearsal-1"
+            and rehearsal["status"] == "native_tls_copy_verified" and rehearsal["reviewed_adapter_sha256"] == files[NATIVE_PUBLISHER]
+            and rehearsal["publisher_manifest"] == PUBLISHER_MANIFEST and rehearsal["publisher_archive_sha256"] == skopeo.ARCHIVE_SHA256
+            and rehearsal["publisher_files"] == {name: row[2] for name, row in skopeo.FILES.items()}
+            and rehearsal["images"] == PUBLICATION_IMAGES and rehearsal["cloud_credentials_used"] is False
+            and rehearsal["fixture"] == "registry_loopback_isolated_network_namespace"
+            and rehearsal["fixture_tls_protocol"] == "TLSv1.3"
+            and type(rehearsal["uid"]) is int and rehearsal["uid"] > 0 and type(rehearsal["gid"]) is int and rehearsal["gid"] > 0
+            and re.fullmatch(r"registry@sha256:[a-f0-9]{64}", rehearsal["registry"])
+            and all(rehearsal[key] is True for key in checks), "native_publication_rehearsal_unbound")
+    require(set(rehearsal["comparison"]) == set(PUBLICATION_IMAGES), "native_publication_rehearsal_targets")
+    for target, row in rehearsal["comparison"].items():
+        exact(row, "manifest manifest_size config layers archive_sha256", "native_publication_rehearsal_target_fields")
+        descriptors = [row["config"], *row["layers"]]
+        require([row["manifest"], row["archive_sha256"]] == PUBLICATION_IMAGES[target]
+                and type(row["manifest_size"]) is int and row["manifest_size"] > 0
+                and len(row["layers"]) == (9 if target == "runtime" else 7)
+                and all(len(pair) == 2 and re.fullmatch(r"sha256:[a-f0-9]{64}", pair[0])
+                        and type(pair[1]) is int and pair[1] > 0 for pair in descriptors),
+                "native_publication_rehearsal_descriptors_changed")
+    scopes = {row["kind"]: evidence(root, evidence(root, row["receipt"])["scope"]) for row in subject["analyses"]}
+    require(all(scopes["bandit"]["sha256_by_source_path"].get(name) == sha for name, sha in files.items() if name.endswith(".py"))
+            and all(scopes["gitleaks"]["sha256_by_source_path"].get(name) == sha for name, sha in files.items()),
+            "native_publication_source_scan_closure_missing")
+    trivy = scopes["trivy_toolchain"]
+    targets = proof["runner_targets"]
+    roles = set(runtime["tools"]) | {"runner_kernel", "standalone_skopeo", "standalone_ca", "standalone_policy",
+                                   "actions_checkout", "actions_auth"}
+    require(set(targets) == roles and trivy["native_host_sha256"] == host_ref["sha256"]
+            and trivy["native_host_inventory_sha256"] == runtime["inventory"]["sha256"]
+            and trivy["runner_targets"] == targets
+            and all(isinstance(values, list) and values and len(values) == len(set(values)) for values in targets.values())
+            and {name for values in targets.values() for name in values} == set(trivy["targets"]),
+            "native_publication_runner_scan_coverage")
+    boot = runtime["kernel"]
+    kernel_purl = r"pkg:deb/ubuntu/" + re.escape(boot["package"]) + "@" + re.escape(boot["version"]) + r"(?:\?.+)?"
+    require(any(re.fullmatch(kernel_purl, package)
+                for target in targets["runner_kernel"] for package in trivy["targets"][target]),
+            "native_publication_running_kernel_scan_missing")
 
 
 def guest_baseline(root, baseline, binding):
@@ -522,7 +601,8 @@ def decision_control(row, operation, action, subjects):
     return None
 
 
-def verify_review(root, review, expected_binding, at, *, runner_version=None, source_root=REPO, guest_action=None):
+def verify_review(root, review, expected_binding, at, *, runner_version=None, source_root=REPO, guest_action=None,
+                  publication_profile="docker"):
     exact(review, "schema binding operations global_history promotion_graph exclusions subjects decisions apply_receipt", "review_fields")
     binding = review["binding"]
     exact(binding, "project repository branch environment profile instance_id data_disk_id source_commit operation "
@@ -535,6 +615,8 @@ def verify_review(root, review, expected_binding, at, *, runner_version=None, so
             and re.fullmatch(r"[1-9][0-9]+", binding["state_generation"]), "wrong_demo_operation_binding")
     require(guest_action in GUEST_ACTIONS if operation == "guest_intervention" else guest_action is None,
             "requested_guest_action_mismatch")
+    require(publication_profile == "docker" or publication_profile == "native-skopeo" and operation == "oci_publication",
+            "publication_profile_outside_scope")
     plan = binding["plan_sha256"]
     require(bool(HEX.fullmatch(plan or "")) if operation in PLAN_BOUND else plan is None, "wrong_plan_binding_for_operation")
     receipt, generation = binding["apply_receipt_sha256"], binding["post_apply_generation"]
@@ -581,7 +663,7 @@ def verify_review(root, review, expected_binding, at, *, runner_version=None, so
     action = None
     publication_rules = set()
     for role in sorted(expected_roles):
-        analyses, checks = role_contract(operation, role)
+        analyses, checks = role_contract(operation, role, publication_profile)
         toolchain = operation == "bootstrap" and role == "credential_toolchain"
         publication = operation == "oci_publication" and role == "credential_toolchain"
         fields = "identity analyses checks"
@@ -597,7 +679,9 @@ def verify_review(root, review, expected_binding, at, *, runner_version=None, so
         require(sorted(i["kind"] for i in value["analyses"]) == sorted(analyses), "analysis_closure_missing:" + role)
         if toolchain:
             verify_bootstrap_toolchain(root, value, binding, at, runner_version, source_root, graph["entrypoint_sha256"])
-        if publication:
+        if publication and publication_profile == "native-skopeo":
+            verify_native_publication_sources(root, value, binding, source_root, graph["entrypoint_sha256"], runner_version)
+        elif publication:
             publication_rules = verify_publication_sources(root, value, binding, source_root, graph["entrypoint_sha256"], runner_version)
         if role == "noble_guest":
             action = verify_guest_control(root, value, binding, at, guest_action)
@@ -668,6 +752,7 @@ def main(argv=None):
     parser.add_argument("--binding", type=Path, required=True, help="Independent expected operation (never taken from the review)")
     parser.add_argument("--operation", choices=sorted(OPERATION_ROLES), required=True)
     parser.add_argument("--guest-action", choices=GUEST_ACTIONS)
+    parser.add_argument("--publication-profile", choices=("docker", "native-skopeo"), default="docker")
     parser.add_argument("--match-credential-runner", action="store_true", help="Require the measured runner revision used by bootstrap")
     args = parser.parse_args(argv)
     try:
@@ -683,7 +768,7 @@ def main(argv=None):
                     and os.environ.get("ImageOS") == "ubuntu24" and runner_version,
                     "missing_hosted_runner_identity")
         count = verify_review(args.review.resolve().parent, closed(raw), binding, datetime.now(timezone.utc),
-                              runner_version=runner_version, guest_action=args.guest_action)
+                              runner_version=runner_version, guest_action=args.guest_action, publication_profile=args.publication_profile)
         result = {"status": "coverage_ready_for_owner_review", "operation": args.operation,
                   "findings_bound": count, "activation_authorized": False}
         print(json.dumps(result))

@@ -3,21 +3,23 @@ name: ClipForge INT A publish reviewed OCI artifacts
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: Observe the existing standard host, or execute approved publication
+        required: true
+        type: choice
+        default: observe
+        options: [observe, publish]
       approved_commit:
         description: Exact approved source SHA
         required: true
         type: string
-      bundle_run:
-        description: Producer run of the private decision and evidence bundle
-        required: true
-        type: string
-      bundle_artifact:
-        description: Exact artifact ID of the private bundle
-        required: true
-        type: string
       decision_sha256:
         description: Independent SHA256 of the owner decision
-        required: true
+        required: false
+        type: string
+      pointer_sha256:
+        description: Canonical SHA256 of the protected private GCS pointer
+        required: false
         type: string
 
 permissions: {}
@@ -29,19 +31,40 @@ env:
   INT_APPROVED_COMMIT: ${{ inputs.approved_commit }}
   GUEST_APPROVED_COMMIT: ${{ inputs.approved_commit }}
   GUEST_ENVIRONMENT: int
-  BUNDLE_RUN: ${{ inputs.bundle_run }}
-  BUNDLE_ARTIFACT: ${{ inputs.bundle_artifact }}
   DECISION_SHA: ${{ inputs.decision_sha256 }}
+  POINTER_SHA: ${{ inputs.pointer_sha256 }}
   PYTHONDONTWRITEBYTECODE: '1'
 
 jobs:
+  observe-host:
+    if: inputs.mode == 'observe' && github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && github.sha == inputs.approved_commit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the exact controls
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Measure the assigned runner without OIDC or registry access
+        run: /usr/bin/python3 -E -s -B -m scripts.int_demo_a_publication_host --observe "$RUNNER_TEMP/native-publication-host-observed.json"
+      - name: Retain bounded host facts for independent review
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: int-a-native-publication-host-${{ github.run_id }}-1
+          path: ${{ runner.temp }}/native-publication-host-observed.json
+          if-no-files-found: warn
+          retention-days: 7
+
   local-preflight:
-    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    if: inputs.mode == 'publish' && github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && github.sha == inputs.approved_commit
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
-      actions: read
     outputs:
       verified_commit: ${{ steps.review.outputs.verified_commit }}
     steps:
@@ -50,29 +73,12 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 1
-      - name: Check local inputs and reserve bundle directory
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$BUNDLE_ARTIFACT" =~ ^[1-9][0-9]*$ && "$BUNDLE_RUN" =~ ^[1-9][0-9]*$ ]]
-          [[ "$DECISION_SHA" =~ ^[a-f0-9]{64}$ ]]
-          test "$GITHUB_SHA" = "$INT_APPROVED_COMMIT"
-          umask 077
-          echo "INT_DEMO_A_BUNDLE=$(mktemp -d "$RUNNER_TEMP/clipforge-a-bundle.XXXXXXXX")" >> "$GITHUB_ENV"
-      - name: Receive immutable decision and evidence
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
-        with:
-          artifact-ids: ${{ inputs.bundle_artifact }}
-          run-id: ${{ inputs.bundle_run }}
-          github-token: ${{ github.token }}
-          path: ${{ env.INT_DEMO_A_BUNDLE }}
-          merge-multiple: true
-      - name: Validate decision and scope without OIDC
+      - name: Validate exact dispatch inputs without OIDC
         id: review
         shell: bash
         run: |
           set -euo pipefail
-          python -B -m scripts.int_demo_a_publish local --bundle "$INT_DEMO_A_BUNDLE" --decision-sha256 "$DECISION_SHA"
+          /usr/bin/python3 -E -s -B -m scripts.int_demo_a_native_publication local --decision-sha256 "$DECISION_SHA" --pointer-sha256 "$POINTER_SHA"
           echo "verified_commit=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
   protected-operation:
@@ -93,7 +99,6 @@ jobs:
       GCP_DEPLOY_SA: ${{ vars.GCP_DEPLOY_SA }}
       INT_DEMO_A_PROTECTED_DECISION_SHA256: ${{ vars.INT_DEMO_A_PUBLISH_DECISION_SHA256 }}
       INT_DEMO_A_PROTECTED_GATE_MODE: ${{ vars.INT_DEMO_A_GATE_MODE || 'global' }}
-      INT_DOCKER_PREP_ENVIRONMENT: int
     steps:
       - name: Check out the exact controls
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -105,28 +110,39 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$BUNDLE_ARTIFACT" =~ ^[1-9][0-9]*$ && "$BUNDLE_RUN" =~ ^[1-9][0-9]*$ ]]
-          [[ "$DECISION_SHA" =~ ^[a-f0-9]{64}$ ]]
           test "$GITHUB_SHA" = "$INT_APPROVED_COMMIT"
           umask 077
           test "$DECISION_SHA" = "$INT_DEMO_A_PROTECTED_DECISION_SHA256"
           git check-ignore --no-index --quiet gha-creds-demo-a.json
           test -z "$(git ls-files -- ':(glob)**/gha-creds-*.json')"
-          echo "INT_DEMO_A_BUNDLE=$(mktemp -d "$RUNNER_TEMP/clipforge-a-bundle.XXXXXXXX")" >> "$GITHUB_ENV"
           echo "INT_DEMO_A_WORK=$(mktemp -d "$RUNNER_TEMP/clipforge-demo-a.XXXXXXXX")" >> "$GITHUB_ENV"
-      - name: Receive immutable decision and evidence
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+      - name: Verify the reviewed live host and independent approval before WIF
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INT_DEMO_A_PUBLISH_POINTER_JSON: ${{ secrets.INT_DEMO_A_PUBLISH_POINTER_JSON }}
+        run: /usr/bin/python3 -E -s -B -m scripts.int_demo_a_native_publication preauth --decision-sha256 "$DECISION_SHA" --pointer-sha256 "$POINTER_SHA"
+      - name: Request a separate read-only Cloud Storage token using existing Deploy WIF
+        id: read-input
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
         with:
-          artifact-ids: ${{ inputs.bundle_artifact }}
-          run-id: ${{ inputs.bundle_run }}
-          github-token: ${{ github.token }}
-          path: ${{ env.INT_DEMO_A_BUNDLE }}
-          merge-multiple: true
-      # The protected job has OIDC permission. This step precedes the Google credentials exchange.
-      - name: Reproduce the reviewed Docker preparation before Google auth
-        run: python -B -m scripts.int_demo_a_publish prepare --bundle "$INT_DEMO_A_BUNDLE" --decision-sha256 "$DECISION_SHA"
-      - name: Verify the live Docker toolchain and stage the reviewed publisher before Google auth
-        run: python -B -m scripts.int_demo_a_publish stage --bundle "$INT_DEMO_A_BUNDLE" --decision-sha256 "$DECISION_SHA"
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+          token_format: access_token
+          access_token_lifetime: 600s
+          access_token_scopes: https://www.googleapis.com/auth/devstorage.read_only
+          create_credentials_file: false
+          export_environment_variables: false
+          cleanup_credentials: true
+      - name: Verify and fetch exactly one private GCS generation
+        env:
+          GCP_READ_ACCESS_TOKEN: ${{ steps.read-input.outputs.access_token }}
+          INT_DEMO_A_PUBLISH_POINTER_JSON: ${{ secrets.INT_DEMO_A_PUBLISH_POINTER_JSON }}
+        run: /usr/bin/python3 -E -s -B -m scripts.int_demo_a_native_publication fetch --decision-sha256 "$DECISION_SHA" --pointer-sha256 "$POINTER_SHA"
+      - name: Validate the private gate and stage the exact native publisher before write credentials
+        env:
+          INT_DEMO_A_PUBLISH_POINTER_JSON: ${{ secrets.INT_DEMO_A_PUBLISH_POINTER_JSON }}
+        run: /usr/bin/python3 -E -s -B -m scripts.int_demo_a_native_publication stage --decision-sha256 "$DECISION_SHA" --pointer-sha256 "$POINTER_SHA"
       - name: Record the start of the short WIF credential budget
         run: echo "INT_DEMO_A_AUTH_STARTED_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
       - name: Federate solely as the existing Deploy service account
@@ -146,15 +162,5 @@ jobs:
         env:
           GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           GH_TOKEN: ${{ github.token }}
-        run: python -B -m scripts.int_demo_a_publish execute --bundle "$INT_DEMO_A_BUNDLE" --decision-sha256 "$DECISION_SHA"
-      - name: Preserve the bounded preparation and host observation receipts
-        if: ${{ always() && steps.scratch.outcome == 'success' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        with:
-          name: int-demo-a-publication-toolchain-${{ github.run_id }}-1
-          path: |
-            ${{ runner.temp }}/int-demo-a-docker-prepare.json
-            ${{ env.INT_DEMO_A_WORK }}/docker-toolchain-before-auth.json
-            ${{ env.INT_DEMO_A_WORK }}/docker-toolchain-before-publication.json
-          if-no-files-found: warn
-          retention-days: 7
+          INT_DEMO_A_PUBLISH_POINTER_JSON: ${{ secrets.INT_DEMO_A_PUBLISH_POINTER_JSON }}
+        run: /usr/bin/python3 -E -s -B -m scripts.int_demo_a_native_publication execute --decision-sha256 "$DECISION_SHA" --pointer-sha256 "$POINTER_SHA"

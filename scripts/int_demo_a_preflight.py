@@ -25,7 +25,8 @@ def json_bytes(bundle, filename, expected=None, *, limit=32 * 1024 * 1024):
     return transport.decode(raw)
 
 
-def local_decision(bundle, digest, operation, workflow, env, *, protected=False, now=None, guest_action=None):
+def local_decision(bundle, digest, operation, workflow, env, *, protected=False, now=None, guest_action=None,
+                   publication_profile=None):
     """Check the static scope in the job that has no OIDC permission."""
     expected = {"GITHUB_REPOSITORY": REPO, "GITHUB_REF": "refs/heads/" + BRANCH,
                 "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_RUN_ATTEMPT": "1", "RUNNER_ENVIRONMENT": "github-hosted",
@@ -55,6 +56,8 @@ def local_decision(bundle, digest, operation, workflow, env, *, protected=False,
     if guest_action is not None:
         require(value["inputs"]["action"] == guest_action, "demo_a_guest_action_mismatch")
         review_args.extend(("--guest-action", guest_action))
+    if publication_profile is not None:
+        review_args.extend(("--publication-profile", publication_profile))
     require(gate.main(review_args) == 0, "demo_a_operation_evidence_blocked")
     return value
 
