@@ -14,6 +14,7 @@ import time
 from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 
 from scripts import int_demo_a_docker as docker
+from scripts import int_demo_a_docker_apparmor as apparmor
 from scripts.int_noble_demo_preflight_guest import run_diagnostic
 
 
@@ -309,7 +310,7 @@ def install_reviewed(commands, packages):
     commands.run("restart_docker", SUDO + [SYSTEMCTL, "restart", "docker.socket", "docker.service"], budget=60)
 
 
-def prepare(env, work, journal, report, expected):
+def prepare(env, work, journal, report, expected, *, native_apparmor=False):
     home = work / "home"
     home.mkdir()
     (home / "empty-docker-config").mkdir()
@@ -322,6 +323,9 @@ def prepare(env, work, journal, report, expected):
     require(all(compare(commands, row["before"], "<<", row["after"]) for row in changes.values()), "docker_prepare_downgrade_blocked")
     report["before"] = snapshot(env, installed)
     require_idle(commands)
+    if native_apparmor:
+        probe_image = apparmor.prepare_image(commands)
+        report["apparmor_native"] = {"before": apparmor.confinement(commands, probe_image, "before")}
     opener = build_opener(ProxyHandler({}), NoRedirect())
     paths = {package.name: download(work, package, opener) for package in REVIEWED}
     for package in REVIEWED:
@@ -371,8 +375,14 @@ def prepare(env, work, journal, report, expected):
             and toolchain["components"]["containerd"]["Version"].removeprefix("v") == "2.4.2"
             and toolchain["components"]["runc"]["Version"].removeprefix("v") == "1.5.3", "docker_prepare_exact_loaded_toolchain")
     security = toolchain["engine_settings"]["security"]
-    require(any("seccomp" in item for item in security) and set(before["toolchain"]["engine_settings"]["security"]) <= set(security),
-            "docker_prepare_effective_protections_regressed")
+    original_security = before["toolchain"]["engine_settings"]["security"]
+    if native_apparmor:
+        report["apparmor_native"]["after"] = apparmor.confinement(commands, probe_image, "after")
+        apparmor.enforce_options(original_security, security, report["apparmor_native"])
+        docker.verify_same_host(toolchain, docker.inventory(env))
+    else:
+        require(any("seccomp" in item for item in security) and set(original_security) <= set(security),
+                "docker_prepare_effective_protections_regressed")
     comparison["after"] = portable(after)
     if expected is not None:
         require(comparison["after"] == expected["after"], "docker_prepare_expected_effective_toolchain_changed")
@@ -395,9 +405,11 @@ def main(argv=None, *, env=None):
     parser.add_argument("--report", required=True, type=Path)
     parser.add_argument("--expected", type=Path)
     parser.add_argument("--expected-sha256")
+    parser.add_argument("--native-apparmor", action="store_true")
     args = parser.parse_args(argv)
     try:
         hosted(env, args.profile, args.approved_commit)
+        require(not args.native_apparmor or args.profile == "evaluate", "docker_prepare_native_apparmor_evaluation_only")
         require(sys.platform == "linux", "docker_prepare_linux_runner_required")
         root = Path(env["RUNNER_TEMP"]).resolve(strict=True)
         require(args.report == root / REPORT_NAME and not args.report.is_symlink(), "docker_prepare_report_scope")
@@ -415,7 +427,10 @@ def main(argv=None, *, env=None):
         with args.report.open("xb") as output:
             try:
                 with TemporaryDirectory(prefix="clipforge-docker-prepare.", dir=root) as scratch:
-                    prepare(env, Path(scratch), journal, report, expected)
+                    if args.native_apparmor:
+                        prepare(env, Path(scratch), journal, report, expected, native_apparmor=True)
+                    else:
+                        prepare(env, Path(scratch), journal, report, expected)
             except (OSError, ValueError, KeyError, TypeError) as error:
                 report["error_code"] = str(error) if isinstance(error, docker.ToolchainBlocked) else type(error).__name__
                 response_code = getattr(error, "code", None)

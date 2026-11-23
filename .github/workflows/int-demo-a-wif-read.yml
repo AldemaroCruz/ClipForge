@@ -173,7 +173,7 @@ jobs:
     needs: local-guard
     if: needs.local-guard.result == 'success' && needs.local-guard.outputs.verified_commit == github.sha && inputs.observation == 'docker_prepare'
     runs-on: ubuntu-24.04
-    timeout-minutes: 16
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -182,19 +182,26 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 1
+      - name: Verify the assigned image and signed running kernel before Docker changes
+        env:
+          INT_APPROVED_COMMIT: ${{ inputs.approved_commit }}
+          INT_DOCKER_PREP_SELECTOR: docker_prepare
+        shell: bash
+        run: python -B -m scripts.int_demo_a_hosted_trial --approved-commit "$INT_APPROVED_COMMIT" --report "$RUNNER_TEMP/int-demo-a-hosted-trial.json"
       - name: Verify the running host before evaluating the exact public packages
         run: python -B -m scripts.int_demo_a_docker --output "$RUNNER_TEMP/int-demo-a-docker-toolchain.json"
       - name: Simulate and prepare only the authenticated Docker packages
         env:
           INT_DOCKER_PREP_SELECTOR: docker_prepare
           INT_APPROVED_COMMIT: ${{ inputs.approved_commit }}
-        run: python -B -m scripts.int_demo_a_docker_prepare --profile evaluate --approved-commit "$INT_APPROVED_COMMIT" --report "$RUNNER_TEMP/int-demo-a-docker-prepare.json"
+        run: python -B -m scripts.int_demo_a_docker_prepare --profile evaluate --native-apparmor --approved-commit "$INT_APPROVED_COMMIT" --report "$RUNNER_TEMP/int-demo-a-docker-prepare.json"
       - name: Retain only sanitized preparation and host evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: int-demo-a-docker-prepare-${{ github.run_id }}-1
           path: |
+            ${{ runner.temp }}/int-demo-a-hosted-trial.json
             ${{ runner.temp }}/int-demo-a-docker-toolchain.json
             ${{ runner.temp }}/int-demo-a-docker-prepare.json
           if-no-files-found: error
