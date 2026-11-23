@@ -29,6 +29,8 @@ REHEARSAL = "native-publication-rehearsal.json"
 CHECKPOINT = "native-publication-before-wif.json"
 INPUT_CHECKPOINT = "native-publication-before-private-read.json"
 STAGING = "native-skopeo"
+COMPLETED_TARGET = "runtime"
+PENDING_TARGET = "db01-noble-client"
 WIF_SECONDS = 900
 CUSTODY_SECONDS = 90
 COPY_SECONDS = 360
@@ -86,11 +88,34 @@ def fetch_bundle(work, env, pointer):
     input_checkpoint(work, env, pointer["host"])
 
 
-def checked_inputs(bundle, decision):
+def publication_scope(decision, env, approval_hash):
     inputs = decision["inputs"]
-    require(set(inputs) == {"publisher", "targets", "transport", "native_host_sha256", "native_rehearsal_sha256"}
-            and inputs["targets"] == list(common.TARGETS) and inputs["transport"] == PROFILE,
+    fields = {"publisher", "targets", "transport", "native_host_sha256", "native_rehearsal_sha256"}
+    continuation = "continuation" in inputs
+    require(set(inputs) == (fields | {"continuation"} if continuation else fields)
+            and inputs["targets"] == ([PENDING_TARGET] if continuation else list(common.TARGETS))
+            and inputs["transport"] == PROFILE,
             "native_publication_closed_decision_inputs")
+    if not continuation:
+        return None
+    previous = inputs["continuation"]
+    require(isinstance(previous, dict) and set(previous) == {"previous_run", "previous_decision_sha256", "receipt"}
+            and isinstance(previous["previous_run"], str) and re.fullmatch(receipts.RUN, previous["previous_run"])
+            and int(previous["previous_run"]) < int(env["GITHUB_RUN_ID"])
+            and isinstance(previous["previous_decision_sha256"], str)
+            and re.fullmatch(receipts.SHA, previous["previous_decision_sha256"])
+            and previous["previous_decision_sha256"] != approval_hash,
+            "native_publication_continuation_requires_fresh_run_and_decision")
+    names = receipts.producer_names({**env, "GITHUB_RUN_ID": previous["previous_run"]}, "publish", decision["operation_id"])
+    ref = previous["receipt"]
+    require(isinstance(ref, dict) and ref.get("name") == names["publication-" + COMPLETED_TARGET + ".json"],
+            "native_publication_continuation_receipt_scope")
+    return names["publication-" + COMPLETED_TARGET + "-intent.json"]
+
+
+def checked_inputs(bundle, decision, env, approval_hash):
+    publication_scope(decision, env, approval_hash)
+    inputs = decision["inputs"]
     expected = host.checked(preflight.json_bytes(bundle, HOST_FILE, inputs["native_host_sha256"], limit=65536))
     review = preflight.json_bytes(bundle, "review.json", decision["review_sha256"])
     subject = review["subjects"]["credential_toolchain"]
@@ -157,39 +182,72 @@ def phase_deadline(seconds, code):
         signal.signal(signal.SIGALRM, previous)
 
 
+def metadata(target, image, env, operation_id, approval_hash, tool):
+    return {"target": f"{common.HOST}/{common.REPOSITORY}/{target}@{image['manifest']}",
+            "run": env["GITHUB_RUN_ID"], "source_controls": env["GITHUB_SHA"],
+            "manifest": image["manifest"], "operation_id": operation_id, "owner_decision_sha256": approval_hash,
+            "config": image["config"][0], "archive_sha256": image["archive_sha256"],
+            "layers": [row[0] for row in image["layers"]], "publisher_digest": tool["manifest"]}
+
+
+def verify_previous_publication(reader, decision, env, images, tool, expected_intent):
+    previous = decision["inputs"]["continuation"]
+    ref = previous["receipt"]
+    recorded = transport.decode(reader.fetch(ref))
+    require(isinstance(recorded, dict), "native_publication_continuation_receipt_contents")
+    intent = recorded.get("intent")
+    expected = metadata(COMPLETED_TARGET, images[COMPLETED_TARGET], {**env, "GITHUB_RUN_ID": previous["previous_run"]},
+                        decision["operation_id"], previous["previous_decision_sha256"], tool)
+    require(isinstance(intent, dict) and intent.get("name") == expected_intent
+            and recorded == {**expected, "status": "published_and_verified", "intent": intent},
+            "native_publication_continuation_receipt_contents")
+    require(transport.decode(reader.fetch(intent)) == {**expected, "status": "copy_intended"},
+            "native_publication_continuation_intent_contents")
+    return ref, intent
+
+
 def execute(bundle, work, env, decision, approval_hash, expected, tool, images):
     verify_checkpoint(work, env, expected)
     credential_budget(env, decision)
+    previous_intent = publication_scope(decision, env, approval_hash)
     token = preflight.deploy_after_wif(env, decision)
     names = receipts.producer_names(env, "publish", decision["operation_id"])
-    cloud = receipts.Custody(token, names=names.values())
+    targets = decision["inputs"]["targets"]
+    cloud = receipts.Custody(token, names=[names[f"publication-{target}{leaf}"]
+                                         for target in targets for leaf in ("-intent.json", ".json")])
     report = {"status": "publication_pending", "references": {}, "intent": {}, "native_exit": {},
               "operation_id": decision["operation_id"]}
     auth = work / "publisher-auth.json"
     auth_data = {"auths": {common.HOST: {"auth": base64.b64encode(("oauth2accesstoken:" + token).encode()).decode()}}}
     owned = False
     try:
+        if previous_intent is not None:
+            with phase_deadline(CUSTODY_SECONDS, "native_publication_continuation_evidence_deadline"):
+                report["phase"] = PENDING_TARGET
+                ref, intent = verify_previous_publication(receipts.Custody(token), decision, env, images, tool, previous_intent)
+                report["references"][COMPLETED_TARGET] = ref
+                report["intent"][COMPLETED_TARGET] = intent
+                report["status"] = "continuation_requires_reconciliation"
+                cloud.require_absent(names["publication-" + PENDING_TARGET + "-intent.json"])
+                report["status"] = "publication_pending"
         # An intent must be durable before invoking the only write-capable copy for a target.
         with os.fdopen(os.open(auth, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400), "wb") as output:
             owned = True
             output.write(transport.canonical(auth_data))
-        for target, image in images.items():
+        for target in targets:
+            image = images[target]
             archive = bundle / (target + ".oci.tar")
             staged = work / (target + ".oci.tar")
             report.update(phase=target, status="publication_pending")
             common.check_staging_archive(staged, image)
-            destination = f"{common.HOST}/{common.REPOSITORY}/{target}@{image['manifest']}"
-            metadata = {"target": destination, "run": env["GITHUB_RUN_ID"], "source_controls": env["GITHUB_SHA"],
-                        "manifest": image["manifest"], "operation_id": decision["operation_id"],
-                        "owner_decision_sha256": approval_hash, "config": image["config"][0],
-                        "archive_sha256": image["archive_sha256"], "layers": [row[0] for row in image["layers"]],
-                        "publisher_digest": tool["manifest"]}
+            publication = metadata(target, image, env, decision["operation_id"], approval_hash, tool)
+            destination = publication["target"]
             verify_checkpoint(work, env, expected)
             credential_budget(env, decision)
             intent = names["publication-" + target + "-intent.json"]
             with phase_deadline(CUSTODY_SECONDS, "native_publication_intent_deadline"):
                 report["status"] = "intent_outcome_requires_reconciliation"
-                report["intent"][target] = cloud.create(intent, {**metadata, "status": "copy_intended"})
+                report["intent"][target] = cloud.create(intent, {**publication, "status": "copy_intended"})
             report["status"] = "intent_recorded_no_copy_started"
             with phase_deadline(LOCAL_CHECK_SECONDS, "native_publication_before_copy_check_deadline"):
                 verify_checkpoint(work, env, expected)
@@ -208,7 +266,7 @@ def execute(bundle, work, env, decision, approval_hash, expected, tool, images):
             with phase_deadline(CUSTODY_SECONDS, "native_publication_result_receipt_deadline"):
                 report["status"] = "verified_copy_receipt_outcome_requires_reconciliation"
                 report["references"][target] = cloud.create(
-                    receipt, {**metadata, "status": "published_and_verified", "intent": report["intent"][target]})
+                    receipt, {**publication, "status": "published_and_verified", "intent": report["intent"][target]})
         report["status"] = "published_and_verified"
     except (OSError, ValueError, TypeError, KeyError, tarfile.TarError, subprocess.SubprocessError) as error:
         report["error_code"] = error_code(error)
@@ -270,12 +328,15 @@ def main(argv=None):
             bundle = work / "bundle"
             decision = preflight.local_decision(bundle, args.decision_sha256, common.OPERATION, common.WORKFLOW, env,
                                                 protected=True, publication_profile=PROFILE)
-            expected, tool, images = checked_inputs(bundle, decision)
+            expected, tool, images = checked_inputs(bundle, decision, env, args.decision_sha256)
+            continuation_sha = args.decision_sha256 if "continuation" in decision["inputs"] else None
+            owner_input = custody_input.name(env["GITHUB_SHA"], decision["operation_id"], continuation_sha=continuation_sha)
             require(expected == pointer["host"] and all(decision[key] == pointer[key]
-                    for key in ("operation_id", "gate_mode", "issued_utc", "expires_utc")),
+                    for key in ("operation_id", "gate_mode", "issued_utc", "expires_utc"))
+                    and pointer["input"]["name"] == owner_input,
                     "native_publication_private_review_differs_from_pointer")
             if args.phase == "stage":
-                stage(bundle, work, env, expected, images)
+                stage(bundle, work, env, expected, {target: images[target] for target in decision["inputs"]["targets"]})
                 protected_pointer(env, args.decision_sha256, args.pointer_sha256)
             else:
                 report = execute(bundle, work, env, decision, args.decision_sha256, expected, tool, images)

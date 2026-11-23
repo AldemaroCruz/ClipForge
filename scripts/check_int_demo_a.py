@@ -8,6 +8,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 from stat import S_ISREG
+from urllib.parse import unquote
 
 
 SCHEMA = "clipforge-int-demo-a-review-1"
@@ -468,11 +469,13 @@ def verify_native_publication_sources(root, subject, binding, source_root, entry
             and all(isinstance(values, list) and values and len(values) == len(set(values)) for values in targets.values())
             and {name for values in targets.values() for name in values} == set(trivy["targets"]),
             "native_publication_runner_scan_coverage")
-    boot = runtime["kernel"]
-    kernel_purl = r"pkg:deb/ubuntu/" + re.escape(boot["package"]) + "@" + re.escape(boot["version"]) + r"(?:\?.+)?"
-    require(any(re.fullmatch(kernel_purl, package)
-                for target in targets["runner_kernel"] for package in trivy["targets"][target]),
-            "native_publication_running_kernel_scan_missing")
+    verify_native_running_kernel_scan(runtime["kernel"], targets["runner_kernel"], trivy["targets"])
+
+
+def verify_native_running_kernel_scan(boot, target_names, scan_targets):
+    purls = {unquote(package).partition("?")[0] for target in target_names for package in scan_targets[target]}
+    expected = {f"pkg:deb/ubuntu/{name.partition(':')[0]}@{version}" for name, version, _, _ in boot["packages"]}
+    require(expected and expected <= purls, "native_publication_running_kernel_scan_missing")
 
 
 def guest_baseline(root, baseline, binding):

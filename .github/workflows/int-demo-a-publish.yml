@@ -49,14 +49,36 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
       - name: Measure the assigned runner without OIDC or registry access
-        run: /usr/bin/python3 -E -s -B -m scripts.int_demo_a_publication_host --observe "$RUNNER_TEMP/native-publication-host-observed.json"
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/native-publication-host-observed.json"
+          result=0
+          /usr/bin/timeout --kill-after=5s 150s /usr/bin/python3 -E -s -B \
+            -m scripts.int_demo_a_publication_host --observe "$report" || result=$?
+          if [[ ! -s "$report" ]]; then
+            if [[ "$result" == 0 ]]; then
+              result=1
+            fi
+            run_id="$GITHUB_RUN_ID"
+            attempt="$GITHUB_RUN_ATTEMPT"
+            commit="$GITHUB_SHA"
+            image="${ImageVersion:-}"
+            [[ "$run_id" =~ ^[1-9][0-9]{0,18}$ ]] || run_id=''
+            [[ "$attempt" =~ ^[1-9][0-9]{0,9}$ ]] || attempt=''
+            [[ "$commit" =~ ^[a-f0-9]{40}$ ]] || commit=''
+            [[ "$image" =~ ^[0-9]{1,12}\.[0-9]{1,12}\.[0-9]{1,12}$ ]] || image=''
+            printf '{"schema":"clipforge-int-demo-a-observation-failure-1","status":"host_observation_blocked","activation_authorized":false,"run":"%s","attempt":"%s","job":"observe-host","commit":"%s","image_version":"%s","host":null,"errors":{"collector":"no_report"},"collector_exit":%d}\n' \
+              "$run_id" "$attempt" "$commit" "$image" "$result" > "$report"
+          fi
+          exit "$result"
       - name: Retain bounded host facts for independent review
         if: ${{ always() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: int-a-native-publication-host-${{ github.run_id }}-1
           path: ${{ runner.temp }}/native-publication-host-observed.json
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 7
 
   local-preflight:

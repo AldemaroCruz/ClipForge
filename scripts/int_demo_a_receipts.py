@@ -42,20 +42,25 @@ class Custody:
         require(self.names is None or bool(self.names) and all(NAME.fullmatch(name) for name in self.names),
                 "demo_a_custody_exact_names")
 
-    def request(self, method, name, *, generation=None, payload=None):
+    def request(self, method, name, *, generation=None, payload=None, metadata=False):
         require(isinstance(name, str) and NAME.fullmatch(name), "demo_a_custody_scope")
         require((self.names is None and method == "GET") or (self.names is not None and name in self.names),
                 "demo_a_custody_not_in_operation")
         headers = {"Authorization": "Bearer " + self.token}
         if method == "POST":
-            require(isinstance(payload, bytes) and len(payload) <= LIMIT and generation is None, "demo_a_custody_create_shape")
+            require(isinstance(payload, bytes) and len(payload) <= LIMIT and generation is None and not metadata,
+                    "demo_a_custody_create_shape")
             query = {"uploadType": "media", "name": name, "ifGenerationMatch": "0", "fields": "name,generation,size"}
             url = f"{GCS}upload/storage/v1/b/{BUCKET}/o?" + urlencode(query)
             headers["Content-Type"] = "application/octet-stream"
         else:
-            require(method == "GET" and payload is None and isinstance(generation, str) and re.fullmatch(RUN, generation),
-                    "demo_a_custody_get_shape")
-            query = {"alt": "media", "generation": generation, "ifGenerationMatch": generation}
+            require(method == "GET" and payload is None, "demo_a_custody_get_shape")
+            if metadata:
+                require(generation is None and self.names is not None, "demo_a_custody_bound_metadata")
+                query = {"fields": "name"}
+            else:
+                require(isinstance(generation, str) and re.fullmatch(RUN, generation), "demo_a_custody_get_shape")
+                query = {"alt": "media", "generation": generation, "ifGenerationMatch": generation}
             url = f"{GCS}storage/v1/b/{BUCKET}/o/{quote(name, safe='')}?" + urlencode(query)
         try:
             with build_opener(ProxyHandler({}), transport.NoRedirect()).open(
@@ -76,6 +81,16 @@ class Custody:
         raw = self.request("GET", reference["name"], generation=reference["generation"])
         require(len(raw) == reference["size"] and custody.sha256(raw) == reference["sha256"], "demo_a_custody_verified_bytes")
         return raw
+
+    def require_absent(self, name):
+        """Check the exact live intent before the independent create-only precondition."""
+        try:
+            self.request("GET", name, metadata=True)
+        except transport.Failure as error:
+            if error.receipt["http_status"] == 404:
+                return
+            raise
+        raise transport.Blocked("demo_a_custody_existing_intent_requires_reconciliation")
 
     def create(self, name, document):
         return self.create_bytes(name, custody.canonical(document))

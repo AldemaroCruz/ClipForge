@@ -8,6 +8,7 @@ from tempfile import TemporaryDirectory
 import time
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from scripts import check_int_demo_a as gate
@@ -24,6 +25,12 @@ OPERATION = "b" * 32
 APPROVAL = "c" * 64
 TOKEN = "synthetic-always-discarded-bearer"
 RUN = "123456"
+
+
+def operation_decision():
+    return {"operation_id": OPERATION, "expires_utc": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+            "inputs": {"publisher": {}, "targets": list(common.TARGETS), "transport": publisher.PROFILE,
+                       "native_host_sha256": "1" * 64, "native_rehearsal_sha256": "2" * 64}}
 
 
 def private_pointer(body=b"test bytes"):
@@ -50,6 +57,18 @@ class PublicationInputTests(unittest.TestCase):
         expired = transport.canonical(dict(pointer, issued_utc="2026-01-01T00:00:00+00:00", expires_utc="2026-01-01T00:59:00+00:00"))
         with self.assertRaisesRegex(transport.Blocked, "pointer_expired"):
             custody_input.pointer(expired.decode(), transport.sha(expired), COMMIT, APPROVAL)
+
+    def test_continuation_has_distinct_private_input_bound_to_new_decision(self):
+        pointer = private_pointer()
+        original = pointer["input"]["name"]
+        pointer["input"]["name"] = custody_input.name(COMMIT, OPERATION, continuation_sha=APPROVAL)
+        raw = transport.canonical(pointer)
+        self.assertEqual(custody_input.pointer(raw.decode(), transport.sha(raw), COMMIT, APPROVAL), pointer)
+        self.assertNotEqual(original, pointer["input"]["name"])
+        pointer["input"]["name"] = custody_input.name(COMMIT, OPERATION, continuation_sha="9" * 64)
+        other = transport.canonical(pointer)
+        with self.assertRaisesRegex(transport.Blocked, "input_reference"):
+            custody_input.pointer(other.decode(), transport.sha(other), COMMIT, APPROVAL)
 
     def test_fetch_pins_method_destination_generation_and_hash(self):
         class Response(BytesIO):
@@ -133,7 +152,7 @@ class NativePublicationTests(unittest.TestCase):
     def test_two_copy_receipts_follow_intent_and_independent_bytes(self):
         images = {key: {"manifest": pin[0], "archive_sha256": pin[1], "config": ("sha256:" + "d" * 64, 2),
                         "layers": [("sha256:" + "e" * 64, 3)]} for key, pin in common.TARGETS.items()}
-        decision = {"operation_id": OPERATION, "expires_utc": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()}
+        decision = operation_decision()
         env = {"GITHUB_SHA": COMMIT, "GITHUB_RUN_ID": RUN, "GITHUB_RUN_ATTEMPT": "1",
                "INT_DEMO_A_AUTH_STARTED_EPOCH": str(int(time.time()))}
         events = []
@@ -211,7 +230,7 @@ class NativePublicationTests(unittest.TestCase):
 
     def test_budget_shortfall_before_second_intent_preserves_first_receipt(self):
         started = 1700000000
-        decision = {"operation_id": OPERATION, "expires_utc": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()}
+        decision = operation_decision()
         env = {"GITHUB_SHA": COMMIT, "GITHUB_RUN_ID": RUN, "GITHUB_RUN_ATTEMPT": "1",
                "INT_DEMO_A_AUTH_STARTED_EPOCH": str(started)}
         images = {key: {"manifest": pin[0], "archive_sha256": pin[1], "config": ("sha256:" + "d" * 64, 2),
@@ -245,7 +264,7 @@ class NativePublicationTests(unittest.TestCase):
 
     def test_readback_deadline_preserves_uncertain_copy_and_prevents_retry(self):
         started = 1700000000
-        decision = {"operation_id": OPERATION, "expires_utc": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()}
+        decision = operation_decision()
         env = {"GITHUB_SHA": COMMIT, "GITHUB_RUN_ID": RUN, "GITHUB_RUN_ATTEMPT": "1",
                "INT_DEMO_A_AUTH_STARTED_EPOCH": str(started)}
         images = {key: {"manifest": pin[0], "archive_sha256": pin[1], "config": ("sha256:" + "d" * 64, 2),
@@ -274,6 +293,162 @@ class NativePublicationTests(unittest.TestCase):
         storage.return_value.create.assert_called_once()
         copy.assert_called_once()
         credential.assert_called_once()
+
+
+class PublicationContinuationTests(unittest.TestCase):
+    def setUp(self):
+        self.started = 1700000000
+        self.env = {"GITHUB_SHA": COMMIT, "GITHUB_RUN_ID": RUN, "GITHUB_RUN_ATTEMPT": "1",
+                    "INT_DEMO_A_AUTH_STARTED_EPOCH": str(self.started)}
+        self.images = {target: {"manifest": pin[0], "archive_sha256": pin[1], "config": ("sha256:" + "d" * 64, 2),
+                                "layers": [("sha256:" + "e" * 64, 3)]} for target, pin in common.TARGETS.items()}
+        self.tool = {"manifest": "sha256:" + publisher.skopeo.MANIFEST}
+        previous_run = "123455"
+        previous_sha = "9" * 64
+        previous_env = {**self.env, "GITHUB_RUN_ID": previous_run}
+        names = receipts.producer_names(previous_env, "publish", OPERATION)
+        prior = publisher.metadata("runtime", self.images["runtime"], previous_env, OPERATION, previous_sha, self.tool)
+        self.objects = {}
+        intent = self.put(names["publication-runtime-intent.json"], {**prior, "status": "copy_intended"}, "41")
+        self.ref = self.put(names["publication-runtime.json"], {**prior, "status": "published_and_verified", "intent": intent}, "42")
+        self.decision = operation_decision()
+        self.decision["inputs"].update(targets=[publisher.PENDING_TARGET], continuation={
+            "previous_run": previous_run, "previous_decision_sha256": previous_sha, "receipt": self.ref})
+        self.names = receipts.producer_names(self.env, "publish", OPERATION)
+        self.calls = []
+        self.race = False
+        self.metadata_error = None
+
+    def put(self, name, document, generation):
+        raw = transport.canonical(document)
+        self.objects[name] = (generation, raw)
+        return {"name": name, "generation": generation, "sha256": transport.sha(raw), "size": len(raw)}
+
+    def storage_request(self, request, timeout):
+        url = urlsplit(request.full_url)
+        query = parse_qs(url.query)
+        self.assertEqual((url.scheme, url.netloc), ("https", "storage.googleapis.com"))
+        self.assertEqual(request.headers["Authorization"], "Bearer " + TOKEN)
+        if request.method == "POST":
+            self.assertEqual(url.path, f"/upload/storage/v1/b/{receipts.BUCKET}/o")
+            self.assertEqual(query["ifGenerationMatch"], ["0"])
+            name = query["name"][0]
+            self.calls.append(("create", name))
+            self.assertIn(name, {self.names["publication-db01-noble-client-intent.json"],
+                                 self.names["publication-db01-noble-client.json"]})
+            if self.race:
+                raise HTTPError(request.full_url, 412, "fixture", {}, BytesIO())
+            ref = self.put(name, transport.decode(request.data), str(40 + len(self.calls)))
+            return BytesIO(transport.canonical(ref))
+        self.assertEqual(request.method, "GET")
+        prefix = f"/storage/v1/b/{receipts.BUCKET}/o/"
+        self.assertTrue(url.path.startswith(prefix))
+        name = unquote(url.path.removeprefix(prefix))
+        if "fields" in query:
+            self.calls.append(("metadata", name))
+            self.assertEqual(name, self.names["publication-db01-noble-client-intent.json"])
+            self.assertEqual(query, {"fields": ["name"]})
+            if self.metadata_error:
+                raise HTTPError(request.full_url, self.metadata_error, "fixture", {}, BytesIO())
+            if name not in self.objects:
+                raise HTTPError(request.full_url, 404, "fixture", {}, BytesIO())
+            return BytesIO(transport.canonical({"name": name}))
+        self.calls.append(("pinned", name))
+        generation, raw = self.objects[name]
+        self.assertEqual(query, {"alt": ["media"], "generation": [generation], "ifGenerationMatch": [generation]})
+        return BytesIO(raw)
+
+    def run_continuation(self):
+        with (TemporaryDirectory() as tmp, patch.object(publisher, "verify_checkpoint"),
+              patch.object(publisher.time, "time", return_value=self.started),
+              patch.object(publisher.preflight, "deploy_after_wif", return_value=TOKEN),
+              patch.object(receipts, "build_opener") as opener, patch.object(common, "check_staging_archive"),
+              patch.object(publisher.skopeo, "copy", return_value=0) as copied,
+              patch.object(common, "verify_registry") as verified,
+              patch.object(common, "digest_file", return_value=common.TARGETS["db01-noble-client"][1])):
+            opener.return_value.open.side_effect = self.storage_request
+            result = publisher.execute(Path(tmp), Path(tmp), self.env, self.decision, APPROVAL, {}, self.tool, self.images)
+            self.assertFalse((Path(tmp) / "publisher-auth.json").exists())
+            return result, copied, verified
+
+    def test_continuation_uses_prior_immutable_receipt_and_only_copies_pending_manifest(self):
+        result, copied, verified = self.run_continuation()
+        self.assertEqual(result["status"], "published_and_verified")
+        self.assertEqual(result["references"]["runtime"], self.ref)
+        self.assertEqual(set(result["references"]), set(common.TARGETS))
+        self.assertEqual([step for step, _ in self.calls], ["pinned", "pinned", "metadata", "create", "pinned", "create", "pinned"])
+        copied.assert_called_once()
+        self.assertEqual(copied.call_args.args[1].name, "db01-noble-client.oci.tar")
+        self.assertTrue(copied.call_args.args[3].endswith(common.TARGETS["db01-noble-client"][0]))
+        verified.assert_called_once()
+        self.assertEqual(verified.call_args.args[0], copied.call_args.args[3])
+
+    def test_existing_or_racing_intent_never_repeats_copy(self):
+        pending = self.names["publication-db01-noble-client-intent.json"]
+        self.put(pending, {"status": "copy_intended"}, "66")
+        result, copied, verified = self.run_continuation()
+        self.assertEqual(result["status"], "continuation_requires_reconciliation")
+        self.assertEqual(result["references"], {"runtime": self.ref})
+        self.assertEqual([step for step, _ in self.calls], ["pinned", "pinned", "metadata"])
+        copied.assert_not_called()
+        verified.assert_not_called()
+        self.objects.pop(pending)
+        self.calls.clear()
+        self.race = True
+        result, copied, verified = self.run_continuation()
+        self.assertEqual((result["status"], result["failure"]["http_status"]),
+                         ("intent_outcome_requires_reconciliation", 412))
+        self.assertEqual([step for step, _ in self.calls], ["pinned", "pinned", "metadata", "create"])
+        copied.assert_not_called()
+        verified.assert_not_called()
+
+    def test_metadata_denial_cannot_be_treated_as_absence(self):
+        self.metadata_error = 403
+        result, copied, verified = self.run_continuation()
+        self.assertEqual((result["status"], result["failure"]["http_status"]),
+                         ("continuation_requires_reconciliation", 403))
+        self.assertEqual([step for step, _ in self.calls], ["pinned", "pinned", "metadata"])
+        copied.assert_not_called()
+        verified.assert_not_called()
+
+    def test_stage_uses_only_pending_archive_and_cannot_reuse_original_input(self):
+        pointer = private_pointer()
+        self.decision.update(gate_mode=pointer["gate_mode"], issued_utc=pointer["issued_utc"], expires_utc=pointer["expires_utc"])
+        args = ["stage", "--decision-sha256", APPROVAL, "--pointer-sha256", "4" * 64]
+        with (patch.object(publisher.os, "environ", self.env), patch.object(publisher, "scope"),
+              patch.object(publisher, "protected_pointer", return_value=pointer),
+              patch.object(publisher.preflight, "runtime_scratch", return_value=Path("/fixture")),
+              patch.object(publisher.preflight, "local_decision", return_value=self.decision),
+              patch.object(publisher, "checked_inputs", return_value=({}, self.tool, self.images)),
+              patch.object(publisher, "stage") as staged, patch("builtins.print")):
+            self.assertEqual(publisher.main(args), 1)
+            staged.assert_not_called()
+            pointer["input"]["name"] = custody_input.name(COMMIT, OPERATION, continuation_sha=APPROVAL)
+            self.assertEqual(publisher.main(args), 0)
+        self.assertEqual(staged.call_args.args[-1], {"db01-noble-client": self.images["db01-noble-client"]})
+
+    def test_substituted_receipt_or_reused_approval_never_reaches_new_intent(self):
+        reference = self.decision["inputs"]["continuation"]["receipt"]
+        _, raw = self.objects[reference["name"]]
+        self.objects[reference["name"]] = (reference["generation"], raw.replace(b"published_and_verified", b"published_and_rejected"))
+        result, copied, verified = self.run_continuation()
+        self.assertEqual(result.get("error_code"), "demo_a_custody_verified_bytes")
+        self.assertEqual([step for step, _ in self.calls], ["pinned"])
+        copied.assert_not_called()
+        verified.assert_not_called()
+        self.decision["inputs"]["continuation"]["previous_decision_sha256"] = APPROVAL
+        with self.assertRaisesRegex(transport.Blocked, "fresh_run_and_decision"):
+            publisher.publication_scope(self.decision, self.env, APPROVAL)
+
+    def test_valid_json_non_object_receipt_blocks_before_new_intent(self):
+        previous = self.decision["inputs"]["continuation"]
+        reference = previous["receipt"]
+        previous["receipt"] = self.put(reference["name"], ["published_and_verified"], reference["generation"])
+        result, copied, verified = self.run_continuation()
+        self.assertEqual(result["error_code"], "native_publication_continuation_receipt_contents")
+        self.assertEqual(self.calls, [("pinned", reference["name"])])
+        copied.assert_not_called()
+        verified.assert_not_called()
 
 
 if __name__ == "__main__":

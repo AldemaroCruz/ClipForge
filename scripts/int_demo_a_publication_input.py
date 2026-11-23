@@ -28,10 +28,14 @@ ESSENTIAL = {"decision.json", "binding.json", "review.json", "native-publication
 require = transport.require
 
 
-def name(commit, operation_id):
+def name(commit, operation_id, *, continuation_sha=None):
     require(re.fullmatch(r"[a-f0-9]{40}", commit) and re.fullmatch(r"[a-f0-9]{32}", operation_id),
             "native_publication_input_identity")
-    return f"{receipts.PREFIX}{commit}/decisions/{operation_id}/publication-input.tar"
+    leaf = "publication-input.tar"
+    if continuation_sha is not None:
+        require(re.fullmatch(receipts.SHA, continuation_sha), "native_publication_continuation_input_identity")
+        leaf = f"publication-continuation-{continuation_sha}.tar"
+    return f"{receipts.PREFIX}{commit}/decisions/{operation_id}/{leaf}"
 
 
 def pointer(raw, pin, commit, decision_hash):
@@ -49,7 +53,8 @@ def pointer(raw, pin, commit, decision_hash):
             "native_publication_pointer_expired")
     reference = value["input"]
     require(set(reference) == {"name", "generation", "size", "sha256"}
-            and reference["name"] == name(commit, value["operation_id"])
+            and reference["name"] in {name(commit, value["operation_id"]),
+                                      name(commit, value["operation_id"], continuation_sha=decision_hash)}
             and re.fullmatch(receipts.RUN, reference["generation"])
             and re.fullmatch(receipts.SHA, reference["sha256"])
             and type(reference["size"]) is int and 0 < reference["size"] <= LIMIT, "native_publication_input_reference")
@@ -79,7 +84,7 @@ def stream(source, destination, limit, *, deadline=None):
 
 def download(reference, token, path):
     require(re.fullmatch(r"[A-Za-z0-9._~+/=-]{20,16384}", token), "native_publication_missing_read_token")
-    require(re.fullmatch(re.escape(receipts.PREFIX) + r"[a-f0-9]{40}/decisions/[a-f0-9]{32}/publication-input\.tar",
+    require(re.fullmatch(re.escape(receipts.PREFIX) + r"[a-f0-9]{40}/decisions/[a-f0-9]{32}/publication-(?:input|continuation-[a-f0-9]{64})\.tar",
                          reference["name"]) and re.fullmatch(receipts.RUN, reference["generation"])
             and type(reference["size"]) is int and 0 < reference["size"] <= LIMIT, "native_publication_read_scope")
     generation = reference["generation"]
