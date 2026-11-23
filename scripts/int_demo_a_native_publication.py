@@ -2,11 +2,13 @@
 
 import argparse
 import base64
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import tarfile
 import time
@@ -27,6 +29,14 @@ REHEARSAL = "native-publication-rehearsal.json"
 CHECKPOINT = "native-publication-before-wif.json"
 INPUT_CHECKPOINT = "native-publication-before-private-read.json"
 STAGING = "native-skopeo"
+WIF_SECONDS = 900
+CUSTODY_SECONDS = 90
+COPY_SECONDS = 360
+READBACK_SECONDS = 120
+LOCAL_CHECK_SECONDS = 30
+FINISH_MARGIN_SECONDS = 15
+COPY_BUDGET_SECONDS = COPY_SECONDS + READBACK_SECONDS + LOCAL_CHECK_SECONDS + CUSTODY_SECONDS + FINISH_MARGIN_SECONDS
+INTENT_BUDGET_SECONDS = CUSTODY_SECONDS + LOCAL_CHECK_SECONDS + COPY_BUDGET_SECONDS
 require = transport.require
 
 
@@ -122,12 +132,29 @@ def verify_checkpoint(work, env, expected):
     return {"runner": live, "tool": tool}
 
 
-def credential_budget(env, decision):
+def credential_budget(env, decision, *, required=INTENT_BUDGET_SECONDS):
     started = env.get("INT_DEMO_A_AUTH_STARTED_EPOCH", "")
-    require(re.fullmatch(r"[1-9][0-9]{9,11}", started) and 0 <= time.time() - int(started) <= 900 - 300,
+    require(re.fullmatch(r"[1-9][0-9]{9,11}", started) and 0 <= time.time() - int(started) <= WIF_SECONDS - required,
             "native_publication_credential_margin")
     require(datetime.now(timezone.utc) < datetime.fromisoformat(decision["expires_utc"]),
             "native_publication_owner_decision_expired")
+
+
+@contextmanager
+def phase_deadline(seconds, code):
+    """Bound the entire native Linux phase, including streams with per-read timeouts."""
+    require(signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0), "native_publication_timer_already_active")
+
+    def expired(signum, frame):
+        raise transport.Blocked(code)
+
+    previous = signal.signal(signal.SIGALRM, expired)
+    try:
+        signal.setitimer(signal.ITIMER_REAL, seconds)
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def execute(bundle, work, env, decision, approval_hash, expected, tool, images):
@@ -149,9 +176,9 @@ def execute(bundle, work, env, decision, approval_hash, expected, tool, images):
         for target, image in images.items():
             archive = bundle / (target + ".oci.tar")
             staged = work / (target + ".oci.tar")
+            report.update(phase=target, status="publication_pending")
             common.check_staging_archive(staged, image)
             destination = f"{common.HOST}/{common.REPOSITORY}/{target}@{image['manifest']}"
-            report.update(phase=target, status="intent_outcome_requires_reconciliation")
             metadata = {"target": destination, "run": env["GITHUB_RUN_ID"], "source_controls": env["GITHUB_SHA"],
                         "manifest": image["manifest"], "operation_id": decision["operation_id"],
                         "owner_decision_sha256": approval_hash, "config": image["config"][0],
@@ -160,21 +187,28 @@ def execute(bundle, work, env, decision, approval_hash, expected, tool, images):
             verify_checkpoint(work, env, expected)
             credential_budget(env, decision)
             intent = names["publication-" + target + "-intent.json"]
-            report["intent"][target] = cloud.create(intent, {**metadata, "status": "copy_intended"})
+            with phase_deadline(CUSTODY_SECONDS, "native_publication_intent_deadline"):
+                report["status"] = "intent_outcome_requires_reconciliation"
+                report["intent"][target] = cloud.create(intent, {**metadata, "status": "copy_intended"})
             report["status"] = "intent_recorded_no_copy_started"
-            verify_checkpoint(work, env, expected)
-            credential_budget(env, decision)
-            report["status"] = "copy_outcome_requires_reconciliation"
-            code = skopeo.copy(work / STAGING, staged, auth, destination)
+            with phase_deadline(LOCAL_CHECK_SECONDS, "native_publication_before_copy_check_deadline"):
+                verify_checkpoint(work, env, expected)
+            credential_budget(env, decision, required=COPY_BUDGET_SECONDS)
+            with phase_deadline(COPY_SECONDS, "native_publication_copy_deadline"):
+                report["status"] = "copy_outcome_requires_reconciliation"
+                code = skopeo.copy(work / STAGING, staged, auth, destination)
             report["native_exit"][target] = code
             require(code == 0, "native_publication_copy_failed_review_before_retry")
-            common.verify_registry(destination, image, "Bearer " + token, ca=str(work / STAGING / "ca.pem"))
-            require(common.digest_file(archive) == image["archive_sha256"], "demo_a_oci_source_changed")
-            verify_checkpoint(work, env, expected)
+            with phase_deadline(READBACK_SECONDS, "native_publication_readback_deadline"):
+                common.verify_registry(destination, image, "Bearer " + token, ca=str(work / STAGING / "ca.pem"))
+            with phase_deadline(LOCAL_CHECK_SECONDS, "native_publication_after_copy_check_deadline"):
+                require(common.digest_file(archive) == image["archive_sha256"], "demo_a_oci_source_changed")
+                verify_checkpoint(work, env, expected)
             receipt = names["publication-" + target + ".json"]
-            report["status"] = "verified_copy_receipt_outcome_requires_reconciliation"
-            report["references"][target] = cloud.create(
-                receipt, {**metadata, "status": "published_and_verified", "intent": report["intent"][target]})
+            with phase_deadline(CUSTODY_SECONDS, "native_publication_result_receipt_deadline"):
+                report["status"] = "verified_copy_receipt_outcome_requires_reconciliation"
+                report["references"][target] = cloud.create(
+                    receipt, {**metadata, "status": "published_and_verified", "intent": report["intent"][target]})
         report["status"] = "published_and_verified"
     except (OSError, ValueError, TypeError, KeyError, tarfile.TarError, subprocess.SubprocessError) as error:
         report["error_code"] = error_code(error)

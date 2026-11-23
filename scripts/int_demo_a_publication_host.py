@@ -190,19 +190,45 @@ def observe(env, path):
     require(not any(env.get(key) for key in ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL",
                                             "GCP_ACCESS_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS")),
             "native_publication_observation_credentialed")
-    live, inventory = snapshot(env, "observe-host")
     try:
-        checked(live["host"])
-        result = {"status": "host_observed_review_required"}
+        live, inventory = snapshot(env, "observe-host")
     except HostBlocked as error:
-        result = {"status": "host_rejected", "reason": str(error)}
-    raw = (json.dumps({**result, **live, "binary_source_packages": inventory, "activation_authorized": False},
+        if str(error) != "native_publication_azure_kernel_family":
+            raise
+        result = {"status": "host_observation_blocked", "reason": str(error)}
+        evidence = rejected_kernel_facts(env)
+    else:
+        try:
+            checked(live["host"])
+            result = {"status": "host_observed_review_required"}
+        except HostBlocked as error:
+            result = {"status": "host_rejected", "reason": str(error)}
+        evidence = {**live, "binary_source_packages": inventory}
+    raw = (json.dumps({**result, **evidence, "activation_authorized": False},
                       sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
     require(len(raw) <= 10 * 1024 * 1024, "native_publication_observation_bound")
     with path.open("xb") as output:
         output.write(raw)
     print(json.dumps(result))
-    return int(result["status"] == "host_rejected")
+    return int(result["status"] != "host_observed_review_required")
+
+
+def rejected_kernel_facts(env):
+    machine = os.uname()
+    require(re.fullmatch(r"[A-Za-z0-9_.+-]{1,96}", machine.release) and re.fullmatch(r"[A-Za-z0-9_]{1,24}", machine.machine),
+            "native_publication_rejected_kernel_facts_shape")
+    signature = None
+    try:
+        with Path("/proc/version_signature").open(encoding="ascii") as stream:
+            candidate = stream.read(257).strip()
+        if re.fullmatch(r"[A-Za-z0-9 ._+~()-]{1,255}", candidate):
+            signature = candidate
+    except (OSError, UnicodeError):
+        pass
+    image = env.get("ImageVersion", "")
+    return {"schema": SCHEMA, "image_version": image if IMAGE.fullmatch(image) else None,
+            "kernel_release": machine.release, "kernel_signature": signature, "architecture": machine.machine,
+            "run": env["GITHUB_RUN_ID"], "attempt": env["GITHUB_RUN_ATTEMPT"], "commit": env["GITHUB_SHA"]}
 
 
 def main():

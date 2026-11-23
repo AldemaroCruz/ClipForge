@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
+import signal
 import tarfile
 from tempfile import TemporaryDirectory
 import time
@@ -181,6 +182,98 @@ class NativePublicationTests(unittest.TestCase):
         with self.assertRaisesRegex(transport.Blocked, "owner_decision_expired"):
             publisher.credential_budget({"INT_DEMO_A_AUTH_STARTED_EPOCH": str(int(time.time()))},
                                         {"expires_utc": "2026-01-01T00:00:00+00:00"})
+
+    def test_budget_covers_full_intent_and_copy_deadlines_at_the_boundary(self):
+        decision = {"expires_utc": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()}
+        started = 1700000000
+        env = {"INT_DEMO_A_AUTH_STARTED_EPOCH": str(started)}
+        with patch.object(publisher.time, "time", return_value=started + 600):
+            with self.assertRaisesRegex(transport.Blocked, "credential_margin"):
+                publisher.credential_budget(env, decision)
+        self.assertEqual((publisher.INTENT_BUDGET_SECONDS, publisher.COPY_BUDGET_SECONDS), (735, 615))
+        for minimum, check in (
+            (publisher.INTENT_BUDGET_SECONDS, lambda: publisher.credential_budget(env, decision)),
+            (publisher.COPY_BUDGET_SECONDS, lambda: publisher.credential_budget(
+                env, decision, required=publisher.COPY_BUDGET_SECONDS)),
+        ):
+            with self.subTest(minimum=minimum), patch.object(publisher.time, "time") as now:
+                now.return_value = started + 900 - minimum
+                check()
+                now.return_value += 1
+                with self.assertRaisesRegex(transport.Blocked, "credential_margin"):
+                    check()
+                now.return_value = started + 600
+                with self.assertRaisesRegex(transport.Blocked, "credential_margin"):
+                    check()
+        with patch.object(publisher.skopeo, "_run_copy") as adapter:
+            publisher.skopeo.copy("fixture/tool", "fixture/source", "fixture/auth", next(iter(publisher.skopeo.TARGETS)))
+        self.assertEqual(adapter.call_args.kwargs["timeout"], publisher.COPY_SECONDS)
+
+    def test_budget_shortfall_before_second_intent_preserves_first_receipt(self):
+        started = 1700000000
+        decision = {"operation_id": OPERATION, "expires_utc": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()}
+        env = {"GITHUB_SHA": COMMIT, "GITHUB_RUN_ID": RUN, "GITHUB_RUN_ATTEMPT": "1",
+               "INT_DEMO_A_AUTH_STARTED_EPOCH": str(started)}
+        images = {key: {"manifest": pin[0], "archive_sha256": pin[1], "config": ("sha256:" + "d" * 64, 2),
+                        "layers": [("sha256:" + "e" * 64, 3)]} for key, pin in common.TARGETS.items()}
+        with (TemporaryDirectory() as tmp, patch.object(publisher, "verify_checkpoint"),
+              patch.object(publisher.time, "time", return_value=started) as now,
+              patch.object(publisher.preflight, "deploy_after_wif", return_value=TOKEN) as credential,
+              patch.object(receipts, "Custody") as storage, patch.object(common, "check_staging_archive"),
+              patch.object(publisher.skopeo, "copy", return_value=0) as copy,
+              patch.object(common, "verify_registry"),
+              patch.object(common, "digest_file",
+                           side_effect=lambda path: common.TARGETS[path.name.removesuffix(".oci.tar")][1])):
+            def create(_name, document):
+                if document["status"] == "published_and_verified":
+                    now.return_value = started + 166
+                return {"generation": "123", "sha256": "f" * 64, "size": 4}
+
+            write = storage.return_value.create
+            write.side_effect = create
+            result = publisher.execute(Path(tmp), Path(tmp), env, decision, APPROVAL, {},
+                                       {"manifest": "sha256:" + publisher.skopeo.MANIFEST}, images)
+            self.assertFalse((Path(tmp) / "publisher-auth.json").exists())
+        self.assertEqual([item.args[1]["status"] for item in write.call_args_list],
+                         ["copy_intended", "published_and_verified"])
+        self.assertEqual((result["phase"], result["status"], result.get("error_code")),
+                         ("db01-noble-client", "publication_pending", "native_publication_credential_margin"))
+        self.assertEqual(publisher.public_result(result)["receipts_verified"], ["runtime"])
+        self.assertEqual(publisher.public_result(result)["intents_verified"], ["runtime"])
+        copy.assert_called_once()
+        credential.assert_called_once()
+
+    def test_readback_deadline_preserves_uncertain_copy_and_prevents_retry(self):
+        started = 1700000000
+        decision = {"operation_id": OPERATION, "expires_utc": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()}
+        env = {"GITHUB_SHA": COMMIT, "GITHUB_RUN_ID": RUN, "GITHUB_RUN_ATTEMPT": "1",
+               "INT_DEMO_A_AUTH_STARTED_EPOCH": str(started)}
+        images = {key: {"manifest": pin[0], "archive_sha256": pin[1], "config": ("sha256:" + "d" * 64, 2),
+                        "layers": [("sha256:" + "e" * 64, 3)]} for key, pin in common.TARGETS.items()}
+        previous = signal.getsignal(signal.SIGALRM)
+        with (TemporaryDirectory() as tmp, patch.object(publisher, "verify_checkpoint"),
+              patch.object(publisher.time, "time", return_value=started),
+              patch.object(publisher.preflight, "deploy_after_wif", return_value=TOKEN) as credential,
+              patch.object(receipts, "Custody") as storage, patch.object(common, "check_staging_archive"),
+              patch.object(publisher.skopeo, "copy", return_value=0) as copy,
+              patch.object(publisher, "READBACK_SECONDS", 0.02, create=True),
+              patch.object(common, "digest_file",
+                           side_effect=lambda path: common.TARGETS[path.name.removesuffix(".oci.tar")][1]),
+              patch.object(common, "verify_registry", side_effect=lambda *args, **kwargs: time.sleep(1))):
+            storage.return_value.create.return_value = {"generation": "123", "sha256": "f" * 64, "size": 4}
+            result = publisher.execute(Path(tmp), Path(tmp), env, decision, APPROVAL, {},
+                                       {"manifest": "sha256:" + publisher.skopeo.MANIFEST}, images)
+            self.assertFalse((Path(tmp) / "publisher-auth.json").exists())
+        self.assertEqual((result["status"], result.get("error_code")),
+                         ("copy_outcome_requires_reconciliation", "native_publication_readback_deadline"))
+        self.assertEqual(result["native_exit"], {"runtime": 0})
+        self.assertEqual(set(result["intent"]), {"runtime"})
+        self.assertEqual(result["references"], {})
+        self.assertEqual(signal.getitimer(signal.ITIMER_REAL), (0.0, 0.0))
+        self.assertEqual(signal.getsignal(signal.SIGALRM), previous)
+        storage.return_value.create.assert_called_once()
+        copy.assert_called_once()
+        credential.assert_called_once()
 
 
 if __name__ == "__main__":
