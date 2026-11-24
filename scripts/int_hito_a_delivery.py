@@ -697,11 +697,25 @@ def _verify_plan(plan, state, acceptance_nonce):
     template = _one(service.get("template"), "terraform_service_template")
     scaling = _one(template.get("scaling"), "terraform_service_scaling")
     optional_targets = {"cpu_utilization", "concurrency_utilization"}
-    require(template.get("service_account") == "clipforge-api-int@clipforgebeta2.iam.gserviceaccount.com"
-            and scaling.get("max_instance_count") == 1 and scaling.get("min_instance_count") == 0
+    definitions = plan["configuration"]["root_module"]["resources"]
+    service_definition = _one([row for row in definitions
+                               if row.get("address") == "google_cloud_run_v2_service.api"],
+                              "terraform_service_definition")
+    declared = _one(service_definition["expressions"].get("template"), "terraform_template_definition")
+    require(_one(declared.get("scaling"), "terraform_scaling_definition") == {
+        "max_instance_count": {"constant_value": 1}, "min_instance_count": {"constant_value": 0},
+    }, "terraform_scaling_configuration")
+    require(template.get("service_account") == "clipforge-api-int@clipforgebeta2.iam.gserviceaccount.com",
+            "terraform_service_identity")
+    # The provider may materialize unset optional floats as zero in refreshed state.
+    # Actual request construction uses the raw configuration verified above.
+    require(type(scaling.get("max_instance_count")) is int and scaling["max_instance_count"] == 1
+            and (scaling.get("min_instance_count") is None
+                 or type(scaling["min_instance_count"]) is int and scaling["min_instance_count"] == 0)
             and set(scaling) <= {"max_instance_count", "min_instance_count"} | optional_targets
-            and all(scaling.get(target) is None for target in optional_targets),
-            "terraform_service_identity_or_scaling")
+            and all(item is None or type(item) in (int, float) and item == 0
+                    for item in (scaling.get(target) for target in optional_targets)),
+            "terraform_service_scaling_values")
     container = _one(template.get("containers"), "terraform_service_container")
     require(container.get("image") == image and container.get("command") == ["python"]
             and "app.int_demo:app" in container.get("args", []), "terraform_service_image")
@@ -734,7 +748,11 @@ def _verify_plan(plan, state, acceptance_nonce):
             and human.get("role") == deploy.get("role") == "roles/iap.httpsResourceAccessor",
             "terraform_iap_access")
     credential_reader = planned["google_secret_manager_secret_iam_member.bootstrap_admin_human[0]"]
-    require(credential_reader.get("secret_id") == "clipforge-int-bootstrap-admin"
+    require(credential_reader.get("secret_id") in {
+                "clipforge-int-bootstrap-admin",
+                f"projects/{PROJECT}/secrets/clipforge-int-bootstrap-admin",
+                f"projects/{PROJECT_NUMBER}/secrets/clipforge-int-bootstrap-admin",
+            }
             and credential_reader.get("member") == "user:admin@ixbalam.studio"
             and credential_reader.get("role") == "roles/secretmanager.secretAccessor",
             "terraform_bootstrap_credential_access")

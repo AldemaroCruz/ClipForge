@@ -110,8 +110,13 @@ def runtime_plan(state, nonce, *, action="create"):
     changes = [{"mode": "managed", "address": address,
                 "change": {"actions": [action if address == "google_cloud_run_v2_service.api[0]" else "create"]}}
                for address in values]
+    definition = {"address": "google_cloud_run_v2_service.api", "expressions": {
+        "template": [{"scaling": [{"max_instance_count": {"constant_value": 1},
+                                   "min_instance_count": {"constant_value": 0}}]}],
+    }}
     return {"terraform_version": delivery.TERRAFORM_VERSION, "format_version": "1.2",
             "complete": True, "applyable": True, "errored": False,
+            "configuration": {"root_module": {"resources": [definition]}},
             "resource_changes": changes, "planned_values": {"root_module": {"resources": resources}}}
 
 
@@ -442,8 +447,23 @@ class DeliveryContractTests(unittest.TestCase):
                 plan = runtime_plan(state, nonce)
                 scaling = plan["planned_values"]["root_module"]["resources"][0]["values"]["template"][0]["scaling"][0]
                 scaling[field] = value
-                with self.assertRaisesRegex(delivery.DeliveryBlocked, "terraform_service_identity_or_scaling"):
+                with self.assertRaisesRegex(delivery.DeliveryBlocked, "terraform_service_scaling_values"):
                     delivery._verify_plan(plan, state, nonce)
+
+    def test_refreshed_plan_uses_native_defaults_and_exact_config(self):
+        state = {"commit": COMMIT, "image": IMAGE}
+        nonce = "prepare-123-1"
+        plan = runtime_plan(state, nonce, action="update")
+        resources = plan["planned_values"]["root_module"]["resources"]
+        scaling = resources[0]["values"]["template"][0]["scaling"][0]
+        scaling.update(cpu_utilization=0.0, concurrency_utilization=0.0, min_instance_count=None)
+        credential = next(row["values"] for row in resources if "bootstrap_admin_human" in row["address"])
+        credential["secret_id"] = "projects/clipforgebeta2/secrets/clipforge-int-bootstrap-admin"
+        delivery._verify_plan(plan, state, nonce)
+        expression = plan["configuration"]["root_module"]["resources"][0]["expressions"]
+        expression["template"][0]["scaling"][0]["cpu_utilization"] = {"constant_value": 0}
+        with self.assertRaisesRegex(delivery.DeliveryBlocked, "terraform_scaling_configuration"):
+            delivery._verify_plan(plan, state, nonce)
 
     def test_acceptance_private_state_is_not_copied_to_public_receipt(self):
         with mock.patch.object(delivery.int_release_image, "archive_digest", return_value=DIGEST):
