@@ -24,6 +24,7 @@ ROOT_FILES = (
     "requirements-ci-tools.txt", "requirements-ci-tools.lock",
     "Dockerfile.dev", "Dockerfile.dev.dockerignore", "compose.dev.yaml",
     "Dockerfile.int-demo", "requirements-int-demo-apt.tsv", "requirements-int-demo.lock",
+    "Dockerfile.int-beta", "requirements-int.lock", "requirements-int-beta-apt.tsv",
 )
 DIRECTORIES = {
     "app": frozenset({".py"}),
@@ -68,6 +69,7 @@ SUPPORT_FILES = PERSONAL_SQL_FILES | frozenset({
     '.github/workflows/int-foundation-recovery-plan.yml',
     '.github/workflows/int-guest-inventory.yml',
     '.github/workflows/int-hito-a.yml',
+    '.github/workflows/int-hito-b.yml',
     '.github/workflows/int-iap-diagnostic.yml',
     '.github/workflows/tf-int-plan.yml',
     '.gitleaks.toml',
@@ -80,6 +82,7 @@ SUPPORT_FILES = PERSONAL_SQL_FILES | frozenset({
     'config/int-db01-noble-write-iam.json',
     'config/int-demo-a-noble-policy.json',
     'config/int-hito-a-bandit-acceptance.json',
+    'config/int-hito-b-bandit-review.json',
     'config/int-runner-risk-acceptance.json',
     'config/int-e2e01-decisions.json',
     'config/int-foundation-close.json',
@@ -104,6 +107,9 @@ SUPPORT_FILES = PERSONAL_SQL_FILES | frozenset({
     'config/tf-int01-costs.json',
     'config/whisper-int.json',
     'infra/gcp/int-base/.terraform.lock.hcl',
+    'infra/gcp/int-beta/.terraform.lock.hcl',
+    'infra/gcp/int-beta/main.tf',
+    'scripts/build_int_beta_ffmpeg.sh',
     'infra/gcp/int-base/audit.tf',
     'infra/gcp/int-base/backend-int.hcl',
     'infra/gcp/int-base/db01-noble-hostkey-template.sh',
@@ -270,7 +276,7 @@ def _files(root: Path, *, strict: bool) -> list[tuple[str, Path]]:
                 if not stat.S_ISREG(metadata.st_mode):
                     raise ContextError("Only regular source files may be copied.")
                 if Path(entry.name).suffix.lower() not in extensions:
-                    if strict:
+                    if strict and candidate not in SUPPORT_FILES:
                         raise ContextError("Context contains a file outside its source allowlist.")
                     continue
                 found.append((candidate, Path(entry.path)))

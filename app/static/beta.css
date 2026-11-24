@@ -1,0 +1,144 @@
+.beta {
+  max-width: 1200px;
+}
+.beta header {
+  margin: 28px 0 0;
+}
+.beta-brand {
+  color: var(--accent);
+  font-weight: 750;
+  text-decoration: none;
+}
+.beta header h1 {
+  font-size: clamp(1.85rem, 3vw, 2.7rem);
+  margin-top: .25rem;
+}
+.beta-layout {
+  display: grid;
+  grid-template-columns: minmax(265px, 1fr) minmax(0, 2fr);
+  gap: 20px;
+  align-items: start;
+}
+.beta-stack {
+  min-width: 0;
+}
+.beta-layout .panel {
+  margin-bottom: 0;
+}
+.beta-panel-heading {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.beta-panel-heading h2 {
+  margin-bottom: 0;
+}
+.beta-list {
+  list-style: none;
+  padding: 0;
+  margin-block: 12px;
+}
+.beta-list > li {
+  padding-block: 12px;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.beta-list > li:last-child {
+  border-bottom: 0;
+}
+.beta-list p {
+  margin: .2rem 0;
+}
+.beta-list a[aria-current="true"] {
+  font-weight: 700;
+}
+.beta-detail h2 {
+  overflow-wrap: anywhere;
+}
+.beta-detail {
+  min-height: 18rem;
+}
+.beta-message:empty {
+  display: none;
+}
+.beta button:disabled {
+  cursor: default;
+}
+.beta progress {
+  display: block;
+  margin-block: 12px;
+  width: 100%;
+  accent-color: var(--accent);
+}
+.beta-clips {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 245px), 1fr));
+  gap: 14px;
+}
+.beta-clips:not(:empty) {
+  margin-top: 20px;
+}
+.beta-clip {
+  padding: 14px;
+  background: #111d30;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.beta-clip h3 {
+  margin: 0;
+}
+.beta-clip video {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 9 / 16;
+  max-height: 400px;
+  background: #080e18;
+  border-radius: 8px;
+}
+.beta-clip .actions {
+  margin-top: 12px;
+}
+.beta-feedback {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 20px;
+}
+.beta textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 125px;
+  padding: 11px 12px;
+  border: 1px solid #49607f;
+  border-radius: 8px;
+  background: #0f192b;
+  color: inherit;
+  font: inherit;
+  resize: vertical;
+}
+.beta textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.beta fieldset {
+  min-width: 0;
+  margin: 16px 0 0;
+  padding: 0 12px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.beta-comments p.beta-comment {
+  white-space: pre-wrap;
+  margin-block: .5rem;
+}
+.beta-comments code {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 760px) {
+  .beta-layout, .beta-feedback {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+}

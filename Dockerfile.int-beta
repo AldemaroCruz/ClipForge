@@ -1,0 +1,86 @@
+# syntax=docker/dockerfile:1@sha256:572cebbc2b15e6f84c077742952674889cb63cd5e9b80abdffcbe587b6f19183
+FROM docker.io/library/ubuntu:24.04@sha256:77eb101c607d6e3d4f5ad0c8a02c2136c689b98aba1f359e6502ba517e5c57ec AS native
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    gcc make libc6-dev pkg-config gnupg xz-utils \
+    libx264-dev=2:0.164.3108+git31e19f9-1 \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+COPY scripts/build_int_beta_ffmpeg.sh /build/
+RUN --network=none --mount=type=bind,source=native,target=/source \
+    cp /source/* . && bash build_int_beta_ffmpeg.sh
+
+FROM docker.io/library/ubuntu:24.04@sha256:77eb101c607d6e3d4f5ad0c8a02c2136c689b98aba1f359e6502ba517e5c57ec AS os
+ENV LANG=C.UTF-8 PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PSYCOPG_IMPL=python PATH=/opt/clipforge/venv/bin:$PATH
+COPY requirements-int-demo-apt.tsv requirements-int-beta-apt.tsv /opt/clipforge-custody/
+RUN --network=none <<'PACKAGES'
+set -eu
+cat > /usr/local/sbin/install-clipforge-packages <<'INSTALL'
+#!/bin/sh
+set -eu
+export DEBIAN_FRONTEND=noninteractive
+set --
+while IFS="$(printf '\t')" read -r package version arch digest url; do
+    file="/debs/${url##*/}"
+    printf '%s  %s\n' "$digest" "$file" | sha256sum --check
+    test "$(dpkg-deb -f "$file" Package)" = "$package"
+    test "$(dpkg-deb -f "$file" Version)" = "$version"
+    test "$(dpkg-deb -f "$file" Architecture)" = "$arch"
+    set -- "$@" "$file"
+done < "/opt/clipforge-custody/${CLIPFORGE_APT_LOCK}"
+dpkg --unpack "$@"
+dpkg --configure --pending
+apt-get check
+INSTALL
+chmod 0555 /usr/local/sbin/install-clipforge-packages
+groupadd --gid 10001 clipforge
+useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin clipforge
+PACKAGES
+RUN --network=none --mount=type=bind,source=debs,target=/debs \
+    CLIPFORGE_APT_LOCK=requirements-int-demo-apt.tsv install-clipforge-packages
+WORKDIR /app
+
+FROM os AS web
+COPY web.lock /opt/clipforge-custody/requirements-web.lock
+RUN --network=none --mount=type=bind,source=wheels-web,target=/wheels \
+    python3.12 -m venv /opt/clipforge/venv \
+ && python -m pip --isolated install --no-index --no-cache-dir --require-hashes --only-binary=:all: \
+    --find-links=/wheels -r /opt/clipforge-custody/requirements-web.lock \
+ && python -m pip check
+COPY app/__init__.py app/auth.py app/auth_db.py app/auth_models.py app/auth_migrations.py \
+     app/editorial.py app/environment.py app/int_beta.py app/int_beta_proxy.py \
+     app/presentation.py app/subtitles.py /app/app/
+COPY app/cloud/ /app/app/cloud/
+COPY app/static/account.css app/static/account.html app/static/account.js app/static/auth.js \
+     app/static/login.html app/static/recover.html app/static/recover.js \
+     app/static/beta.html app/static/beta.css app/static/beta.js /app/app/static/
+RUN find /app -xdev -type d -exec chmod 0555 {} + && find /app -xdev -type f -exec chmod 0444 {} +
+USER 10001:10001
+RUN --network=none python -c 'import app.int_beta, app.int_beta_proxy, psycopg; assert psycopg.pq.__impl__ == "python"'
+EXPOSE 8080
+CMD ["python", "-m", "uvicorn", "app.int_beta_proxy:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log", "--no-proxy-headers"]
+
+FROM os AS worker
+ENV CLIPFORGE_DATA_DIR=/tmp/clipforge-cache CLIPFORGE_STORAGE_BACKEND=gcs \
+    CLIPFORGE_INT_BETA_WORKER=1 CLIPFORGE_AI_PROVIDER=disabled CLIPFORGE_LLM_ENABLED=0 \
+    HF_HOME=/opt/clipforge/models WHISPER_MODEL=tiny CLIPFORGE_MODEL_LOCK=/opt/clipforge/whisper-int.json \
+    HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+COPY worker.lock /opt/clipforge-custody/requirements-worker.lock
+RUN --network=none --mount=type=bind,source=debs,target=/debs \
+    CLIPFORGE_APT_LOCK=requirements-int-beta-apt.tsv install-clipforge-packages
+RUN --network=none --mount=type=bind,source=wheels-worker,target=/wheels \
+    python3.12 -m venv /opt/clipforge/venv \
+ && python -m pip --isolated install --no-index --no-cache-dir --require-hashes --only-binary=:all: \
+    --find-links=/wheels -r /opt/clipforge-custody/requirements-worker.lock \
+ && python -m pip check
+COPY --from=native /opt/clipforge/media /opt/clipforge/media
+COPY app/ /app/app/
+COPY config/whisper-int.json /opt/clipforge/whisper-int.json
+COPY weights/ /opt/clipforge/models/
+RUN find /app /opt/clipforge/models -xdev -type d -exec chmod 0555 {} + \
+ && find /app /opt/clipforge/models -xdev -type f -exec chmod 0444 {} +
+USER 10001:10001
+RUN --network=none python -m app.model_source verify \
+ && python -c 'from app.media_binaries import resolve_media_binary; import ctranslate2, psycopg; assert psycopg.pq.__impl__ == "python"; resolve_media_binary("ffmpeg"); resolve_media_binary("ffprobe")'
+CMD ["python", "-m", "app.cloud.worker"]

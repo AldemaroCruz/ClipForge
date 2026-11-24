@@ -6,6 +6,7 @@ protection against a compromised image builder/root. CI records SHA256 as well.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 import stat
@@ -14,6 +15,7 @@ import sys
 
 BINARIES = {"ffmpeg": "/usr/bin/ffmpeg", "ffprobe": "/usr/bin/ffprobe"}
 PACKAGE_LIST = Path("/var/lib/dpkg/info/ffmpeg.list")
+BETA_BIN = Path("/opt/clipforge/media/bin")
 
 
 def _trusted_path(path: Path, *, directory: bool = False) -> None:
@@ -36,7 +38,8 @@ def resolve_media_binary(name: str, *, candidate: str | None = None) -> str:
         raise ValueError("Only ffmpeg and ffprobe are authorized media tools")
     if sys.platform != "linux":
         raise RuntimeError("Media tools require Linux containers; on Windows/macOS use Docker Desktop with Linux containers")
-    expected = BINARIES[name]
+    beta = os.environ.get("CLIPFORGE_INT_BETA_WORKER") == "1"
+    expected = str(BETA_BIN / name) if beta else BINARIES[name]
     if candidate is not None and candidate != expected:
         raise PermissionError("Media tool location is not authorized")
     path = Path(expected)
@@ -46,7 +49,15 @@ def resolve_media_binary(name: str, *, candidate: str | None = None) -> str:
     with path.open("rb") as stream:
         if stream.read(4) != b"\x7fELF":
             raise PermissionError(f"Media tool must be a native Linux ELF binary: {path}")
-    _trusted_path(PACKAGE_LIST)
-    if expected not in PACKAGE_LIST.read_text(encoding="utf-8").splitlines():
-        raise PermissionError(f"Media tool is not recorded in the Debian ffmpeg package: {path}")
+    if beta:
+        receipt = BETA_BIN / (name + ".sha256")
+        _trusted_path(receipt)
+        with path.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        if digest != receipt.read_text(encoding="ascii").strip():
+            raise PermissionError("Media tool differs from the build receipt")
+    else:
+        _trusted_path(PACKAGE_LIST)
+        if expected not in PACKAGE_LIST.read_text(encoding="utf-8").splitlines():
+            raise PermissionError(f"Media tool is not recorded in the Debian ffmpeg package: {path}")
     return expected

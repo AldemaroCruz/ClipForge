@@ -10,6 +10,7 @@ import math
 import os
 import re
 import shutil
+import tempfile
 import threading
 import time
 import uuid
@@ -196,7 +197,29 @@ def process(job_id: str) -> None:
         _process(job_id, recorder)
 
 
-def _process(job_id: str, recorder: Recorder | None = None) -> None:
+def _beta_audio(source: Path) -> Any:
+    import numpy as np
+    from .cloud.config import BETA_MAX_SECONDS
+
+    samples_per_second = 16000
+    byte_limit = BETA_MAX_SECONDS * samples_per_second * 2
+    with tempfile.TemporaryDirectory(prefix=".audio-", dir=source.parent) as directory:
+        pcm = Path(directory) / "voice.pcm"
+        run_ffmpeg(
+            "-protocol_whitelist", "file,pipe", "-f", "mov", "-i", source.resolve(),
+            "-map", "0:a:0", "-vn", "-sn", "-dn",
+            "-ar", samples_per_second, "-ac", 1, "-c:a", "pcm_s16le",
+            "-t", BETA_MAX_SECONDS, "-fs", byte_limit, "-f", "s16le", pcm,
+        )
+        with pcm.open("rb") as audio:
+            data = audio.read(byte_limit + 1)
+    if not data or len(data) > byte_limit or len(data) % 2:
+        raise MediaValidationError("UNSUPPORTED_MEDIA", "No se pudo decodificar la pista de audio.")
+    return np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
+
+
+def _process(job_id: str, recorder: Recorder | None = None, *,
+             validated_media: dict[str, Any] | None = None) -> None:
     recorder = recorder or Recorder(ROOT, job_id, "process", job_id)
     folder = ROOT / job_id
     job: dict[str, Any] | None = None
@@ -205,8 +228,13 @@ def _process(job_id: str, recorder: Recorder | None = None) -> None:
         recorder.phase("validation")
         job["status"] = "validating"
         persist(job_id, job)
-        LOGGER.info("Job %s: validando pistas y duración con ffprobe", job_id)
-        job["media"] = inspect_media(folder / "input.mp4", min_duration=1 if job.get("processing_mode") == "manual" else 20)
+        source = folder / "input.mp4"
+        if validated_media is None:
+            LOGGER.info("Job %s: validando pistas y duración con ffprobe", job_id)
+            validated = inspect_media(source, min_duration=1 if job.get("processing_mode") == "manual" else 20)
+        else:
+            validated = validated_media
+        job["media"] = validated
         LOGGER.info("Job %s: video=%s audio=%s duración=%s s", job_id,
                     job["media"]["video_streams"], job["media"]["audio_streams"],
                     job["media"]["duration_seconds"])
@@ -222,7 +250,8 @@ def _process(job_id: str, recorder: Recorder | None = None) -> None:
         recorder.phase("model_load")
         model = WhisperModel(resolve_model(), device="cpu", compute_type="int8")
         recorder.phase("transcription")
-        segments, info = model.transcribe(str(folder / "input.mp4"), beam_size=1, vad_filter=True)
+        audio = _beta_audio(source) if validated_media is not None else str(source)
+        segments, info = model.transcribe(audio, beam_size=1, vad_filter=True)
         segs = [{"start": s.start, "end": s.end, "text": s.text.strip()}
                 for s in segments if s.text.strip()]
         write_json_atomic(folder / "transcript.json", segs)
@@ -245,7 +274,7 @@ def _process(job_id: str, recorder: Recorder | None = None) -> None:
             render_clip(
                 folder / "input.mp4", output, start=clip["start"], end=clip["end"],
                 options=options, cues=cues, video_index=job["media"]["video_stream_index"],
-                threads=FFMPEG_THREADS, runner=ffmpeg,
+                threads=FFMPEG_THREADS, runner=ffmpeg, pilot=validated_media is not None,
             )
             clip["cues"] = cues
             clip["options"] = options.model_dump()
@@ -257,7 +286,10 @@ def _process(job_id: str, recorder: Recorder | None = None) -> None:
         persist(job_id, job)
         LOGGER.info("Job %s: completado (%s clips)", job_id, len(chosen))
     except Exception as exc:
-        if isinstance(exc, MediaValidationError):
+        if validated_media is not None:
+            LOGGER.warning("Job beta %s: %s", job_id,
+                           exc.code if isinstance(exc, MediaValidationError) else type(exc).__name__)
+        elif isinstance(exc, MediaValidationError):
             if job and job.get("processing_mode") == "manual":
                 if exc.code == "NO_AUDIO_STREAM":
                     exc = MediaValidationError(exc.code, "Este render requiere un MP4 con pista de video y audio. El modo manual no exige voz, pero todavía no exporta videos sin pista de audio.", exc.media)
@@ -268,7 +300,8 @@ def _process(job_id: str, recorder: Recorder | None = None) -> None:
             LOGGER.exception("Job %s falló", job_id)
         if job is not None:
             job["status"] = "failed"
-            job["error"] = str(exc)
+            if validated_media is None:
+                job["error"] = str(exc)
             if isinstance(exc, MediaValidationError):
                 job["error_code"] = exc.code
                 if exc.media is not None:

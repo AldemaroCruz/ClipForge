@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>ClipForge · Tus videos</title>
+  <link rel="stylesheet" href="/static/account.css">
+  <link rel="stylesheet" href="/static/beta.css">
+  <script src="/static/auth.js" defer></script>
+  <script src="/static/beta.js" defer></script>
+</head>
+<body class="beta">
+  <header>
+    <div><a class="beta-brand" href="/">ClipForge</a><h1>Tus videos y clips</h1></div>
+    <nav class="actions" aria-label="Cuenta y ayuda">
+      <a href="#feedback">Enviar feedback</a>
+      <a href="/account">Mi cuenta <span data-auth-user></span></a>
+      <button type="button" class="secondary" data-auth-logout>Cerrar sesión</button>
+    </nav>
+  </header>
+  <p class="status beta-message" role="alert" data-auth-error></p>
+  <main id="beta-workspace" hidden>
+    <div class="beta-layout">
+      <aside class="beta-stack" aria-label="Trabajos">
+        <section id="new-job" class="panel">
+          <h2>Nuevo trabajo</h2>
+          <p id="upload-limits" class="muted" role="status">Consultando los límites de carga…</p>
+          <form id="upload-form" aria-describedby="upload-limits">
+            <label for="upload-video">Video original</label>
+            <input type="file" id="upload-video" name="video" accept=".mp4,video/mp4" required disabled>
+            <div class="actions"><button type="submit" id="upload-submit" disabled>Subir y procesar</button></div>
+            <progress id="upload-progress" aria-label="Bytes de video guardados" hidden></progress>
+            <p id="upload-status" class="status beta-message" role="status"></p>
+          </form>
+        </section>
+        <section class="panel" aria-labelledby="projects-heading">
+          <div class="beta-panel-heading">
+            <h2 id="projects-heading">Mis trabajos</h2>
+            <button id="refresh-projects" type="button" class="secondary">Actualizar</button>
+          </div>
+          <p id="projects-status" class="status beta-message" role="status"></p>
+          <ul id="project-list" class="beta-list"></ul>
+          <button id="more-projects" type="button" class="secondary" hidden>Ver más trabajos</button>
+        </section>
+      </aside>
+      <section class="panel beta-detail" aria-labelledby="job-title">
+        <h2 id="job-title">Revisar clips</h2>
+        <p id="job-status" class="status" role="status">Abre un trabajo de tu lista para revisar sus resultados.</p>
+        <p id="job-error" class="status beta-message" role="alert"></p>
+        <div class="actions" id="job-actions" hidden>
+          <button id="start-existing" type="button" class="secondary" hidden>Procesar video guardado</button>
+          <button id="retry-job" type="button" class="secondary" hidden>Reintentar procesamiento</button>
+          <button id="feedback-job" type="button" class="secondary">Enviar feedback sobre este trabajo</button>
+        </div>
+        <div id="clip-list" class="beta-clips"></div>
+      </section>
+    </div>
+    <section id="feedback" class="panel" aria-labelledby="feedback-heading">
+      <h2 id="feedback-heading">Enviar feedback</h2>
+      <form id="feedback-form" class="beta-feedback">
+        <div>
+          <label for="feedback-category">Categoría</label>
+          <select id="feedback-category" required>
+            <option value="error">Error</option>
+            <option value="suggestion">Sugerencia</option>
+            <option value="quality">Calidad del resultado</option>
+          </select>
+          <label for="feedback-context">Asociar comentario con</label>
+          <select id="feedback-context"><option value="">Experiencia general</option></select>
+          <fieldset id="clip-rating" hidden disabled>
+            <legend>Valoración del clip (opcional)</legend>
+            <label for="clip-useful">¿Te resulta útil?</label>
+            <select id="clip-useful"><option value="">Sin valoración</option><option value="yes">Sí</option><option value="no">No</option></select>
+            <label for="clip-publishable">¿Lo publicarías?</label>
+            <select id="clip-publishable"><option value="">Sin valoración</option><option value="yes">Sí</option><option value="no">No</option></select>
+          </fieldset>
+        </div>
+        <div>
+          <label for="feedback-comment">Comentario</label>
+          <textarea id="feedback-comment" required maxlength="2000" rows="5" aria-describedby="feedback-privacy"></textarea>
+          <small id="feedback-privacy">Evita incluir contraseñas, enlaces privados o datos personales de terceros.</small>
+          <div class="actions"><button type="submit">Enviar feedback</button></div>
+          <p id="feedback-status" class="status beta-message" role="status"></p>
+        </div>
+      </form>
+      <h3>Mis comentarios</h3>
+      <p id="feedback-history-status" class="status beta-message" role="status"></p>
+      <ul id="feedback-history" class="beta-list beta-comments"></ul>
+      <button id="more-feedback" type="button" class="secondary" hidden>Ver más comentarios</button>
+    </section>
+    <section id="admin-feedback" class="panel" aria-labelledby="admin-feedback-heading" hidden>
+      <div class="beta-panel-heading">
+        <h2 id="admin-feedback-heading">Feedback recibido</h2>
+        <button id="refresh-admin-feedback" type="button" class="secondary">Actualizar</button>
+      </div>
+      <p id="admin-feedback-status" class="status beta-message" role="status"></p>
+      <ul id="admin-feedback-list" class="beta-list beta-comments"></ul>
+      <button id="more-admin-feedback" type="button" class="secondary" hidden>Ver más comentarios</button>
+    </section>
+    <section class="panel" aria-labelledby="beta-guide-heading">
+      <h2 id="beta-guide-heading">Guía de la beta</h2>
+      <ol>
+        <li>Entra con la cuenta que te entregó el administrador y selecciona un MP4 con voz audible.</li>
+        <li>Elige «Subir y procesar». Puedes salir cuando el trabajo figure como pendiente o procesando y retomarlo en «Mis trabajos».</li>
+        <li>Reproduce los clips y descárgalos en MP4. La selección es heurística: usa la transcripción para encontrar tramos con voz.</li>
+        <li>Envía feedback desde el formulario, incluso si un trabajo falla. Puedes asociarlo con un trabajo o clip concreto.</li>
+      </ol>
+      <p class="muted">La beta por invitación no incluye edición avanzada ni publicación en redes.</p>
+    </section>
+  </main>
+</body>
+</html>

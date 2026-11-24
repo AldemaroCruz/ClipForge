@@ -108,10 +108,15 @@ def build_filter(options: Presentation, *, video_index: int = 0,
 
 def render_clip(source: Path, output: Path, *, start: float, end: float,
                 options: Presentation, cues: list[dict[str, Any]], video_index: int = 0,
-                threads: int = 2, runner: Callable[..., None] = run_ffmpeg) -> None:
+                threads: int = 2, runner: Callable[..., None] = run_ffmpeg,
+                pilot: bool = False) -> None:
     if not 0 < end - start <= 60.001:
         raise ValueError("La duración de exportación debe ser mayor que 0 y no superar 60 segundos.")
     duration = round(end - start, 3)
+    encoding_limits = []
+    if pilot:
+        duration = min(duration, 60.0)
+        encoding_limits = ["-maxrate", "2200k", "-bufsize", "4400k", "-b:a", "128k"]
     cues = validate_cues(cues, duration)
     if options.burn_subtitles and not cues:
         raise ValueError("No hay subtítulos para incrustar. Agrega texto o desactiva esa opción.")
@@ -133,7 +138,8 @@ def render_clip(source: Path, output: Path, *, start: float, end: float,
             "-filter_complex", build_filter(options, video_index=video_index, ass_path=ass),
             "-map", "[outv]", "-map", "0:a:0", "-af", "asetpts=PTS-STARTPTS",
             "-c:v", "libx264", "-threads", max(1, threads), "-preset", "veryfast",
-            "-crf", "26", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart", target,
+            "-crf", "26", "-pix_fmt", "yuv420p", "-c:a", "aac", *encoding_limits,
+            "-movflags", "+faststart", target,
         )
         if not target.is_file() or target.stat().st_size == 0:
             raise RuntimeError("FFmpeg no generó un archivo de video válido.")

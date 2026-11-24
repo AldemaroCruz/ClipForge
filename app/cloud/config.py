@@ -6,6 +6,20 @@ import re
 from urllib.parse import urlsplit
 
 
+BETA_MAX_BYTES = 100 * 1024 * 1024
+BETA_MIN_SECONDS = 20
+BETA_MAX_SECONDS = 180
+BETA_MAX_DIMENSION = 1920
+BETA_MAX_ACTIVE = 4
+BETA_UPLOAD_SECONDS = 24 * 60 * 60
+BETA_RETRIES = 1
+BETA_RETRYABLE = frozenset({"WORKER_INTERRUPTED", "SOURCE_UNAVAILABLE", "PROCESSING_FAILED"})
+
+
+def beta_enabled() -> bool:
+    return os.getenv("CLIPFORGE_INT_BETA") == "1"
+
+
 @dataclass(frozen=True)
 class Settings:
     bucket: str

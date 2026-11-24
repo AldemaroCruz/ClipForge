@@ -1,0 +1,117 @@
+{
+  "schema": "clipforge-int-hito-b-bandit-review-1",
+  "scope": "int-hito-b",
+  "reference": "3caca7533844bdc43d7c0293a93a59c806d75b58",
+  "reviewed": [
+    {
+      "path": "app/cloud/worker.py",
+      "test_id": "B404",
+      "severity": "LOW",
+      "confidence": "HIGH",
+      "cwe": 78,
+      "line": 12,
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "source_sha256": "fd2749a945d1b255b6766694186bcfc17a130818c07761b102884bc9db70430e",
+      "reason": "Imports subprocess for the reviewed worker child, bounded waits and process-group termination."
+    },
+    {
+      "path": "app/cloud/worker.py",
+      "test_id": "B603",
+      "severity": "LOW",
+      "confidence": "HIGH",
+      "cwe": 78,
+      "line": 149,
+      "context_sha256": "8415e97bd461f03909d1aacf75962f85fa0562255b9f8ac40d2e096d52e95aae",
+      "source_sha256": "fd2749a945d1b255b6766694186bcfc17a130818c07761b102884bc9db70430e",
+      "reason": "A fixed Python interpreter and worker module run without a shell. The UUID and fence come from the claimed PostgreSQL task and the child validates both before execution."
+    },
+    {
+      "path": "app/main.py",
+      "test_id": "B108",
+      "severity": "MEDIUM",
+      "confidence": "MEDIUM",
+      "cwe": 377,
+      "line": 39,
+      "context_sha256": "0efe935ca8a29845fb3caad89d0989ee45c5286fab44f8c5106bc737c4b9aef6",
+      "source_sha256": "9ba279527ed26a703cfe9a20dd6eb6b5cb3746bda9a20d401859782538c3b3f4",
+      "reason": "The beta worker sets its exclusively created private TemporaryDirectory as CLIPFORGE_DATA_DIR before importing main. The public and private beta HTTP entrypoints do not mount app.main."
+    },
+    {
+      "path": "app/media.py",
+      "test_id": "B404",
+      "severity": "LOW",
+      "confidence": "HIGH",
+      "cwe": 78,
+      "line": 12,
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "source_sha256": "18e5a86c3fc1e0ac6a845315a85650e63939717c3e7335374092f444fe762893",
+      "reason": "Imports subprocess for the reviewed read-only ffprobe inspection and its timeout handling."
+    },
+    {
+      "path": "app/media.py",
+      "test_id": "B603",
+      "severity": "LOW",
+      "confidence": "HIGH",
+      "cwe": 78,
+      "line": 51,
+      "context_sha256": "933014ae61106957400bd9d47333950a3a19343209234ba8b95f1c910a3ad4f5",
+      "source_sha256": "18e5a86c3fc1e0ac6a845315a85650e63939717c3e7335374092f444fe762893",
+      "reason": "Launches the verified ffprobe binary without a shell and with fixed switches, the fixed MOV demuxer in beta, file/pipe protocols and a 30-second timeout. The worker supplies its private local input.mp4 path."
+    },
+    {
+      "path": "app/media_child.py",
+      "test_id": "B606",
+      "severity": "LOW",
+      "confidence": "MEDIUM",
+      "cwe": 78,
+      "line": 75,
+      "context_sha256": "f33c43dd849b40c0764ce5402797efd960a8374bf680012fbedbca7072353708",
+      "source_sha256": "0f741b10dcc8decdabcaf712ee4606dce43f7729cbbc0819728d881a94a3ead5",
+      "reason": "The internal launcher executes FFmpeg from the trusted resolver as a list. It requires an absolute regular executable without privilege flags or capabilities and arms Linux parent-death supervision before exec."
+    },
+    {
+      "path": "app/render.py",
+      "test_id": "B404",
+      "severity": "LOW",
+      "confidence": "HIGH",
+      "cwe": 78,
+      "line": 5,
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "source_sha256": "eb033ae75ab5b0cd8abb2e4a7895f47aed5a84cef85b21a90030a0ef955d96d4",
+      "reason": "Imports subprocess for the reviewed FFmpeg launcher, dedicated process group and timing controls."
+    },
+    {
+      "path": "app/render.py",
+      "test_id": "B603",
+      "severity": "LOW",
+      "confidence": "HIGH",
+      "cwe": 78,
+      "line": 28,
+      "context_sha256": "2d722ea9c62e87235c11409e9cf13325d2927f73fc65667eb6e704870fff86a7",
+      "source_sha256": "eb033ae75ab5b0cd8abb2e4a7895f47aed5a84cef85b21a90030a0ef955d96d4",
+      "reason": "A fixed Python launcher receives the verified FFmpeg executable as argv. Clip times and stream indexes are validated or computed, presentation options are enumerated, and input, outputs and subtitle files are generated in private worker scratch. The beta FFmpeg build disables network protocols."
+    },
+    {
+      "path": "scripts/int_hito_b_bandit.py",
+      "test_id": "B404",
+      "severity": "LOW",
+      "confidence": "HIGH",
+      "cwe": 78,
+      "line": 12,
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "source_sha256": "bc7680e8850fcb31f89bbd3dfa54a21e802926f3fa3829b9ad5401d72930cd60",
+      "reason": "Imports subprocess to read the fixed Git reference tree for the Bandit scope comparison."
+    },
+    {
+      "path": "scripts/int_hito_b_bandit.py",
+      "test_id": "B603",
+      "severity": "LOW",
+      "confidence": "HIGH",
+      "cwe": 78,
+      "line": 31,
+      "context_sha256": "18fe56f63e803960a854610c79621edb3820695db97a7e32ff6380c659a6b0b1",
+      "source_sha256": "bc7680e8850fcb31f89bbd3dfa54a21e802926f3fa3829b9ad5401d72930cd60",
+      "reason": "Runs the absolute Git executable without a shell, using only the verified repository path, fixed reference commit and fixed app and scripts path arguments. The timeout and the command status fail closed."
+    }
+  ]
+}

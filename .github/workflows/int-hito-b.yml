@@ -1,0 +1,352 @@
+name: ClipForge INT Hito B delivery
+run-name: Hito B delivery of ${{ inputs.approved_commit }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      approved_commit:
+        description: Exact source commit for the INT creator pilot
+        required: true
+        type: string
+
+permissions: {}
+concurrency:
+  group: clipforge-int-hito-a-delivery
+  cancel-in-progress: false
+
+env:
+  APPROVED_COMMIT: ${{ inputs.approved_commit }}
+  PYTHONDONTWRITEBYTECODE: '1'
+  GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:b109bc5f8f76a38196a3e413704fc5b9e3c32360bce4e4b603bd6f45b3721dbb
+  BUILDKIT_IMAGE: moby/buildkit:v0.35.1@sha256:baf6138eb8c37644800c7c913fba051e840ebb9ba13eaf92d92ef9a1712d0b4c
+  SKOPEO_IMAGE: quay.io/skopeo/stable:v1.20.0@sha256:47853bb9fb24202af9110531ebd6e43c5f97701254ca290596640290d17942f4
+  TRIVY_IMAGE: ghcr.io/aquasecurity/trivy:0.76.2@sha256:6fa071ef8daa2e58b90cbf1710bedca91adbb3bf98693533226f442035b836a6
+  IMAGE_REPOSITORY: us-central1-docker.pkg.dev/clipforgebeta2/clipforge-int
+  WIF_PROVIDER: projects/816643438938/locations/global/workloadIdentityPools/clipforge-gh-int/providers/github
+
+jobs:
+  frontend:
+    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Validate source and browser interactions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$APPROVED_COMMIT" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python -m pip install --no-deps --only-binary=:all: --require-hashes -r requirements-ci-tools.lock
+          command -v google-chrome
+          node --check app/static/beta.js
+          node --check app/static/auth.js
+          node --check app/static/account.js
+          node --check app/static/recover.js
+          python -m unittest tests.test_auth_recovery_ui tests.browser_hito_b_e2e -v
+
+  api:
+    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 65
+    outputs:
+      artifact_id: ${{ steps.artifact.outputs.artifact-id }}
+      receipt: ${{ steps.candidate.outputs.receipt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Prepare verified CI context
+        id: setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$APPROVED_COMMIT" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          umask 077
+          scratch="$(mktemp -d "$RUNNER_TEMP/clipforge-hito-b.XXXXXXXX")"
+          uid="$(id -u)"
+          gid="$(id -g)"
+          test "$uid" -ne 0
+          mkdir "$scratch/reports" "$scratch/images"
+          {
+            printf 'CI_SCRATCH=%s\nCI_CONTEXT=%s/context\nCI_REPORTS=%s/reports\n' "$scratch" "$scratch" "$scratch"
+            printf 'CI_RUN_UID=%s\nCI_RUN_GID=%s\nCI_CONTAINER_USER=%s:%s\n' "$uid" "$gid" "$uid" "$gid"
+          } >> "$GITHUB_ENV"
+          python -m scripts.prepare_ci_context prepare --source "$GITHUB_WORKSPACE" \
+            --destination "$scratch/context" --manifest "$scratch/reports/context-manifest.json"
+
+      - name: Gitleaks with the checked-in policy and precision controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          git ls-files -z > "$CI_SCRATCH/tracked.nul"
+          source="$CI_SCRATCH/source"
+          python -m scripts.prepare_ci_scan --source "$GITHUB_WORKSPACE" --paths "$CI_SCRATCH/tracked.nul" --destination "$source"
+          cp "$source/.clipforge-source-manifest.json" "$CI_REPORTS/source-scan-manifest.json"
+          docker pull "$GITLEAKS_IMAGE"
+          docker run --rm --pull never --network none "$GITLEAKS_IMAGE" version > "$CI_REPORTS/gitleaks-version.txt"
+          python -m scripts.check_gitleaks_precision --config "$source/.gitleaks.toml" \
+            --report "$CI_REPORTS/gitleaks-precision.json" --scratch "$CI_SCRATCH/gitleaks-precision" --user "$CI_CONTAINER_USER"
+          scanner_exit=0
+          docker run --rm --pull never --network none --user "$CI_CONTAINER_USER" \
+            --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,size=256m \
+            -v "$source:/source:ro" -v "$CI_REPORTS:/reports" "$GITLEAKS_IMAGE" dir /source \
+            --config /source/.gitleaks.toml --no-banner --redact=100 --ignore-gitleaks-allow --exit-code 1 \
+            --timeout 120 --report-format json --report-path /reports/gitleaks.json || scanner_exit=$?
+          python -m scripts.gitleaks_policy record --config "$source/.gitleaks.toml" \
+            --source-manifest "$CI_REPORTS/source-scan-manifest.json" --raw-report "$CI_REPORTS/gitleaks.json" \
+            --exit-code "$scanner_exit" --version-file "$CI_REPORTS/gitleaks-version.txt" \
+            --scanner-image "$GITLEAKS_IMAGE" --policy-copy "$CI_REPORTS/gitleaks-policy.toml" \
+            --output "$CI_REPORTS/gitleaks-execution.json"
+          test "$scanner_exit" -eq 0
+
+      - name: Run backend suites with isolated PostgreSQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m scripts.prepare_ci_context verify --context "$CI_CONTEXT" --manifest "$CI_REPORTS/context-manifest.json"
+          docker build --platform linux/amd64 --target ci -f "$CI_CONTEXT/Dockerfile.ci" \
+            --iidfile "$CI_REPORTS/ci-image-id.txt" "$CI_CONTEXT"
+          export CI_IMAGE_ID="$(cat "$CI_REPORTS/ci-image-id.txt")"
+          [[ "$CI_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'CI_IMAGE_ID=%s\n' "$CI_IMAGE_ID" >> "$GITHUB_ENV"
+          python -m scripts.ci_postgres prepare
+          python -m scripts.ci_postgres start
+          python -m scripts.ci_postgres check
+          python -m scripts.ci_postgres migrate
+          # Exercise the Hito A policy against the published snapshot it pins.
+          fixture="$CI_REPORTS/hito-a-policy-fixture"
+          mkdir "$fixture"
+          trap 'rm -r -- "$fixture"' EXIT
+          git archive 3caca7533844bdc43d7c0293a93a59c806d75b58 app scripts config/int-hito-a-bandit-acceptance.json |
+            tar -x -C "$fixture"
+          python -m scripts.ci_postgres run --role unit -- python scripts/run_ci_tests.py --report /ci-results/test-summary.json
+
+      - name: Remove this run's PostgreSQL resources
+        if: ${{ always() && steps.setup.outcome == 'success' && env.CI_IMAGE_ID != '' }}
+        shell: bash
+        run: python -m scripts.ci_postgres cleanup
+
+      - name: Capture native Bandit results and review Hito B
+        shell: bash
+        run: |
+          set -euo pipefail
+          options=(--rm --pull never --network none --user "$CI_CONTAINER_USER" --read-only
+                   --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,size=256m
+                   -v "$CI_REPORTS:/reports")
+          docker run "${options[@]}" "$CI_IMAGE_ID" python -m bandit --version > "$CI_REPORTS/bandit-version.txt"
+          scanner_exit=0
+          docker run "${options[@]}" "$CI_IMAGE_ID" python -m bandit -r /app/app /app/scripts \
+            --ignore-nosec --format json --output /reports/bandit.json || scanner_exit=$?
+          printf '%s\n' "$scanner_exit" > "$CI_REPORTS/bandit-exit.txt"
+          python -m scripts.int_hito_b_bandit --report "$CI_REPORTS/bandit.json" --version "$CI_REPORTS/bandit-version.txt" \
+            --scanner-exit "$scanner_exit" --receipt "$CI_REPORTS/bandit-review.json"
+
+      - name: Prepare hash-locked runtime inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          python -m scripts.prepare_ci_context verify --context "$CI_CONTEXT" --manifest "$CI_REPORTS/context-manifest.json"
+          runtime="$CI_SCRATCH/runtime"
+          mkdir "$runtime"
+          cp -a "$CI_CONTEXT/app" "$runtime/"
+          mkdir "$runtime/scripts" "$runtime/config" "$runtime/debs" "$runtime/wheels-web" "$runtime/wheels-worker" "$runtime/native"
+          cp "$CI_CONTEXT/config/whisper-int.json" "$runtime/config/"
+          cp "$CI_CONTEXT"/{Dockerfile.int-beta,requirements-int-demo-apt.tsv,requirements-int-beta-apt.tsv} "$runtime/"
+          cp "$CI_CONTEXT/scripts/build_int_beta_ffmpeg.sh" "$runtime/scripts/"
+          cp "$CI_CONTEXT/requirements-int-demo.lock" "$runtime/web.lock"
+          grep -E '^(requests|certifi|charset-normalizer|urllib3|python-multipart)==' "$CI_CONTEXT/requirements-int.lock" >> "$runtime/web.lock"
+          grep -v '^psycopg-binary==' "$CI_CONTEXT/requirements-int.lock" > "$runtime/worker.lock"
+          cat "$runtime"/requirements-int-{demo,beta}-apt.tsv |
+            while IFS=$'\t' read -r package version arch digest url; do
+              [[ -n "$package" && -n "$version" && -n "$arch" && "$digest" =~ ^[a-f0-9]{64}$ ]]
+              [[ "$url" =~ ^https://archive\.ubuntu\.com/ubuntu/pool/ ]]
+              download="$runtime/debs/${url##*/}"
+              curl --fail --silent --show-error --location --proto '=https' --retry 2 --output "$download" "$url"
+              printf '%s  %s\n' "$digest" "$download" | sha256sum --check
+            done
+          for target in web worker; do
+            python -m pip download --no-deps --only-binary=:all: --require-hashes \
+              --dest "$runtime/wheels-$target" -r "$runtime/$target.lock"
+          done
+          for filename in ffmpeg-9.1.tar.xz ffmpeg-9.1.tar.xz.asc; do
+            curl --fail --silent --show-error --location --proto '=https' --retry 2 \
+              --output "$runtime/native/$filename" "https://ffmpeg.org/releases/$filename"
+          done
+          curl --fail --silent --show-error --location --proto '=https' --retry 2 \
+            --output "$runtime/native/ffmpeg-release-key.asc" https://ffmpeg.org/ffmpeg-devel.asc
+          python -m scripts.prepare_int_runtime fetch --source "$CI_CONTEXT" --weights "$runtime/weights"
+
+      - name: Build once and scan the exact two runtime images
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          builder="clipforge-beta-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          docker buildx create --name "$builder" --driver docker-container --driver-opt "image=$BUILDKIT_IMAGE" --bootstrap
+          trap 'docker buildx rm "$builder" >/dev/null' EXIT
+          docker pull "$SKOPEO_IMAGE"
+          docker pull "$TRIVY_IMAGE"
+          mkdir "$CI_SCRATCH/trivy-cache"
+          opts=(--rm --pull never --read-only --cap-drop ALL --security-opt no-new-privileges
+                --tmpfs /tmp:rw,nosuid,nodev,size=512m --user "$CI_CONTAINER_USER" -v "$CI_SCRATCH:/private")
+          for target in web worker; do
+            docker buildx build --builder "$builder" --platform linux/amd64 --provenance=false --sbom=false \
+              -f "$CI_SCRATCH/runtime/Dockerfile.int-beta" --target "$target" \
+              --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+              --output "type=oci,dest=$CI_SCRATCH/images/$target.tar" "$CI_SCRATCH/runtime"
+            docker run "${opts[@]}" --network none "$SKOPEO_IMAGE" copy --preserve-digests \
+              "oci-archive:/private/images/$target.tar" "oci:/private/$target"
+            docker run "${opts[@]}" "$TRIVY_IMAGE" image --cache-dir /private/trivy-cache \
+              --scanners vuln,secret --list-all-pkgs --format json --exit-code 0 --skip-java-db-update \
+              --input "/private/$target" --output "/private/reports/trivy-$target.json"
+            docker run "${opts[@]}" --network none "$TRIVY_IMAGE" image --cache-dir /private/trivy-cache \
+              --skip-db-update --skip-java-db-update --format cyclonedx \
+              --input "/private/$target" --output "/private/reports/sbom-$target.cdx.json"
+          done
+          python -m scripts.int_hito_b_delivery receipt "$CI_SCRATCH/images" "$CI_REPORTS"
+      - name: Retain native validation and scan evidence
+        if: ${{ always() && steps.setup.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hito-b-validation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.CI_REPORTS }}
+          if-no-files-found: error
+      - name: Transfer the scanned OCI archives
+        id: artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hito-b-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.CI_SCRATCH }}/images/*.tar
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  deploy:
+    needs: [frontend, api]
+    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03'
+    runs-on: ubuntu-24.04
+    environment: int
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    timeout-minutes: 90
+    env:
+      CANDIDATE_RECEIPT: ${{ needs.api.outputs.receipt }}
+      CLOUDSDK_CORE_DISABLE_PROMPTS: '1'
+      CLOUDSDK_CORE_DISABLE_USAGE_REPORTING: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.15.8
+          terraform_wrapper: false
+      - name: Prepare isolated deployment workspace
+        id: setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$APPROVED_COMMIT" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          umask 077
+          root="$(mktemp -d "$RUNNER_TEMP/clipforge-beta-deploy.XXXXXXXX")"
+          mkdir "$root/reports" "$root/images"
+          printf 'DELIVERY_DIR=%s\nTF_DATA_DIR=%s/terraform\nCLOUDSDK_CONFIG=%s/gcloud\n' "$root" "$root" "$root" >> "$GITHUB_ENV"
+          docker pull "$SKOPEO_IMAGE"
+          python -m pip install --no-deps --only-binary=:all: --require-hashes -r requirements-ci-tools.lock
+          command -v google-chrome
+          if ! command -v ffmpeg >/dev/null || ! command -v espeak-ng >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ffmpeg espeak-ng
+          fi
+          command -v ffmpeg ffprobe espeak-ng
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.api.outputs.artifact_id }}
+          path: ${{ env.DELIVERY_DIR }}/images
+      - name: Verify commit, archive SHA-256 and OCI manifest before OIDC
+        run: python -m scripts.int_hito_b_delivery verify "$DELIVERY_DIR/images" "$DELIVERY_DIR/reports"
+
+      - name: Authenticate publication identity
+        id: publishing
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: clipforgebeta2
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com
+          token_format: access_token
+          access_token_lifetime: 1800s
+          create_credentials_file: false
+          export_environment_variables: false
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          version: 582.0.0
+      - name: Publish the two scanned digests
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.publishing.outputs.access_token }}
+        run: bash scripts/deploy_int_beta.sh publish
+
+      - name: Authenticate INT Terraform
+        id: terraform_identity
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: clipforgebeta2
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com
+          token_format: access_token
+          access_token_lifetime: 1800s
+          create_credentials_file: true
+          export_environment_variables: true
+          cleanup_credentials: true
+      - name: Apply only the scoped beta plan
+        env:
+          GOOGLE_OAUTH_ACCESS_TOKEN: ${{ steps.terraform_identity.outputs.access_token }}
+        run: bash scripts/deploy_int_beta.sh prepare
+
+      - name: Run the additive PostgreSQL migration from INT
+        env:
+          CLOUDSDK_AUTH_ACCESS_TOKEN: ${{ steps.publishing.outputs.access_token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run jobs execute clipforge-int-beta-migrate --project clipforgebeta2 --region us-central1 --wait
+
+      - name: Open the public frontend and check the real creator flow
+        env:
+          GOOGLE_OAUTH_ACCESS_TOKEN: ${{ steps.terraform_identity.outputs.access_token }}
+          CLOUDSDK_AUTH_ACCESS_TOKEN: ${{ steps.terraform_identity.outputs.access_token }}
+          INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
+        run: bash scripts/deploy_int_beta.sh acceptance
+
+      - name: Retain public acceptance and scoped rollout evidence
+        if: ${{ always() && steps.setup.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hito-b-int-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.DELIVERY_DIR }}/reports
+          if-no-files-found: warn

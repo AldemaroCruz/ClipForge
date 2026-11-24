@@ -17,7 +17,8 @@ NOW = datetime(2026, 11, 25, 12, 0, tzinfo=timezone.utc)
 class HitoABanditPolicyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.root = Path(__file__).resolve().parents[1]
+        snapshot = Path("/ci-results/hito-a-policy-fixture")
+        cls.root = snapshot if snapshot.is_dir() else Path(__file__).resolve().parents[1]
         cls.temporary = tempfile.TemporaryDirectory(prefix="clipforge-hito-a-bandit-")
         cls.work = Path(cls.temporary.name)
         cls.native = cls.work / "bandit.json"

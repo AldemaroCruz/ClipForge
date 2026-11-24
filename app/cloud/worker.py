@@ -15,8 +15,9 @@ import tempfile
 import time
 from sqlalchemy import text
 from ..auth_db import get_engine
+from ..media import MediaValidationError, inspect_beta_media
 from . import enabled
-from .config import settings
+from .config import beta_enabled, settings
 from . import repository as repo
 from . import storage
 
@@ -40,11 +41,22 @@ def _terminate(child):
 
 def _claim(connection):
     # The global advisory lock has already excluded every other supervisor.
-    running = connection.execute(text("SELECT * FROM cloud_tasks WHERE status='running' ORDER BY created_at LIMIT 1")).mappings().first()
+    # A worker whose supervisor lost its connection may still hold a live lease.
+    # Honor that lease across profiles before handling expired or queued work.
+    active = connection.execute(text("""
+        SELECT EXISTS(SELECT 1 FROM cloud_tasks WHERE status='running' AND lease_until>clock_timestamp())
+        """)).scalar()
+    if active:
+        return "wait"
+    profile = {"beta": beta_enabled()}
+    running = connection.execute(text("""
+        SELECT t.* FROM cloud_tasks t
+        LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
+        WHERE t.status='running' AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
+          AND (NOT :beta OR t.kind='process')
+        ORDER BY t.created_at LIMIT 1
+        """), profile).mappings().first()
     if running:
-        active = connection.execute(text("SELECT lease_until>clock_timestamp() FROM cloud_tasks WHERE id=:i"), {"i": running["id"]}).scalar()
-        if active:
-            return "wait"
         # Crash recovery fences the previous child before publishing failure.
         with get_engine().begin() as c:
             row = c.execute(text("SELECT * FROM cloud_tasks WHERE id=:i FOR UPDATE"), {"i": running["id"]}).mappings().one()
@@ -52,10 +64,17 @@ def _claim(connection):
             doc = repo.document(row["job_id"], kind, row["item_id"], c)
             item = doc["payload"]
             item.update(status="failed", error="Procesamiento interrumpido; el original se conserva. Crea una nueva variante para reintentar.", error_code="WORKER_INTERRUPTED")
+            repo.public_beta_failure(item)
             repo.update_document(c, row["job_id"], kind, item)
             c.execute(text("UPDATE cloud_tasks SET status='failed',fence=fence+1,lease_until=NULL,updated_at=clock_timestamp() WHERE id=:i"), {"i": row["id"]})
     with get_engine().begin() as c:
-        row = c.execute(text("SELECT * FROM cloud_tasks WHERE status='queued' ORDER BY created_at,id LIMIT 1 FOR UPDATE SKIP LOCKED")).mappings().first()
+        row = c.execute(text("""
+            SELECT t.* FROM cloud_tasks t
+            LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
+            WHERE t.status='queued' AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
+              AND (NOT :beta OR t.kind='process')
+            ORDER BY t.created_at,t.id LIMIT 1 FOR UPDATE OF t SKIP LOCKED
+            """), profile).mappings().first()
         if row is None:
             return None
         return dict(c.execute(text("UPDATE cloud_tasks SET status='running',fence=fence+1,lease_until=clock_timestamp()+interval '60 seconds',updated_at=clock_timestamp() WHERE id=:i RETURNING *"), {"i": row["id"]}).mappings().one())
@@ -68,7 +87,14 @@ def cleanup_failed():
     this namespace, and every manifest reference is checked before deletion.
     """
     with get_engine().connect() as c:
-        tasks = c.execute(text("SELECT t.*,p.workspace_id FROM cloud_tasks t JOIN auth_projects p ON p.id=t.job_id WHERE t.status='failed' AND t.cleaned_at IS NULL ORDER BY t.created_at LIMIT 100")).mappings().all()
+        tasks = c.execute(text("""
+            SELECT t.*,p.workspace_id FROM cloud_tasks t JOIN auth_projects p ON p.id=t.job_id
+            LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
+            WHERE t.status='failed' AND t.cleaned_at IS NULL
+              AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
+              AND (NOT :beta OR t.kind='process')
+            ORDER BY t.created_at LIMIT 100
+            """), {"beta": beta_enabled()}).mappings().all()
     for task in tasks:
         prefix = f"workspaces/{task['workspace_id']}/jobs/{task['job_id']}/tasks/{task['id']}/"
         try:
@@ -157,7 +183,13 @@ def drain(max_tasks=None):
 def execute(task_id, fence):
     cfg = settings()
     with get_engine().connect() as c:
-        task = c.execute(text("SELECT * FROM cloud_tasks WHERE id=:i AND fence=:f AND status='running' AND lease_until>clock_timestamp()"), {"i": task_id, "f": fence}).mappings().first()
+        task = c.execute(text("""
+            SELECT t.* FROM cloud_tasks t
+            LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
+            WHERE t.id=:i AND t.fence=:f AND t.status='running' AND t.lease_until>clock_timestamp()
+              AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
+              AND (NOT :beta OR t.kind='process')
+            """), {"i": task_id, "f": fence, "beta": beta_enabled()}).mappings().first()
         if task is None:
             raise RuntimeError("Task lease unavailable")
         task = dict(task)
@@ -174,14 +206,35 @@ def execute(task_id, fence):
         folder = main.ROOT / task["job_id"]
         folder.mkdir()
         job = repo.document(task["job_id"])
-        storage.download(job["manifest"]["input.mp4"], folder / "input.mp4")
+        pilot = task["kind"] == "process" and job["payload"].get("pilot") is True
+        try:
+            storage.download(job["manifest"]["input.mp4"], folder / "input.mp4")
+        except storage.StorageError:
+            if not pilot:
+                raise
+            item = job["payload"]
+            item.update(status="failed", error_code="SOURCE_UNAVAILABLE")
+            repo.finish_task(task, item, job["manifest"])
+            return
         if "transcript.json" in job["manifest"]:
             storage.download(job["manifest"]["transcript.json"], folder / "transcript.json")
         context = {"task": task, "staged": None}
         reset = repo.CURRENT_TASK.set(context)
         try:
             if task["kind"] == "process":
-                main._process(task["job_id"])
+                if pilot:
+                    item = job["payload"]
+                    item["status"] = "validating"
+                    repo.worker_progress(task["job_id"], "job", item)
+                    try:
+                        media = inspect_beta_media(folder / "input.mp4")
+                    except MediaValidationError as exc:
+                        item.update(status="failed", error_code=exc.code)
+                        repo.finish_task(task, item, job["manifest"])
+                        return
+                    main._process(task["job_id"], validated_media=media)
+                else:
+                    main._process(task["job_id"])
                 kind, directory = "job", folder
             else:
                 (folder / "exports" / task["item_id"]).mkdir(parents=True)

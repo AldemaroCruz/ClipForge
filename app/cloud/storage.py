@@ -1,13 +1,23 @@
 """Private GCS JSON API using only runtime metadata credentials or test emulator."""
+import base64
+import binascii
 import hashlib
 from pathlib import Path
 import re
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlsplit
 import requests
 from .config import settings
 
 
 class StorageError(RuntimeError):
+    pass
+
+
+class ObjectMissing(StorageError):
+    pass
+
+
+class InvalidUpload(StorageError):
     pass
 
 
@@ -25,7 +35,7 @@ def token():
         return value
 
 
-def request(method, url, *, stream=False, **kwargs):
+def request(method, url, *, stream=False, timeout=(5, 120), **kwargs):
     cfg = settings()
     headers = kwargs.pop("headers", {})
     if not cfg.local_test:
@@ -33,7 +43,7 @@ def request(method, url, *, stream=False, **kwargs):
     session = requests.Session()
     session.trust_env = False
     try:
-        response = session.request(method, url, headers=headers, timeout=(5, 120), stream=stream, allow_redirects=False, **kwargs)
+        response = session.request(method, url, headers=headers, timeout=timeout, stream=stream, allow_redirects=False, **kwargs)
     except requests.RequestException:
         session.close()
         raise StorageError("Cloud request transport failed") from None
@@ -41,6 +51,8 @@ def request(method, url, *, stream=False, **kwargs):
         status = response.status_code
         response.close()
         session.close()
+        if status == 404:
+            raise ObjectMissing("Cloud object or endpoint unavailable (HTTP 404)")
         raise StorageError(f"Cloud request denied or unavailable (HTTP {status})")
     # Closing the response also returns its connection; retain session for stream.
     response._clipforge_session = session
@@ -57,6 +69,75 @@ def object_url(name):
     if not re.fullmatch(r"[a-z0-9/._-]+", name) or ".." in name:
         raise StorageError("Invalid opaque object name")
     return cfg.endpoint + "/storage/v1/b/" + quote(cfg.bucket, safe="") + "/o/" + quote(name, safe="")
+
+
+def beta_original(workspace_id, job_id):
+    for part in (workspace_id, job_id):
+        if not isinstance(part, str) or not re.fullmatch(r"[a-f0-9]{32}", part):
+            raise StorageError("Invalid pilot original identity")
+    return f"workspaces/{workspace_id}/jobs/{job_id}/original/input.mp4"
+
+
+def start_resumable(name, size, origin):
+    """Mint a create-only capability for exactly one server-selected object."""
+    cfg = settings()
+    endpoint = urlsplit(cfg.endpoint)
+    path = "/upload/storage/v1/b/" + quote(cfg.bucket, safe="") + "/o"
+    response = request(
+        "POST", cfg.endpoint + path,
+        params={"uploadType": "resumable", "name": name, "ifGenerationMatch": "0"},
+        json={"contentType": "video/mp4"},
+        headers={"Origin": origin, "X-Upload-Content-Type": "video/mp4",
+                 "X-Upload-Content-Length": str(size)},
+        timeout=(4, 10),
+    )
+    try:
+        location = response.headers.get("Location", "")
+        if not isinstance(location, str) or len(location) > 4096 or not location.isascii() \
+                or any(ord(char) < 33 or ord(char) == 127 for char in location):
+            raise StorageError("Invalid resumable upload destination")
+        parsed = urlsplit(location)
+        query = parse_qs(parsed.query, keep_blank_values=True, max_num_fields=8)
+        upload_id = query.get("upload_id", [])
+        if (parsed.scheme != endpoint.scheme or parsed.netloc != endpoint.netloc or parsed.path != path
+                or parsed.fragment or len(upload_id) != 1
+                or not re.fullmatch(r"[A-Za-z0-9_-]+", upload_id[0])
+                or query.get("name", [name]) != [name]
+                or query.get("uploadType", ["resumable"]) != ["resumable"]
+                or query.get("ifGenerationMatch", ["0"]) != ["0"]):
+            raise StorageError("Invalid resumable upload destination")
+        return location
+    except ValueError:
+        raise StorageError("Invalid resumable upload destination") from None
+    finally:
+        close(response)
+
+
+def beta_original_metadata(name):
+    """Read only trusted GCS metadata for the allocated original."""
+    try:
+        response = request("GET", object_url(name), timeout=(4, 10),
+                           params={"fields": "name,generation,size,contentType,contentEncoding,md5Hash"})
+    except ObjectMissing:
+        return None
+    try:
+        item = response.json()
+        if (not isinstance(item, dict) or item.get("name") != name
+                or item.get("contentType") != "video/mp4" or item.get("contentEncoding")):
+            raise InvalidUpload("Original upload metadata mismatch")
+        size, generation = item.get("size"), item.get("generation")
+        if (not isinstance(size, str) or not re.fullmatch(r"[1-9][0-9]{0,19}", size)
+                or not isinstance(generation, str) or not re.fullmatch(r"[1-9][0-9]{0,30}", generation)):
+            raise InvalidUpload("Original upload size or generation is invalid")
+        digest = base64.b64decode(item["md5Hash"], validate=True)
+        if len(digest) != 16:
+            raise InvalidUpload("Original upload integrity metadata mismatch")
+        return {"name": name, "bytes": int(size), "generation": generation,
+                "content_type": "video/mp4", "md5": digest.hex()}
+    except (ValueError, TypeError, KeyError, binascii.Error):
+        raise InvalidUpload("Original upload integrity metadata mismatch") from None
+    finally:
+        close(response)
 
 
 def upload(name, source, content_type):
@@ -94,7 +175,12 @@ def download(item, path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     response = open_object(item)
-    digest = hashlib.sha256()
+    # GCS exposes MD5 for non-composite browser uploads. This checks the
+    # transport checksum, while the immutable object generation pins identity.
+    if "sha256" in item:
+        digest, expected = hashlib.sha256(), item["sha256"]
+    else:
+        digest, expected = hashlib.md5(usedforsecurity=False), item["md5"]
     size = 0
     try:
         with path.open("xb") as target:
@@ -104,7 +190,7 @@ def download(item, path):
                     raise StorageError("Stored object size mismatch")
                 target.write(chunk)
                 digest.update(chunk)
-        if size != item["bytes"] or digest.hexdigest() != item["sha256"]:
+        if size != item["bytes"] or digest.hexdigest() != expected:
             raise StorageError("Stored object integrity mismatch")
     finally:
         close(response)

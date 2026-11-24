@@ -4,7 +4,7 @@ import json
 from urllib.parse import quote
 from sqlalchemy import text
 from ..auth_db import get_engine
-from .config import settings
+from .config import beta_enabled, settings
 from .storage import request, close
 
 
@@ -23,13 +23,16 @@ def reconcile():
         # task (for example, a Job that timed out waiting for the global lock).
         pending = c.execute(text("""
             SELECT o.task_id FROM cloud_outbox o JOIN cloud_tasks t ON t.id=o.task_id
-            WHERE (t.status='queued' AND
-                (o.dispatched_at IS NULL OR o.dispatched_at<clock_timestamp()-interval '5 minutes'))
-            OR (t.status='running' AND t.lease_until<=clock_timestamp() AND
-                (o.dispatched_at IS NULL OR o.dispatched_at<t.lease_until OR
-                 o.dispatched_at<clock_timestamp()-interval '5 minutes'))
+            LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
+            WHERE COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
+              AND (NOT :beta OR t.kind='process')
+              AND ((t.status='queued' AND
+                  (o.dispatched_at IS NULL OR o.dispatched_at<clock_timestamp()-interval '5 minutes'))
+                OR (t.status='running' AND t.lease_until<=clock_timestamp() AND
+                  (o.dispatched_at IS NULL OR o.dispatched_at<t.lease_until OR
+                   o.dispatched_at<clock_timestamp()-interval '5 minutes')))
             ORDER BY t.created_at,t.id LIMIT 100
-            """)).scalars().all()
+            """), {"beta": beta_enabled()}).scalars().all()
         if not pending:
             return {"status": "current", "dispatched": 0}
         url = ("https://run.googleapis.com/v2/projects/" + quote(cfg.project, safe="") + "/locations/" + quote(cfg.region, safe="") + "/jobs/" + quote(cfg.job, safe="") + ":run")
