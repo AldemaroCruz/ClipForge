@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Select one intervention or one approved personal SQL action
+        description: Select one read preflight, intervention or approved personal SQL action
         type: choice
         default: guest_intervention
-        options: [guest_intervention, personal_activate, personal_observe, personal_revoke]
+        options: [apt_preflight, guest_intervention, personal_activate, personal_observe, personal_revoke]
       approved_commit:
         description: Exact approved SHA of the Noble intervention controls
         required: true
@@ -40,7 +40,7 @@ concurrency:
 
 env:
   INT_NOBLE_OPERATION: ${{ inputs.operation }}
-  OPERATOR_MODULE: ${{ startsWith(inputs.operation, 'personal_') && 'scripts.int_noble_personal_sql' || 'scripts.int_noble_guest_intervention' }}
+  OPERATOR_MODULE: ${{ inputs.operation == 'apt_preflight' && 'scripts.int_noble_apt_preflight' || startsWith(inputs.operation, 'personal_') && 'scripts.int_noble_personal_sql' || 'scripts.int_noble_guest_intervention' }}
   INT_APPROVED_COMMIT: ${{ inputs.approved_commit }}
   OWNER_ARTIFACT: ${{ inputs.review_artifact_id }}
   OWNER_RUN: ${{ inputs.review_run_id }}
@@ -72,6 +72,10 @@ jobs:
           test "$RUNNER_ENVIRONMENT" = github-hosted
           test "$GITHUB_RUN_ATTEMPT" = 1
           test "$GITHUB_SHA" = "$INT_APPROVED_COMMIT"
+          case "$INT_NOBLE_OPERATION" in
+            apt_preflight|guest_intervention|personal_activate|personal_observe|personal_revoke) ;;
+            *) exit 2 ;;
+          esac
           [[ "$OWNER_ARTIFACT" =~ ^[1-9][0-9]*$ && "$OWNER_RUN" =~ ^[1-9][0-9]*$ ]]
           [[ "$DECISION_SHA" =~ ^[a-f0-9]{64}$ && "$REVIEW_SHA" =~ ^[a-f0-9]{64}$ && "$BINDING_SHA" =~ ^[a-f0-9]{64}$ ]]
           umask 077
@@ -109,10 +113,10 @@ jobs:
       GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
       GCP_REGION: ${{ vars.GCP_REGION }}
       GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
-      INT_DEMO_A_PROTECTED_DECISION_SHA256: ${{ vars.INT_NOBLE_INTERVENTION_DECISION_SHA256 }}
-      INT_DEMO_A_PROTECTED_GATE_MODE: ${{ vars.INT_NOBLE_INTERVENTION_GATE_MODE || 'global' }}
-      INT_NOBLE_INTERVENTION_REVIEW_SHA256: ${{ vars.INT_NOBLE_INTERVENTION_REVIEW_SHA256 }}
-      INT_NOBLE_INTERVENTION_BINDING_SHA256: ${{ vars.INT_NOBLE_INTERVENTION_BINDING_SHA256 }}
+      INT_DEMO_A_PROTECTED_DECISION_SHA256: ${{ inputs.operation == 'apt_preflight' && vars.INT_NOBLE_APT_PREFLIGHT_DECISION_SHA256 || inputs.operation != 'apt_preflight' && vars.INT_NOBLE_INTERVENTION_DECISION_SHA256 || '' }}
+      INT_DEMO_A_PROTECTED_GATE_MODE: ${{ inputs.operation == 'apt_preflight' && vars.INT_NOBLE_APT_PREFLIGHT_GATE_MODE || inputs.operation != 'apt_preflight' && vars.INT_NOBLE_INTERVENTION_GATE_MODE || 'global' }}
+      INT_NOBLE_INTERVENTION_REVIEW_SHA256: ${{ inputs.operation == 'apt_preflight' && vars.INT_NOBLE_APT_PREFLIGHT_REVIEW_SHA256 || inputs.operation != 'apt_preflight' && vars.INT_NOBLE_INTERVENTION_REVIEW_SHA256 || '' }}
+      INT_NOBLE_INTERVENTION_BINDING_SHA256: ${{ inputs.operation == 'apt_preflight' && vars.INT_NOBLE_APT_PREFLIGHT_BINDING_SHA256 || inputs.operation != 'apt_preflight' && vars.INT_NOBLE_INTERVENTION_BINDING_SHA256 || '' }}
     steps:
       - name: Check out the same reviewed controls
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -164,6 +168,8 @@ jobs:
         run: python -B -m "$OPERATOR_MODULE" observe-backend --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA" --backend-observation "$BACKEND_DIR/backend.json"
       - name: Verify freshness of the local proof before the Deploy exchange
         id: host_admission
+        env:
+          INT_DB_RUNNER_REQUIRE_EXISTING: ${{ inputs.operation == 'apt_preflight' && '1' || '' }}
         run: python -B -m "$OPERATOR_MODULE" protected-local --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA" --backend-observation "$BACKEND_DIR/backend.json"
       - name: Record the start of the short credential budget
         run: echo "INT_GCP_AUTH_STARTED_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
@@ -175,13 +181,22 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOY_SA }}
           token_format: access_token
-          access_token_lifetime: 900s
+          access_token_lifetime: ${{ inputs.operation == 'apt_preflight' && '300s' || '900s' }}
           access_token_scopes: https://www.googleapis.com/auth/cloud-platform
           create_credentials_file: true
           export_environment_variables: true
           cleanup_credentials: true
+      - name: Verify only the WIF reads needed for APT
+        id: apt-read
+        if: success() && inputs.operation == 'apt_preflight' && steps.host_admission.outcome == 'success' && steps.auth.outcome == 'success'
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          GCP_DEPLOY_SA: ${{ vars.GCP_DEPLOY_SA }}
+          GH_TOKEN: ${{ github.token }}
+        run: python -B -m scripts.int_noble_apt_preflight read --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA" --backend-observation "$BACKEND_DIR/backend.json"
       - name: Verify live policy and pinned guest and execute the exact authorization once
         id: native
+        if: success() && inputs.operation != 'apt_preflight' && steps.host_admission.outcome == 'success' && steps.auth.outcome == 'success'
         env:
           GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           GCP_DEPLOY_SA: ${{ vars.GCP_DEPLOY_SA }}
@@ -190,7 +205,7 @@ jobs:
         run: python -B -m "$OPERATOR_MODULE" run --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA" --backend-observation "$BACKEND_DIR/backend.json"
       - name: Confirm absence of only the key owned by this attempt
         id: cleanup
-        if: always() && steps.scratch.outcome == 'success' && steps.auth.outcome == 'success'
+        if: always() && inputs.operation != 'apt_preflight' && steps.scratch.outcome == 'success' && steps.auth.outcome == 'success'
         env:
           GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           GCP_DEPLOY_SA: ${{ vars.GCP_DEPLOY_SA }}
@@ -226,12 +241,15 @@ jobs:
         if: always() && steps.scratch.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: noble-intervention-result-${{ github.sha }}-${{ github.run_id }}-1
+          name: ${{ inputs.operation == 'apt_preflight' && 'noble-apt-preflight' || 'noble-intervention-result' }}-${{ github.sha }}-${{ github.run_id }}-1
           path: |
             ${{ env.GUEST_REPORTS }}/intervention-result.json
             ${{ env.GUEST_REPORTS }}/intervention-failure.json
             ${{ env.GUEST_REPORTS }}/personal-sql-progress.json
             ${{ env.GUEST_REPORTS }}/personal-sql-result.json
             ${{ env.GUEST_REPORTS }}/cleanup.json
+            ${{ env.GUEST_REPORTS }}/apt-preflight-backend.json
+            ${{ env.GUEST_REPORTS }}/apt-preflight.json
+            ${{ env.GUEST_REPORTS }}/apt-preflight-failure.json
           if-no-files-found: warn
           retention-days: 7

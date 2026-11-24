@@ -16,6 +16,7 @@ SCHEMA = "clipforge-int-db-runner-1"
 OPERATIONS = {
     "bootstrap": ("int-db01-noble-bootstrap.yml", "protected-bootstrap"),
     "guest_intervention": ("int-db01-noble-intervention.yml", "intervene"),
+    "apt_preflight": ("int-db01-noble-intervention.yml", "intervene"),
     "personal_sql_intervention": ("int-db01-noble-intervention.yml", "intervene"),
     "secret_versions": ("int-demo-a-secrets.yml", "protected-operation"),
 }
@@ -81,7 +82,7 @@ def checked(facts, operation):
     return facts
 
 
-def runner_tools(operation, runner_temp):
+def runner_component_paths(operation, runner_temp):
     worker = common.runner_executables()
     paths = {"runner_worker": worker["runner_worker"], "node24": worker["node24"],
              "bash": Path("/usr/bin/bash"), "git": executable("git"), "python": Path(sys.executable),
@@ -94,15 +95,45 @@ def runner_tools(operation, runner_temp):
                 and version.read_text(encoding="ascii").strip() == "582.0.0", "db_runner_gcloud_release")
         paths.update(ssh=Path("/usr/bin/ssh"), ssh_keygen=Path("/usr/bin/ssh-keygen"),
                      gcloud=sdk, gcloud_entry=root / "lib/gcloud.py", gcloud_version=version)
-    files = {name: common.file_identity(path)["sha256"] for name, path in paths.items()}
+    components = {name: {"file": path} for name, path in paths.items()}
     actions_root = runner_temp.parent / "_actions"
     for action in sorted(name.removeprefix("action_") for name in tool_names(operation) if name.startswith("action_")):
         pin, entries = ACTIONS[action]
         repository, commit = pin.split("@", 1)
         root = actions_root / repository / commit
-        files[f"action_{action}"] = common.digest({leaf: common.file_identity(root / leaf)
-                                                  for leaf in ("action.yml", *entries)})
+        components[f"action_{action}"] = {leaf: root / leaf for leaf in ("action.yml", *entries)}
+    return components
+
+
+def component_hashes(components):
+    files = {}
+    for name, entries in components.items():
+        identities = {leaf: common.file_identity(path) for leaf, path in entries.items()}
+        files[name] = common.digest(identities) if name.startswith("action_") else identities["file"]["sha256"]
     return files
+
+
+def runner_tools(operation, runner_temp):
+    return component_hashes(runner_component_paths(operation, runner_temp))
+
+
+def live_facts(operation, env, runner_temp, *, inventory=None):
+    machine = os.uname()
+    with Path("/proc/version_signature").open(encoding="ascii") as stream:
+        signature = stream.read(256).strip()
+    require(len(signature) < 255, "db_runner_kernel_signature_bound")
+    package_names = {prefix + machine.release for prefix in ("linux-image-", "linux-modules-", "linux-modules-extra-")}
+    packages = []
+    for row in common.package_inventory() if inventory is None else inventory:
+        name = row[0].removesuffix(":amd64")
+        if name in package_names:
+            packages.append([name, *row[1:]])
+    kernel = {"release": machine.release, "family": machine.release.rsplit("-", 1)[-1],
+              "signature": signature, "packages": sorted(packages)}
+    facts = checked({"schema": SCHEMA, "image": env["ImageVersion"], "os": env["ImageOS"],
+                     "architecture": machine.machine, "kernel": kernel, "tools": runner_tools(operation, runner_temp)}, operation)
+    boot = str(uuid.UUID(Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()))
+    return facts, boot
 
 
 def observe(operation, env, binding):
@@ -115,23 +146,7 @@ def observe(operation, env, binding):
             and os.getuid() == os.geteuid() > 0, "db_runner_protected_job_identity")
     runner_temp = Path(env["RUNNER_TEMP"]).resolve(strict=True)
     require(runner_temp.is_dir() and runner_temp.stat().st_uid == os.getuid(), "db_runner_private_checkpoint_parent")
-    machine = os.uname()
-    signature_path = Path("/proc/version_signature")
-    with signature_path.open(encoding="ascii") as stream:
-        signature = stream.read(256).strip()
-    require(len(signature) < 255, "db_runner_kernel_signature_bound")
-    package_names = {prefix + machine.release for prefix in ("linux-image-", "linux-modules-", "linux-modules-extra-")}
-    packages = []
-    for row in common.package_inventory():
-        name = row[0].removesuffix(":amd64")
-        if name in package_names:
-            packages.append([name, *row[1:]])
-    kernel = {"release": machine.release, "family": machine.release.rsplit("-", 1)[-1],
-              "signature": signature, "packages": sorted(packages)}
-    kernel_review(kernel)
-    facts = checked({"schema": SCHEMA, "image": env["ImageVersion"], "os": env["ImageOS"],
-                     "architecture": machine.machine, "kernel": kernel, "tools": runner_tools(operation, runner_temp)}, operation)
-    boot = str(uuid.UUID(Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()))
+    facts, boot = live_facts(operation, env, runner_temp)
     return runner_temp, {"facts": facts, "boot_id": boot, "run": env["GITHUB_RUN_ID"],
                          "attempt": env["GITHUB_RUN_ATTEMPT"], "job": job, "operation": operation,
                          "commit": env["GITHUB_SHA"]}
@@ -163,6 +178,7 @@ def verify(expected, operation, env, binding):
                     and info.st_mode & 0o077 == 0, "db_runner_private_checkpoint")
             require(stream.read(len(raw) + 1) == raw, "db_runner_continuity_changed")
     except FileNotFoundError:
-        require(not admission_inputs_present(env), "db_runner_missing_preauth_checkpoint")
+        require(not admission_inputs_present(env) and env.get("INT_DB_RUNNER_REQUIRE_EXISTING") != "1",
+                "db_runner_missing_preauth_checkpoint")
         with os.fdopen(os.open(checkpoint, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "wb") as stream:
             stream.write(raw)

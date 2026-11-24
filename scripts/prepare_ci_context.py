@@ -45,6 +45,7 @@ SUPPORT_FILES = PERSONAL_SQL_FILES | frozenset({
     '.github/workflows/int-db01-noble-apply.yml',
     '.github/workflows/int-db01-noble-bootstrap.yml',
     '.github/workflows/int-db01-noble-intervention.yml',
+    '.github/workflows/int-db01-noble-apt-runner-observe.yml',
     '.github/workflows/int-db01-noble-jobs.yml',
     '.github/workflows/int-db01-noble-observe.yml',
     '.github/workflows/int-db01-noble-kernel-observe.yml',

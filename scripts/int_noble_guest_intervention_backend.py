@@ -28,14 +28,34 @@ def observe(token, expected, *, opener=None, clock=lambda: datetime.now(timezone
     prefix = f"https://storage.googleapis.com/storage/v1/b/{scope.BUCKET}/o/"
     state_url = prefix + quote(scope.STATE["name"], safe="") + "?fields=name,generation,size"
     lock_url = prefix + quote(jobs.LOCK_NAME, safe="") + "?fields=name"
+
+    def read(url, name, *, missing=False):
+        try:
+            return jobs.request_json(opener, token, "GET", url, missing=True) if missing else jobs.request_json(opener, token, "GET", url)
+        except (OSError, ValueError) as error:
+            if expected["action"] != "apt_preflight":
+                raise
+            detail = {"operation": "storage.objects.get_metadata", "resource": f"gs://{scope.BUCKET}/{name}"}
+            status = re.fullmatch(r"cloud_http_([1-5][0-9]{2})", str(error))
+            if status:
+                detail["http_status"] = int(status[1])
+            else:
+                detail["error_type"] = type(error).__name__
+            raise transport.Failure("apt_preflight_backend_read_failed", detail) from None
+
     started = clock()
-    before = jobs.request_json(opener, token, "GET", state_url)
-    lock = jobs.request_json(opener, token, "GET", lock_url, missing=True)
+    before = read(state_url, scope.STATE["name"])
+    lock = read(lock_url, jobs.LOCK_NAME, missing=True)
     observed = clock()
-    after = jobs.request_json(opener, token, "GET", state_url)
+    after = read(state_url, scope.STATE["name"])
     finished = clock()
-    require(before == after == {**expected["state"], "size": str(expected["state"]["size"])}
-            and lock is None, "intervention_backend_or_lock_changed")
+    metadata_matches = before == after == {**expected["state"], "size": str(expected["state"]["size"])}
+    if expected["action"] == "apt_preflight" and not (metadata_matches and lock is None):
+        name = jobs.LOCK_NAME if lock is not None else scope.STATE["name"]
+        raise transport.Failure("intervention_backend_or_lock_changed", {
+            "operation": "storage.objects.get_metadata", "resource": f"gs://{scope.BUCKET}/{name}",
+            "http_status": 200, "result": "lock_present" if lock is not None else "state_metadata_mismatch"})
+    require(metadata_matches and lock is None, "intervention_backend_or_lock_changed")
     proof = {**expected, "started_utc": started.isoformat(), "lock_observed_utc": observed.isoformat(), "completed_utc": finished.isoformat()}
     verify(proof, expected, now=finished)
     return proof

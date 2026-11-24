@@ -1,0 +1,118 @@
+name: ClipForge INT Noble APT runner observation
+
+on:
+  workflow_dispatch:
+    inputs:
+      approved_commit:
+        description: Exact reviewed SHA for this credential-free observation
+        required: true
+        type: string
+
+permissions: {}
+concurrency:
+  group: clipforge-int-noble-apt-runner-observe
+  cancel-in-progress: false
+
+jobs:
+  observe-apt-runner:
+    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && github.sha == inputs.approved_commit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      INT_APPROVED_COMMIT: ${{ inputs.approved_commit }}
+      PYTHONDONTWRITEBYTECODE: '1'
+      CLOUDSDK_CORE_DISABLE_PROMPTS: '1'
+      CLOUDSDK_CORE_DISABLE_USAGE_REPORTING: '1'
+      TRIVY_IMAGE: ghcr.io/aquasecurity/trivy:0.76.2@sha256:6fa071ef8daa2e58b90cbf1710bedca91adbb3bf98693533226f442035b836a6
+    steps:
+      - name: Verify dispatch and allocate review-only scratch
+        id: scratch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_SHA" = "$INT_APPROVED_COMMIT"
+          test -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}${GCP_ACCESS_TOKEN:-}${GOOGLE_APPLICATION_CREDENTIALS:-}${GOOGLE_GHA_CREDS_PATH:-}"
+          umask 077
+          work="$(mktemp -d "$RUNNER_TEMP/clipforge-apt-runner.XXXXXXXX")"
+          mkdir "$work/reports" "$work/docker-config" "$work/gcloud"
+          mkdir -p "$work/scan/app-metadata" "$work/cache/tmp"
+          printf 'APT_OBSERVE_WORK=%s\nDOCKER_CONFIG=%s/docker-config\nCLOUDSDK_CONFIG=%s/gcloud\n' "$work" "$work" "$work" >> "$GITHUB_ENV"
+      - name: Check out the exact controls
+        id: source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      # References load the native _actions slots. The observation job accepts workflow_dispatch only.
+      - name: Reference the pinned artifact reader for file measurement only
+        if: github.event_name == 'repository_dispatch'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+      - name: Reference the pinned federation action for file measurement only
+        if: github.event_name == 'repository_dispatch'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+      - name: Prepare the same public Cloud SDK version
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+        with:
+          version: 582.0.0
+      - name: Measure the APT host and stage exact bounded scanner inputs
+        shell: bash
+        run: python -B -m scripts.int_demo_a_db_observe collect --work "$APT_OBSERVE_WORK"
+      - name: Prepare the pinned public scanner and current database
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull "$TRIVY_IMAGE"
+          docker run --rm --pull never --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --user "$(id -u):$(id -g)" -e TMPDIR=/cache/tmp \
+            --mount "type=bind,src=$APT_OBSERVE_WORK/cache,dst=/cache" \
+            "$TRIVY_IMAGE" image --download-db-only --cache-dir /cache --disable-telemetry
+          TRIVY_LOCAL_ID="$(docker image inspect --format '{{.Id}}' "$TRIVY_IMAGE")"
+          export TRIVY_LOCAL_ID
+          python -B -m scripts.int_demo_a_db_observe database --work "$APT_OBSERVE_WORK"
+      - name: Run only the scoped native vulnerability scans offline
+        id: native
+        shell: bash
+        run: |
+          set -euo pipefail
+          isolated=(--rm --pull never --network none --read-only --cap-drop ALL --security-opt no-new-privileges
+                    --user "$(id -u):$(id -g)" --tmpfs '/tmp:rw,nosuid,nodev,noexec,size=256m'
+                    --ulimit fsize=33554432:33554432
+                    --mount "type=bind,src=$APT_OBSERVE_WORK/scan,dst=/input,readonly"
+                    --mount "type=bind,src=$APT_OBSERVE_WORK/cache,dst=/cache"
+                    --mount "type=bind,src=$APT_OBSERVE_WORK/reports,dst=/reports")
+          flags=(--cache-dir /cache --scanners vuln --list-all-pkgs --offline-scan --skip-db-update
+                 --skip-java-db-update --skip-check-update --disable-telemetry --format json --exit-code 0)
+          result=0
+          docker run "${isolated[@]}" "$TRIVY_IMAGE" rootfs "${flags[@]}" --pkg-types os \
+            --output /reports/trivy-os.json /input/runner-os || result=1
+          docker run "${isolated[@]}" "$TRIVY_IMAGE" fs "${flags[@]}" --pkg-types library \
+            --output /reports/trivy-app-metadata.json /input/app-metadata || result=1
+          exit "$result"
+      - name: Record status and unresolved scope without authorizing WIF
+        if: always() && steps.scratch.outcome == 'success' && steps.source.outcome == 'success'
+        env:
+          NATIVE_STAGE: ${{ steps.native.outcome }}
+        shell: bash
+        run: python -B -m scripts.int_demo_a_db_observe summarize --work "$APT_OBSERVE_WORK" --native-stage "${NATIVE_STAGE:-skipped}"
+      - name: Retain native reports and measured host evidence
+        if: always() && steps.scratch.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: int-noble-apt-runner-observation-${{ github.run_id }}-1
+          path: |
+            ${{ env.APT_OBSERVE_WORK }}/reports/host-facts.json
+            ${{ env.APT_OBSERVE_WORK }}/reports/host-observed.json
+            ${{ env.APT_OBSERVE_WORK }}/reports/host-result.json
+            ${{ env.APT_OBSERVE_WORK }}/reports/collect-failure.json
+            ${{ env.APT_OBSERVE_WORK }}/reports/database-failure.json
+            ${{ env.APT_OBSERVE_WORK }}/reports/summarize-failure.json
+            ${{ env.APT_OBSERVE_WORK }}/reports/scan-inputs.json
+            ${{ env.APT_OBSERVE_WORK }}/reports/trivy-db-receipt.json
+            ${{ env.APT_OBSERVE_WORK }}/reports/trivy-os.json
+            ${{ env.APT_OBSERVE_WORK }}/reports/trivy-app-metadata.json
+          if-no-files-found: error
+          retention-days: 7

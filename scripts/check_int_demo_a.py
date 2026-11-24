@@ -16,11 +16,13 @@ BOUNDARY = {"project": "clipforgebeta2", "repository": "AldemaroCruz/ClipForge",
             "branch": "ci/bootstrap-sec03", "environment": "int", "profile": "demo-a",
             "instance_id": "7365414160255801909", "data_disk_id": "7382984635240536620"}
 PERSONAL_SQL = "personal_sql_intervention"
-DB_RUNNER_OPERATIONS = {"bootstrap", "guest_intervention", "secret_versions", PERSONAL_SQL}
+APT_PREFLIGHT = "apt_preflight"
+DB_RUNNER_OPERATIONS = {"bootstrap", "guest_intervention", "secret_versions", PERSONAL_SQL, APT_PREFLIGHT}
 DB_RUNNER_SOURCE = "scripts/int_demo_a_db_runner.py"
 OPERATION_ROLES = {
     "guest_safety": {"noble_guest", "credential_toolchain"},
     "guest_intervention": {"noble_guest", "credential_toolchain"},
+    APT_PREFLIGHT: {"credential_toolchain"},
     "bootstrap": {"noble_guest", "credential_toolchain"},
     "human_sql_access": {"noble_guest", "personal_windows"},
     PERSONAL_SQL: {"noble_guest", "credential_toolchain"},
@@ -37,6 +39,7 @@ PLAN_BOUND = {"locked_plan_apply"} | POST_APPLY
 CREDENTIAL_CHECKS = {
     "guest_safety": ("guest_package_scope_and_recovery",),
     "guest_intervention": ("guest_package_scope_and_recovery", "exact_guest_intervention_transport"),
+    APT_PREFLIGHT: ("exact_apt_read_preflight_transport",),
     PERSONAL_SQL: ("exact_personal_sql_and_receipt_chain",),
     "bootstrap": ("controlled_bootstrap_and_stop", "scoped_iam_and_protected_inputs"),
     "secret_versions": ("secret_target_and_version_receipt_protocol",),
@@ -49,6 +52,7 @@ CREDENTIAL_CHECKS = {
 }
 RUNNER_IMAGE_CHECKS = {
     "exact_guest_intervention_transport": "guest_intervention_runner_mismatch",
+    "exact_apt_read_preflight_transport": "apt_read_preflight_runner_mismatch",
     "secret_target_and_version_receipt_protocol": "secret_versions_runner_mismatch",
 }
 # Roles are fixed by the profile, independent of the reports a producer sends.
@@ -87,10 +91,15 @@ BOOTSTRAP_TOOL_PINS = {
 }
 BOOTSTRAP_TOOL_ROLES = set(BOOTSTRAP_TOOL_PINS) | {"runner_image", "node", "python", "ssh", "ssh_keygen", "ca_bundle", "bootstrap_sources"}
 BOOTSTRAP_WORKFLOW = ".github/workflows/int-db01-noble-bootstrap.yml"
-PERSONAL_SQL_WORKFLOW = ".github/workflows/int-db01-noble-intervention.yml"
+NOBLE_INTERVENTION_WORKFLOW = ".github/workflows/int-db01-noble-intervention.yml"
+APT_PREFLIGHT_SOURCES = {"scripts/int_noble_apt_preflight.py", "scripts/int_noble_guest_intervention_backend.py",
+                         "scripts/int_demo_a_wif_read.py", "scripts/int_demo_a_noble_policy.py", "scripts/int_demo_a_preflight.py",
+                         "scripts/int_db01_noble_read_iam.py", "scripts/check_int_demo_a.py", "scripts/int_guest_inventory.py",
+                         "scripts/int_noble_first_observation.py", "scripts/int_noble_kernel_observation.py",
+                         "scripts/int_noble_guest_intervention.py", "scripts/int_db01_noble_jobs.py"}
 PERSONAL_SQL_ASSETS = {"scripts/personal_sql/" + leaf for leaf in
                        ("20-personal-inspection.sql", "29-verify-personal-acl.sql", "90-revoke-personal.sql")}
-PERSONAL_SQL_SOURCES = {PERSONAL_SQL_WORKFLOW, "scripts/int_noble_personal_sql.py",
+PERSONAL_SQL_SOURCES = {NOBLE_INTERVENTION_WORKFLOW, "scripts/int_noble_personal_sql.py",
                         "scripts/int_noble_personal_sql_contract.py", "scripts/int_noble_personal_sql_guest.py",
                         "scripts/int_noble_guest_intervention.py", "scripts/int_demo_a_receipts.py",
                         "scripts/check_int_demo_a.py", "config/int-demo-a-noble-policy.json", *PERSONAL_SQL_ASSETS}
@@ -331,6 +340,13 @@ def verify_db_runner(root, subject, binding, at, source_root, env):
     require(all(scopes["bandit"]["sha256_by_source_path"].get(path) == sha
                 and scopes["gitleaks"]["sha256_by_source_path"].get(path) == sha for path, sha in sources.items()),
             "db_runner_source_scan_scope")
+    if operation == APT_PREFLIGHT:
+        expected_sources = {path: digest(local_regular(source_root / path)) for path in APT_PREFLIGHT_SOURCES}
+        require(all(scopes["bandit"]["sha256_by_source_path"].get(path) == sha
+                    and scopes["gitleaks"]["sha256_by_source_path"].get(path) == sha
+                    for path, sha in expected_sources.items())
+                and scopes["gitleaks"]["sha256_by_source_path"].get(NOBLE_INTERVENTION_WORKFLOW)
+                == digest(local_regular(source_root / NOBLE_INTERVENTION_WORKFLOW)), "apt_read_preflight_source_scan_scope")
     trivy = scopes["trivy_toolchain"]
     targets = proof["targets"]
     require(trivy["db_runner_host_sha256"] == reference["sha256"] and trivy["db_runner_targets"] == targets
@@ -389,7 +405,7 @@ def verify_bootstrap_toolchain(root, subject, binding, at, runner_version, sourc
             verify_sources(source_root, proof["files"],
                            PERSONAL_SQL_SOURCES if personal else REQUIRED_BOOTSTRAP_SOURCES, "personal_sql" if personal else "bootstrap")
             files = proof["files"]
-            require(files[PERSONAL_SQL_WORKFLOW if personal else BOOTSTRAP_WORKFLOW] == entrypoint,
+            require(files[NOBLE_INTERVENTION_WORKFLOW if personal else BOOTSTRAP_WORKFLOW] == entrypoint,
                     "bootstrap_promotion_entrypoint_mismatch")
             bandit_sources = scan_scopes["bandit"]["sha256_by_source_path"]
             gitleaks_sources = scan_scopes["gitleaks"]["sha256_by_source_path"]
@@ -703,6 +719,9 @@ def verify_review(root, review, expected_binding, at, *, runner_version=None, so
     require(graph["binding"] == binding and HEX.fullmatch(graph["entrypoint_sha256"]) and
             graph["roles"] == {role: value["identity"] for role, value in review["subjects"].items()} and
             set(graph["operations"]) == {operation}, "promotion_graph_mismatch")
+    if operation == APT_PREFLIGHT:
+        require(graph["entrypoint_sha256"] == digest(local_regular(source_root / NOBLE_INTERVENTION_WORKFLOW)),
+                "apt_read_preflight_entrypoint_sha256")
     chain = exact(graph["operations"][operation], "reads produces credentials", "operation_graph_fields")
     require(all(isinstance(values, list) and len(values) == len(set(values)) for values in chain.values()) and
             chain["reads"], "operation_graph_incomplete:" + operation)
@@ -725,7 +744,7 @@ def verify_review(root, review, expected_binding, at, *, runner_version=None, so
         publication = operation == "oci_publication" and role == "credential_toolchain"
         db_role = operation in DB_RUNNER_OPERATIONS and role == "credential_toolchain"
         db_runner = db_role and "runner_host" in review["subjects"][role]
-        require(not db_role or db_runner_env is None or db_runner, "db_runner_review_missing")
+        require(not db_role or db_runner or (operation != APT_PREFLIGHT and db_runner_env is None), "db_runner_review_missing")
         fields = "identity analyses checks"
         if toolchain:
             fields += " toolchain"
