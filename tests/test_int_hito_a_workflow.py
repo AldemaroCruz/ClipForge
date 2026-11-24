@@ -8,6 +8,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/int-hito-a.yml"
 CI_DOCKERFILE = ROOT / "Dockerfile.ci"
+RUNTIME_DOCKERFILE = ROOT / "Dockerfile.int-demo"
 LEGACY_MUTATORS = {
     "int-db01-noble-apply.yml",
     "int-db01-noble-bootstrap.yml",
@@ -77,6 +78,18 @@ class HitoAWorkflowTests(unittest.TestCase):
         self.assertIn("COPY Dockerfile Dockerfile.ci", source)
         self.assertLess(source.index("COPY app/"), source.index(directories))
         self.assertLess(source.index("COPY scripts/"), source.index(directories))
+        self.assertNotRegex(source, r"chmod\s+(?:0?777|a\+w)")
+
+    def test_nonroot_runtime_sources_are_readable_before_the_build_probe(self):
+        source = RUNTIME_DOCKERFILE.read_text(encoding="utf-8")
+        directories = "find /app -xdev -type d -exec chmod 0555 {} +"
+        files = "find /app -xdev -type f -exec chmod 0444 {} +"
+        last_copy = source.rindex("COPY app/static/")
+        self.assertIn(directories, source)
+        self.assertIn(files, source)
+        self.assertLess(last_copy, source.index(directories))
+        self.assertLess(source.index(files), source.index("USER 10001:10001"))
+        self.assertLess(source.index("USER 10001:10001"), source.index("import app.int_demo"))
         self.assertNotRegex(source, r"chmod\s+(?:0?777|a\+w)")
 
     def test_one_candidate_is_reused_by_digest_for_service_jobs_and_acceptance(self):

@@ -37,6 +37,8 @@ COPY app/__init__.py app/auth.py app/auth_db.py app/auth_models.py app/auth_migr
 COPY app/cloud/__init__.py app/cloud/migrate.py app/cloud/bootstrap_admin.py /app/app/cloud/
 COPY app/static/account.css app/static/account.html app/static/account.js app/static/auth.js \
      app/static/login.html app/static/recover.html app/static/recover.js /app/app/static/
+RUN find /app -xdev -type d -exec chmod 0555 {} + \
+ && find /app -xdev -type f -exec chmod 0444 {} +
 USER 10001:10001
 
 RUN --network=none python -c 'import app.int_demo, importlib.util, psycopg, shutil; assert psycopg.pq.__impl__ == "python"; assert not any(shutil.which(command) for command in ("ffmpeg", "ffprobe")); assert not any(importlib.util.find_spec(name) for name in ("app.main", "app.cloud.worker", "app.cloud.router", "av", "faster_whisper", "onnxruntime", "ctranslate2"))'
