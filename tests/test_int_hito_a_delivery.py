@@ -431,8 +431,10 @@ class DeliveryContractTests(unittest.TestCase):
         with mock.patch.dict(os.environ, self.env, clear=True), \
                 mock.patch.object(delivery, "preflight",
                                   side_effect=delivery.DeliveryBlocked(
-                                      "terraform_cannot_grant_bootstrap_credential_access")):
+                                      "terraform_cannot_grant_bootstrap_credential_access")), \
+                mock.patch.object(delivery.os, "umask") as set_umask:
             self.assertEqual(delivery.main(["preflight"]), 1)
+        set_umask.assert_called_once_with(0o077)
         failure = json.loads((Path(self.env["INT_HITO_A_SCRATCH"]) /
                               "delivery-failure-preflight.json").read_text())
         self.assertEqual(failure, {

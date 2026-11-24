@@ -75,7 +75,7 @@
     },
     {
       "path": ".github/workflows/int-e2e-bootstrap-db.yml",
-      "sha256": "55393fb68df2dd5771e5d6e07279d23bc209fb4604387e30dbc9f167f448b7c8"
+      "sha256": "e3dcc405d066497b6a59e0ddb75d811262b05f819a0da2fe9a56f3c34b885571"
     },
     {
       "path": "infra/gcp/int-base/postgres-install.sh",
@@ -95,11 +95,11 @@
     },
     {
       "path": "app/cloud/bootstrap_admin.py",
-      "sha256": "10d4f2d95b8252e18ef0ec2a055cb25f9a1a9c61aac4183b17530da2c4a79e36"
+      "sha256": "d42edc44edb726bdaf1c4e7c8fbb2b50257e22c5a4be1fb2cd721a0bbd1ea175"
     },
     {
       "path": "scripts/int_secrets.py",
-      "sha256": "f09f6fe8500574da66db9378ea5156aea023c3ac8a199b563f3501169ea9b685"
+      "sha256": "79d50470e06c66af04b1c2c40e9aca55d5f7265a76bd7b5b9961ba4b7317a00e"
     },
     {
       "path": "scripts/int_guest_inventory.py",

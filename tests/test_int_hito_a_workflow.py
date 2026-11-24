@@ -74,6 +74,7 @@ class HitoAWorkflowTests(unittest.TestCase):
         files = "find /app -xdev -type f -exec chmod 0444 {} +"
         self.assertIn(directories, source)
         self.assertIn(files, source)
+        self.assertIn("COPY Dockerfile Dockerfile.ci", source)
         self.assertLess(source.index("COPY app/"), source.index(directories))
         self.assertLess(source.index("COPY scripts/"), source.index(directories))
         self.assertNotRegex(source, r"chmod\s+(?:0?777|a\+w)")

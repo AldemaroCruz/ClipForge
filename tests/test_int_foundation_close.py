@@ -183,6 +183,8 @@ class FoundationCloseContract(unittest.TestCase):
         for name in source_names:
             if name=='scripts/check_int_foundation.py':
                 source=fixtures/'d67e581-check_int_foundation.py.txt'
+            elif name=='scripts/int_release.py':
+                source=Path(__file__).parent/'historical_d67e581_int_release.py'
             else:
                 source=foundation.ROOT/name
             raw=source.read_bytes()

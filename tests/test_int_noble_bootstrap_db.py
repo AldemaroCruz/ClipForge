@@ -159,14 +159,15 @@ class LauncherTests(unittest.TestCase):
         global_ci.assert_not_called()
         profile.assert_not_called()
 
-    def test_real_workflow_denies_oidc_until_the_separate_cli_validation(self):
+    def test_legacy_workflow_is_inert_before_any_oidc(self):
         workflow = (launcher.ROOT / launcher.WORKFLOW).read_text(encoding="utf-8")
         preview, protected = workflow.split("\n  protected-bootstrap:\n", 1)
         self.assertIn("-m scripts.int_noble_bootstrap_db local ", preview)
         self.assertNotIn("id-token:", preview)
         self.assertNotIn("google-github-actions/auth@", preview)
         self.assertIn("needs: local-preflight", protected)
-        self.assertIn("needs.local-preflight.result == 'success'", protected)
+        self.assertIn("if: ${{ false }}", protected)
+        self.assertNotIn("needs.local-preflight.result == 'success'", protected)
         self.assertIn("environment: int", protected)
         order = ("protected-local --bundle", "google-github-actions/auth@", " cloud --bundle", " run --bundle")
         self.assertEqual(sorted(protected.index(marker) for marker in order), [protected.index(marker) for marker in order])

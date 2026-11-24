@@ -49,7 +49,7 @@ COPY .github/ ./.github/
 COPY .gitleaks.toml ./
 # Packaging regressions inspect the production files as source; they do not
 # replace this CI image's separately locked dependency set.
-COPY Dockerfile requirements.txt requirements-test.txt requirements-ci.lock requirements-ci-tools.txt requirements-ci-tools.lock ./
+COPY Dockerfile Dockerfile.ci requirements.txt requirements-test.txt requirements-ci.lock requirements-ci-tools.txt requirements-ci-tools.lock ./
 # AUTH-01 packaging regressions inspect only these additional, explicit sources.
 COPY Dockerfile.dev Dockerfile.dev.dockerignore compose.dev.yaml ./
 # The verified context is prepared under umask 077. Keep its contents immutable
