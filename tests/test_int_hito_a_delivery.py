@@ -278,52 +278,54 @@ class DeliveryContractTests(unittest.TestCase):
                     self.assertRaisesRegex(delivery.DeliveryBlocked, code):
                 delivery._require_delivery_iam_permissions(self.env)
 
-    def test_noble_host_pin_is_rebuilt_from_the_exact_serial_record(self):
-        record = {"public_key": "ssh-ed25519 fixture-public-key",
-                  "guest_boot_id": "e1a4fb53-1970-490b-af37-5cccbbc99f32"}
-        with mock.patch.object(delivery, "_gcloud_json", return_value={"start": "0", "next": "1"}), \
-                mock.patch.object(delivery.noble_hostkey, "serial_record", return_value=record) as parser:
-            path, actual = delivery._noble_host_pin(self.env)
-        self.assertEqual(actual, record)
-        self.assertEqual(path.read_text(encoding="ascii"),
-                         delivery.INSTANCE + "." + delivery.INSTANCE_ID + " " +
-                         record["public_key"] + "\n")
-        parser.assert_called_once_with(
-            {"start": "0", "next": "1"}, instance_id=delivery.INSTANCE_ID,
-            nonce=delivery.NOBLE_HOST_RECORD_NONCE,
-            publisher_sha256=delivery.NOBLE_HOST_RECORD_PUBLISHER_SHA256,
-        )
+    def test_noble_host_pin_matches_the_preexisting_verified_host_line(self):
+        path, record = delivery._noble_host_pin(self.env)
+        self.assertEqual(record, {"guest_boot_id": delivery.NOBLE_GUEST_BOOT_ID})
+        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), delivery.NOBLE_PIN)
+        with mock.patch.object(delivery, "NOBLE_HOST_ED25519", "ssh-ed25519 changed"), \
+                self.assertRaisesRegex(delivery.DeliveryBlocked, "noble_host_pin"):
+            delivery._noble_host_pin(self.env)
 
     def test_noble_ssh_requires_the_published_ed25519_pin_and_private_key(self):
-        known = Path(self.env["INT_HITO_A_SCRATCH"]) / "known-hosts.fixture"
-        known.write_text("fixture\n", encoding="ascii")
-        record = {"guest_boot_id": "e1a4fb53-1970-490b-af37-5cccbbc99f32"}
+        known = "/private/known-hosts.fixture"
+        record = {"guest_boot_id": delivery.NOBLE_GUEST_BOOT_ID}
         captured = {}
+        client = mock.Mock(import_attempted=True, fingerprint="fixture-fingerprint")
+        client.import_key.return_value = {"username": "sa_123", "fingerprint": client.fingerprint}
 
         def invoke(command, **kwargs):
+            if command[0] == "/usr/bin/ssh-keygen":
+                return b""
             captured.update(command=command, kwargs=kwargs)
             return b'{"schema":"fixture"}\n'
 
         with mock.patch.object(delivery, "_noble_host_pin", return_value=(known, record)), \
                 mock.patch.object(delivery, "_gcloud_binary", return_value="/usr/bin/gcloud"), \
+                mock.patch.object(delivery.guest_transport, "Client", return_value=client), \
+                mock.patch.object(delivery.guest_transport, "_local_bytes", return_value=delivery.NOBLE_HOST_ED25519.encode("ascii")), \
+                mock.patch.object(delivery.guest_transport, "find_own_key", return_value=client.fingerprint), \
+                mock.patch.object(Path, "is_file", return_value=True), \
+                mock.patch.object(Path, "stat", return_value=mock.Mock(st_mode=0o100600)), \
+                mock.patch.object(delivery, "scratch", return_value=self.env["INT_HITO_A_SCRATCH"]), \
                 mock.patch.object(delivery, "_run", side_effect=invoke):
-            receipt, actual_record = delivery._ssh_public(b"print('fixture')\n", self.env)
+            receipt, actual_record = delivery._ssh_public(b"print('fixture')\n", self.env,
+                                                          protected_input=b"private-fixture")
         self.assertEqual(receipt, {"schema": "fixture"})
         self.assertEqual(actual_record, record)
         command = captured["command"]
+        self.assertEqual(command[:5], ["/usr/bin/ssh", "-F", "/dev/null", "-T", "-i"])
+        self.assertEqual(captured["kwargs"]["input_data"], b"private-fixture")
+        client.delete_own_key.assert_called_once_with("fixture-fingerprint")
         for option in (
-            "--tunnel-through-iap", "--ssh-key-expire-after=10m",
-            "--ssh-flag=-o=StrictHostKeyChecking=yes",
-            "--ssh-flag=-o=GlobalKnownHostsFile=/dev/null",
-            "--ssh-flag=-o=HostKeyAlgorithms=ssh-ed25519",
-            "--ssh-flag=-o=UpdateHostKeys=no", "--ssh-flag=-o=BatchMode=yes",
-            "--ssh-flag=-o=PasswordAuthentication=no",
+            "StrictHostKeyChecking=yes", "GlobalKnownHostsFile=/dev/null",
+            "HostKeyAlgorithms=ssh-ed25519", "UpdateHostKeys=no", "BatchMode=yes",
+            "PasswordAuthentication=no", "sa_123",
+            "ProxyCommand=/usr/bin/gcloud compute start-iap-tunnel " + delivery.INSTANCE
+            + " 22 --listen-on-stdin --project=clipforgebeta2 --zone=us-central1-a --quiet --verbosity=error",
         ):
             self.assertIn(option, command)
-        self.assertIn("--ssh-flag=-o=UserKnownHostsFile=" + str(known), command)
-        self.assertIn("--ssh-flag=-o=HostKeyAlias=" + delivery.INSTANCE + "." +
-                      delivery.INSTANCE_ID, command)
-        self.assertTrue(any(item.startswith("--ssh-key-file=") for item in command))
+        self.assertIn("UserKnownHostsFile=" + known, command)
+        self.assertIn("HostKeyAlias=" + delivery.INSTANCE + "." + delivery.INSTANCE_ID, command)
 
     def test_plan_allows_only_one_service_two_jobs_and_safe_revision_update(self):
         state = {"commit": COMMIT, "image": IMAGE}

@@ -15,16 +15,20 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import tarfile
+import tempfile
+import time
 from urllib.request import Request, build_opener, ProxyHandler
 
 from scripts import int_bootstrap_vm as legacy_operator
+from scripts import int_guest_inventory as guest_transport
 from scripts import int_hito_a_db_credentials as db_credentials
 from scripts import int_hito_a_db_probe as db_probe
-from scripts import int_noble_hostkey as noble_hostkey
 from scripts import int_noble_bootstrap_payloads as noble_payloads
+from scripts.int_noble_human_access import NOBLE_PIN
 from scripts import int_release
 from scripts import int_release_image
 from scripts import int_secrets
@@ -47,8 +51,11 @@ BOOTSTRAP_JOB = "clipforge-int-bootstrap"
 IMAGE_PREFIX = "us-central1-docker.pkg.dev/clipforgebeta2/clipforge-int/runtime@sha256:"
 TERRAFORM_VERSION = "1.15.8"
 GCLOUD_VERSION = "582.0.0"
-NOBLE_HOST_RECORD_NONCE = "c17af30d152fe6991cae09fdbff8db31c08dcac6360abb73084e2c3737c0cdf8"
-NOBLE_HOST_RECORD_PUBLISHER_SHA256 = "0400c905a0cf8578d8315e608afdca3a87aed6521f8ae36b449b9d675cd87cc5"
+NOBLE_GUEST_BOOT_ID = "e1a4fb53-1970-490b-af37-5cccbbc99f32"
+NOBLE_HOST_ED25519 = (
+    "ssh-ed25519 "
+    "AAAAC3NzaC1lZDI1NTE5AAAAINc6b3H2CNOhPbZHjlueWnJ61yDoM9wbQM8m/2Ku96Bl"
+)
 STATE_SCHEMA = "clipforge-int-hito-a-delivery-state-1"
 RECEIPT_SCHEMA = "clipforge-int-hito-a-delivery-receipt-1"
 HEX64 = re.compile(r"[a-f0-9]{64}")
@@ -304,19 +311,8 @@ def _remote_loader(source, digest):
 
 
 def _noble_host_pin(env):
-    serial = _gcloud_json([
-        "compute", "instances", "get-serial-port-output", INSTANCE,
-        "--project=" + PROJECT, "--zone=" + ZONE, "--port=1", "--start=0",
-        "--format=json",
-    ])
-    try:
-        record = noble_hostkey.serial_record(
-            serial, instance_id=INSTANCE_ID, nonce=NOBLE_HOST_RECORD_NONCE,
-            publisher_sha256=NOBLE_HOST_RECORD_PUBLISHER_SHA256,
-        )
-    except (TypeError, ValueError, KeyError):
-        raise DeliveryBlocked("noble_host_pin") from None
-    line = (INSTANCE + "." + INSTANCE_ID + " " + record["public_key"] + "\n").encode("ascii")
+    line = f"{INSTANCE}.{INSTANCE_ID} {NOBLE_HOST_ED25519}\n".encode("ascii")
+    require(sha256(line) == NOBLE_PIN, "noble_host_pin")
     path = scratch(env) / "noble-known-hosts"
     if not path.exists():
         descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o400)
@@ -327,36 +323,58 @@ def _noble_host_pin(env):
     require(path.is_file() and not path.is_symlink()
             and (os.name != "posix" or path.stat().st_mode & 0o077 == 0)
             and path.read_bytes() == line, "noble_known_hosts")
-    return path, record
+    return path, {"guest_boot_id": NOBLE_GUEST_BOOT_ID}
 
 
 def _ssh_public(source, env, *, protected_input=None, timeout=720):
     digest = sha256(source)
     known_hosts, host_record = _noble_host_pin(env)
-    private_key = scratch(env) / "noble-id-ed25519"
-    command = [
-        _gcloud_binary(), "compute", "ssh", INSTANCE,
-        "--project=" + PROJECT, "--zone=" + ZONE, "--tunnel-through-iap", "--quiet",
-        "--verbosity=error", "--ssh-key-expire-after=10m",
-        "--ssh-key-file=" + str(private_key),
-        "--command=" + _remote_loader(source, digest),
-        "--ssh-flag=-F=/dev/null",
-        "--ssh-flag=-o=HostKeyAlias=" + INSTANCE + "." + INSTANCE_ID,
-        "--ssh-flag=-o=StrictHostKeyChecking=yes",
-        "--ssh-flag=-o=UserKnownHostsFile=" + str(known_hosts),
-        "--ssh-flag=-o=GlobalKnownHostsFile=/dev/null",
-        "--ssh-flag=-o=HostKeyAlgorithms=ssh-ed25519",
-        "--ssh-flag=-o=UpdateHostKeys=no",
-        "--ssh-flag=-o=BatchMode=yes", "--ssh-flag=-o=PasswordAuthentication=no",
-        "--ssh-flag=-o=KbdInteractiveAuthentication=no",
-        "--ssh-flag=-o=IdentitiesOnly=yes", "--ssh-flag=-o=IdentityAgent=none",
-        "--ssh-flag=-o=PreferredAuthentications=publickey",
-        "--ssh-flag=-o=ForwardAgent=no", "--ssh-flag=-o=CheckHostIP=no",
-        "--ssh-flag=-o=ClearAllForwardings=yes", "--ssh-flag=-o=PermitLocalCommand=no",
-        "--ssh-flag=-o=ConnectTimeout=30", "--ssh-flag=-o=ConnectionAttempts=1",
-        "--ssh-flag=-o=ServerAliveInterval=10", "--ssh-flag=-o=ServerAliveCountMax=3",
-    ]
-    raw = _run(command, input_data=protected_input, timeout=timeout)
+    gcloud = _gcloud_binary()
+    require("%" not in gcloud and re.fullmatch(r"[A-Za-z0-9_./-]+", str(known_hosts)),
+            "noble_ssh_paths")
+    proxy = shlex.join([gcloud, "compute", "start-iap-tunnel", INSTANCE, "22",
+                        "--listen-on-stdin", "--project=" + PROJECT, "--zone=" + ZONE,
+                        "--quiet", "--verbosity=error"])
+    client = guest_transport.Client(lambda: env.get("GCP_ACCESS_TOKEN", ""))
+    with tempfile.TemporaryDirectory(prefix="noble-ssh-", dir=scratch(env)) as key_dir:
+        private_key = Path(key_dir) / "id_ed25519"
+        _run(["/usr/bin/ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(private_key)],
+             timeout=30, output_limit=4096)
+        require(private_key.is_file() and not private_key.is_symlink()
+                and private_key.stat().st_mode & 0o777 == 0o600, "noble_ephemeral_key")
+        public, _ = guest_transport.host_guest.public_key(
+            guest_transport._local_bytes(private_key.with_suffix(".pub"), 1024))
+        expiration = int(time.time() * 1_000_000) + guest_transport.KEY_TTL_SECONDS * 1_000_000
+        try:
+            client.arm_key(public, expiration)
+            try:
+                selected = client.import_key()
+                command = [
+                    "/usr/bin/ssh", "-F", "/dev/null", "-T", "-i", str(private_key),
+                    "-o", "ProxyCommand=" + proxy, "-o", "HostKeyAlias=" + INSTANCE + "." + INSTANCE_ID,
+                    "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=" + str(known_hosts),
+                    "-o", "GlobalKnownHostsFile=/dev/null", "-o", "HostKeyAlgorithms=ssh-ed25519",
+                    "-o", "UpdateHostKeys=no", "-o", "BatchMode=yes", "-o", "PasswordAuthentication=no",
+                    "-o", "KbdInteractiveAuthentication=no", "-o", "IdentitiesOnly=yes",
+                    "-o", "IdentityAgent=none", "-o", "CertificateFile=none",
+                    "-o", "PreferredAuthentications=publickey", "-o", "ForwardAgent=no",
+                    "-o", "CheckHostIP=no", "-o", "ClearAllForwardings=yes", "-o", "PermitLocalCommand=no",
+                    "-o", "ConnectTimeout=30", "-o", "ConnectionAttempts=1",
+                    "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3",
+                    "-l", selected["username"], "--", INSTANCE, _remote_loader(source, digest),
+                ]
+                raw = _run(command, input_data=protected_input, timeout=timeout)
+            finally:
+                if client.import_attempted:
+                    observed = guest_transport.find_own_key(client.profile(), public, expiration)
+                    if observed is not None:
+                        require(client.fingerprint in {None, observed}, "noble_oslogin_fingerprint_changed")
+                        client.fingerprint = observed
+                        client.delete_own_key(observed)
+                    else:
+                        require(client.fingerprint is None, "noble_oslogin_key_unexpectedly_absent")
+        except guest_transport.Blocked:
+            raise DeliveryBlocked("noble_oslogin_authority_or_cleanup") from None
     lines = [line for line in raw.splitlines() if line.strip().startswith(b"{")]
     require(len(lines) == 1 and len(lines[0]) <= 2 * 1024 * 1024, "guest_json_receipt")
     try:
