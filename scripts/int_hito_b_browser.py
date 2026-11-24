@@ -134,11 +134,22 @@ def browser_post(page, path, body, key=None, *, csrf=True):
 
 
 def create_account(page, account):
+    # The form's previous submission clears its password in finally before
+    # enabling the button. Do not fill the next account while it is busy.
+    ready = "() => !document.querySelector('#create-user-form button[type=submit]').disabled"
+    page.wait_for_function(ready)
     page.locator("#new-username").fill(account["username"])
     page.locator("#user-password").fill(account["password"])
-    page.locator("#create-user-form button[type=submit]").click()
-    page.wait_for_function("() => document.querySelector('#users-status').textContent === 'Cuenta creada.'")
-    page.get_by_role("button", name="Desactivar a " + account["username"], exact=True).wait_for()
+    with page.expect_response(lambda item: item.url == PUBLIC + "/auth/users"
+                              and item.request.method == "POST") as result:
+        page.locator("#create-user-form button[type=submit]").click()
+    response = result.value
+    require(response.status == 201, "creator_account_creation_http_" + str(response.status))
+    created = response.json()["user"]
+    require(created["username"] == account["username"] and created["is_admin"] is False
+            and created["is_active"] is True,
+            "creator_account_creation_identity")
+    page.wait_for_function(ready)
 
 
 def deactivate_accounts(page, accounts):
@@ -349,10 +360,13 @@ def prepare(browser, args, admin, report, revisions):
     marker = "Prueba piloto " + secrets.token_hex(10)
     report["step"] = "creator_accounts"
     with browser_page(browser) as page:
+        report["step"] = "administrator_sign_in"
         login(page, admin, args.commit)
         page.goto(PUBLIC + "/account", wait_until="domcontentloaded")
-        for account in accounts:
+        for index, account in enumerate(accounts, start=1):
+            report["step"] = "creator_account_create_" + str(index)
             create_account(page, account)
+        report["step"] = "administrator_sign_out"
         logout(page)
     check(report, "public_browser_login_logout_and_account_creation")
     transfer = []
@@ -481,10 +495,11 @@ def main():
         return 0
     except (BrowserAcceptanceError, shared_http.AcceptanceError) as error:
         code = str(error)
-    except Exception:
+    except Exception as error:
         # Browser and subprocess exceptions can contain temporary upload URLs,
         # credentials or local paths. Limit diagnostics to this stage code.
-        code = stage
+        code = report.get("step", stage)
+        report["failure_type"] = type(error).__name__
     report.update(status="failed", failure=code)
     try:
         if args.report != args.state:
