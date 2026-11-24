@@ -1472,7 +1472,7 @@
       "path": "scripts/int_hito_a_db_probe.py",
       "reason": "Import supports bounded read-only commands selected exclusively from fixed absolute lsblk, wipefs and systemctl argv; request data cannot select an executable or argument.",
       "severity": "LOW",
-      "source_sha256": "1af4d794b4d9d0cdce822a3de1a6ce1d3c2090a05b7e2ab48c321edafd2fd7aa",
+      "source_sha256": "2a4bfdee368e1eb598b8820aba3e65a155f3ac0e64c0cd02cb221cf36dcd27cd",
       "test_id": "B404"
     },
     {
@@ -1483,18 +1483,18 @@
       "path": "scripts/int_hito_a_db_probe.py",
       "reason": "The helper is called only with locally authored absolute lsblk and wipefs argv; it bounds output and time, supplies a minimal environment and never enables a shell.",
       "severity": "LOW",
-      "source_sha256": "1af4d794b4d9d0cdce822a3de1a6ce1d3c2090a05b7e2ab48c321edafd2fd7aa",
+      "source_sha256": "2a4bfdee368e1eb598b8820aba3e65a155f3ac0e64c0cd02cb221cf36dcd27cd",
       "test_id": "B603"
     },
     {
       "confidence": "HIGH",
-      "context_sha256": "aac0cc739d19a96b8c6e8a9e8b805559575a2f291ab41b44182140335a07de01",
+      "context_sha256": "6090f3707ca0e6532e1918442d14cfb1c4a2e8ff3befd324979a8374c32dd9fe",
       "cwe": 78,
       "line": 125,
       "path": "scripts/int_hito_a_db_probe.py",
-      "reason": "Absolute systemctl path and constant is-active/postgresql.service arguments are used with no external input, bounded output, a timeout and shell disabled.",
+      "reason": "Absolute systemctl path and constant is-active/postgresql@17-main.service arguments check the exact initialized cluster. The call takes no external input and uses a timeout with shell disabled.",
       "severity": "LOW",
-      "source_sha256": "1af4d794b4d9d0cdce822a3de1a6ce1d3c2090a05b7e2ab48c321edafd2fd7aa",
+      "source_sha256": "2a4bfdee368e1eb598b8820aba3e65a155f3ac0e64c0cd02cb221cf36dcd27cd",
       "test_id": "B603"
     },
     {

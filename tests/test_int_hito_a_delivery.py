@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -333,6 +334,45 @@ class DeliveryContractTests(unittest.TestCase):
         with mock.patch.object(delivery.subprocess, "run", return_value=failure), \
                 self.assertRaisesRegex(delivery.DeliveryBlocked, "^noble_database_probe_exit_2$"):
             delivery._run(["/usr/bin/ssh"], operation="noble_database_probe")
+
+    def test_probe_trusts_only_the_specific_postgres_owner_for_the_ca(self):
+        probe = delivery.db_probe
+        path = mock.Mock()
+        path.lstat.return_value = mock.Mock(st_mode=stat.S_IFREG | 0o600, st_uid=123, st_size=4)
+        path.open.return_value.__enter__ = mock.Mock(return_value=mock.Mock(read=mock.Mock(return_value=b"test")))
+        path.open.return_value.__exit__ = mock.Mock(return_value=False)
+        with self.assertRaisesRegex(ValueError, "unsafe_probe_file"):
+            probe.regular_bytes(path, 8192)
+        self.assertEqual(probe.regular_bytes(path, 8192, owners=(0, 123)), b"test")
+        path.lstat.return_value.st_mode |= 0o020
+        with self.assertRaisesRegex(ValueError, "unsafe_probe_file"):
+            probe.regular_bytes(path, 8192, owners=(0, 123))
+
+    def test_configured_database_probe_checks_the_cluster_unit_and_ca_owner(self):
+        probe = delivery.db_probe
+        metadata = [probe.INSTANCE_ID, probe.PROJECT_ID, probe.PROJECT_NUMBER,
+                    "projects/" + probe.PROJECT_NUMBER + "/zones/" + probe.ZONE]
+        journal = mock.Mock()
+        journal.exists.return_value = True
+        disk = {"fstype": "ext4", "mountpoints": [str(probe.MOUNT)], "signature_count": 1}
+        with mock.patch.object(probe, "metadata", side_effect=metadata), \
+                mock.patch.object(Path, "read_text", return_value=delivery.NOBLE_GUEST_BOOT_ID), \
+                mock.patch.object(probe, "JOURNAL", journal), \
+                mock.patch.object(probe, "disk_metadata", return_value=disk), \
+                mock.patch.object(probe, "regular_bytes", side_effect=[
+                    b'{"status":"configured_guest_verified_external_acceptance_pending"}',
+                    b"ca-fixture",
+                ]) as read, \
+                mock.patch.object(probe.subprocess, "run", return_value=mock.Mock(stdout=b"active\n")) as systemctl, \
+                mock.patch.dict(sys.modules, {"pwd": mock.Mock(getpwnam=mock.Mock(
+                    return_value=mock.Mock(pw_uid=123)))}):
+            result = probe.collect()
+        self.assertEqual(result["state"], "configured")
+        self.assertEqual(result["ca_sha256"], hashlib.sha256(b"ca-fixture").hexdigest())
+        self.assertEqual(systemctl.call_args.args[0], [
+            "/usr/bin/systemctl", "is-active", "postgresql@17-main.service",
+        ])
+        read.assert_has_calls([mock.call(journal, 65536), mock.call(probe.CA, 8192, owners=(0, 123))])
 
     def test_noble_ssh_requires_the_published_ed25519_pin_and_private_key(self):
         known = "/private/known-hosts.fixture"

@@ -67,9 +67,9 @@ def fixed(command, limit=65536):
     return result.stdout
 
 
-def regular_bytes(path, limit):
+def regular_bytes(path, limit, *, owners=(0,)):
     info = path.lstat()
-    require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022
+    require(stat.S_ISREG(info.st_mode) and info.st_uid in owners and not info.st_mode & 0o022
             and info.st_size <= limit, "unsafe_probe_file")
     with path.open("rb") as stream:
         raw = stream.read(limit + 1)
@@ -123,7 +123,7 @@ def collect():
         journal = json.loads(regular_bytes(JOURNAL, 65536))
         journal_status = journal.get("status")
     active = subprocess.run(
-        ["/usr/bin/systemctl", "is-active", "postgresql.service"],
+        ["/usr/bin/systemctl", "is-active", "postgresql@17-main.service"],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         timeout=10, check=False,
         env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "LC_ALL": "C"},
@@ -133,7 +133,11 @@ def collect():
     configured = (journal_status == "configured_guest_verified_external_acceptance_pending"
                   and active == "active" and disk["fstype"] == "ext4" and str(MOUNT) in disk["mountpoints"])
     require(blank or configured, "database_state_requires_manual_reconciliation")
-    ca_sha = hashlib.sha256(regular_bytes(CA, 8192)).hexdigest() if configured else None
+    ca_sha = None
+    if configured:
+        from pwd import getpwnam
+
+        ca_sha = hashlib.sha256(regular_bytes(CA, 8192, owners=(0, getpwnam("postgres").pw_uid))).hexdigest()
     return {
         "schema": "clipforge-int-hito-a-db-probe-1",
         "state": "blank" if blank else "configured",
