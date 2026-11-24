@@ -204,7 +204,7 @@ jobs:
           trap 'docker buildx rm "$builder" >/dev/null' EXIT
           docker pull "$SKOPEO_IMAGE"
           docker pull "$TRIVY_IMAGE"
-          mkdir "$CI_SCRATCH/trivy-cache"
+          mkdir "$CI_SCRATCH/trivy-cache" "$CI_SCRATCH/skopeo-temp"
           opts=(--rm --pull never --read-only --cap-drop ALL --security-opt no-new-privileges
                 --tmpfs /tmp:rw,nosuid,nodev,size=512m --user "$CI_CONTAINER_USER" -v "$CI_SCRATCH:/private")
           for target in web worker; do
@@ -212,7 +212,7 @@ jobs:
               -f "$CI_SCRATCH/runtime/Dockerfile.int-beta" --target "$target" \
               --label "org.opencontainers.image.revision=$GITHUB_SHA" \
               --output "type=oci,dest=$CI_SCRATCH/images/$target.tar" "$CI_SCRATCH/runtime"
-            docker run "${opts[@]}" --network none "$SKOPEO_IMAGE" copy --preserve-digests \
+            docker run "${opts[@]}" --network none "$SKOPEO_IMAGE" --tmpdir /private/skopeo-temp copy --preserve-digests \
               "oci-archive:/private/images/$target.tar" "oci:/private/$target"
             docker run "${opts[@]}" "$TRIVY_IMAGE" image --cache-dir /private/trivy-cache \
               --scanners vuln,secret --list-all-pkgs --format json --exit-code 0 --skip-java-db-update \
