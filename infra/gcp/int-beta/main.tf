@@ -125,7 +125,10 @@ resource "google_cloud_run_v2_service" "api" {
       image   = var.web_image
       command = ["python"]
       args    = ["-m", "uvicorn", "app.int_beta:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log", "--no-proxy-headers"]
-      resources { limits = { cpu = "1", memory = "512Mi" } }
+      resources {
+        limits   = { cpu = "1", memory = "512Mi" }
+        cpu_idle = true
+      }
       dynamic "env" {
         for_each = merge(local.database, local.cloud, {
           CLIPFORGE_DATABASE_USER    = "clipforge_app"
@@ -189,7 +192,10 @@ resource "google_cloud_run_v2_service" "frontend" {
       image   = var.web_image
       command = ["python"]
       args    = ["-m", "uvicorn", "app.int_beta_proxy:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log", "--no-proxy-headers"]
-      resources { limits = { cpu = "1", memory = "256Mi" } }
+      resources {
+        limits   = { cpu = "1", memory = "512Mi" }
+        cpu_idle = true
+      }
       env {
         name  = "CLIPFORGE_ACCEPTANCE_NONCE"
         value = var.acceptance_nonce

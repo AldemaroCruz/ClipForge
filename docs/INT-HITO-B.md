@@ -44,6 +44,14 @@ La decodificación restringida entrega PCM a Whisper. Los informes de Trivy
 cubren paquetes que detecta en cada OCI. La procedencia y la lista de
 bibliotecas del FFmpeg compilado quedan en la imagen del worker.
 
+La revisión del worker conserva `CVE-2025-25467` con la prioridad MEDIUM
+que reporta Trivy para `libx264-164` en Ubuntu Noble. La biblioteca se usa
+como codificador de fotogramas H.264 con parámetros del servidor. El
+decodificador AAC de FFmpeg recibe el audio, y cada render se ejecuta en
+un proceso acotado. Debian considera bajo el impacto en procesos de vida
+corta. El hallazgo sigue abierto en el informe. [Ubuntu](https://ubuntu.com/security/CVE-2025-25467)
+[Debian](https://security-tracker.debian.org/tracker/CVE-2025-25467)
+
 La API acepta sólo la identidad de servicio del frontend a través de IAM.
 El original viaja desde el navegador a Cloud Storage mediante una sesión
 reanudable creada para el objeto y origen autorizados. El servidor valida
