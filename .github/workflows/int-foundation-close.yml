@@ -1,7 +1,8 @@
-name: ClipForge INT close one exact serial-6 foundation plan
+name: DEPRECATED - ClipForge INT close one exact serial-6 foundation plan
 
+# Historical source only. All Hito A mutations now belong to int-hito-a.yml.
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       approved_control_commit:
         description: Full reviewed dispatch controls SHA D; producer configuration P stays immutable
@@ -27,7 +28,7 @@ concurrency:
 
 jobs:
   close-reviewed-foundation:
-    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     environment: int
     timeout-minutes: 30

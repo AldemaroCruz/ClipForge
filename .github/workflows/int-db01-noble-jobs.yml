@@ -1,6 +1,7 @@
-name: ClipForge INT Noble protected database Jobs
+name: DEPRECATED - ClipForge INT Noble protected database Jobs
+# Historical source only. Its dispatch-only preflight makes workflow_call inert.
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       approved_commit:
         description: Exact approved controls SHA
@@ -20,13 +21,11 @@ on:
         required: true
       action:
         description: One create-only or one execution operation
-        type: choice
-        options: [create, run]
+        type: string
         required: true
       phase:
         description: Migration, application-role acceptance or first administrator
-        type: choice
-        options: [migrate, app, admin]
+        type: string
         required: true
 permissions: {}
 concurrency:
@@ -42,7 +41,7 @@ env:
   PYTHONDONTWRITEBYTECODE: "1"
 jobs:
   verify-evidence:
-    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 6
     permissions:
@@ -70,6 +69,7 @@ jobs:
         run: python -B -m scripts.int_db01_noble_jobs preflight --action "$INT_JOB_ACTION" --phase "$INT_JOB_PHASE" --bundle "$INT_JOB_BUNDLE" --decision-sha256 "$INT_DECISION_SHA256"
   protected-operation:
     needs: verify-evidence
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: int

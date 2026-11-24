@@ -1,13 +1,13 @@
-name: ClipForge INT Noble protected guest intervention
+name: DEPRECATED - ClipForge INT Noble protected guest intervention
 
+# Historical source only. Constant-false job guards make workflow_call inert.
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       operation:
         description: Select one read preflight, intervention or approved personal SQL action
-        type: choice
+        type: string
         default: guest_intervention
-        options: [apt_preflight, guest_intervention, personal_activate, personal_observe, personal_revoke]
       approved_commit:
         description: Exact approved SHA of the Noble intervention controls
         required: true
@@ -51,7 +51,7 @@ env:
 
 jobs:
   local-preflight:
-    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -98,7 +98,7 @@ jobs:
 
   intervene:
     needs: local-preflight
-    if: needs.local-preflight.outputs.verified_commit == github.sha
+    if: ${{ false }}
     environment: int
     runs-on: ubuntu-24.04
     timeout-minutes: 25

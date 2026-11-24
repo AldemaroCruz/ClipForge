@@ -326,6 +326,30 @@ def bootstrap_admin(username, password):
         return _new_user(database, username, password, is_admin=True)
 
 
+def ensure_bootstrap_admin(username, password):
+    """Create the first admin once or verify that the exact bootstrap already won.
+
+    This is for the zero-retry Cloud Run bootstrap job.  It makes a resumed
+    delivery observable and idempotent without resetting a credential, adding
+    an administrator, or accepting a different existing account.
+    """
+    username = _normalize_username(username)
+    _validate_password(password)
+    with session_scope() as database:
+        database.execute(text("SELECT pg_advisory_xact_lock(1837086402)"))
+        first = database.execute(select(User.id).limit(1)).first()
+        if not first:
+            return _new_user(database, username, password, is_admin=True), True
+        admins = database.execute(
+            select(User).where(User.is_admin.is_(True)).order_by(User.created_at, User.id).limit(2)
+        ).scalars().all()
+        user = admins[0] if len(admins) == 1 else None
+        if (user is not None and user.username == username and user.is_active is True
+                and _verify(password, user.password_hash)):
+            return _principal(database, user), False
+        raise ValueError("La creación inicial ya no está disponible: existen usuarios.")
+
+
 def create_user(username, password, *, is_admin=False):
     """Trusted local provisioning for isolated fixtures; never a public route."""
     with session_scope() as database:

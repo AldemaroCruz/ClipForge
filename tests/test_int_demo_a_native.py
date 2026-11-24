@@ -129,7 +129,7 @@ class ProtectedPlanTest(unittest.TestCase):
                         ImageOS="ubuntu24", ImageVersion="20261120.1", RUNNER_TEMP=str(self.root),
                         INT_DEMO_A_GATE_BUNDLE=str(bundle))
         self.decision["plan_binary_sha256"] = binary_sha
-        self.decision["gate"] = {"mode": "demo-a", "run_id": "12", "artifact_id": "13", "runner_version": "20261120.1",
+        self.decision["gate"] = {"mode": "demo-a", "run_id": "12", "artifact_id": "13", "runner_version": "20261119.1",
                                  "review_sha256": review_sha, "binding_sha256": binding_sha}
         evidence = {"graph": {"entrypoint_sha256": native.custody.sha256(controller.read_bytes())},
                     "receipt": {"scope": "scope"}, "scope": {"oci_config": native.CONFIG, "oci_diff_ids": native.LAYERS}}
@@ -137,6 +137,10 @@ class ProtectedPlanTest(unittest.TestCase):
                 patch.object(native.activation_gate, "evidence", side_effect=lambda _, key: evidence[key]):
             native.verify_activation_gate("apply", self.env, self.decision, root=self.root)
             self.assertEqual(check.call_args.args[2], binding)
+            self.env["ImageVersion"] = "not-a-runner-version"
+            with self.assertRaisesRegex(ValueError, "independent_demo_gate_approval_missing"):
+                native.verify_activation_gate("apply", self.env, self.decision, root=self.root)
+            self.env["ImageVersion"] = "20261120.1"
             self.decision["plan_binary_sha256"] = "a" * 64
             with self.assertRaisesRegex(ValueError, "exact_demo_gate_operation_binding"):
                 native.verify_activation_gate("apply", self.env, self.decision, root=self.root)

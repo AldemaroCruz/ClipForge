@@ -14,6 +14,7 @@ import sys
 
 from scripts import int_demo_a_db_runner as db
 from scripts import int_demo_a_publication_host as common
+from scripts import int_runner_risk as runner_risk
 
 
 REPOSITORY = "AldemaroCruz/ClipForge"
@@ -324,10 +325,11 @@ def summarize(env, work, native_stage):
         targets = raw.get("Results") or []
         if not targets or any(not item.get("Packages") for item in targets):
             coverage_gaps.append(name + ":package_coverage_missing")
-        blockers = [row for target in targets for row in (target.get("Vulnerabilities") or [])
-                    if row.get("Severity") in {"HIGH", "CRITICAL", "UNKNOWN"}]
+        vulnerabilities = [row for target in targets for row in (target.get("Vulnerabilities") or [])]
+        informational = [row for row in vulnerabilities if row.get("Severity") in runner_risk.INFORMATIONAL_SEVERITIES]
+        blockers = [row for row in vulnerabilities if row.get("Severity") == "UNKNOWN"]
         receipt["native_reports"][name] = {**common.file_identity(path), "targets": [item["Target"] for item in targets],
-                                           "threshold_rows": len(blockers)}
+                                           "threshold_rows": len(blockers), "informational_rows": len(informational)}
         if name == "trivy-os.json":
             coverage = native_os_coverage(raw, targets, inventory)
             receipt["native_os_coverage"] = coverage
@@ -337,6 +339,14 @@ def summarize(env, work, native_stage):
                 coverage_gaps.append("native_os_target_missing_or_unexpected")
             if not coverage["inventory_match"]:
                 coverage_gaps.append("native_os_package_set_mismatch")
+            accepted = [row for row in informational if (row["PkgName"], row["InstalledVersion"]) in expected]
+            if accepted:
+                first = next((row for row in accepted if row["PkgName"] in kernel_packages), accepted[0])
+                receipt["risk_accepted_os_findings"] = {
+                    "count": len(accepted), "policy_sha256": runner_risk.CONFIG_SHA256,
+                    "first": {key: first.get(key) for key in (
+                        "VulnerabilityID", "PkgName", "InstalledVersion", "FixedVersion", "Severity", "PkgIdentifier")},
+                }
             attributed = [row for row in blockers if (row["PkgName"], row["InstalledVersion"]) in expected]
             if attributed:
                 first = next((row for row in attributed if row["PkgName"] in kernel_packages), attributed[0])

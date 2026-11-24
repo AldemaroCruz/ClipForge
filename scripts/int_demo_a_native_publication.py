@@ -70,7 +70,7 @@ def protected_pointer(env, decision_sha, pointer_sha):
     pointer = custody_input.pointer(env.get("INT_DEMO_A_PUBLISH_POINTER_JSON"), pointer_sha, env["GITHUB_SHA"], decision_sha)
     require(env.get("INT_DEMO_A_PROTECTED_GATE_MODE", "global") == pointer["gate_mode"],
             "native_publication_protected_gate_mode")
-    host.checked(pointer["host"])
+    host.accepted(pointer["host"])
     return pointer
 
 
@@ -116,7 +116,7 @@ def publication_scope(decision, env, approval_hash):
 def checked_inputs(bundle, decision, env, approval_hash):
     publication_scope(decision, env, approval_hash)
     inputs = decision["inputs"]
-    expected = host.checked(preflight.json_bytes(bundle, HOST_FILE, inputs["native_host_sha256"], limit=65536))
+    expected = host.accepted(preflight.json_bytes(bundle, HOST_FILE, inputs["native_host_sha256"], limit=65536))
     review = preflight.json_bytes(bundle, "review.json", decision["review_sha256"])
     subject = review["subjects"]["credential_toolchain"]
     reference = subject["publication"]
@@ -142,7 +142,8 @@ def stage(bundle, work, env, expected, images):
         common.verified_staging_archive(bundle / staged.name, staged, image, os.getuid(), os.getgid())
         staged.chmod(0o400)
     checkpoint = {"runner": host.verify(env, expected, before), "tool": tool}
-    require(tool["setpriv_sha256"] == expected["tools"]["setpriv"]["sha256"] and tool["uid"] == expected["uid"],
+    require(tool["setpriv_sha256"] == before["host"]["tools"]["setpriv"]["sha256"]
+            and tool["uid"] == before["host"]["uid"],
             "native_publication_staged_execution_identity")
     write_exclusive(work / CHECKPOINT, transport.canonical(checkpoint))
     return checkpoint
@@ -152,8 +153,8 @@ def verify_checkpoint(work, env, expected):
     checkpoint = preflight.json_bytes(work, CHECKPOINT, limit=65536)
     live = host.verify(env, expected, checkpoint["runner"])
     tool = skopeo.verify(work / STAGING)
-    require(tool == checkpoint["tool"] and tool["setpriv_sha256"] == expected["tools"]["setpriv"]["sha256"]
-            and tool["uid"] == expected["uid"], "native_publication_tool_changed_since_wif")
+    require(tool == checkpoint["tool"] and tool["setpriv_sha256"] == live["host"]["tools"]["setpriv"]["sha256"]
+            and tool["uid"] == live["host"]["uid"], "native_publication_tool_changed_since_wif")
     return {"runner": live, "tool": tool}
 
 

@@ -1,6 +1,7 @@
-name: ClipForge INT runtime build test scan and exact digest publication
+name: DEPRECATED - ClipForge INT runtime build test scan and exact digest publication
+# Historical source only. The single Hito A image now belongs to int-hito-a.yml.
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       approved_commit:
         description: Exact owner-approved source commit for this separate publication
@@ -12,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   build:
-    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment: int
@@ -140,7 +141,7 @@ jobs:
 
   publish:
     needs: build
-    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: int

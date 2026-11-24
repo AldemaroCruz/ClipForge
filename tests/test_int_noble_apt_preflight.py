@@ -344,7 +344,9 @@ class NobleAptPreflight(unittest.TestCase):
     def test_protected_workflow_keeps_both_host_fences_and_owns_a_distinct_read_step(self):
         source = (intervention.ROOT / intervention.WORKFLOW).read_text(encoding="utf-8")
         local, protected = source.split("\n  intervene:\n", 1)
-        self.assertRegex(local, r"options: \[[^\n]*\bapt_preflight\b[^\n]*\]")
+        self.assertIn("on:\n  workflow_call:", local)
+        self.assertNotIn("workflow_dispatch:", local)
+        self.assertIn("if: ${{ false }}", local)
         self.assertIn('case "$INT_NOBLE_OPERATION" in', local)
         self.assertRegex(local, r"(?m)^ +\*\) exit 2 ;;")
         self.assertNotIn("id-token: write", local)

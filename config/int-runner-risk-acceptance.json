@@ -1,0 +1,54 @@
+{
+  "schema": "clipforge-int-hosted-runner-risk-acceptance-1",
+  "status": "accepted_informational",
+  "authorization": {
+    "owner": "AldemaroCruz",
+    "decision": "accept_github_hosted_ubuntu_24_04_runner_platform_risk_for_int",
+    "recorded_date": "2026-11-24"
+  },
+  "scope": {
+    "repository": "AldemaroCruz/ClipForge",
+    "branch": "ci/bootstrap-sec03",
+    "environment": "int",
+    "runner_environment": "github-hosted",
+    "runner_label": "ubuntu-24.04",
+    "image_os": "ubuntu24",
+    "architecture": "x86_64"
+  },
+  "findings": {
+    "role": "credential_toolchain",
+    "kind": "trivy_toolchain",
+    "severities": [
+      "LOW",
+      "MEDIUM",
+      "HIGH",
+      "CRITICAL"
+    ],
+    "components": [
+      "host_operating_system",
+      "host_running_kernel",
+      "host_preinstalled_packages",
+      "hosted_credential_toolchain_metadata"
+    ],
+    "treatment": "risk_accepted_informational"
+  },
+  "cross_job_continuity": {
+    "image_version_required": false,
+    "boot_id_required": false,
+    "kernel_identity_required": false,
+    "tool_fingerprints_required": false
+  },
+  "same_job_continuity_required": true,
+  "preserved_controls": [
+    "application_and_migration_oci_thresholds",
+    "noncredential_toolchain_thresholds",
+    "bandit_and_gitleaks",
+    "source_and_artifact_digests",
+    "same_job_checkpoint_continuity",
+    "secrets_before_wif_boundaries",
+    "iam_oidc_tls_and_numeric_secret_versions",
+    "noble_guest_controls",
+    "historical_host_rejected_evidence",
+    "environment_int_manual_approval"
+  ]
+}

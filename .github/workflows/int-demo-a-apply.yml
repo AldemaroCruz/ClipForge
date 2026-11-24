@@ -1,7 +1,8 @@
-name: ClipForge INT demo A reviewed saved-plan apply
+name: DEPRECATED - ClipForge INT demo A reviewed saved-plan apply
 
+# Historical source only. Hito A Terraform now belongs to int-hito-a.yml.
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       approved_commit:
         description: Exact reviewed controls SHA
@@ -25,7 +26,7 @@ concurrency:
 
 jobs:
   protected-apply:
-    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: int

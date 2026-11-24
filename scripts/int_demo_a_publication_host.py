@@ -14,6 +14,8 @@ import sys
 import time
 import uuid
 
+from scripts import int_runner_risk as runner_risk
+
 
 SCHEMA = "clipforge-int-demo-a-native-publication-host-2"
 HEX = re.compile(r"[0-9a-f]{64}")
@@ -97,23 +99,26 @@ def checked_kernel_packages(boot, family):
             "native_publication_running_kernel_packages_incomplete")
 
 
-def checked(value):
+def host_shape(value):
     require(isinstance(value, dict) and set(value) == {
         "schema", "complete", "image_version", "os", "architecture", "family", "kernel", "module_evidence", "tools",
         "inventory", "socket", "uid", "groups"
     } and value["schema"] == SCHEMA and value["complete"] is True and value["os"] == "ubuntu24"
             and value["architecture"] == "x86_64" and isinstance(value["image_version"], str)
             and IMAGE.fullmatch(value["image_version"]) and type(value["uid"]) is int and value["uid"] > 0
+            and value["family"] in {"aws", "azure", "unknown"}
             and isinstance(value["groups"], list) and value["groups"] == sorted(set(value["groups"]))
             and all(type(group) is int and group >= 0 for group in value["groups"]),
             "native_publication_host_projection")
     boot = value["kernel"]
     require(isinstance(boot, dict) and set(boot) == {"release", "abi", "signature", "package", "version", "packages"},
             "native_publication_kernel_fields")
-    expected = kernel(boot["release"], boot["signature"], boot["version"])
-    require(all(boot[key] == expected[key] for key in expected) and boot["abi"] == parsed_release(boot["release"])[1]
-            and value["family"] == kernel_family(boot["release"]), "native_publication_kernel_fields")
-    checked_kernel_packages(boot, value["family"])
+    require(all(isinstance(boot[key], str) and 0 < len(boot[key]) <= 255
+                for key in ("release", "abi", "signature", "package", "version"))
+            and isinstance(boot["packages"], list) and boot["packages"]
+            and all(isinstance(row, list) and len(row) == 4
+                    and all(isinstance(item, str) and 0 < len(item) <= 255 for item in row)
+                    for row in boot["packages"]), "native_publication_kernel_fields")
     checked_module_evidence(value["module_evidence"])
     tools = value["tools"]
     require(isinstance(tools, dict), "native_publication_host_tools")
@@ -128,6 +133,22 @@ def checked(value):
     socket = value["socket"]
     require(socket is None or isinstance(socket, dict) and set(socket) == {"mode", "uid", "gid"} and
             all(type(socket[key]) is int and socket[key] >= 0 for key in socket), "native_publication_socket_projection")
+    return boot
+
+
+def accepted(value):
+    """Accept a complete Ubuntu 24.04 host record without cross-job identity pinning."""
+    host_shape(value)
+    require(not runner_risk.cross_job_identity_required(), "native_publication_runner_risk_scope")
+    return value
+
+
+def checked(value):
+    boot = host_shape(value)
+    expected = kernel(boot["release"], boot["signature"], boot["version"])
+    require(all(boot[key] == expected[key] for key in expected) and boot["abi"] == parsed_release(boot["release"])[1]
+            and value["family"] == kernel_family(boot["release"]), "native_publication_kernel_fields")
+    checked_kernel_packages(boot, value["family"])
     return value
 
 
@@ -396,8 +417,8 @@ def snapshot(env, job):
 
 def verify(env, expected, previous=None):
     live, _ = snapshot(env, "protected-operation")
-    checked(live["host"])
-    require(live["host"] == expected, "native_publication_host_unreviewed_or_changed")
+    accepted(expected)
+    accepted(live["host"])
     require(previous is None or live == previous, "native_publication_boot_or_context_changed")
     return live
 

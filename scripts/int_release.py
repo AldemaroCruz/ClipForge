@@ -170,8 +170,19 @@ def verify_manifest(manifest, module, environ, backend, *, foundation_bridge=Fal
               "Private manifest object bindings differ")
 
 
-def require_application_ci(environ):
+def require_application_ci(environ, *, delivery=None):
     """Every mutating workflow verifies the existing application CI for this SHA."""
+    if delivery == "int-hito-a":
+        c.require(
+            environ.get("GITHUB_WORKFLOW_REF") ==
+            "AldemaroCruz/ClipForge/.github/workflows/int-hito-a.yml@refs/heads/ci/bootstrap-sec03"
+            and environ.get("GITHUB_JOB") == "deploy"
+            and environ.get("INT_HITO_A_API_RESULT") == "success"
+            and environ.get("INT_HITO_A_SCANS_PASSED") == "true",
+            "The protected Hito A API job and runtime scans must pass for this exact workflow",
+        )
+        return
+    c.require(delivery is None, "Unknown delivery gate")
     token = environ.get("GH_TOKEN", "")
     c.require(bool(token), "Read-only GitHub Actions token required to verify existing application CI")
     url = "https://api.github.com/repos/AldemaroCruz/ClipForge/actions/workflows/ci.yml/runs?" + urlencode(
@@ -189,13 +200,13 @@ def require_application_ci(environ):
               "Existing application CI blocks INT mutation; scanners and thresholds remain unchanged")
 
 
-def execute_job(environ):
+def execute_job(environ, *, delivery=None):
     """Fixed job, no overrides; retries/interruption are handled by durable app state."""
     import time
     from scripts.tf_int_plan import NoRedirect
     hosted_context(environ)
     c.require(environ.get("INT_APPROVED_COMMIT") == environ.get("GITHUB_SHA"), "Exact owner-approved commit required")
-    require_application_ci(environ)
+    require_application_ci(environ, delivery=delivery)
     name = environ.get("INT_JOB", "")
     c.require(name in {"worker", "migrate", "bootstrap"}, "Only reviewed INT jobs are allowed")
     base = "https://run.googleapis.com/v2/"
@@ -267,8 +278,12 @@ def apply_saved(work, reports, manifest_reference, environ):
     print("Applied only the exact approved immutable binary plan; cloud acceptance remains separate.")
 
 
-def verify_published_runtime(image, environ):
-    c.runtime_inputs(image, inputs(environ)["secret_versions"])
+def verify_published_runtime(image, environ, *, delivery=None):
+    if delivery == "int-hito-a":
+        c.runtime_inputs(image, None, "foundation")
+    else:
+        c.require(delivery is None, "Unknown delivery gate")
+        c.runtime_inputs(image, inputs(environ)["secret_versions"])
     digest = image.rsplit("@", 1)[1]
     url = "https://us-central1-docker.pkg.dev/v2/clipforgebeta2/clipforge-int/runtime/manifests/" + digest
     from scripts.tf_int_plan import NoRedirect

@@ -1,7 +1,8 @@
-name: ClipForge INT apply exact reviewed private plan
+name: DEPRECATED - ClipForge INT apply exact reviewed private plan
 
+# Historical source only. Hito A Terraform now belongs to int-hito-a.yml.
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       approved_control_commit:
         description: Exact reviewed control commit; must equal this dispatch SHA
@@ -28,9 +29,8 @@ on:
         required: true
       stage:
         description: Foundation first; runtime requires a separately reviewed phase
-        type: choice
+        type: string
         default: foundation
-        options: [foundation, runtime]
       secret_versions_json:
         description: null for foundation; explicit app_password/migrator_password/postgres_ca/bootstrap_admin version numbers for runtime
         type: string
@@ -41,9 +41,8 @@ on:
         default: "null"
       machine_type:
         description: Bound capacity profile for the reviewed saved plan
-        type: choice
+        type: string
         default: e2-micro
-        options: [e2-micro, e2-small]
 
 permissions: {}
 concurrency:
@@ -52,7 +51,7 @@ concurrency:
 
 jobs:
   apply-reviewed-plan:
-    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: int

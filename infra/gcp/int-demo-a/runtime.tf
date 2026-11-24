@@ -75,6 +75,17 @@ variable "demo_source_revision" {
   default     = ""
 }
 
+variable "demo_a_acceptance_nonce" {
+  description = "Non-secret revision marker used once to prove persistence across a real Hito A replacement."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.int_runtime_profile != "demo-a" || can(regex("^[a-z0-9][a-z0-9-]{0,63}$", var.demo_a_acceptance_nonce))
+    error_message = "The account demo requires a bounded non-secret acceptance revision marker."
+  }
+}
+
 variable "noble_postgres_from_run" {
   description = "Enable the reviewed TCP/5432 path from the INT Run subnet to the existing Noble identity."
   type        = bool
@@ -229,7 +240,7 @@ resource "google_cloud_run_v2_service" "api" {
         for_each = merge(local.runtime_env, {
           CLIPFORGE_DATABASE_USER          = "clipforge_app"
           CLIPFORGE_DATABASE_PASSWORD_FILE = "/secrets/database/value"
-        })
+        }, local.demo_a ? { CLIPFORGE_ACCEPTANCE_NONCE = var.demo_a_acceptance_nonce } : {})
         content {
           name  = env.key
           value = env.value
@@ -287,11 +298,35 @@ resource "google_iap_web_cloud_run_service_iam_member" "pilot_admin" {
   member                 = "user:admin@ixbalam.studio"
 }
 
+# The protected delivery job needs a non-browser acceptance identity. IAP still
+# authenticates and authorizes the request; the deploy principal is not a
+# Cloud Run invoker and cannot bypass IAP.
+resource "google_iap_web_cloud_run_service_iam_member" "deploy_acceptance" {
+  count                  = var.stage == "runtime" && local.demo_a ? 1 : 0
+  project                = var.project_id
+  location               = local.region
+  cloud_run_service_name = google_cloud_run_v2_service.api[0].name
+  role                   = "roles/iap.httpsResourceAccessor"
+  member                 = "serviceAccount:${data.google_service_account.existing["deploy"].email}"
+}
+
+# The named IAP pilot retrieves the initial application credential from the
+# existing dedicated secret. The payload never enters Terraform or artifacts.
+resource "google_secret_manager_secret_iam_member" "bootstrap_admin_human" {
+  count     = var.stage == "runtime" && local.demo_a ? 1 : 0
+  project   = var.project_id
+  secret_id = local.runtime_secrets.bootstrap_admin
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "user:admin@ixbalam.studio"
+}
+
 resource "google_cloud_run_v2_job" "task" {
-  # The dedicated Noble migration client owns schema changes in INT.
+  # Hito A uses the exact same scanned application image for the service,
+  # migration and administrator bootstrap. Full INT retains its historical
+  # dedicated Noble migration path.
   for_each = var.stage == "runtime" ? {
     for name, command in local.job_commands : name => command
-    if(var.db01_noble_candidate == null || name != "migrate") && (!local.demo_a || name == "bootstrap")
+    if local.demo_a ? contains(["migrate", "bootstrap"], name) : (var.db01_noble_candidate == null || name != "migrate")
   } : {}
   project             = var.project_id
   name                = "clipforge-int-${each.key}"

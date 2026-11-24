@@ -2,7 +2,7 @@
 import json
 import os
 from pathlib import Path
-from ..auth import bootstrap_admin
+from ..auth import ensure_bootstrap_admin
 
 
 def main():
@@ -13,8 +13,8 @@ def main():
         value = json.loads(path.read_text(encoding="utf-8"))
         if set(value) != {"username", "password"} or not all(isinstance(v, str) for v in value.values()):
             raise ValueError("Invalid bootstrap input")
-        bootstrap_admin(value["username"], value["password"])
-        print(json.dumps({"status": "created", "credentials_printed": False}))
+        _, created = ensure_bootstrap_admin(value["username"], value["password"])
+        print(json.dumps({"status": "created" if created else "current", "credentials_printed": False}))
         return 0
     except Exception:
         print(json.dumps({"status": "failed", "message": "First administrator not created; check protected input and existing administrators."}))

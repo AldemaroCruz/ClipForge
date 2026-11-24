@@ -51,6 +51,7 @@ class CIContextTests(unittest.TestCase):
     def test_public_contract_hcl_workflow_and_scanner_sources_are_explicit_and_complete(self):
         expected = {"config/int-db01-noble-read-iam.json", "config/int-db01-noble-write-iam.json",
                     "config/int-foundation-contract.json", "config/int-foundation-recovery.json",
+                    "config/int-hito-a-bandit-acceptance.json",
                     "config/int-foundation-history/5800b4c-recovery-contract.json",
                     "infra/gcp/int-base/versions.tf", "infra/gcp/int-base/postgres-install.sh",
                     ".github/workflows/ci.yml", ".gitleaks.toml",
@@ -70,13 +71,18 @@ class CIContextTests(unittest.TestCase):
         apply = (workflows / "int-db01-noble-apply.yml").read_text(encoding="utf-8")
         observe = (workflows / "int-db01-noble-observe.yml").read_text(encoding="utf-8")
         postverify = (workflows / "int-db01-noble-postverify.yml").read_text(encoding="utf-8")
-        for source in (plan, apply, observe, postverify):
+        for source in (plan, observe, postverify):
             self.assertIn("on:\n  workflow_dispatch:", source)
             self.assertIn("    environment: int\n", source)
             self.assertIn("cancel-in-progress: false", source)
             self.assertIn("github.repository == 'AldemaroCruz/ClipForge'", source)
             self.assertIn("github.ref == 'refs/heads/ci/bootstrap-sec03'", source)
             self.assertIn("github.event_name == 'workflow_dispatch'", source)
+        self.assertIn("on:\n  workflow_call:", apply)
+        self.assertNotIn("on:\n  workflow_dispatch:", apply)
+        self.assertIn("name: DEPRECATED -", apply)
+        self.assertIn("    environment: int\n", apply)
+        self.assertIn("    if: ${{ false }}", apply)
         for source in (plan, apply, postverify):
             self.assertIn("group: clipforge-int-terraform-state", source)
             self.assertIn("service_account: ${{ vars.GCP_TERRAFORM_SA }}", source)

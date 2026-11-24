@@ -23,6 +23,7 @@ ROOT_FILES = (
     "requirements.txt", "requirements-test.txt", "requirements-ci.lock",
     "requirements-ci-tools.txt", "requirements-ci-tools.lock",
     "Dockerfile.dev", "Dockerfile.dev.dockerignore", "compose.dev.yaml",
+    "Dockerfile.int-demo", "requirements-int-demo-apt.tsv", "requirements-int-demo.lock",
 )
 DIRECTORIES = {
     "app": frozenset({".py"}),
@@ -66,6 +67,7 @@ SUPPORT_FILES = PERSONAL_SQL_FILES | frozenset({
     '.github/workflows/int-foundation-recovery-apply.yml',
     '.github/workflows/int-foundation-recovery-plan.yml',
     '.github/workflows/int-guest-inventory.yml',
+    '.github/workflows/int-hito-a.yml',
     '.github/workflows/int-iap-diagnostic.yml',
     '.github/workflows/tf-int-plan.yml',
     '.gitleaks.toml',
@@ -77,6 +79,8 @@ SUPPORT_FILES = PERSONAL_SQL_FILES | frozenset({
     'config/int-db01-noble-bootstrap.json',
     'config/int-db01-noble-write-iam.json',
     'config/int-demo-a-noble-policy.json',
+    'config/int-hito-a-bandit-acceptance.json',
+    'config/int-runner-risk-acceptance.json',
     'config/int-e2e01-decisions.json',
     'config/int-foundation-close.json',
     'config/int-foundation-contract.json',

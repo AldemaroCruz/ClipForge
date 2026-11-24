@@ -1,6 +1,7 @@
-name: ClipForge INT protected database and worker Jobs
+name: DEPRECATED - ClipForge INT protected database and worker Jobs
+# Historical source only. Hito A jobs now run from int-hito-a.yml.
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       approved_commit:
         description: Exact owner-approved commit; this operation remains separate from plan approval
@@ -8,15 +9,14 @@ on:
         required: true
       job:
         description: Fixed reviewed job only; no command, env or argument overrides
-        type: choice
-        options: [migrate, bootstrap, worker]
+        type: string
 permissions: {}
 concurrency:
   group: clipforge-int-protected-operations
   cancel-in-progress: false
 jobs:
   protected-operation:
-    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: int

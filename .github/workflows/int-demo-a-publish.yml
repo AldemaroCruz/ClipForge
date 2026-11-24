@@ -1,14 +1,14 @@
-name: ClipForge INT A publish reviewed OCI artifacts
+name: DEPRECATED - ClipForge INT A publish reviewed OCI artifacts
 
+# Historical source only. Hito A publication now belongs to int-hito-a.yml.
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       mode:
         description: Observe the existing standard host, or execute approved publication
         required: true
-        type: choice
+        type: string
         default: observe
-        options: [observe, publish]
       approved_commit:
         description: Exact approved source SHA
         required: true
@@ -37,7 +37,7 @@ env:
 
 jobs:
   observe-host:
-    if: inputs.mode == 'observe' && github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && github.sha == inputs.approved_commit
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -82,7 +82,7 @@ jobs:
           retention-days: 7
 
   local-preflight:
-    if: inputs.mode == 'publish' && github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch' && github.run_attempt == 1 && github.sha == inputs.approved_commit
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -105,7 +105,7 @@ jobs:
 
   protected-operation:
     needs: local-preflight
-    if: needs.local-preflight.result == 'success' && needs.local-preflight.outputs.verified_commit == github.sha
+    if: ${{ false }}
     environment: int
     runs-on: ubuntu-24.04
     timeout-minutes: 35

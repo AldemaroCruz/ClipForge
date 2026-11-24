@@ -36,15 +36,24 @@ def archive_digest(path):
         return digest
 
 
-def publish(path, environ):
+def publish(path, environ, *, delivery=None):
     int_release.hosted_context(environ)
     require(environ.get("INT_APPROVED_COMMIT") == environ.get("GITHUB_SHA"), "Exact owner-approved source commit required")
-    int_release.require_application_ci(environ)
+    int_release.require_application_ci(environ, delivery=delivery)
     image = environ.get("RUNTIME_IMAGE", "")
     int_release.inputs(environ)
     digest = archive_digest(path)
     require(image.rsplit("@", 1)[1] == digest, "Rebuilt archive differs from the approved manifest; review instead of publishing")
-    require(environ.get("INT_RUNTIME_SCANS_PASSED") == "true", "All runtime scans must succeed before publication")
+    if delivery == "int-hito-a":
+        require(environ.get("GITHUB_WORKFLOW_REF") ==
+                "AldemaroCruz/ClipForge/.github/workflows/int-hito-a.yml@refs/heads/ci/bootstrap-sec03",
+                "Exact Hito A delivery workflow required")
+        require(environ.get("INT_HITO_A_API_RESULT") == "success"
+                and environ.get("INT_HITO_A_SCANS_PASSED") == "true",
+                "Hito A API build and runtime scans must succeed before publication")
+    else:
+        require(delivery is None and environ.get("INT_RUNTIME_SCANS_PASSED") == "true",
+                "All runtime scans must succeed before publication")
     authfile = path.parent / "registry-auth-private.json"
     value = {"auths": {"us-central1-docker.pkg.dev": {"auth": base64.b64encode(("oauth2accesstoken:" + environ["GCP_ACCESS_TOKEN"]).encode()).decode()}}}
     try:
@@ -62,7 +71,7 @@ def publish(path, environ):
         result = subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1200, check=False)
         require(result.returncode == 0, "Exact-digest publication failed; never retry automatically")
         # Same OAuth token reads actual registry manifest headers + bytes.
-        int_release.verify_published_runtime(image, environ)
+        int_release.verify_published_runtime(image, environ, delivery=delivery)
         print(json.dumps({"commit": environ["GITHUB_SHA"], "image": image, "digest_verified": True}))
     finally:
         if authfile.exists():

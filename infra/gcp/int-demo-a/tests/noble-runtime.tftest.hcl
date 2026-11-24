@@ -34,6 +34,14 @@ override_data {
 }
 
 override_data {
+  target = data.google_service_account.existing["deploy"]
+  values = {
+    email = "clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com"
+    name  = "projects/clipforgebeta2/serviceAccounts/clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com"
+  }
+}
+
+override_data {
   target = data.google_compute_image.noble[0]
   values = {
     image_id     = "9000000000000000001"
@@ -127,11 +135,12 @@ run "debian_runtime_retains_existing_jobs" {
   }
 }
 
-run "noble_demo_only_serves_accounts_and_provisions_admin_job" {
+run "noble_demo_uses_one_image_for_accounts_migration_and_admin" {
   command = plan
   variables {
     stage                   = "runtime"
     int_runtime_profile     = "demo-a"
+    demo_a_acceptance_nonce = "test-prepare"
     demo_source_revision    = "1234567890123456789012345678901234567890"
     noble_postgres_from_run = true
     secret_versions         = { app_password = "12", migrator_password = "13", postgres_ca = "14", bootstrap_admin = "15" }
@@ -141,12 +150,14 @@ run "noble_demo_only_serves_accounts_and_provisions_admin_job" {
       google_cloud_run_v2_service.api[0].iap_enabled &&
       !google_cloud_run_v2_service.api[0].invoker_iam_disabled &&
       length(google_iap_web_cloud_run_service_iam_member.pilot_admin) == 0 &&
+      length(google_iap_web_cloud_run_service_iam_member.deploy_acceptance) == 1 &&
       google_cloud_run_v2_service_iam_member.iap_invoker[0].member == "serviceAccount:service-816643438938@gcp-sa-iap.iam.gserviceaccount.com" &&
       contains(google_cloud_run_v2_service.api[0].template[0].containers[0].args, "app.int_demo:app") &&
-      toset(keys(google_cloud_run_v2_job.task)) == toset(["bootstrap"]) &&
-      toset(keys(google_cloud_run_v2_job_iam_member.protected_operator)) == toset(["bootstrap"]) &&
+      toset(keys(google_cloud_run_v2_job.task)) == toset(["migrate", "bootstrap"]) &&
+      toset(keys(google_cloud_run_v2_job_iam_member.protected_operator)) == toset(["migrate", "bootstrap"]) &&
       length(google_cloud_run_v2_job_iam_member.api_worker) == 0 &&
       alltrue([for env in [google_cloud_run_v2_service.api[0].template[0].containers[0].env,
+        google_cloud_run_v2_job.task["migrate"].template[0].template[0].containers[0].env,
         google_cloud_run_v2_job.task["bootstrap"].template[0].template[0].containers[0].env] : try(
         one([for item in env : item.value if item.name == "CLIPFORGE_DATABASE_HOST"]) == "10.80.1.3" &&
         one([for item in env : item.value if item.name == "CLIPFORGE_DATABASE_SSL_MODE"]) == "verify-full" &&
@@ -155,7 +166,7 @@ run "noble_demo_only_serves_accounts_and_provisions_admin_job" {
         !anytrue([for item in env : contains(["CLIPFORGE_GCS_BUCKET", "CLIPFORGE_CLOUD_JOB", "WHISPER_MODEL"], item.name)]),
       false)])
     )
-    error_message = "Only the protected API and admin initializer may be provisioned for the Noble account demo."
+    error_message = "The protected account demo must use one image for the API, migration and admin initializer."
   }
 }
 
@@ -164,6 +175,7 @@ run "noble_demo_explicit_human_iap_binding_uses_exact_service" {
   variables {
     stage                    = "runtime"
     int_runtime_profile      = "demo-a"
+    demo_a_acceptance_nonce  = "test-human"
     demo_source_revision     = "1234567890123456789012345678901234567890"
     noble_postgres_from_run  = true
     demo_a_iap_human_enabled = true
@@ -175,7 +187,12 @@ run "noble_demo_explicit_human_iap_binding_uses_exact_service" {
       !google_cloud_run_v2_service.api[0].invoker_iam_disabled &&
       google_iap_web_cloud_run_service_iam_member.pilot_admin[0].cloud_run_service_name == "clipforge-int-api" &&
       google_iap_web_cloud_run_service_iam_member.pilot_admin[0].member == "user:admin@ixbalam.studio" &&
-      google_iap_web_cloud_run_service_iam_member.pilot_admin[0].role == "roles/iap.httpsResourceAccessor"
+      google_iap_web_cloud_run_service_iam_member.pilot_admin[0].role == "roles/iap.httpsResourceAccessor" &&
+      google_iap_web_cloud_run_service_iam_member.deploy_acceptance[0].member == "serviceAccount:clipforge-deploy-int@clipforgebeta2.iam.gserviceaccount.com" &&
+      google_iap_web_cloud_run_service_iam_member.deploy_acceptance[0].role == "roles/iap.httpsResourceAccessor" &&
+      google_secret_manager_secret_iam_member.bootstrap_admin_human[0].secret_id == "clipforge-int-bootstrap-admin" &&
+      google_secret_manager_secret_iam_member.bootstrap_admin_human[0].role == "roles/secretmanager.secretAccessor" &&
+      google_secret_manager_secret_iam_member.bootstrap_admin_human[0].member == "user:admin@ixbalam.studio"
     )
     error_message = "The second demo phase must retain protected IAP and add only the exact human member."
   }
@@ -186,6 +203,7 @@ run "noble_demo_fails_without_bound_source_revision" {
   variables {
     stage                   = "runtime"
     int_runtime_profile     = "demo-a"
+    demo_a_acceptance_nonce = "test-invalid-source"
     noble_postgres_from_run = true
     secret_versions         = { app_password = "12", migrator_password = "13", postgres_ca = "14", bootstrap_admin = "15" }
   }

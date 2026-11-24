@@ -293,9 +293,10 @@ class DemoGate(unittest.TestCase):
                             "db_expires_at": (AT + timedelta(hours=4)).isoformat()})
         return {"kind": kind, "native": raw, "receipt": receipt}
 
-    def verify(self, expected=None, at=AT, runner_version=None):
+    def verify(self, expected=None, at=AT, runner_version=None, risk_summary=None):
         return gate.verify_review(self.root, self.review, expected or self.binding, at,
-                                  runner_version=runner_version, source_root=self.source_root, guest_action=self.guest_action)
+                                  runner_version=runner_version, source_root=self.source_root, guest_action=self.guest_action,
+                                  risk_summary=risk_summary)
 
     def test_closed_fixture_is_reviewable_only(self):
         self.assertEqual(self.verify(), 3)
@@ -376,9 +377,8 @@ class DemoGate(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unbound_control_evidence"):
             self.verify()
 
-    def test_publication_bandit_cannot_drop_a_docker_row_or_use_a_foreign_runner(self):
-        with self.assertRaisesRegex(ValueError, "publication_runner_or_artifact_mismatch"):
-            self.verify(runner_version="20261121.1.2")
+    def test_publication_bandit_cannot_drop_a_docker_row_after_runner_rotation(self):
+        self.assertEqual(self.verify(runner_version="20261121.1.2"), 3)
         scan = next(item for item in self.review["subjects"]["credential_toolchain"]["analyses"] if item["kind"] == "bandit")
         report = gate.evidence(self.root, scan["native"])
         report["results"].pop()
@@ -428,7 +428,7 @@ class DemoGate(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "publication_rehearsal_source_mismatch"):
             self.verify()
 
-    def test_toolchain_high_row_remains_blocking_for_a_rejected_identifier(self):
+    def test_hosted_runner_high_row_is_informational_without_a_finding_decision(self):
         subject = self.review["subjects"]["credential_toolchain"]
         entry = self.analysis("credential_toolchain", subject["identity"], "trivy_toolchain", high=True)
         report = gate.evidence(self.root, entry["native"])
@@ -438,15 +438,35 @@ class DemoGate(unittest.TestCase):
         receipt["native_sha256"] = entry["native"]["sha256"]
         entry["receipt"] = self.write("unresolved-native-receipt.json", receipt)
         subject["analyses"][0] = entry
+        summary = {}
+        self.assertEqual(self.verify(risk_summary=summary), 3)
+        self.assertEqual(summary, {"hosted_runner_findings_informational": 1,
+                                  "runner_risk_acceptance_sha256": gate.runner_risk.CONFIG_SHA256})
+
+    def test_unknown_runner_severity_and_noncredential_toolchains_still_block(self):
+        subject = self.review["subjects"]["credential_toolchain"]
+        entry = self.analysis("credential_toolchain", subject["identity"], "trivy_toolchain", high=True)
+        report = gate.evidence(self.root, entry["native"])
+        report["Results"][0]["Vulnerabilities"][0]["Severity"] = "UNKNOWN"
+        receipt = gate.evidence(self.root, entry["receipt"])
+        entry["native"] = self.write("unknown-runner-native.json", report)
+        receipt["native_sha256"] = entry["native"]["sha256"]
+        entry["receipt"] = self.write("unknown-runner-receipt.json", receipt)
+        subject["analyses"][0] = entry
         with self.assertRaisesRegex(ValueError, "native_image_threshold:credential_toolchain"):
+            self.verify()
+
+        self.prepare("oci_publication")
+        subject = self.review["subjects"]["artifact_builder"]
+        subject["analyses"][0] = self.analysis("artifact_builder", subject["identity"], "trivy_toolchain", high=True)
+        with self.assertRaisesRegex(ValueError, "native_image_threshold:artifact_builder"):
             self.verify()
 
     def test_guest_admission_requires_action_and_does_not_certify_mitigation(self):
         self.prepare("guest_intervention", guest_action="apt_upgrade")
         self.assertEqual(self.verify(runner_version="20261120.1.2"), 3)
         self.assertEqual({d["disposition"] for d in self.review["decisions"].values()}, {"remediation_preflight_verified"})
-        with self.assertRaisesRegex(ValueError, "guest_intervention_runner_mismatch"):
-            self.verify(runner_version="20261121.1.2")
+        self.assertEqual(self.verify(runner_version="20261121.1.2"), 3)
         self.guest_action = "kmod_apply"
         with self.assertRaisesRegex(ValueError, "guest_control_binding_or_freshness"):
             self.verify()
@@ -493,11 +513,10 @@ class DemoGate(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "wrong_plan_binding_for_operation"):
             self.verify()
 
-    def test_secret_versions_require_the_reviewed_runner_image(self):
+    def test_secret_versions_validate_each_runner_record_without_cross_job_equality(self):
         self.prepare("secret_versions")
         self.verify(runner_version="20261120.1.2")
-        with self.assertRaisesRegex(ValueError, "secret_versions_runner_mismatch"):
-            self.verify(runner_version="20261121.1.2")
+        self.verify(runner_version="20261121.1.2")
         checks = self.review["subjects"]["credential_toolchain"]["checks"]
         name = "secret_target_and_version_receipt_protocol"
         old_receipt = gate.evidence(self.root, checks[name])
@@ -537,11 +556,10 @@ class DemoGate(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "bootstrap_toolchain_components_incomplete"):
             self.verify()
 
-    def test_bootstrap_requires_matching_live_runner_and_source(self):
+    def test_bootstrap_allows_runner_rotation_but_requires_the_reviewed_source(self):
         self.prepare("bootstrap")
         self.assertEqual(self.verify(runner_version="fixture-runner-1"), 3)
-        with self.assertRaisesRegex(ValueError, "runner_image_mismatch"):
-            self.verify(runner_version="unreviewed")
+        self.assertEqual(self.verify(runner_version="20261124.2.1"), 3)
         path = self.source_root / "scripts/int_noble_bootstrap_db.py"
         path.write_bytes(path.read_bytes() + b"\n")
         with self.assertRaisesRegex(ValueError, "changed_bootstrap_source"):
@@ -598,7 +616,10 @@ class DemoGate(unittest.TestCase):
                                 "--binding", str(self.root / binding["path"]), "--operation", "oci_publication"])
         self.assertEqual(result, 0)
         self.assertEqual(json.loads(stdout.getvalue()), {"status": "coverage_ready_for_owner_review",
-                         "operation": "oci_publication", "findings_bound": 3, "activation_authorized": False})
+                         "operation": "oci_publication", "findings_bound": 3,
+                         "hosted_runner_findings_informational": 0,
+                         "runner_risk_acceptance_sha256": gate.runner_risk.CONFIG_SHA256,
+                         "activation_authorized": False})
 
 
 if __name__ == "__main__":

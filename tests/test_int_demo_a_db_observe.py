@@ -114,7 +114,7 @@ class AptRunnerObservationTests(unittest.TestCase):
             self.assertEqual(measured["measurement_scope"], observer.OPERATION)
             self.assertEqual(measured["applicable_operations"], list(observer.APPLICABLE_OPERATIONS))
 
-    def test_native_threshold_and_missing_application_report_remain_distinct(self):
+    def test_accepted_host_finding_and_missing_scan_remain_distinct(self):
         with tempfile.TemporaryDirectory() as scratch:
             work = Path(scratch)
             reports = work / "reports"
@@ -133,8 +133,12 @@ class AptRunnerObservationTests(unittest.TestCase):
                 self.assertEqual(observer.summarize({}, work, "failure"), 1)
             summary = observer.read_json(reports / "host-result.json")
             self.assertFalse(summary["activation_authorized"])
-            self.assertEqual(summary["status"], "host_rejected")
-            self.assertEqual(summary["first_os_blocker"]["VulnerabilityID"], result["VulnerabilityID"])
+            self.assertEqual(summary["status"], "host_observation_blocked")
+            self.assertEqual(summary["reason"], "native_scan_incomplete")
+            self.assertEqual(summary["risk_accepted_os_findings"]["first"]["VulnerabilityID"], result["VulnerabilityID"])
+            self.assertEqual(summary["risk_accepted_os_findings"]["policy_sha256"], observer.runner_risk.CONFIG_SHA256)
+            self.assertEqual(summary["native_reports"]["trivy-os.json"]["informational_rows"], 1)
+            self.assertEqual(summary["native_reports"]["trivy-os.json"]["threshold_rows"], 0)
             self.assertEqual(observer.read_json(reports / "trivy-os.json"), native)
             self.assertIn("native_scan_incomplete", summary["known_scope_gaps"])
             self.assertIn("native_os_identity_mismatch", summary["known_scope_gaps"])
@@ -168,6 +172,19 @@ class AptRunnerObservationTests(unittest.TestCase):
             self.assertEqual(summary["applicable_operations"], list(observer.APPLICABLE_OPERATIONS))
             self.assertIn("owner_dispositions", summary["known_scope_gaps"])
             self.assertTrue(summary["native_os_coverage"]["inventory_match"])
+
+            high = {"PkgName": "test-package", "InstalledVersion": version, "Severity": "HIGH",
+                    "VulnerabilityID": "CVE-2026-90292", "FixedVersion": "1:1.2.3-1ubuntu3"}
+            native["Results"][0]["Vulnerabilities"] = [high]
+            (reports / "trivy-os.json").write_text(json.dumps(native), encoding="utf-8")
+            (reports / "host-result.json").unlink()
+            with patch.object(observer, "verify_context"):
+                self.assertEqual(observer.summarize({}, work, "success"), 0)
+            accepted = observer.read_json(reports / "host-result.json")
+            self.assertEqual(accepted["status"], "host_observed_review_required")
+            self.assertEqual(accepted["risk_accepted_os_findings"]["count"], 1)
+            self.assertEqual(accepted["native_reports"]["trivy-os.json"]["threshold_rows"], 0)
+            del native["Results"][0]["Vulnerabilities"]
 
             os_report = reports / "trivy-os.json"
             for label, modified in {

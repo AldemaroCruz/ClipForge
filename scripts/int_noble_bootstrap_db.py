@@ -51,7 +51,8 @@ REQUIRED_SOURCES = {WORKFLOW, CONTROL, "scripts/int_noble_bootstrap_db.py", "scr
                     "scripts/int_guest_db_observe.py", "scripts/int_vm_hostkey_guest.py", "scripts/int_noble_guest_observation.py",
                     "scripts/int_noble_first_observation.py", "scripts/int_noble_hostkey.py", "scripts/int_noble_kernel_observation.py",
                     "scripts/int_noble_apply.py", "scripts/int_db01_noble_read_iam.py", "scripts/int_release.py",
-                    "scripts/int_demo_a_db_runner.py", "scripts/int_demo_a_publication_host.py"}
+                    "scripts/int_demo_a_db_runner.py", "scripts/int_demo_a_publication_host.py",
+                    "scripts/int_runner_risk.py", "config/int-runner-risk-acceptance.json"}
 MAX_OPERATION = legacy.MAX_OPERATION_SECONDS
 CLEANUP_MARGIN = legacy.CLEANUP_MARGIN_SECONDS
 require = transport.require

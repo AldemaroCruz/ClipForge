@@ -48,21 +48,28 @@ class DatabaseRunnerTests(unittest.TestCase):
                     with self.subTest(operation=operation, action=action):
                         self.assertRegex(workflow, rf"(?m)^\s+uses: {ref}(?:\s+#.*)?$")
 
-    def test_changed_actual_bytes_and_kernel_block_even_with_same_image(self):
+    def test_cross_job_image_kernel_and_tool_fingerprints_may_rotate(self):
         expected = facts("bootstrap")
         actual = record("bootstrap")
         with TemporaryDirectory() as tmp:
             path = Path(tmp)
             altered = deepcopy(actual)
+            release = "7.0.0-1020-azure"
+            version = "7.0.0-1020.21~24.04.2"
+            altered["facts"]["image"] = "20261124.2.1"
+            altered["facts"]["kernel"] = {
+                "release": release, "family": "azure", "signature": f"Ubuntu {version}-azure 7.0.5",
+                "packages": [["linux-image-" + release, version, "linux-signed-azure-7.0", version],
+                             ["linux-modules-" + release, version, "linux-azure-7.0", version]],
+            }
             altered["facts"]["tools"]["gcloud_entry"] = "a" * 64
             with patch.object(runner, "observe", return_value=(path, altered)):
-                with self.assertRaisesRegex(ValueError, "db_runner_actual_projection_mismatch"):
-                    runner.verify(expected, "bootstrap", {}, {})
+                runner.verify(expected, "bootstrap", {}, {})
             altered = deepcopy(actual)
             altered["facts"]["kernel"]["signature"] = actual["facts"]["kernel"]["signature"].replace(".19~", ".20~")
             with self.assertRaisesRegex(ValueError, "db_runner_kernel_signature_match"):
                 runner.checked(altered["facts"], "bootstrap")
-            self.assertEqual(list(path.iterdir()), [])
+            self.assertEqual(len(list(path.iterdir())), 1)
 
     def test_checkpoint_precedes_credentials_and_compares_live_boot(self):
         actual = record("guest_intervention")
@@ -129,7 +136,8 @@ class DatabaseRunnerTests(unittest.TestCase):
         at = gate.utc("2026-11-23T09:00:00+00:00")
         binding = {"operation": "secret_versions"}
         expected = facts(binding["operation"])
-        sources = {name: gate.digest((root / name).read_bytes()) for name in (gate.NATIVE_HOST, gate.DB_RUNNER_SOURCE)}
+        source_names = {gate.NATIVE_HOST, gate.DB_RUNNER_SOURCE, *gate.RUNNER_RISK_SOURCES}
+        sources = {name: gate.digest((root / name).read_bytes()) for name in source_names}
         targets = {**dict.fromkeys(expected["tools"], ["tools"]), "runner_kernel": ["kernel"]}
         valid = [f"pkg:deb/ubuntu/{name}@{revision}" for name, revision, _, _ in expected["kernel"]["packages"]]
         with TemporaryDirectory() as tmp:

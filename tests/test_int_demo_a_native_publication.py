@@ -128,11 +128,16 @@ class NativePublicationTests(unittest.TestCase):
         self.assertIn("native_runner_and_skopeo_continuity",
                       gate.role_contract("oci_publication", "credential_toolchain", "native-skopeo")[1])
 
-    def test_requires_same_boot_and_live_expected_projection(self):
+    def test_requires_same_boot_within_the_job_but_not_across_jobs(self):
         expected = {"sha": "reviewed"}
+        live = {"sha": "rotated"}
+        current = {"host": live, "boot_id": "new"}
+        with (patch.object(host, "snapshot", return_value=(current, [])),
+              patch.object(host, "accepted")):
+            self.assertEqual(host.verify({}, expected), current)
         before = {"host": expected, "boot_id": "old"}
-        with (patch.object(host, "snapshot", return_value=({"host": expected, "boot_id": "new"}, [])),
-              patch.object(host, "checked")):
+        with (patch.object(host, "snapshot", return_value=(current, [])),
+              patch.object(host, "accepted")):
             with self.assertRaisesRegex(host.HostBlocked, "boot_or_context_changed"):
                 host.verify({}, expected, before)
 

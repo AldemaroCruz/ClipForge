@@ -1,8 +1,10 @@
-name: ClipForge INT exact DB-01 Noble creation
+name: DEPRECATED - ClipForge INT exact DB-01 Noble creation
 run-name: Noble apply for plan run ${{ inputs.producer_run }} (artifact ${{ inputs.plan_artifact_id }})
 
+# Historical source only. workflow_dispatch was removed and every job has a
+# constant-false guard, including when this reusable workflow is called.
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       approved_control_commit:
         description: Exact execution controls SHA in the separate owner authorization
@@ -40,7 +42,7 @@ concurrency:
 
 jobs:
   create-noble:
-    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     environment: int
     timeout-minutes: 35

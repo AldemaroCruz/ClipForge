@@ -86,6 +86,7 @@ class PublicationHostObservation(unittest.TestCase):
                 self.assertEqual(old["reason"], "native_publication_kernel_below_reviewable_floor")
                 self.assertEqual(old["host"]["kernel"]["version"], version)
                 self.assertFalse(old["activation_authorized"])
+                self.assertIs(host.accepted(old["host"]), old["host"])
 
     def test_unknown_family_retains_boot_inventory_and_tools(self):
         code, report = self.observe_fixture(family="generic")
@@ -100,6 +101,7 @@ class PublicationHostObservation(unittest.TestCase):
         self.assertFalse(report["activation_authorized"])
         with self.assertRaises(host.HostBlocked):
             host.checked(report["host"])
+        self.assertIs(host.accepted(report["host"]), report["host"])
 
     def test_failed_proc_and_worker_reads_keep_independent_evidence(self):
         code, report = self.observe_fixture(read_failure="/proc/version_signature",
@@ -116,6 +118,8 @@ class PublicationHostObservation(unittest.TestCase):
         with patch.object(host, "snapshot", return_value=(report, report["binary_source_packages"])):
             with self.assertRaises(host.HostBlocked):
                 host.verify({}, report["host"])
+        with self.assertRaises(host.HostBlocked):
+            host.accepted(report["host"])
 
     def test_related_kernel_package_revision_must_match(self):
         _, report = self.observe_fixture()

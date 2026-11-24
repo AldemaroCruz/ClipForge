@@ -16,11 +16,14 @@
 !Dockerfile
 !Dockerfile.ci
 !Dockerfile.ci.dockerignore
+!Dockerfile.int-demo
 !requirements.txt
 !requirements-test.txt
 !requirements-ci.lock
 !requirements-ci-tools.txt
 !requirements-ci-tools.lock
+!requirements-int-demo-apt.tsv
+!requirements-int-demo.lock
 !Dockerfile.dev
 !Dockerfile.dev.dockerignore
 !compose.dev.yaml
@@ -70,6 +73,7 @@
 !.github/workflows/int-foundation-recovery-plan.yml
 !.github/workflows/int-guest-inventory.yml
 !.github/workflows/int-iap-diagnostic.yml
+!.github/workflows/int-hito-a.yml
 !.github/workflows/tf-int-plan.yml
 !.gitleaks.toml
 !config/db01-activation-preparation.json
@@ -80,6 +84,7 @@
 !config/int-db01-noble-bootstrap.json
 !config/int-db01-noble-write-iam.json
 !config/int-demo-a-noble-policy.json
+!config/int-hito-a-bandit-acceptance.json
 !config/int-e2e01-decisions.json
 !config/int-foundation-close.json
 !config/int-foundation-contract.json
@@ -98,6 +103,7 @@
 !config/int-foundation-recovery.json
 !config/int-foundation-verification.json
 !config/int-iap-diagnostic.json
+!config/int-runner-risk-acceptance.json
 !config/owner-risk-acceptance.json
 !config/postgres-ci-security.Dockerfile
 !config/tf-int01-costs.json

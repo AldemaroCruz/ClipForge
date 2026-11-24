@@ -10,6 +10,7 @@ import sys
 import uuid
 
 from scripts import int_demo_a_publication_host as common
+from scripts import int_runner_risk as runner_risk
 
 
 SCHEMA = "clipforge-int-db-runner-1"
@@ -166,9 +167,13 @@ def require_secretless_admission(env):
 
 
 def verify(expected, operation, env, binding):
-    """Use the same live boot and tool projection from before WIF through execution."""
+    """Validate each hosted runner independently, then pin only this job across WIF."""
+    checked(expected, operation)
     runner_temp, actual = observe(operation, env, binding)
-    require(actual["facts"] == checked(expected, operation), "db_runner_actual_projection_mismatch")
+    checked(actual["facts"], operation)
+    require(not runner_risk.cross_job_identity_required()
+            and runner_risk.POLICY["same_job_continuity_required"] is True,
+            "db_runner_risk_acceptance_scope")
     checkpoint = runner_temp / f".int-db-host.{actual['run']}.{actual['job']}.json"
     raw = json.dumps(actual, sort_keys=True, separators=(",", ":")).encode("ascii")
     try:

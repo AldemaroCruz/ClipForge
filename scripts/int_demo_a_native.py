@@ -67,7 +67,7 @@ NATIVE_HCL = {
     (MODULE / "runtime.tf").as_posix(): "f573d073f93d5bf2969548f1432a3d4cfa1f99e1030b14ed180dbb8ffea78abb",
     (MODULE / "noble-candidate.tf").as_posix(): "d1c89dfd11d99e68ac0ae9371597446c253c6ccc35de399ea53fd40515d7e8dd",
     (MODULE / ".terraform.lock.hcl").as_posix(): "89e2189a1b882ac5ad3ce74ad17a304e95cf7fa072b9ced86fce09e78b88b5fa",
-    (DEMO_MODULE / "runtime.tf").as_posix(): "23bc7762c952917bb1b2534786da5a180876f9fddabd01a7ea06b62c0b604cf7",
+    (DEMO_MODULE / "runtime.tf").as_posix(): "8d1d61e79e077614b561922bbbaba560f5eb68697897248e4142b6b8a0c4a2a1",
     (DEMO_MODULE / "noble-candidate.tf").as_posix(): "bca3d815083eec680f0faf5210a80a41d82001c987994a9f8d30595a7e4ff6bc",
 }
 SCHEMA = "clipforge-int-demo-a-private-plan-2"
@@ -197,7 +197,8 @@ def verify_activation_gate(phase, env, decision, *, root=ROOT):
             and scope.HEX.fullmatch(selected["review_sha256"]) and selected["review_sha256"] == env.get("INT_DEMO_A_PROTECTED_REVIEW_SHA")
             and scope.HEX.fullmatch(selected["binding_sha256"]) and selected["binding_sha256"] == env.get("INT_DEMO_A_PROTECTED_BINDING_SHA")
             and env.get("ImageOS") == "ubuntu24" and re.fullmatch(r"[0-9.]+", selected["runner_version"])
-            and selected["runner_version"] == env.get("ImageVersion"), "independent_demo_gate_approval_missing")
+            and re.fullmatch(r"[0-9.]+", env.get("ImageVersion", ""))
+            and not activation_gate.runner_risk.cross_job_identity_required(), "independent_demo_gate_approval_missing")
     bundle = Path(env["INT_DEMO_A_GATE_BUNDLE"]).resolve()
     require(bundle.parent == Path(env["RUNNER_TEMP"]).resolve() and bundle.name.startswith("clipforge-int-demo-a-review.")
             and bundle.is_dir(), "private_demo_gate_bundle")

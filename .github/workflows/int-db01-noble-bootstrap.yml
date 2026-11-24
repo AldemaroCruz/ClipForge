@@ -1,7 +1,8 @@
-name: ClipForge INT Noble protected PostgreSQL bootstrap
+name: DEPRECATED - ClipForge INT Noble protected PostgreSQL bootstrap
 
+# Historical source only. Hito A configuration now belongs to int-hito-a.yml.
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       approved_commit:
         description: Exact approved SHA of the Noble controls
@@ -44,7 +45,7 @@ env:
 
 jobs:
   local-preflight:
-    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -87,7 +88,7 @@ jobs:
 
   protected-bootstrap:
     needs: local-preflight
-    if: needs.local-preflight.result == 'success' && needs.local-preflight.outputs.verified_commit == github.sha
+    if: ${{ false }}
     environment: int
     runs-on: ubuntu-24.04
     timeout-minutes: 25

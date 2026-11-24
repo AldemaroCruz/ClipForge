@@ -36,9 +36,9 @@ def validate_payload(target, raw):
                 and "PRIVATE KEY" not in text, "Only the PostgreSQL CA certificate may be published")
 
 
-def add_version(target, raw, environ):
+def add_version(target, raw, environ, *, delivery=None):
     int_release.hosted_context(environ)
-    int_release.require_application_ci(environ)
+    int_release.require_application_ci(environ, delivery=delivery)
     require(environ.get("INT_APPROVED_COMMIT") == environ.get("GITHUB_SHA"), "Exact owner-confirmed commit required")
     validate_payload(target, raw)
     url = "https://secretmanager.googleapis.com/v1/projects/clipforgebeta2/secrets/" + TARGETS[target] + ":addVersion"

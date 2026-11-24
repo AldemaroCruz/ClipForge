@@ -1,7 +1,8 @@
-name: ClipForge INT apply exact reviewed recovery plan
+name: DEPRECATED - ClipForge INT apply exact reviewed recovery plan
 
+# Historical source only. All Hito A mutations now belong to int-hito-a.yml.
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       approved_control_commit:
         description: Full reviewed dispatch controls SHA; configuration stays at 264d1cf
@@ -27,7 +28,7 @@ concurrency:
 
 jobs:
   apply-reviewed-recovery:
-    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     environment: int
     timeout-minutes: 30

@@ -1,0 +1,1599 @@
+{
+  "baseline_commit": "cbc05133cd96bf3bd79991d8f2157775624c755f",
+  "baseline_findings": [
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 13,
+      "path": "app/acceptance.py",
+      "severity": "LOW",
+      "source_sha256": "28d7c2455a5e4d6278a86acd46e4de7ac74fbe49c59d3e6047188735cb1d0870",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "d187d590b61deee38512116fddab9079cfb0683caad1efde0585fec34a3be2e5",
+      "cwe": 78,
+      "line": 93,
+      "path": "app/acceptance.py",
+      "severity": "LOW",
+      "source_sha256": "28d7c2455a5e4d6278a86acd46e4de7ac74fbe49c59d3e6047188735cb1d0870",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 11,
+      "path": "app/audio_check.py",
+      "severity": "LOW",
+      "source_sha256": "30c22a8bcc2711d4c99f4486d297c770b66359bb88185fc011348cbbaddb2d26",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "9263f8dd4cab40a2d50aa4ec0cf0a8b5319e1bd67967a051854a245df401d29b",
+      "cwe": 78,
+      "line": 46,
+      "path": "app/audio_check.py",
+      "severity": "LOW",
+      "source_sha256": "30c22a8bcc2711d4c99f4486d297c770b66359bb88185fc011348cbbaddb2d26",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 3,
+      "path": "app/check_branding.py",
+      "severity": "LOW",
+      "source_sha256": "288d17f17cfccb73d68f0017e83034e6394182e0f8f1efd62c14d80b758b06e7",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "54ee7431305d3f29097b7a51e80b65a73a9d4f8f4a961ec802918f926b40d239",
+      "cwe": 78,
+      "line": 13,
+      "path": "app/check_branding.py",
+      "severity": "LOW",
+      "source_sha256": "288d17f17cfccb73d68f0017e83034e6394182e0f8f1efd62c14d80b758b06e7",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "20897438704e578bcc0a18b1bbf5eb773d4d0a48ab7ac6958d7ae604db4ad919",
+      "cwe": 78,
+      "line": 21,
+      "path": "app/check_branding.py",
+      "severity": "LOW",
+      "source_sha256": "288d17f17cfccb73d68f0017e83034e6394182e0f8f1efd62c14d80b758b06e7",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 8,
+      "path": "app/check_media.py",
+      "severity": "LOW",
+      "source_sha256": "f490622b7710e302cd70b2d9ac909197d659b7d7570c56cd5190d13d777d5a1b",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "e855cb4bde6694755b8c4b59dad4f04379ebc5eb4b6ae547c4b97ab1369ab481",
+      "cwe": 78,
+      "line": 34,
+      "path": "app/check_media.py",
+      "severity": "LOW",
+      "source_sha256": "f490622b7710e302cd70b2d9ac909197d659b7d7570c56cd5190d13d777d5a1b",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 6,
+      "path": "app/check_presentation.py",
+      "severity": "LOW",
+      "source_sha256": "2f1581e106f1fb18685ce2a5ba76dd42b794b054cbbd1037f4e8483149ac6d10",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "4effd9f6e1ddd3cff1e34d38f4cb9e64142e56b489a76b1248e819041b1de3a9",
+      "cwe": 78,
+      "line": 16,
+      "path": "app/check_presentation.py",
+      "severity": "LOW",
+      "source_sha256": "2f1581e106f1fb18685ce2a5ba76dd42b794b054cbbd1037f4e8483149ac6d10",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "682d6cbb80434480fd623e7afdce4a4d75be44793dbd3899211961ed9ccdb411",
+      "cwe": 78,
+      "line": 26,
+      "path": "app/check_presentation.py",
+      "severity": "LOW",
+      "source_sha256": "2f1581e106f1fb18685ce2a5ba76dd42b794b054cbbd1037f4e8483149ac6d10",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "fb5ed0d76395b27ce7face48af8a3c5bdb8f094d974bd4c6d6406e1e76bcaeea",
+      "cwe": 78,
+      "line": 40,
+      "path": "app/check_presentation.py",
+      "severity": "LOW",
+      "source_sha256": "2f1581e106f1fb18685ce2a5ba76dd42b794b054cbbd1037f4e8483149ac6d10",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "1ee38f0f7cb68ed2bb0a71a55d95ca89a0d95b570837c956e145ed556ad508e8",
+      "cwe": 78,
+      "line": 84,
+      "path": "app/check_presentation.py",
+      "severity": "LOW",
+      "source_sha256": "2f1581e106f1fb18685ce2a5ba76dd42b794b054cbbd1037f4e8483149ac6d10",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 12,
+      "path": "app/check_runtime.py",
+      "severity": "LOW",
+      "source_sha256": "a627259606185c6bf98f08baeb4b5b08a6f3221759269bfd6b018bf121c1a2ce",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "ab2ee769c5c5d92912f86e059537a706d3d5e96a2d5bdc0931ed04bb5d5b6da0",
+      "cwe": 78,
+      "line": 65,
+      "path": "app/check_runtime.py",
+      "severity": "LOW",
+      "source_sha256": "a627259606185c6bf98f08baeb4b5b08a6f3221759269bfd6b018bf121c1a2ce",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 12,
+      "path": "app/cloud/worker.py",
+      "severity": "LOW",
+      "source_sha256": "ef403c53a923e48c0f668549591c94186eb42a945a64183973e1d0ec8dcf70d2",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "8415e97bd461f03909d1aacf75962f85fa0562255b9f8ac40d2e096d52e95aae",
+      "cwe": 78,
+      "line": 123,
+      "path": "app/cloud/worker.py",
+      "severity": "LOW",
+      "source_sha256": "ef403c53a923e48c0f668549591c94186eb42a945a64183973e1d0ec8dcf70d2",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "33b1476ca38fa7a8fd641f6e0c82e1ce3537c50e2c6482b9a23f8c06ef022a8d",
+      "cwe": 703,
+      "line": 90,
+      "path": "app/int_demo.py",
+      "severity": "LOW",
+      "source_sha256": "abf1fbcb61e28e68709ca2f409dc0d3f23bb8c3f5ddea16d171bfe34c2afa91d",
+      "test_id": "B110"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "0efe935ca8a29845fb3caad89d0989ee45c5286fab44f8c5106bc737c4b9aef6",
+      "cwe": 377,
+      "line": 38,
+      "path": "app/main.py",
+      "severity": "MEDIUM",
+      "source_sha256": "c7a6461cc327999543361be7e60beb6685dd62e83439096579c9a8748df0c07d",
+      "test_id": "B108"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 11,
+      "path": "app/media.py",
+      "severity": "LOW",
+      "source_sha256": "d31462f1968038d2afcc0b41ac27b97fbd4c4532893e031f24d040722647eeb2",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "48cc890903e6c397b8f66dda988b20aed0bd693ee54e974e76080a9807ceaf2d",
+      "cwe": 78,
+      "line": 44,
+      "path": "app/media.py",
+      "severity": "LOW",
+      "source_sha256": "d31462f1968038d2afcc0b41ac27b97fbd4c4532893e031f24d040722647eeb2",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "f33c43dd849b40c0764ce5402797efd960a8374bf680012fbedbca7072353708",
+      "cwe": 78,
+      "line": 75,
+      "path": "app/media_child.py",
+      "severity": "LOW",
+      "source_sha256": "0f741b10dcc8decdabcaf712ee4606dce43f7729cbbc0819728d881a94a3ead5",
+      "test_id": "B606"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 5,
+      "path": "app/render.py",
+      "severity": "LOW",
+      "source_sha256": "4d114d86121ebd707135c822cbf37af97aa9e76fed1a2b3b2364f5fefff6896d",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "2d722ea9c62e87235c11409e9cf13325d2927f73fc65667eb6e704870fff86a7",
+      "cwe": 78,
+      "line": 28,
+      "path": "app/render.py",
+      "severity": "LOW",
+      "source_sha256": "4d114d86121ebd707135c822cbf37af97aa9e76fed1a2b3b2364f5fefff6896d",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 12,
+      "path": "app/workspace.py",
+      "severity": "LOW",
+      "source_sha256": "1cdba475e4d24f0ae34c4b4ff2385d8edeb70c83c339cd4ef09d970fad0c453f",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "99c901cfb4dc91c6cb62adda84d70414ab4d32aa8cc7cc3836c4b2c31f2c07ec",
+      "cwe": 78,
+      "line": 343,
+      "path": "app/workspace.py",
+      "severity": "LOW",
+      "source_sha256": "1cdba475e4d24f0ae34c4b4ff2385d8edeb70c83c339cd4ef09d970fad0c453f",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 22,
+      "path": "scripts/accept_env_local.py",
+      "severity": "LOW",
+      "source_sha256": "b2921c639ec2c043d69ade5941f9d11aea032682ab111509403d6c84f34bdd0a",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "4c76682ce39ec1f06796af6474828a76187d83585595bb32d957c415c6f1be8a",
+      "cwe": 78,
+      "line": 123,
+      "path": "scripts/accept_env_local.py",
+      "severity": "LOW",
+      "source_sha256": "b2921c639ec2c043d69ade5941f9d11aea032682ab111509403d6c84f34bdd0a",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "7bbfdbeaab7ae3c9ab64affb18d8fb3a172189567dc67df4bed5226b55953386",
+      "cwe": 78,
+      "line": 472,
+      "path": "scripts/accept_env_local.py",
+      "severity": "LOW",
+      "source_sha256": "b2921c639ec2c043d69ade5941f9d11aea032682ab111509403d6c84f34bdd0a",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 21,
+      "path": "scripts/capture_postgres_inventory.py",
+      "severity": "LOW",
+      "source_sha256": "ec860e3e87419d1046e2580577f6f3ad9bc33f851d2f2b79ee37e9c61fd6fc88",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "a48d9e555e1a56983d221bd77bb192f931c8719227b458eb21daad75b101e051",
+      "cwe": 78,
+      "line": 356,
+      "path": "scripts/capture_postgres_inventory.py",
+      "severity": "LOW",
+      "source_sha256": "ec860e3e87419d1046e2580577f6f3ad9bc33f851d2f2b79ee37e9c61fd6fc88",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 12,
+      "path": "scripts/capture_runtime.py",
+      "severity": "LOW",
+      "source_sha256": "4247655daf0aebcd34916462d72862299b5789053ab7432a27c05fb8d7f34b13",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "2daf90b56dd49564de6e72c070090b12840b2c2307d33687b29ef22ae4230866",
+      "cwe": 78,
+      "line": 61,
+      "path": "scripts/capture_runtime.py",
+      "severity": "LOW",
+      "source_sha256": "4247655daf0aebcd34916462d72862299b5789053ab7432a27c05fb8d7f34b13",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "1f2ce0aa787be826c12157950e33a311c627f4c9bd1eb55dd9353cf6ab19d55c",
+      "cwe": 78,
+      "line": 71,
+      "path": "scripts/capture_runtime.py",
+      "severity": "LOW",
+      "source_sha256": "4247655daf0aebcd34916462d72862299b5789053ab7432a27c05fb8d7f34b13",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 16,
+      "path": "scripts/check_gitleaks_precision.py",
+      "severity": "LOW",
+      "source_sha256": "c7850443a5d242f48f99173dfbc7a0a38a01f6e3f52fe525a133f40c814cef4f",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "0ed2bcd81b55704b187ec8fb8d25c20b2b6a785b6f3eed23786f6662af9a58b1",
+      "cwe": 78,
+      "line": 114,
+      "path": "scripts/check_gitleaks_precision.py",
+      "severity": "LOW",
+      "source_sha256": "c7850443a5d242f48f99173dfbc7a0a38a01f6e3f52fe525a133f40c814cef4f",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "c9472bba0ed5a8598687477d9d90d31ca1047e6969841c8ef69fd052ebabf674",
+      "cwe": 377,
+      "line": 130,
+      "path": "scripts/check_gitleaks_precision.py",
+      "severity": "MEDIUM",
+      "source_sha256": "c7850443a5d242f48f99173dfbc7a0a38a01f6e3f52fe525a133f40c814cef4f",
+      "test_id": "B108"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "494ca429405efd498eb7b66748cb4634330f7ce84b66a02182e98b4b403db609",
+      "cwe": 78,
+      "line": 139,
+      "path": "scripts/check_gitleaks_precision.py",
+      "severity": "LOW",
+      "source_sha256": "c7850443a5d242f48f99173dfbc7a0a38a01f6e3f52fe525a133f40c814cef4f",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "6ccdd00515d70d433bc925696e2bb94cfe24ca76f0faf0f03251aa52134358c6",
+      "cwe": 259,
+      "line": 56,
+      "path": "scripts/check_int_demo_a.py",
+      "severity": "LOW",
+      "source_sha256": "1cf2b2fafdc5d492af89ed91fb5e47dd065edeca69efd3350642e27ffa4a6f2d",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "b2dadd5bfcb33e97dc971d29a9667d410e0620c9c78d3839f011d5efa1ca29de",
+      "cwe": 377,
+      "line": 309,
+      "path": "scripts/check_int_foundation.py",
+      "severity": "MEDIUM",
+      "source_sha256": "48825cea5be2585f43c2ea902600146a2dd5d894ecfb47731b922e5d4b15d14f",
+      "test_id": "B108"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "4353da1c9bf7fb3673ab11f4e8f393fe682da42f9b5fb2ad55ba70ef7a9e1e45",
+      "cwe": 259,
+      "line": 305,
+      "path": "scripts/check_tf_int.py",
+      "severity": "LOW",
+      "source_sha256": "ef222660b3d62d4db3589430c6f228dbf1429eda9c20322c413f1b213ccac605",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "4353da1c9bf7fb3673ab11f4e8f393fe682da42f9b5fb2ad55ba70ef7a9e1e45",
+      "cwe": 259,
+      "line": 306,
+      "path": "scripts/check_tf_int.py",
+      "severity": "LOW",
+      "source_sha256": "ef222660b3d62d4db3589430c6f228dbf1429eda9c20322c413f1b213ccac605",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 21,
+      "path": "scripts/ci_postgres.py",
+      "severity": "LOW",
+      "source_sha256": "35c22d23c6a7577638129a04a79fa479c237322a47b19803fe68d8e6d24d44af",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "e00369bd3b15a2689fec88f52468b41b7123c82b7c0577762be31a601cbc6dab",
+      "cwe": 377,
+      "line": 227,
+      "path": "scripts/ci_postgres.py",
+      "severity": "MEDIUM",
+      "source_sha256": "35c22d23c6a7577638129a04a79fa479c237322a47b19803fe68d8e6d24d44af",
+      "test_id": "B108"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "ab9188daf0ce48c205b148338d9413cc8930647422570491be09d379f8e3d3f1",
+      "cwe": 377,
+      "line": 295,
+      "path": "scripts/ci_postgres.py",
+      "severity": "MEDIUM",
+      "source_sha256": "35c22d23c6a7577638129a04a79fa479c237322a47b19803fe68d8e6d24d44af",
+      "test_id": "B108"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "08e1faf60fe85f450fece8a85ba24f63c5744c099e42b9a57f6168d90df46d3f",
+      "cwe": 259,
+      "line": 300,
+      "path": "scripts/ci_postgres.py",
+      "severity": "LOW",
+      "source_sha256": "35c22d23c6a7577638129a04a79fa479c237322a47b19803fe68d8e6d24d44af",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "08e1faf60fe85f450fece8a85ba24f63c5744c099e42b9a57f6168d90df46d3f",
+      "cwe": 377,
+      "line": 302,
+      "path": "scripts/ci_postgres.py",
+      "severity": "MEDIUM",
+      "source_sha256": "35c22d23c6a7577638129a04a79fa479c237322a47b19803fe68d8e6d24d44af",
+      "test_id": "B108"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 15,
+      "path": "scripts/db01_libxml_packaging.py",
+      "severity": "LOW",
+      "source_sha256": "37d5f839b3e1a21db2b6d8588f827bc44ff6fd87304131c9d206add8e44366cc",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "e7db59f58557ff680e3e3e9c4fc8e21fa360dd813eaaca6eb3c021372a676495",
+      "cwe": 78,
+      "line": 156,
+      "path": "scripts/db01_libxml_packaging.py",
+      "severity": "LOW",
+      "source_sha256": "37d5f839b3e1a21db2b6d8588f827bc44ff6fd87304131c9d206add8e44366cc",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "282ec6ec1f7b9822dd914417699e724a7093b9b2716a714f837d401d3057df0e",
+      "cwe": 377,
+      "line": 469,
+      "path": "scripts/db01_noble_plan.py",
+      "severity": "MEDIUM",
+      "source_sha256": "f93c2df2156b8accaa54bf32854bb5eed03f9707e2a6751a0399275ed0a3039f",
+      "test_id": "B108"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "b607727e91a7211e2ef91ae1be604be218bfe107fd0365f4f9011657b5df6a43",
+      "cwe": 259,
+      "line": 23,
+      "path": "scripts/db01_noble_read.py",
+      "severity": "LOW",
+      "source_sha256": "8c36529f27304e92215cf9e8b3b99a1f352f7b95a188e7b6167ad9ea06bfa87a",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 17,
+      "path": "scripts/db01_remediation_trial.py",
+      "severity": "LOW",
+      "source_sha256": "c282dfa128eede28d7f772e24045905340269b8ac49b16f6220e13e44840aef9",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "efcf048a924c34579d9404d623c4ff9870fa3e65a66a5aae5939f4f69b932073",
+      "cwe": 78,
+      "line": 118,
+      "path": "scripts/db01_remediation_trial.py",
+      "severity": "LOW",
+      "source_sha256": "c282dfa128eede28d7f772e24045905340269b8ac49b16f6220e13e44840aef9",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "f75262563400f7c5d9967209f38e37754b865fe0d28ffd53185a15e3d2b90f0a",
+      "cwe": 377,
+      "line": 162,
+      "path": "scripts/db01_remediation_trial.py",
+      "severity": "MEDIUM",
+      "source_sha256": "c282dfa128eede28d7f772e24045905340269b8ac49b16f6220e13e44840aef9",
+      "test_id": "B108"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "d154ca96d5094bef1912c8fa31166cf2b906d3323a4c226c6fa04c0bf46a20e2",
+      "cwe": 78,
+      "line": 171,
+      "path": "scripts/db01_remediation_trial.py",
+      "severity": "LOW",
+      "source_sha256": "c282dfa128eede28d7f772e24045905340269b8ac49b16f6220e13e44840aef9",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 16,
+      "path": "scripts/dev_backup.py",
+      "severity": "LOW",
+      "source_sha256": "8bdea117d6a3808ea58ce210ccc90c4be5b4056403181812ccdc4371e5dac0bc",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "e7067b78f75491fe3821b43fb9b5dac807d56c725f4a2556303abe531a1c1ea0",
+      "cwe": 78,
+      "line": 98,
+      "path": "scripts/dev_backup.py",
+      "severity": "LOW",
+      "source_sha256": "8bdea117d6a3808ea58ce210ccc90c4be5b4056403181812ccdc4371e5dac0bc",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 25,
+      "path": "scripts/dev_local.py",
+      "severity": "LOW",
+      "source_sha256": "ab565bb62494c4b84e3a6615ee4be82d744f09ff39f1023c882272037ac83e42",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "1d4c3ce8bc3c31b993ad82ce2d584de9f1bcdca401e1a443deb4d0aa1f8920e6",
+      "cwe": 78,
+      "line": 163,
+      "path": "scripts/dev_local.py",
+      "severity": "LOW",
+      "source_sha256": "ab565bb62494c4b84e3a6615ee4be82d744f09ff39f1023c882272037ac83e42",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "3baba3da017bd20e301f739065a98554830c34fef3b204eebb5c9c8886f06242",
+      "cwe": 78,
+      "line": 179,
+      "path": "scripts/dev_local.py",
+      "severity": "LOW",
+      "source_sha256": "ab565bb62494c4b84e3a6615ee4be82d744f09ff39f1023c882272037ac83e42",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "02c75213f3b7b54fc530138751a07fe1359dbf82acbcb3373b7e8732002f7fd0",
+      "cwe": 78,
+      "line": 182,
+      "path": "scripts/dev_local.py",
+      "severity": "LOW",
+      "source_sha256": "ab565bb62494c4b84e3a6615ee4be82d744f09ff39f1023c882272037ac83e42",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "5469ef67b4bbd331d4885145b1739e14465c3ffa561f3a01a85e3c379921e0a1",
+      "cwe": 78,
+      "line": 188,
+      "path": "scripts/dev_local.py",
+      "severity": "LOW",
+      "source_sha256": "ab565bb62494c4b84e3a6615ee4be82d744f09ff39f1023c882272037ac83e42",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "3baba3da017bd20e301f739065a98554830c34fef3b204eebb5c9c8886f06242",
+      "cwe": 78,
+      "line": 263,
+      "path": "scripts/dev_local.py",
+      "severity": "LOW",
+      "source_sha256": "ab565bb62494c4b84e3a6615ee4be82d744f09ff39f1023c882272037ac83e42",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "ffc6ad91e1f97e3cde6075d4259d17628edce33c5ecc834cf3d00ffeab08f21c",
+      "cwe": 78,
+      "line": 379,
+      "path": "scripts/dev_local.py",
+      "severity": "LOW",
+      "source_sha256": "ab565bb62494c4b84e3a6615ee4be82d744f09ff39f1023c882272037ac83e42",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "5787363a8ae7d9ab23fd91390c255628fa5858a62ab68185cece84f739958fb1",
+      "cwe": 78,
+      "line": 382,
+      "path": "scripts/dev_local.py",
+      "severity": "LOW",
+      "source_sha256": "ab565bb62494c4b84e3a6615ee4be82d744f09ff39f1023c882272037ac83e42",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "34a629e8b4161f1701c16be38b5e058798c4a645bb0746a6659b3159d05d3d63",
+      "cwe": 78,
+      "line": 514,
+      "path": "scripts/dev_local.py",
+      "severity": "LOW",
+      "source_sha256": "ab565bb62494c4b84e3a6615ee4be82d744f09ff39f1023c882272037ac83e42",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "3fa3678cec254bc1d53513799856b02cc702f3354c5bd94a3b4bc11be9267450",
+      "cwe": 259,
+      "line": 34,
+      "path": "scripts/int_bootstrap_db.py",
+      "severity": "LOW",
+      "source_sha256": "c3a9fd51b87355892c6bda0119dd28bc1ba498aea8685ba22a7d4be98872303e",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "3fa3678cec254bc1d53513799856b02cc702f3354c5bd94a3b4bc11be9267450",
+      "cwe": 259,
+      "line": 34,
+      "path": "scripts/int_bootstrap_db.py",
+      "severity": "LOW",
+      "source_sha256": "c3a9fd51b87355892c6bda0119dd28bc1ba498aea8685ba22a7d4be98872303e",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 24,
+      "path": "scripts/int_bootstrap_vm.py",
+      "severity": "LOW",
+      "source_sha256": "861de13ce61943a0a9f62118633adab24f413cb4234566cac34cf441eea4a023",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "685c009426210d3d48917b9c04be4dde2e298151094dc927cdefc4a1789f40b6",
+      "cwe": 78,
+      "line": 272,
+      "path": "scripts/int_bootstrap_vm.py",
+      "severity": "LOW",
+      "source_sha256": "861de13ce61943a0a9f62118633adab24f413cb4234566cac34cf441eea4a023",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "f4b55d47109a8c0eab70947763473e317f56cd22dc8602433904bfcba2942dc4",
+      "cwe": 732,
+      "line": 665,
+      "path": "scripts/int_bootstrap_vm.py",
+      "severity": "MEDIUM",
+      "source_sha256": "861de13ce61943a0a9f62118633adab24f413cb4234566cac34cf441eea4a023",
+      "test_id": "B103"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "de3ff863264296619944f6d36cdd17159d683ca5fc10935fd0cbedb6cdd50a7f",
+      "cwe": 259,
+      "line": 728,
+      "path": "scripts/int_bootstrap_vm.py",
+      "severity": "LOW",
+      "source_sha256": "861de13ce61943a0a9f62118633adab24f413cb4234566cac34cf441eea4a023",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 10,
+      "path": "scripts/int_db01_noble_read_iam.py",
+      "severity": "LOW",
+      "source_sha256": "88678ba918256004159d402f571f02e21f5f732cc8bb1ff1ec481c59053021bf",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "1c739c0b91c070ff3bfb1cf139e675abf3c298741bc7db00b5b515ece4eed8df",
+      "cwe": 78,
+      "line": 322,
+      "path": "scripts/int_db01_noble_read_iam.py",
+      "severity": "LOW",
+      "source_sha256": "88678ba918256004159d402f571f02e21f5f732cc8bb1ff1ec481c59053021bf",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "5ea8cb1a378fd402f3781107d11aadd18d38109a500e8e7976cde290c898078b",
+      "cwe": 259,
+      "line": 82,
+      "path": "scripts/int_db_acceptance.py",
+      "severity": "LOW",
+      "source_sha256": "b0d1a7736fe2a0db83bae4b628ebc0d02f1cb74ed5e6524247e3fda8a84154a7",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "e55ae105fd3485d367ad9e3db1b7e003414a79756cb465b5e03dd75d67883791",
+      "cwe": 259,
+      "line": 97,
+      "path": "scripts/int_db_acceptance.py",
+      "severity": "LOW",
+      "source_sha256": "b0d1a7736fe2a0db83bae4b628ebc0d02f1cb74ed5e6524247e3fda8a84154a7",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "4058a49f7552113f5ad18b21598fef0f65a0a0841321d87958b3f3898a40f6b2",
+      "cwe": 259,
+      "line": 119,
+      "path": "scripts/int_db_acceptance_noble.py",
+      "severity": "LOW",
+      "source_sha256": "57a7ceb9c4da47ac5c5b33a829f1c13be6bc0be2c2b4d8a97e404d7b71db82bb",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "e55ae105fd3485d367ad9e3db1b7e003414a79756cb465b5e03dd75d67883791",
+      "cwe": 259,
+      "line": 142,
+      "path": "scripts/int_db_acceptance_noble.py",
+      "severity": "LOW",
+      "source_sha256": "57a7ceb9c4da47ac5c5b33a829f1c13be6bc0be2c2b4d8a97e404d7b71db82bb",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 12,
+      "path": "scripts/int_demo_a_db_observe.py",
+      "severity": "LOW",
+      "source_sha256": "a58602d46d26c52f677f06de08c9a5df60da2dbd570c4be5599611f06aa95d06",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "9d394b09882816dc826c9c274fc3a8f1001de67a072682318aab13354bb4d9cf",
+      "cwe": 78,
+      "line": 76,
+      "path": "scripts/int_demo_a_db_observe.py",
+      "severity": "LOW",
+      "source_sha256": "a58602d46d26c52f677f06de08c9a5df60da2dbd570c4be5599611f06aa95d06",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 11,
+      "path": "scripts/int_demo_a_docker.py",
+      "severity": "LOW",
+      "source_sha256": "18172324861b43c729088738b40bdb08aafea5b2942329e4b54733626e3d80fb",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "6b30b1b26b7a3ff1254a2ab3b72dce0cf290abbef13021e66b9ef0ea782ed259",
+      "cwe": 78,
+      "line": 48,
+      "path": "scripts/int_demo_a_docker.py",
+      "severity": "LOW",
+      "source_sha256": "18172324861b43c729088738b40bdb08aafea5b2942329e4b54733626e3d80fb",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 12,
+      "path": "scripts/int_demo_a_hosted_trial.py",
+      "severity": "LOW",
+      "source_sha256": "a766ce97cf1199cc67765d2425aa93c1a26d622c38fdf89c4563c6b01960dacb",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 12,
+      "path": "scripts/int_demo_a_native_publication.py",
+      "severity": "LOW",
+      "source_sha256": "9e7a8784a9fa2d82f76dac68465b7d0b9fdbd754fd399d1a2dc7095fbd65b58c",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 9,
+      "path": "scripts/int_demo_a_native_skopeo.py",
+      "severity": "LOW",
+      "source_sha256": "a5341cec1caec4c49f1300ede6daa782b54a9a071249d378db88f0bf4fc72e10",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "95818c09d4d2682692b6d779f011aab2e19d606f35e6fcf1c0609b391e2e5f4b",
+      "cwe": 78,
+      "line": 208,
+      "path": "scripts/int_demo_a_native_skopeo.py",
+      "severity": "LOW",
+      "source_sha256": "a5341cec1caec4c49f1300ede6daa782b54a9a071249d378db88f0bf4fc72e10",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "42af48bb00254e446d5088d1a94420cd08b5aa3f82c5f14b91768e8655ece8cb",
+      "cwe": 259,
+      "line": 21,
+      "path": "scripts/int_demo_a_plan_scope.py",
+      "severity": "LOW",
+      "source_sha256": "065eb7e9295b19df5b12b0905574cb36000945a8d455591f4b8282d5be8ecb2f",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "42af48bb00254e446d5088d1a94420cd08b5aa3f82c5f14b91768e8655ece8cb",
+      "cwe": 259,
+      "line": 21,
+      "path": "scripts/int_demo_a_plan_scope.py",
+      "severity": "LOW",
+      "source_sha256": "065eb7e9295b19df5b12b0905574cb36000945a8d455591f4b8282d5be8ecb2f",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "a038ad82d97fc3543f355c1f79dba6cb64bd4b52b0d7d324c6a610a99ec09340",
+      "cwe": 605,
+      "line": 50,
+      "path": "scripts/int_demo_a_plan_scope.py",
+      "severity": "MEDIUM",
+      "source_sha256": "065eb7e9295b19df5b12b0905574cb36000945a8d455591f4b8282d5be8ecb2f",
+      "test_id": "B104"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "7a8a8a94c8c1bce7c9dc2bd7fe2e19fb6e65b4069c75124e0ee9934c6b539a76",
+      "cwe": 259,
+      "line": 60,
+      "path": "scripts/int_demo_a_plan_scope.py",
+      "severity": "LOW",
+      "source_sha256": "065eb7e9295b19df5b12b0905574cb36000945a8d455591f4b8282d5be8ecb2f",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 12,
+      "path": "scripts/int_demo_a_publication_host.py",
+      "severity": "LOW",
+      "source_sha256": "36df755d527d0d640ba1b3b9edcf1a726894a79f4ee2e01ccd3d74cfeeeb2f41",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "f2a2b4ebecbcdfeedf26db4554508748350d2c0d3cd5f41b741abd0aea594946",
+      "cwe": 78,
+      "line": 158,
+      "path": "scripts/int_demo_a_publication_host.py",
+      "severity": "LOW",
+      "source_sha256": "36df755d527d0d640ba1b3b9edcf1a726894a79f4ee2e01ccd3d74cfeeeb2f41",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 9,
+      "path": "scripts/int_demo_a_publish.py",
+      "severity": "LOW",
+      "source_sha256": "fbf122292c0964334c8047730927b30f08ee278beff79d74d57b17b10dc79876",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "1aed325c0ba5e6a9dbafdb1fde23110c65b7e22d039b5acb61a059c3695b4b3a",
+      "cwe": 78,
+      "line": 48,
+      "path": "scripts/int_demo_a_publish.py",
+      "severity": "LOW",
+      "source_sha256": "fbf122292c0964334c8047730927b30f08ee278beff79d74d57b17b10dc79876",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "3db892d97cc96c4662c1269333b6aa464235cbcb18068be1df24949321932be5",
+      "cwe": 78,
+      "line": 50,
+      "path": "scripts/int_demo_a_publish.py",
+      "severity": "LOW",
+      "source_sha256": "fbf122292c0964334c8047730927b30f08ee278beff79d74d57b17b10dc79876",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "b714658daf074e4788ff58a95b98423ab6194f706a50e36d7bed25c5811acdb7",
+      "cwe": 78,
+      "line": 91,
+      "path": "scripts/int_demo_a_publish.py",
+      "severity": "LOW",
+      "source_sha256": "fbf122292c0964334c8047730927b30f08ee278beff79d74d57b17b10dc79876",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 9,
+      "path": "scripts/int_demo_a_publisher_lab.py",
+      "severity": "LOW",
+      "source_sha256": "3038a567144f912aab74bf3f0291cb33f8697aba038cc9e0f59c7556026d6ef1",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "b73f0d4db7e30a365047002f9ed97a8e16ecf3b1e05f6ef5eb87bdc64bef4b31",
+      "cwe": 78,
+      "line": 48,
+      "path": "scripts/int_demo_a_publisher_lab.py",
+      "severity": "LOW",
+      "source_sha256": "3038a567144f912aab74bf3f0291cb33f8697aba038cc9e0f59c7556026d6ef1",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "a7c451bbada9f103193d0dae319581576e1688fb8ad81fbed8db106dfb59e353",
+      "cwe": 259,
+      "line": 26,
+      "path": "scripts/int_demo_a_secrets.py",
+      "severity": "LOW",
+      "source_sha256": "105fed18beba8b40e75e41d78eac058e241504b8c19203086c24f2b7e8795519",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "a7c451bbada9f103193d0dae319581576e1688fb8ad81fbed8db106dfb59e353",
+      "cwe": 259,
+      "line": 26,
+      "path": "scripts/int_demo_a_secrets.py",
+      "severity": "LOW",
+      "source_sha256": "105fed18beba8b40e75e41d78eac058e241504b8c19203086c24f2b7e8795519",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "6b66d02fe472289be73c85ed8fe6343a1f57e32baeb58154f5da88cafe55dedb",
+      "cwe": 259,
+      "line": 332,
+      "path": "scripts/int_demo_a_wif_read.py",
+      "severity": "LOW",
+      "source_sha256": "901b1d1348304dd395c46828da1b21aaa48b1fe9741b696321bd72a1d65da1da",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 22,
+      "path": "scripts/int_guest_inventory.py",
+      "severity": "LOW",
+      "source_sha256": "dffba9c87f63ccefbabcaa5fe1641f3af3840c77090a8d8a4041f1e2931ee9de",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "aff3e63ebde6f3a60a68421e9383e84001d9aa59272b8cfe2330d658ed9db542",
+      "cwe": 259,
+      "line": 239,
+      "path": "scripts/int_guest_inventory.py",
+      "severity": "LOW",
+      "source_sha256": "dffba9c87f63ccefbabcaa5fe1641f3af3840c77090a8d8a4041f1e2931ee9de",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "24c7fc21a2267e2cb59488f16c40f699ec66402985ef133900b724b48931b2df",
+      "cwe": 259,
+      "line": 343,
+      "path": "scripts/int_guest_inventory.py",
+      "severity": "LOW",
+      "source_sha256": "dffba9c87f63ccefbabcaa5fe1641f3af3840c77090a8d8a4041f1e2931ee9de",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "916463b4a7a12a96d9f46d769d40aa367a7e3e1761fbd4a3fc85fcd489216b8a",
+      "cwe": 78,
+      "line": 460,
+      "path": "scripts/int_guest_inventory.py",
+      "severity": "LOW",
+      "source_sha256": "dffba9c87f63ccefbabcaa5fe1641f3af3840c77090a8d8a4041f1e2931ee9de",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 19,
+      "path": "scripts/int_guest_inventory_guest.py",
+      "severity": "LOW",
+      "source_sha256": "46c5c59346198436cd6c7d7b71d50eadc77b9a1004656b581b19d97fa15c2663",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "d29dbdee54abf94f1082c96cc545e1e108b448cc3df1c93e59da03a6555e979c",
+      "cwe": 78,
+      "line": 144,
+      "path": "scripts/int_guest_inventory_guest.py",
+      "severity": "LOW",
+      "source_sha256": "46c5c59346198436cd6c7d7b71d50eadc77b9a1004656b581b19d97fa15c2663",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "04f18230f19dd82063cb34433db0a794d423ec3e11ee392877f1d13a16467e06",
+      "cwe": 78,
+      "line": 66,
+      "path": "scripts/int_noble_bootstrap_payloads.py",
+      "severity": "MEDIUM",
+      "source_sha256": "77c95aba25ca75806e9fe00083ea6a596a1697e38104f781b99971d380cae155",
+      "test_id": "B102"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 8,
+      "path": "scripts/int_noble_demo_preflight_guest.py",
+      "severity": "LOW",
+      "source_sha256": "75524167066245c1957d85dce98390a149de3c1c2add98b52209e148402ef618",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "83ad85b0cec270a9b364836002fda7f02ce10069c342cc57de10686e2737d6cc",
+      "cwe": 78,
+      "line": 50,
+      "path": "scripts/int_noble_demo_preflight_guest.py",
+      "severity": "LOW",
+      "source_sha256": "75524167066245c1957d85dce98390a149de3c1c2add98b52209e148402ef618",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "339f924c98882bdc6474c1972c3eb53c3f671ca27a89fdd1d467014c27075c72",
+      "cwe": 377,
+      "line": 118,
+      "path": "scripts/int_noble_guest_apt.py",
+      "severity": "MEDIUM",
+      "source_sha256": "0e9de319484b8f5cbde311d1500bd9c4f23d676ac06ac7507b50c3e9c8328c13",
+      "test_id": "B108"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "018340de2c2c25832c9c31447596e92215c02ff39ab443c8d931357fb9d605aa",
+      "cwe": 78,
+      "line": 210,
+      "path": "scripts/int_noble_guest_observation.py",
+      "severity": "MEDIUM",
+      "source_sha256": "31f734b47e1c5f48c3aa56f309c396acf216e7061cb773a215808e825d01c196",
+      "test_id": "B102"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 11,
+      "path": "scripts/int_noble_human_access.py",
+      "severity": "LOW",
+      "source_sha256": "50a53073c471903c7e775408a185dde8dd318df75613c2b27a68d246f4855396",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "cf41cc8378b6e4b606be2ec756a1da2055b735438147e43d94b917a5743d6324",
+      "cwe": 78,
+      "line": 100,
+      "path": "scripts/int_noble_human_access.py",
+      "severity": "LOW",
+      "source_sha256": "50a53073c471903c7e775408a185dde8dd318df75613c2b27a68d246f4855396",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "8d6cd209333e6b06fa1ad8bbcd033d74238998635bca43c6035773e412fbeae4",
+      "cwe": 78,
+      "line": 263,
+      "path": "scripts/int_noble_human_access.py",
+      "severity": "LOW",
+      "source_sha256": "50a53073c471903c7e775408a185dde8dd318df75613c2b27a68d246f4855396",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 11,
+      "path": "scripts/int_noble_kernel_guest.py",
+      "severity": "LOW",
+      "source_sha256": "8563467b6bd43dcf74820b98a937e936892bcd61e64a53018fa06eedce3e33d6",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "4d2748c08e613f46721368eb8440e905bf424943d120abe54a75c4b1e75921b5",
+      "cwe": 78,
+      "line": 60,
+      "path": "scripts/int_noble_kernel_guest.py",
+      "severity": "LOW",
+      "source_sha256": "8563467b6bd43dcf74820b98a937e936892bcd61e64a53018fa06eedce3e33d6",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 9,
+      "path": "scripts/int_noble_personal_sql_guest.py",
+      "severity": "LOW",
+      "source_sha256": "c72fd497d5516cac3bfd8208a03eef87b093bb0dc4f3a33cb6248d76459a69f3",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "11afbdc82e071b1b5f6a21af6e5af42f1676db3551f051a832e9f09354438e4b",
+      "cwe": 78,
+      "line": 145,
+      "path": "scripts/int_noble_personal_sql_guest.py",
+      "severity": "LOW",
+      "source_sha256": "c72fd497d5516cac3bfd8208a03eef87b093bb0dc4f3a33cb6248d76459a69f3",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 8,
+      "path": "scripts/int_noble_serial_recovery.py",
+      "severity": "LOW",
+      "source_sha256": "7f944c34baaaca2e707c9f3745849e1f752fd722494dd4b255393701c6cc657c",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "428b534b4f36b3b14caed293517d2c5d38efb08c1448ff5c52de460cf29638c0",
+      "cwe": 78,
+      "line": 160,
+      "path": "scripts/int_noble_serial_recovery.py",
+      "severity": "LOW",
+      "source_sha256": "7f944c34baaaca2e707c9f3745849e1f752fd722494dd4b255393701c6cc657c",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 14,
+      "path": "scripts/int_release.py",
+      "severity": "LOW",
+      "source_sha256": "4666448292fc27687faa8ef449f62cda37e2a602f4ccd1fa9efb7bb0c8317721",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 11,
+      "path": "scripts/int_release_image.py",
+      "severity": "LOW",
+      "source_sha256": "754ded243b9d0fd78b30474c90bd962965c0e1e3c8e10b73f6d82db298e4340d",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "bb74653f69b4e35c31dffeadd27e32281f085a51d9ddcc1987ed522648a2a074",
+      "cwe": 78,
+      "line": 62,
+      "path": "scripts/int_release_image.py",
+      "severity": "LOW",
+      "source_sha256": "754ded243b9d0fd78b30474c90bd962965c0e1e3c8e10b73f6d82db298e4340d",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "ec25f63d731da0676a224cb3458889dd32964ceadd4ff32129992419ccdb9450",
+      "cwe": 259,
+      "line": 17,
+      "path": "scripts/int_secrets.py",
+      "severity": "LOW",
+      "source_sha256": "79d50470e06c66af04b1c2c40e9aca55d5f7265a76bd7b5b9961ba4b7317a00e",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "ec25f63d731da0676a224cb3458889dd32964ceadd4ff32129992419ccdb9450",
+      "cwe": 259,
+      "line": 18,
+      "path": "scripts/int_secrets.py",
+      "severity": "LOW",
+      "source_sha256": "79d50470e06c66af04b1c2c40e9aca55d5f7265a76bd7b5b9961ba4b7317a00e",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 20,
+      "path": "scripts/int_vm_hostkey.py",
+      "severity": "LOW",
+      "source_sha256": "90f47688e1b53e173dfd9105d2861235b99caae59c84fce6c8205e9601ec9dd9",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "c5ea23355ff347fc4103e65fffe9262f313321ad4d1617342547ecf6a1b974ee",
+      "cwe": 78,
+      "line": 324,
+      "path": "scripts/int_vm_hostkey.py",
+      "severity": "LOW",
+      "source_sha256": "90f47688e1b53e173dfd9105d2861235b99caae59c84fce6c8205e9601ec9dd9",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 20,
+      "path": "scripts/run_ci_browser.py",
+      "severity": "LOW",
+      "source_sha256": "ec1635a33586b00f035ec47f7e318196eb914b7dd06df8fd152f892080b558bc",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "3cabef359c85c4c5441786cabf01a08c18ac8130a6589935efc875833d5bcb5c",
+      "cwe": 78,
+      "line": 91,
+      "path": "scripts/run_ci_browser.py",
+      "severity": "LOW",
+      "source_sha256": "ec1635a33586b00f035ec47f7e318196eb914b7dd06df8fd152f892080b558bc",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 24,
+      "path": "scripts/run_ci_tests.py",
+      "severity": "LOW",
+      "source_sha256": "381a4167cca4d07474f9522f0e5c1bf53bd261d211cfe33f1fb47c156fff026d",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 20,
+      "path": "scripts/run_int_e2e.py",
+      "severity": "LOW",
+      "source_sha256": "19c32aca093778a50a55efd989e32f8531d381ddd513a0ce837e2e7c596fc99b",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "899a3407f5d992a3d9dfbf1ea87893d2335c4de6ef79ea29946193df0b351f71",
+      "cwe": 377,
+      "line": 152,
+      "path": "scripts/run_int_e2e.py",
+      "severity": "MEDIUM",
+      "source_sha256": "19c32aca093778a50a55efd989e32f8531d381ddd513a0ce837e2e7c596fc99b",
+      "test_id": "B108"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "5ecf1b6e848de2903c4b79011ae2ecdf94dfd18f2cdce28387c0eb66a06c9b9f",
+      "cwe": 259,
+      "line": 159,
+      "path": "scripts/run_int_e2e.py",
+      "severity": "LOW",
+      "source_sha256": "19c32aca093778a50a55efd989e32f8531d381ddd513a0ce837e2e7c596fc99b",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "5ecf1b6e848de2903c4b79011ae2ecdf94dfd18f2cdce28387c0eb66a06c9b9f",
+      "cwe": 377,
+      "line": 165,
+      "path": "scripts/run_int_e2e.py",
+      "severity": "MEDIUM",
+      "source_sha256": "19c32aca093778a50a55efd989e32f8531d381ddd513a0ce837e2e7c596fc99b",
+      "test_id": "B108"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "97b8dd66d90c9811198cfd18a1573981331dde13cf446031ec80500065ada630",
+      "cwe": 605,
+      "line": 248,
+      "path": "scripts/run_int_e2e.py",
+      "severity": "MEDIUM",
+      "source_sha256": "19c32aca093778a50a55efd989e32f8531d381ddd513a0ce837e2e7c596fc99b",
+      "test_id": "B104"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 16,
+      "path": "scripts/tf_int_plan.py",
+      "severity": "LOW",
+      "source_sha256": "70982d2f5867d0101a181967d182058514e8c82a77423e5eceb09eb0cf89761b",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "d84e37e49078a77d4702954488ee0ad5a52a1537cb47040551ed1458d693768b",
+      "cwe": 78,
+      "line": 169,
+      "path": "scripts/tf_int_plan.py",
+      "severity": "LOW",
+      "source_sha256": "70982d2f5867d0101a181967d182058514e8c82a77423e5eceb09eb0cf89761b",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "80d46b7ff4f4f09889e2db8cb3be6a2f29d15155aa7c25c12e55e9e45ee7ebec",
+      "cwe": 78,
+      "line": 180,
+      "path": "scripts/tf_int_plan.py",
+      "severity": "LOW",
+      "source_sha256": "70982d2f5867d0101a181967d182058514e8c82a77423e5eceb09eb0cf89761b",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "0a3f4e0965ca6cd2b49598f9e06a2b52dfc5890dc6c3dbf991100d0b7bca4a8d",
+      "cwe": 377,
+      "line": 355,
+      "path": "scripts/tf_int_plan.py",
+      "severity": "MEDIUM",
+      "source_sha256": "70982d2f5867d0101a181967d182058514e8c82a77423e5eceb09eb0cf89761b",
+      "test_id": "B108"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "b46526e42c53ff7c926ce8ed29593c18051240edb964e5999ed95846ab59ddba",
+      "cwe": 377,
+      "line": 361,
+      "path": "scripts/tf_int_plan.py",
+      "severity": "MEDIUM",
+      "source_sha256": "70982d2f5867d0101a181967d182058514e8c82a77423e5eceb09eb0cf89761b",
+      "test_id": "B108"
+    }
+  ],
+  "baseline_summary": {
+    "severity": {
+      "LOW": 124,
+      "MEDIUM": 18
+    },
+    "status": "accepted_historical_debt_not_remediated",
+    "total": 142
+  },
+  "decision": "Temporary owner-authorized acceptance for the exact cbc05133 historical Bandit debt and twelve separately reviewed LOW additions. Findings remain reported as debt and are not clean, fixed or accepted for production.",
+  "expires_utc": "2026-12-24T23:59:59Z",
+  "historical_files_changed_outside_finding_span": [
+    "scripts/check_int_demo_a.py",
+    "scripts/int_demo_a_db_observe.py",
+    "scripts/int_demo_a_native_publication.py",
+    "scripts/int_demo_a_publication_host.py",
+    "scripts/int_release.py",
+    "scripts/int_release_image.py",
+    "scripts/int_secrets.py"
+  ],
+  "reviewed_additions": [
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 14,
+      "path": "scripts/int_hito_a_db_credentials.py",
+      "reason": "Import used only for one shell-free call with fixed absolute runuser and PostgreSQL psql executables; protected passwords stay on stdin and never enter argv.",
+      "severity": "LOW",
+      "source_sha256": "14aeefd5ab16141623ca5c25259d0aff8ea05bf09fc409798488336928306557",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "de47e6115bcff2d88d5b412c33d65cc7b7d23dba5a6682f24a070ed2d28c799e",
+      "cwe": 78,
+      "line": 77,
+      "path": "scripts/int_hito_a_db_credentials.py",
+      "reason": "Absolute runuser and PostgreSQL psql paths, constant flags and a constant SELECT are used; passwords arrive only through stdin and are compared in memory; shell execution is never enabled.",
+      "severity": "LOW",
+      "source_sha256": "14aeefd5ab16141623ca5c25259d0aff8ea05bf09fc409798488336928306557",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 17,
+      "path": "scripts/int_hito_a_db_probe.py",
+      "reason": "Import supports bounded read-only commands selected exclusively from fixed absolute lsblk, wipefs and systemctl argv; request data cannot select an executable or argument.",
+      "severity": "LOW",
+      "source_sha256": "203ad4146b09ded87765d895764e054dc5286bb3eb52be66fe1f46fb6a6ef998",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "d5c93c69a937222e5757585b2136c625626f31f37a26485856a67a8b031099c8",
+      "cwe": 78,
+      "line": 56,
+      "path": "scripts/int_hito_a_db_probe.py",
+      "reason": "The helper is called only with locally authored absolute lsblk and wipefs argv; it bounds output and time, supplies a minimal environment and never enables a shell.",
+      "severity": "LOW",
+      "source_sha256": "203ad4146b09ded87765d895764e054dc5286bb3eb52be66fe1f46fb6a6ef998",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "aac0cc739d19a96b8c6e8a9e8b805559575a2f291ab41b44182140335a07de01",
+      "cwe": 78,
+      "line": 121,
+      "path": "scripts/int_hito_a_db_probe.py",
+      "reason": "Absolute systemctl path and constant is-active/postgresql.service arguments are used with no external input, bounded output, a timeout and shell disabled.",
+      "severity": "LOW",
+      "source_sha256": "203ad4146b09ded87765d895764e054dc5286bb3eb52be66fe1f46fb6a6ef998",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "cwe": 78,
+      "line": 19,
+      "path": "scripts/int_hito_a_delivery.py",
+      "reason": "Import supports bounded shell-free gcloud and Terraform invocations; protected binaries are required to be absolute and version-pinned before use.",
+      "severity": "LOW",
+      "source_sha256": "6cac42b9bd08c835e26361904fb3265f3007ba8aeef52bb22197a60dd807d7cf",
+      "test_id": "B404"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "f1892792e04a8f8f21688eff44df3fa6a9ac2cba12884b393b592be6b59c1039",
+      "cwe": 259,
+      "line": 83,
+      "path": "scripts/int_hito_a_delivery.py",
+      "reason": "INT_PG_APP_PASSWORD is an environment-variable name used to retrieve a protected runtime value; the literal is not credential material and cannot authenticate.",
+      "severity": "LOW",
+      "source_sha256": "6cac42b9bd08c835e26361904fb3265f3007ba8aeef52bb22197a60dd807d7cf",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "MEDIUM",
+      "context_sha256": "f1892792e04a8f8f21688eff44df3fa6a9ac2cba12884b393b592be6b59c1039",
+      "cwe": 259,
+      "line": 84,
+      "path": "scripts/int_hito_a_delivery.py",
+      "reason": "INT_PG_MIGRATOR_PASSWORD is an environment-variable name used to retrieve a protected runtime value; the literal is not credential material and cannot authenticate.",
+      "severity": "LOW",
+      "source_sha256": "6cac42b9bd08c835e26361904fb3265f3007ba8aeef52bb22197a60dd807d7cf",
+      "test_id": "B105"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "eeaac1c91d2530bf07206515e8b3a4aae33042e37d84cfa69447c41ee0147d21",
+      "cwe": 78,
+      "line": 270,
+      "path": "scripts/int_hito_a_delivery.py",
+      "reason": "The gcloud path comes from shutil.which, must be absolute, and receives only constant version and format flags in this preflight invocation.",
+      "severity": "LOW",
+      "source_sha256": "6cac42b9bd08c835e26361904fb3265f3007ba8aeef52bb22197a60dd807d7cf",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "d0e895305ce4fff2206d8d9ba3639d5465cf13521c715bca925d47d3a2210ea8",
+      "cwe": 78,
+      "line": 279,
+      "path": "scripts/int_hito_a_delivery.py",
+      "reason": "All callers build argv from fixed tools, hard-coded INT resource identities, validated digests and private scratch paths; protected data uses stdin, outputs and time are bounded, and shell is disabled.",
+      "severity": "LOW",
+      "source_sha256": "6cac42b9bd08c835e26361904fb3265f3007ba8aeef52bb22197a60dd807d7cf",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "370b2cc0fcde6866d209dd4daa5379a68e200e21a2e94169821fa14d6849c5d8",
+      "cwe": 78,
+      "line": 545,
+      "path": "scripts/int_hito_a_delivery.py",
+      "reason": "Terraform must resolve to an absolute path and is checked against exact version 1.15.8 with constant version argv and a closed CLI configuration before protected use.",
+      "severity": "LOW",
+      "source_sha256": "6cac42b9bd08c835e26361904fb3265f3007ba8aeef52bb22197a60dd807d7cf",
+      "test_id": "B603"
+    },
+    {
+      "confidence": "HIGH",
+      "context_sha256": "4ee1c84a65b6fe9e01151e63ae76a23269b13ba122aa756567bb69332892cce6",
+      "cwe": 78,
+      "line": 560,
+      "path": "scripts/int_hito_a_delivery.py",
+      "reason": "Terraform argv uses the pinned binary, reviewed subcommands and private validated plan/module paths; ambient TF options are rejected, output and time are bounded, and shell is disabled.",
+      "severity": "LOW",
+      "source_sha256": "6cac42b9bd08c835e26361904fb3265f3007ba8aeef52bb22197a60dd807d7cf",
+      "test_id": "B603"
+    }
+  ],
+  "reviewed_summary": {
+    "rules": {
+      "B105": 2,
+      "B404": 3,
+      "B603": 7
+    },
+    "severity": {
+      "LOW": 12
+    },
+    "status": "reviewed_and_accepted_for_int_hito_a",
+    "total": 12
+  },
+  "schema": "clipforge-int-hito-a-bandit-acceptance-1",
+  "scope": {
+    "delivery": "int-hito-a",
+    "environment": "int",
+    "production": false,
+    "workflow": ".github/workflows/int-hito-a.yml"
+  },
+  "temporary": true,
+  "valid_from_utc": "2026-11-24T00:00:00Z"
+}

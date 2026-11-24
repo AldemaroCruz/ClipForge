@@ -1,6 +1,7 @@
-name: ClipForge INT reviewed single-operation database bootstrap candidate
+name: DEPRECATED - ClipForge INT reviewed single-operation database bootstrap candidate
+# Historical source only. Hito A configuration now belongs to int-hito-a.yml.
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       approved_commit:
         description: Exact separately owner-approved bootstrap controls SHA
@@ -36,7 +37,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   protected-operation:
-    if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03' && github.event_name == 'workflow_dispatch'
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: int

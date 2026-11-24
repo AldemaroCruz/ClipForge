@@ -347,6 +347,29 @@ class AuthPostgresTests(unittest.TestCase):
         with Session(self.engine) as database:
             self.assertEqual(len(database.scalars(select(User).where(User.is_admin.is_(True))).all()), 1)
 
+    def test_cloud_bootstrap_resume_accepts_only_the_exact_existing_admin(self):
+        with self.engine.begin() as connection:
+            connection.execute(text('DELETE FROM auth_memberships WHERE user_id <> :admin'), {'admin': self.admin.id})
+            connection.execute(text('DELETE FROM auth_workspaces WHERE owner_id <> :admin'), {'admin': self.admin.id})
+            connection.execute(text('DELETE FROM auth_users WHERE id <> :admin'), {'admin': self.admin.id})
+        principal, created = auth.ensure_bootstrap_admin('fixture_admin', self.password)
+        self.assertFalse(created)
+        self.assertEqual(principal.id, self.admin.id)
+        with self.assertRaises(ValueError):
+            auth.ensure_bootstrap_admin('fixture_admin', secrets.token_urlsafe(24))
+        with self.assertRaises(ValueError):
+            auth.ensure_bootstrap_admin('different_admin', self.password)
+
+    def test_cloud_bootstrap_resume_preserves_existing_ordinary_accounts(self):
+        principal, created = auth.ensure_bootstrap_admin('fixture_admin', self.password)
+        self.assertFalse(created)
+        self.assertEqual(principal.id, self.admin.id)
+        with Session(self.engine) as database:
+            self.assertEqual(
+                {user.id for user in database.scalars(select(User)).all()},
+                {self.admin.id, self.alice.id, self.bob.id},
+            )
+
     def test_users_persist_after_engine_and_application_restart(self):
         client = self.client(self.alice)
         before = client.get('/auth/me').json()['user']
