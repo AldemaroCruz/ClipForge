@@ -67,8 +67,9 @@ MAX_RESPONSE = 2 * 1024 * 1024
 
 
 class CloudError(ValueError):
-    def __init__(self, status):
+    def __init__(self, status, *, diagnostic=None):
         self.status = status
+        self.diagnostic = diagnostic
         super().__init__(f"Cloud read or write returned HTTP {status}")
 
 
@@ -183,7 +184,30 @@ def proof_name(commit):
     return custody.PREFIX + commit + f"/{SOURCE['run_id']}-{SOURCE['attempt']}/manifest.json"
 
 
-def request_json(url, token, method="GET", body=None):
+def rejection_diagnostic(stream, token):
+    """Retain only a bounded, sanitized projection of a Google API rejection."""
+    try:
+        raw = stream.read(4097)
+        if len(raw) > 4096:
+            return {"body_status": "oversized"}
+        error = json.loads(raw).get("error", {})
+        if not isinstance(error, dict):
+            return {"body_status": "not_google_error"}
+        message = error.get("message", "")
+        if not isinstance(message, str):
+            return {"body_status": "not_google_error"}
+        if token:
+            message = message.replace(token, "[redacted]")
+        message = re.sub(r"(?i)\b(?:bearer\s+|ya29\.|eyJ[A-Za-z0-9_-]*\.)[A-Za-z0-9._~+/=-]+", "[redacted]", message)
+        message = re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", message).strip()[:700]
+        status = error.get("status")
+        return {"body_status": "sanitized", "status": status if isinstance(status, str) and re.fullmatch(r"[A-Z_]{1,48}", status) else None,
+                "message": message}
+    except (OSError, ValueError, AttributeError):
+        return {"body_status": "unavailable"}
+
+
+def request_json(url, token, method="GET", body=None, *, retain_error=False):
     request = Request(url, method=method, data=custody.canonical(body) if body is not None else None,
                       headers={"Authorization": "Bearer " + token, "Content-Type": "application/json",
                                "X-Goog-Request-Reason": "ClipForge DB01 Noble stable operational READ"})
@@ -191,8 +215,11 @@ def request_json(url, token, method="GET", body=None):
         with build_opener(ProxyHandler({}), driver.NoRedirect()).open(request, timeout=30) as stream:
             raw = stream.read(MAX_RESPONSE + 1)
     except HTTPError as error:
-        error.close()
-        raise CloudError(error.code) from None
+        try:
+            diagnostic = rejection_diagnostic(error, token) if retain_error else None
+        finally:
+            error.close()
+        raise CloudError(error.code, diagnostic=diagnostic) from None
     contract.require(len(raw) <= MAX_RESPONSE, "Private IAM response exceeded its bound")
     return foundation.decode(raw)
 
