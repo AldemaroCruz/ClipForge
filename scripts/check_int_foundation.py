@@ -20,7 +20,7 @@ import zipfile
 
 from scripts import check_tf_int as c, int_release as release, tf_int_plan as driver
 from scripts import classify_int_foundation_sast as sast
-from scripts import prepare_ci_scan
+from scripts import gitleaks_policy, prepare_ci_scan
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = "config/int-foundation-contract.json"
@@ -33,6 +33,7 @@ REQUIRED_CHECKS = {"static_scope_bindings_cost_iam", "fmt", "init_backend_false"
 APPROVED_PLAN_FIELDS = ("commit", "run_id", "manifest", "binary", "json", "created_utc", "configuration_sha256",
                         "provider_lock_sha256", "terraform_version", "inputs", "backend", "managed_addresses", "actions")
 EXECUTION_SOURCE_SHA256 = "70982d2f5867d0101a181967d182058514e8c82a77423e5eceb09eb0cf89761b"
+GITLEAKS_NOBLE_REVIEW_COMMIT = "21ce6c1bb58024961a3351294ee1d4f37e09aa0f"
 IMAGE_IDENTITY = {"project": "debian-cloud", "name": "debian-13-trixie-v20261116", "image_id": "5913446147369107523"}
 INACTIVE_DATABASE_CONDITIONS = ["PostgreSQL remains masked", "No cluster", "No TCP/5432 listener", "No user data",
                                 "No secret retrieval or payload load", "No SQL bootstrap, migrations or service activation"]
@@ -169,6 +170,29 @@ def current_configuration_binding(root, module, contract):
     return current
 
 
+def check_gitleaks_policy(root, contract):
+    policy_path = root / ".gitleaks.toml"
+    historical_digest = contract["unchanged_gitleaks_policy_sha256"]
+    if "current_gitleaks_policy" not in contract:
+        c.require(release.sha256(policy_path.read_bytes()) == historical_digest,
+                  "Secret policy changed; fresh precision evidence and review are required")
+        return
+
+    c.require(contract.get("mode") == "recovery_preparation_only" and contract.get("planning_candidate") is None
+              and contract.get("current_configuration") is not None,
+              "The current Gitleaks policy is scoped to recovery evidence preparation")
+    historical = contract["current_configuration"]["historical_contract"]
+    historical_raw = (root / historical["path"]).read_bytes()
+    c.require(release.sha256(historical_raw) == historical["sha256"]
+              and json.loads(historical_raw)["unchanged_gitleaks_policy_sha256"] == historical_digest,
+              "Historical Gitleaks policy pin changed")
+    review = {"purpose": "current_foundation_evidence_only", "source_commit": GITLEAKS_NOBLE_REVIEW_COMMIT,
+              "previous_sha256": historical_digest, "sha256": gitleaks_policy.POLICY_SHA256}
+    c.require(contract["current_gitleaks_policy"] == review and contract["tools"]["gitleaks"] == gitleaks_policy.GITLEAKS_IMAGE,
+              "Current Gitleaks policy review or scanner binding changed")
+    gitleaks_policy.validate_policy(policy_path)
+
+
 def check_static(root, module, contract):
     c.require(tuple(contract["scope"]["module_files"]) == c.FILES, "Foundation Terraform inventory changed")
     c.source_contract(module)
@@ -211,8 +235,7 @@ def check_static(root, module, contract):
         c.require(release.sha256((root / "scripts/tf_int_plan.py").read_bytes()) == EXECUTION_SOURCE_SHA256,
                   "The accepted F-SAST-EXEC execution source changed")
     c.require(sorted(c.FOUNDATION_ADDRESSES) == contract["plan"]["managed_addresses"], "Foundation resource scope changed")
-    c.require(release.sha256((root / ".gitleaks.toml").read_bytes()) == contract["unchanged_gitleaks_policy_sha256"],
-              "Secret policy changed; fresh precision evidence and review are required")
+    check_gitleaks_policy(root, contract)
     cost = json.loads((root / "config/tf-int01-costs.json").read_text())
     c.require(cost["region"] == c.REGION and cost["hours_per_month"] == 730, "Cost scope changed")
     return binding

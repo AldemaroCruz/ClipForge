@@ -464,20 +464,48 @@ class FoundationCurrentConfiguration(unittest.TestCase):
 
     def test_exact_current_configuration_passes_without_rebinding_historical_plan_or_acceptance(self):
         before = copy.deepcopy(self.contract)
-        policy_path = self.root / ".gitleaks.toml"
-        historical_policy = fixture_policy_bytes(with_noble=False)
-        self.assertEqual(r.sha256(historical_policy), self.contract["unchanged_gitleaks_policy_sha256"])
-        with self.assertRaisesRegex(ValueError, "Secret policy changed"):
-            f.check_static(self.root, self.module, self.contract)
-        read = Path.read_bytes
-        with mock.patch.object(Path, "read_bytes", lambda path: historical_policy if path == policy_path else read(path)):
-            binding = f.check_static(self.root, self.module, self.contract)
+        binding = f.check_static(self.root, self.module, self.contract)
         self.assertEqual(binding["configuration_sha256"], "bf2a20357afc9ccd86edf34efd4a069ba7f43eb14b2853022ec031a9850fe0e1")
         self.assertEqual(binding["commit"], self.contract["plan"]["commit"])
         self.assertNotEqual(binding["configuration_sha256"], self.contract["plan"]["configuration_sha256"])
         self.assertEqual(self.contract, before)
         with self.assertRaisesRegex(ValueError, "retired"):
             f.verify_activation(self.contract)
+
+    def test_current_gitleaks_policy_is_bound_to_exact_review_and_recovery_evidence(self):
+        for field in ("purpose", "source_commit", "previous_sha256", "sha256"):
+            changed = copy.deepcopy(self.contract)
+            changed["current_gitleaks_policy"][field] = "changed"
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "review or scanner binding"):
+                f.check_gitleaks_policy(self.root, changed)
+        for key, value in (("mode", "active_foundation"), ("planning_candidate", {"purpose": "comparative_plan_only"})):
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "scoped to recovery evidence"):
+                f.check_gitleaks_policy(self.root, {**self.contract, key: value})
+        changed = {**self.contract, "tools": {**self.contract["tools"], "gitleaks": "another scanner"}}
+        with self.assertRaisesRegex(ValueError, "review or scanner binding"):
+            f.check_gitleaks_policy(self.root, changed)
+        changed = {**self.contract, "unchanged_gitleaks_policy_sha256": "0" * 64}
+        with self.assertRaisesRegex(ValueError, "Historical Gitleaks policy pin changed"):
+            f.check_gitleaks_policy(self.root, changed)
+
+    def test_historical_rule_requires_old_bytes_and_current_rule_rejects_policy_drift(self):
+        historical = dict(self.contract)
+        del historical["current_gitleaks_policy"]
+        policy_path = self.root / ".gitleaks.toml"
+        historical_policy = fixture_policy_bytes(with_noble=False)
+        self.assertEqual(r.sha256(historical_policy), historical["unchanged_gitleaks_policy_sha256"])
+        with self.assertRaisesRegex(ValueError, "Secret policy changed"):
+            f.check_gitleaks_policy(self.root, historical)
+        read = Path.read_bytes
+        with mock.patch.object(Path, "read_bytes", lambda path: historical_policy if path == policy_path else read(path)):
+            f.check_gitleaks_policy(self.root, historical)
+        with mock.patch.object(f.gitleaks_policy, "read_regular", return_value=historical_policy):
+            with self.assertRaisesRegex(ValueError, "fingerprint differs"):
+                f.check_gitleaks_policy(self.root, self.contract)
+        broad = fixture_policy_bytes().replace(b'condition = "AND"', b'condition = "OR"')
+        with mock.patch.object(f.gitleaks_policy, "read_regular", return_value=broad):
+            with self.assertRaisesRegex(ValueError, "fingerprint differs"):
+                f.check_gitleaks_policy(self.root, self.contract)
 
     def test_current_metadata_is_required_for_new_source_and_cannot_enable_other_modes(self):
         for mutation in ("absent", "active-mode", "candidate", "purpose", "configuration_sha256", "source_patch_sha256",

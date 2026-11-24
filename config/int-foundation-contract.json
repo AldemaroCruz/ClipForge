@@ -112,6 +112,7 @@
       "scripts/int_release_state.py",
       "scripts/check_int_foundation.py",
       "scripts/classify_int_foundation_sast.py",
+      "scripts/gitleaks_policy.py",
       "scripts/prepare_ci_scan.py",
       "scripts/prepare_ci_context.py",
       "scripts/compare_int_foundation_plans.py",
@@ -217,6 +218,12 @@
     ]
   },
   "unchanged_gitleaks_policy_sha256": "877be9355eee66e958e1b453bb59c20302a8cd8bdcd8a7eadb791575483dd054",
+  "current_gitleaks_policy": {
+    "purpose": "current_foundation_evidence_only",
+    "source_commit": "21ce6c1bb58024961a3351294ee1d4f37e09aa0f",
+    "previous_sha256": "877be9355eee66e958e1b453bb59c20302a8cd8bdcd8a7eadb791575483dd054",
+    "sha256": "e3110f65084df2f2ff1768b6c2f05ae2e6aa8179132043159322897709429169"
+  },
   "design_decisions": {
     "google_managed_encryption": "owner_approved_design_only",
     "gcs_access_audit_30_days": "owner_approved_design_only",
