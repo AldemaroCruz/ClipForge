@@ -94,6 +94,19 @@ class CIContextTests(unittest.TestCase):
             self.prepare()
         self.assertFalse(self.manifest.exists())
 
+    def test_personal_sql_payloads_are_copied_by_exact_name(self):
+        names = {"scripts/personal_sql/20-personal-inspection.sql",
+                 "scripts/personal_sql/29-verify-personal-acl.sql",
+                 "scripts/personal_sql/90-revoke-personal.sql"}
+        self.assertTrue(names <= ci.SUPPORT_FILES)
+        sibling = "scripts/personal_sql/private-export.sql"
+        (self.source / sibling).write_bytes(b"synthetic, unlisted SQL")
+        self.prepare()
+        self.verify()
+        self.assertFalse((self.destination / sibling).exists())
+        for name in names:
+            self.assertEqual((self.destination / name).read_bytes(), (self.source / name).read_bytes())
+
     def test_unlisted_config_credentials_state_and_fixture_trees_are_not_read(self):
         rejected = ("config/gha-creds-synthetic.json", "config/private-unreviewed.json",
                     "infra/gcp/int-base/default.tfstate", "infra/gcp/int-base/private.tfvars",

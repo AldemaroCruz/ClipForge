@@ -31,10 +31,15 @@ DIRECTORIES = {
     "scripts": frozenset({".py", ".ps1"}),
     "tests": frozenset({".py"}),
 }
+PERSONAL_SQL_FILES = frozenset({
+    'scripts/personal_sql/20-personal-inspection.sql',
+    'scripts/personal_sql/29-verify-personal-acl.sql',
+    'scripts/personal_sql/90-revoke-personal.sql',
+})
 
 # Public contracts/source fixtures consumed by unit tests. Exact names only;
 # never enumerate config/infra trees or include plans, state, keys or tfvars.
-SUPPORT_FILES = frozenset({
+SUPPORT_FILES = PERSONAL_SQL_FILES | frozenset({
     '.github/workflows/ci.yml',
     '.github/workflows/gcp-auth-check.yml',
     '.github/workflows/int-db01-noble-apply.yml',

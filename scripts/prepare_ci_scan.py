@@ -98,7 +98,7 @@ def validate_paths(names: list[str]) -> list[str]:
             raise ScanError("Tracked private/generated files are forbidden, even when forced into Git.")
         if name == MANIFEST:
             raise ScanError("The snapshot manifest name is reserved.")
-        allowed = name in ROOT_NAMES or (
+        allowed = name in ROOT_NAMES or name in context.PERSONAL_SQL_FILES or (
             len(path.parts) == 1 and path.suffix.lower() == ".md"
         ) or (
             len(path.parts) > 1 and path.parts[0] in DIRECTORIES

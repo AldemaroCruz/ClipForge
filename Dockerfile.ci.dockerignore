@@ -39,6 +39,10 @@
 !tests/
 !tests/fixtures/
 !tests/fixtures/int_foundation_close/
+!scripts/personal_sql/
+!scripts/personal_sql/20-personal-inspection.sql
+!scripts/personal_sql/29-verify-personal-acl.sql
+!scripts/personal_sql/90-revoke-personal.sql
 !.github/workflows/ci.yml
 !.github/workflows/gcp-auth-check.yml
 !.github/workflows/int-db01-noble-apply.yml

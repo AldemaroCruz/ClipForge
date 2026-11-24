@@ -28,6 +28,20 @@ class CIScanTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(scan.ScanError):
                 scan.validate_paths([name])
 
+    def test_personal_sql_payloads_are_scanned_without_accepting_other_sql(self):
+        names = ["scripts/personal_sql/20-personal-inspection.sql", "scripts/personal_sql/29-verify-personal-acl.sql",
+                 "scripts/personal_sql/90-revoke-personal.sql"]
+        for name in names:
+            path = self.source / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"SELECT 1;\n")
+        self.paths.write_bytes(b"\0".join(name.encode() for name in names) + b"\0")
+        scan.prepare_scan(self.source, self.paths, self.destination)
+        self.assertEqual([name for name in names if (self.destination / name).read_bytes() == b"SELECT 1;\n"], names)
+        for name in ("scripts/personal_sql/private-export.sql", "scripts/90-revoke-personal.sql"):
+            with self.subTest(name=name), self.assertRaises(scan.ScanError):
+                scan.validate_paths([name])
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="clipforge-ci-scan-")
         self.addCleanup(self.temporary.cleanup)
