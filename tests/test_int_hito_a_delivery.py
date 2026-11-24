@@ -246,12 +246,29 @@ class DeliveryContractTests(unittest.TestCase):
     def test_cloud_preflight_precedes_every_mutation(self):
         with mock.patch.object(delivery.int_release_image, "archive_digest", return_value=DIGEST):
             delivery.verify_artifact(self.env)
-        with mock.patch.object(delivery, "_require_delivery_iam_permissions") as check:
+        with mock.patch.object(delivery, "_require_delivery_iam_permissions") as check, \
+                mock.patch.object(delivery, "_deployed_secret_versions", return_value=None):
             state = delivery.preflight(self.env)
         check.assert_called_once_with(self.env)
         self.assertEqual(state["phase"], "cloud_preflighted")
         self.assertTrue(state["bootstrap_access_grant_permission"])
         self.assertTrue(state["iap_policy_permissions"])
+
+    def test_existing_verified_database_reuses_only_deployed_secret_versions(self):
+        versions = {"app_password": "1", "migrator_password": "1",
+                    "postgres_ca": "1", "bootstrap_admin": "1"}
+        state = {"deployed_secret_versions": versions}
+        with mock.patch.object(delivery, "load_state", return_value=state), \
+                mock.patch.object(delivery, "_protected_values", return_value={}), \
+                mock.patch.object(delivery, "_bootstrap_database", return_value={
+                    "status": "existing_verified"}) as database, \
+                mock.patch.object(delivery, "save_state"), \
+                mock.patch.object(delivery.int_secrets, "add_version") as publish:
+            value = delivery.configure(self.env)
+        database.assert_called_once_with({}, self.env, allow_initialize=False)
+        publish.assert_not_called()
+        self.assertEqual(value["secret_versions"], versions)
+        self.assertEqual(value["database"]["status"], "existing_verified")
 
     def test_cloud_preflight_reports_all_missing_policy_authority_at_once(self):
         with mock.patch.object(delivery, "_require_bootstrap_access_grant_permission",

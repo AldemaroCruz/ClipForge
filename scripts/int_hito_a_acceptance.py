@@ -286,7 +286,9 @@ def inspect_cloud(http, expected_image):
             and service.get("reconciling", False) is False and ready(service), "cloud_service_not_ready")
     require(service.get("iapEnabled") is True and service.get("invokerIamDisabled", False) is False,
             "cloud_service_iap")
-    require(service.get("uri") == ORIGIN, "cloud_service_uri")
+    urls = service.get("urls", [])
+    require(isinstance(urls, list) and all(isinstance(url, str) for url in urls)
+            and (service.get("uri") == ORIGIN or ORIGIN in urls), "cloud_service_uri")
     latest, revision_resource = revision_leaf(service.get("latestReadyRevision"))
     created, _ = revision_leaf(service.get("latestCreatedRevision"))
     require(created == latest, "cloud_revision_pending")
@@ -297,7 +299,7 @@ def inspect_cloud(http, expected_image):
 
     revision = json_body(http.request("GET", RUN_API + revision_resource), 200, "cloud_revision_read")
     require(normalized_resource(revision.get("name")) == revision_resource
-            and normalized_resource(revision.get("service")) == SERVICE_RESOURCE
+            and normalized_resource(revision.get("service")) in {SERVICE, SERVICE_RESOURCE}
             and revision.get("reconciling", False) is False and ready(revision), "cloud_revision_not_ready")
     containers = revision.get("containers")
     require(isinstance(containers, list) and len(containers) == 1 and isinstance(containers[0], dict),

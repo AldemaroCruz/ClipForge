@@ -43,6 +43,9 @@ class CloudHTTP:
         self.traffic = traffic or [{"revision": revision_resource(revision), "percent": 100}]
         self.public = public
         self.owner = owner
+        self.reported_uri = acceptance.ORIGIN
+        self.reported_urls = []
+        self.reported_revision_service = acceptance.SERVICE_RESOURCE
         self.calls = []
 
     def request(self, method, url, **kwargs):
@@ -58,7 +61,8 @@ class CloudHTTP:
                 "terminalCondition": {"state": "CONDITION_SUCCEEDED"},
                 "iapEnabled": True,
                 "invokerIamDisabled": False,
-                "uri": acceptance.ORIGIN,
+                "uri": self.reported_uri,
+                "urls": self.reported_urls,
                 "latestReadyRevision": revision_resource(self.revision),
                 "latestCreatedRevision": revision_resource(self.revision),
                 "template": {"containers": [{"image": self.image}]},
@@ -67,7 +71,7 @@ class CloudHTTP:
         if method == "GET" and url == acceptance.RUN_API + revision_resource(self.revision):
             return response(200, {
                 "name": revision_resource(self.revision),
-                "service": acceptance.SERVICE_RESOURCE,
+                "service": self.reported_revision_service,
                 "reconciling": False,
                 "conditions": [{"type": "Ready", "state": "CONDITION_SUCCEEDED"}],
                 "containers": [{"image": self.image}],
@@ -82,6 +86,18 @@ class CloudHTTP:
             members = [acceptance.OWNER_MEMBER] if self.owner else ["user:other@example.test"]
             return response(200, {"bindings": [{"role": "roles/iap.httpsResourceAccessor", "members": members}]})
         raise AssertionError((method, url))
+
+
+class CloudRunURLTests(unittest.TestCase):
+    def test_catalog_authorizes_the_fixed_origin_for_the_exact_service(self):
+        cloud = CloudHTTP("clipforge-int-api-00001-2pp")
+        cloud.reported_uri = "https://clipforge-int-api-fixture-uc.a.run.app"
+        cloud.reported_urls = [cloud.reported_uri, acceptance.ORIGIN]
+        cloud.reported_revision_service = acceptance.SERVICE
+        self.assertEqual(acceptance.inspect_cloud(cloud, IMAGE)["uri"], acceptance.ORIGIN)
+        cloud.reported_urls = [cloud.reported_uri]
+        with self.assertRaisesRegex(acceptance.AcceptanceError, "cloud_service_uri"):
+            acceptance.inspect_cloud(cloud, IMAGE)
 
 
 class DeniedHTTP:

@@ -1505,7 +1505,7 @@
       "path": "scripts/int_hito_a_delivery.py",
       "reason": "Import supports bounded shell-free gcloud and Terraform invocations; protected binaries are required to be absolute and version-pinned before use.",
       "severity": "LOW",
-      "source_sha256": "cd4ddb130cac3756fe9cf5ed1ed1486d26113effc8a61cc6de241dc1293fd11e",
+      "source_sha256": "6c194448c2129db2a0bc2ba80a199450be6de5f411d72bf5da559054c54dd686",
       "test_id": "B404"
     },
     {
@@ -1516,7 +1516,7 @@
       "path": "scripts/int_hito_a_delivery.py",
       "reason": "INT_PG_APP_PASSWORD is an environment-variable name used to retrieve a protected runtime value; the literal is not credential material and cannot authenticate.",
       "severity": "LOW",
-      "source_sha256": "cd4ddb130cac3756fe9cf5ed1ed1486d26113effc8a61cc6de241dc1293fd11e",
+      "source_sha256": "6c194448c2129db2a0bc2ba80a199450be6de5f411d72bf5da559054c54dd686",
       "test_id": "B105"
     },
     {
@@ -1527,51 +1527,51 @@
       "path": "scripts/int_hito_a_delivery.py",
       "reason": "INT_PG_MIGRATOR_PASSWORD is an environment-variable name used to retrieve a protected runtime value; the literal is not credential material and cannot authenticate.",
       "severity": "LOW",
-      "source_sha256": "cd4ddb130cac3756fe9cf5ed1ed1486d26113effc8a61cc6de241dc1293fd11e",
+      "source_sha256": "6c194448c2129db2a0bc2ba80a199450be6de5f411d72bf5da559054c54dd686",
       "test_id": "B105"
     },
     {
       "confidence": "HIGH",
       "context_sha256": "eeaac1c91d2530bf07206515e8b3a4aae33042e37d84cfa69447c41ee0147d21",
       "cwe": 78,
-      "line": 277,
+      "line": 313,
       "path": "scripts/int_hito_a_delivery.py",
       "reason": "The gcloud path comes from shutil.which, must be absolute, and receives only constant version and format flags in this preflight invocation.",
       "severity": "LOW",
-      "source_sha256": "cd4ddb130cac3756fe9cf5ed1ed1486d26113effc8a61cc6de241dc1293fd11e",
+      "source_sha256": "6c194448c2129db2a0bc2ba80a199450be6de5f411d72bf5da559054c54dd686",
       "test_id": "B603"
     },
     {
       "confidence": "HIGH",
       "context_sha256": "d0e895305ce4fff2206d8d9ba3639d5465cf13521c715bca925d47d3a2210ea8",
       "cwe": 78,
-      "line": 287,
+      "line": 323,
       "path": "scripts/int_hito_a_delivery.py",
       "reason": "All callers build argv from fixed tools, hard-coded INT resource identities, validated digests and private scratch paths; protected data uses stdin, outputs and time are bounded, and shell is disabled.",
       "severity": "LOW",
-      "source_sha256": "cd4ddb130cac3756fe9cf5ed1ed1486d26113effc8a61cc6de241dc1293fd11e",
+      "source_sha256": "6c194448c2129db2a0bc2ba80a199450be6de5f411d72bf5da559054c54dd686",
       "test_id": "B603"
     },
     {
       "confidence": "HIGH",
       "context_sha256": "370b2cc0fcde6866d209dd4daa5379a68e200e21a2e94169821fa14d6849c5d8",
       "cwe": 78,
-      "line": 566,
+      "line": 610,
       "path": "scripts/int_hito_a_delivery.py",
       "reason": "Terraform must resolve to an absolute path and is checked against exact version 1.15.8 with constant version argv and a closed CLI configuration before protected use.",
       "severity": "LOW",
-      "source_sha256": "cd4ddb130cac3756fe9cf5ed1ed1486d26113effc8a61cc6de241dc1293fd11e",
+      "source_sha256": "6c194448c2129db2a0bc2ba80a199450be6de5f411d72bf5da559054c54dd686",
       "test_id": "B603"
     },
     {
       "confidence": "HIGH",
       "context_sha256": "4ee1c84a65b6fe9e01151e63ae76a23269b13ba122aa756567bb69332892cce6",
       "cwe": 78,
-      "line": 581,
+      "line": 625,
       "path": "scripts/int_hito_a_delivery.py",
       "reason": "Terraform argv uses the pinned binary, reviewed subcommands and private validated plan/module paths; ambient TF options are rejected, output and time are bounded, and shell is disabled.",
       "severity": "LOW",
-      "source_sha256": "cd4ddb130cac3756fe9cf5ed1ed1486d26113effc8a61cc6de241dc1293fd11e",
+      "source_sha256": "6c194448c2129db2a0bc2ba80a199450be6de5f411d72bf5da559054c54dd686",
       "test_id": "B603"
     }
   ],

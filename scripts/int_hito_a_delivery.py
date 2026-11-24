@@ -264,11 +264,47 @@ def publish(env):
 def preflight(env):
     value = load_state(env, {"artifact_verified"})
     _require_delivery_iam_permissions(env)
+    value["deployed_secret_versions"] = _deployed_secret_versions(env)
     value["phase"] = "cloud_preflighted"
     value["bootstrap_access_grant_permission"] = True
     value["iap_policy_permissions"] = True
     save_state(env, value)
     return value
+
+
+def _deployed_secret_versions(env):
+    from scripts import int_hito_a_acceptance as acceptance
+
+    http = acceptance.HTTP(env["GCP_ACCESS_TOKEN"])
+    root = f"projects/{PROJECT}/locations/{REGION}/"
+    app_mounts = {"database": ("app_password", "clipforge-int-pg-app-password"),
+                  "postgres-ca": ("postgres_ca", "clipforge-int-postgres-ca")}
+    job_mounts = {**app_mounts, "database": ("migrator_password", "clipforge-int-pg-migrator-password")}
+    bootstrap_mounts = {**job_mounts, "admin": ("bootstrap_admin", "clipforge-int-bootstrap-admin")}
+    versions = {}
+    for kind, name, mounts in (("services", SERVICE, app_mounts), ("jobs", MIGRATION_JOB, job_mounts),
+                               ("jobs", BOOTSTRAP_JOB, bootstrap_mounts)):
+        resource = root + f"{kind}/{name}"
+        response = http.request("GET", acceptance.RUN_API + resource)
+        if kind == "services" and response.status == 404:
+            return None
+        value = acceptance.json_body(response, 200, "deployed_secret_mounts_read")
+        require(acceptance.normalized_resource(value.get("name")) == resource, "deployed_mounts_identity")
+        template = value["template"] if kind == "services" else value["template"]["template"]
+        rows = template.get("volumes", [])
+        require(isinstance(rows, list) and len(rows) == len(mounts)
+                and all(isinstance(row, dict) for row in rows)
+                and {row.get("name") for row in rows} == set(mounts), "deployed_secret_mounts")
+        for row in rows:
+            key, secret = mounts[row["name"]]
+            spec = row.get("secret", {})
+            item = _one(spec.get("items"), "deployed_secret_item")
+            version = item.get("version", "")
+            require(spec.get("secret") == secret and item.get("path") == "value"
+                    and isinstance(version, str) and NUMBER.fullmatch(version)
+                    and versions.get(key, version) == version, "deployed_secret_version")
+            versions[key] = version
+    return versions
 
 
 def _gcloud_binary():
@@ -468,7 +504,7 @@ def _compute_proof(probe, probe_source, env):
     }
 
 
-def _bootstrap_database(values, env):
+def _bootstrap_database(values, env, *, allow_initialize=True):
     probe, probe_source = _probe_database(env)
     ca_sha = sha256(values["ca_cert"].encode("ascii"))
     if probe["state"] == "configured":
@@ -476,6 +512,7 @@ def _bootstrap_database(values, env):
                 "configured_database_secret_mismatch")
         _verify_existing_credentials(values, env, probe["boot_id"])
         return {"status": "existing_verified", "ca_certificate_sha256": ca_sha}
+    require(allow_initialize, "existing_deployment_blank_database")
     proof = _compute_proof(probe, probe_source, env)
     operator_source = noble_payloads.operator_bytes()
     operator_sha = sha256(operator_source)
@@ -521,7 +558,14 @@ def _protected_values(env):
 def configure(env):
     value = load_state(env, {"published"})
     values = _protected_values(env)
-    database = _bootstrap_database(values, env)
+    database = _bootstrap_database(
+        values, env, allow_initialize=value.get("deployed_secret_versions") is None)
+    if database["status"] == "existing_verified":
+        versions = value.get("deployed_secret_versions")
+        require(versions is not None, "existing_database_secret_versions_unverified")
+        value.update(phase="configured", database=database, secret_versions=versions)
+        save_state(env, value)
+        return value
     publications = {}
     for key, payload_key in (("app_password", "app_password"),
                              ("migrator_password", "migrator_password"),
