@@ -76,7 +76,7 @@ RUN --network=none --mount=type=bind,source=wheels-worker,target=/wheels \
  && python -m pip check
 COPY --from=native /opt/clipforge/media /opt/clipforge/media
 COPY app/ /app/app/
-COPY config/whisper-int.json /opt/clipforge/whisper-int.json
+COPY --chmod=0444 config/whisper-int.json /opt/clipforge/whisper-int.json
 COPY weights/ /opt/clipforge/models/
 RUN find /app /opt/clipforge/models -xdev -type d -exec chmod 0555 {} + \
  && find /app /opt/clipforge/models -xdev -type f -exec chmod 0444 {} +
