@@ -23,6 +23,7 @@ PRODUCERS = {
                 ("secret-app_password-intent.json", "secret-migrator_password-intent.json",
                  "secret-postgres_ca-intent.json", "secret-bootstrap_admin-intent.json")),
     "guest_intervention": (("noble-intervention-result.json",), ("noble-intervention-intent.json",)),
+    "personal_sql_intervention": (("personal-sql-result.json",), ("personal-sql-intent.json",)),
 }
 JOB_OPERATIONS = {"migrate": {"create", "run"}, "app": {"create", "run"}, "admin": {"run"}}
 KIND = ("intent", "result")

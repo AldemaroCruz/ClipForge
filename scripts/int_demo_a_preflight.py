@@ -53,6 +53,8 @@ def local_decision(bundle, digest, operation, workflow, env, *, protected=False,
     json_bytes(bundle, "binding.json", value["binding_sha256"], limit=65536)
     review_args = ["--review", str(bundle / "review.json"), "--review-sha256", value["review_sha256"],
                    "--binding", str(bundle / "binding.json"), "--operation", operation]
+    if protected and operation in gate.DB_RUNNER_OPERATIONS:
+        review_args.append("--match-credential-runner")
     if guest_action is not None:
         require(value["inputs"]["action"] == guest_action, "demo_a_guest_action_mismatch")
         review_args.extend(("--guest-action", guest_action))

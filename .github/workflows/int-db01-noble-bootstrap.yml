@@ -137,22 +137,28 @@ jobs:
           github-token: ${{ github.token }}
           path: ${{ env.BUNDLE }}
           merge-multiple: true
-      - name: Verify independently pinned evidence, credential runner and protected TLS inputs
-        env:
-          INT_PG_APP_PASSWORD: ${{ secrets.INT_APP_PASSWORD }}
-          INT_PG_MIGRATOR_PASSWORD: ${{ secrets.INT_MIGRATOR_PASSWORD }}
-          INT_PG_CA_CERT: ${{ secrets.INT_POSTGRES_CA }}
-          INT_PG_SERVER_CERT: ${{ secrets.INT_PG_SERVER_CERT }}
-          INT_PG_SERVER_KEY: ${{ secrets.INT_PG_SERVER_KEY }}
-        run: python -B -m scripts.int_noble_bootstrap_db protected-local --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA" --workdir "$GUEST_WORK" --reports "$GUEST_REPORTS"
       - name: Prepare the reviewed Cloud SDK version
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
         with:
           version: 582.0.0
+      - name: Admit the live runner, evidence and decision without protected inputs
+        id: host_admission
+        run: python -B -m scripts.int_noble_bootstrap_db protected-admit --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA"
+      - name: Validate protected TLS inputs on the admitted runner
+        id: protected_inputs
+        if: ${{ success() && steps.host_admission.outcome == 'success' }}
+        env:
+          INT_PG_APP_PASSWORD: ${{ steps.host_admission.outcome == 'success' && secrets.INT_APP_PASSWORD || '' }}
+          INT_PG_MIGRATOR_PASSWORD: ${{ steps.host_admission.outcome == 'success' && secrets.INT_MIGRATOR_PASSWORD || '' }}
+          INT_PG_CA_CERT: ${{ steps.host_admission.outcome == 'success' && secrets.INT_POSTGRES_CA || '' }}
+          INT_PG_SERVER_CERT: ${{ steps.host_admission.outcome == 'success' && secrets.INT_PG_SERVER_CERT || '' }}
+          INT_PG_SERVER_KEY: ${{ steps.host_admission.outcome == 'success' && secrets.INT_PG_SERVER_KEY || '' }}
+        run: python -B -m scripts.int_noble_bootstrap_db protected-local --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA" --workdir "$GUEST_WORK" --reports "$GUEST_REPORTS"
       - name: Start the conservative credential lifetime boundary
         run: echo "INT_GCP_AUTH_STARTED_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
       - name: Federate solely as the existing Deploy service account
         id: auth
+        if: ${{ success() && steps.host_admission.outcome == 'success' && steps.protected_inputs.outcome == 'success' }}
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           project_id: ${{ vars.GCP_PROJECT_ID }}
@@ -165,19 +171,21 @@ jobs:
           export_environment_variables: true
           cleanup_credentials: true
       - name: Verify WIF, live VM and disks, policy and effective permissions
+        id: cloud_preflight
         env:
           GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           GH_TOKEN: ${{ github.token }}
         run: python -B -m scripts.int_noble_bootstrap_db cloud --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA" --workdir "$GUEST_WORK" --reports "$GUEST_REPORTS"
       - name: Recheck the fresh disk over pinned IAP and invoke the approved operator once
+        if: ${{ success() && steps.host_admission.outcome == 'success' && steps.cloud_preflight.outcome == 'success' }}
         env:
           GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           GH_TOKEN: ${{ github.token }}
-          INT_PG_APP_PASSWORD: ${{ secrets.INT_APP_PASSWORD }}
-          INT_PG_MIGRATOR_PASSWORD: ${{ secrets.INT_MIGRATOR_PASSWORD }}
-          INT_PG_CA_CERT: ${{ secrets.INT_POSTGRES_CA }}
-          INT_PG_SERVER_CERT: ${{ secrets.INT_PG_SERVER_CERT }}
-          INT_PG_SERVER_KEY: ${{ secrets.INT_PG_SERVER_KEY }}
+          INT_PG_APP_PASSWORD: ${{ steps.host_admission.outcome == 'success' && steps.cloud_preflight.outcome == 'success' && secrets.INT_APP_PASSWORD || '' }}
+          INT_PG_MIGRATOR_PASSWORD: ${{ steps.host_admission.outcome == 'success' && steps.cloud_preflight.outcome == 'success' && secrets.INT_MIGRATOR_PASSWORD || '' }}
+          INT_PG_CA_CERT: ${{ steps.host_admission.outcome == 'success' && steps.cloud_preflight.outcome == 'success' && secrets.INT_POSTGRES_CA || '' }}
+          INT_PG_SERVER_CERT: ${{ steps.host_admission.outcome == 'success' && steps.cloud_preflight.outcome == 'success' && secrets.INT_PG_SERVER_CERT || '' }}
+          INT_PG_SERVER_KEY: ${{ steps.host_admission.outcome == 'success' && steps.cloud_preflight.outcome == 'success' && secrets.INT_PG_SERVER_KEY || '' }}
         run: python -B -m scripts.int_noble_bootstrap_db run --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA" --workdir "$GUEST_WORK" --reports "$GUEST_REPORTS"
       - name: Confirm removal of only this operation's temporary OS Login key
         if: ${{ always() && steps.scratch.outcome == 'success' && steps.auth.outcome == 'success' }}

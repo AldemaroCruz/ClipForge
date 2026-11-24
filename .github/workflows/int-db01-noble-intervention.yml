@@ -1,8 +1,13 @@
-name: ClipForge INT Noble protected APT or kmod intervention
+name: ClipForge INT Noble protected guest intervention
 
 on:
   workflow_dispatch:
     inputs:
+      operation:
+        description: Select one intervention or one approved personal SQL action
+        type: choice
+        default: guest_intervention
+        options: [guest_intervention, personal_activate, personal_observe, personal_revoke]
       approved_commit:
         description: Exact approved SHA of the Noble intervention controls
         required: true
@@ -34,6 +39,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  INT_NOBLE_OPERATION: ${{ inputs.operation }}
+  OPERATOR_MODULE: ${{ startsWith(inputs.operation, 'personal_') && 'scripts.int_noble_personal_sql' || 'scripts.int_noble_guest_intervention' }}
   INT_APPROVED_COMMIT: ${{ inputs.approved_commit }}
   OWNER_ARTIFACT: ${{ inputs.review_artifact_id }}
   OWNER_RUN: ${{ inputs.review_run_id }}
@@ -82,7 +89,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -B -m scripts.int_noble_guest_intervention local --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA"
+          python -B -m "$OPERATOR_MODULE" local --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA"
           echo "verified_commit=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
   intervene:
@@ -138,7 +145,7 @@ jobs:
         with:
           version: 582.0.0
       - name: Revalidate the independent int approval before Google authentication
-        run: python -B -m scripts.int_noble_guest_intervention protected-local --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA"
+        run: python -B -m "$OPERATOR_MODULE" protected-local --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA"
       - name: Federate as the existing Terraform identity for one metadata observation
         id: backend-auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
@@ -154,9 +161,10 @@ jobs:
         env:
           GCP_ACCESS_TOKEN: ${{ steps.backend-auth.outputs.access_token }}
           GCP_TERRAFORM_SA: ${{ vars.GCP_TERRAFORM_SA }}
-        run: python -B -m scripts.int_noble_guest_intervention observe-backend --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA" --backend-observation "$BACKEND_DIR/backend.json"
+        run: python -B -m "$OPERATOR_MODULE" observe-backend --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA" --backend-observation "$BACKEND_DIR/backend.json"
       - name: Verify freshness of the local proof before the Deploy exchange
-        run: python -B -m scripts.int_noble_guest_intervention protected-local --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA" --backend-observation "$BACKEND_DIR/backend.json"
+        id: host_admission
+        run: python -B -m "$OPERATOR_MODULE" protected-local --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA" --backend-observation "$BACKEND_DIR/backend.json"
       - name: Record the start of the short credential budget
         run: echo "INT_GCP_AUTH_STARTED_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
       - name: Federate solely as the existing Deploy service account
@@ -173,17 +181,47 @@ jobs:
           export_environment_variables: true
           cleanup_credentials: true
       - name: Verify live policy and pinned guest and execute the exact authorization once
+        id: native
         env:
           GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           GCP_DEPLOY_SA: ${{ vars.GCP_DEPLOY_SA }}
           GH_TOKEN: ${{ github.token }}
-        run: python -B -m scripts.int_noble_guest_intervention run --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA" --backend-observation "$BACKEND_DIR/backend.json"
+          INT_NOBLE_PERSONAL_SQL_PASSWORD: ${{ inputs.operation == 'personal_activate' && steps.host_admission.outcome == 'success' && steps.auth.outcome == 'success' && secrets.INT_NOBLE_PERSONAL_SQL_PASSWORD || '' }}
+        run: python -B -m "$OPERATOR_MODULE" run --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA" --backend-observation "$BACKEND_DIR/backend.json"
       - name: Confirm absence of only the key owned by this attempt
+        id: cleanup
         if: always() && steps.scratch.outcome == 'success' && steps.auth.outcome == 'success'
         env:
           GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           GCP_DEPLOY_SA: ${{ vars.GCP_DEPLOY_SA }}
-        run: python -B -m scripts.int_noble_guest_intervention cleanup
+        run: python -B -m "$OPERATOR_MODULE" cleanup
+      - name: Federate as Terraform solely for the post-SQL metadata observation
+        if: startsWith(inputs.operation, 'personal_') && steps.native.outcome == 'success' && steps.cleanup.outcome == 'success'
+        id: post-backend-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_TERRAFORM_SA }}
+          token_format: access_token
+          access_token_lifetime: 300s
+          create_credentials_file: false
+          export_environment_variables: false
+      - name: Observe only state metadata and current absence of lock after SQL
+        if: startsWith(inputs.operation, 'personal_') && steps.post-backend-auth.outcome == 'success'
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.post-backend-auth.outputs.access_token }}
+          GCP_TERRAFORM_SA: ${{ vars.GCP_TERRAFORM_SA }}
+          GOOGLE_APPLICATION_CREDENTIALS: ''
+          GOOGLE_GHA_CREDS_PATH: ''
+          CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE: ''
+        run: python -B -m scripts.int_noble_personal_sql post-backend --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA" --backend-observation "$BACKEND_DIR/backend.json"
+      - name: Custody the personal SQL result with the original Deploy token
+        if: startsWith(inputs.operation, 'personal_') && steps.post-backend-auth.outcome == 'success'
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          GCP_DEPLOY_SA: ${{ vars.GCP_DEPLOY_SA }}
+        run: python -B -m scripts.int_noble_personal_sql finalize --bundle "$BUNDLE" --decision-sha256 "$DECISION_SHA" --review-sha256 "$REVIEW_SHA" --binding-sha256 "$BINDING_SHA" --backend-observation "$BACKEND_DIR/backend.json"
       - name: Retain sanitized status and cleanup without credentials
         if: always() && steps.scratch.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -192,6 +230,8 @@ jobs:
           path: |
             ${{ env.GUEST_REPORTS }}/intervention-result.json
             ${{ env.GUEST_REPORTS }}/intervention-failure.json
+            ${{ env.GUEST_REPORTS }}/personal-sql-progress.json
+            ${{ env.GUEST_REPORTS }}/personal-sql-result.json
             ${{ env.GUEST_REPORTS }}/cleanup.json
           if-no-files-found: warn
           retention-days: 7

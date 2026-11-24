@@ -76,7 +76,10 @@ class DemoGate(unittest.TestCase):
                                                                   "check": check, "status": "passed",
                                                                   "checked_at": AT.isoformat(),
                                                                   "expires_at": (AT + timedelta(hours=2)).isoformat(),
-                                                                  **({"runner_image": "20261120.1.2"} if check == "exact_guest_intervention_transport" else {})})
+                                                                  **({"runner_image": "20261120.1.2"} if check in {
+                                                                      "exact_guest_intervention_transport",
+                                                                      "secret_target_and_version_receipt_protocol",
+                                                                  } else {})})
                         for check in checks}
             self.review["subjects"][role] = {"identity": artifact, "analyses": records, "checks": receipts, **extension}
         entrypoint = "d" * 64
@@ -488,6 +491,19 @@ class DemoGate(unittest.TestCase):
         self.assertEqual(self.verify(), 3)
         self.binding["plan_sha256"] = "e" * 64
         with self.assertRaisesRegex(ValueError, "wrong_plan_binding_for_operation"):
+            self.verify()
+
+    def test_secret_versions_require_the_reviewed_runner_image(self):
+        self.prepare("secret_versions")
+        self.verify(runner_version="20261120.1.2")
+        with self.assertRaisesRegex(ValueError, "secret_versions_runner_mismatch"):
+            self.verify(runner_version="20261121.1.2")
+        checks = self.review["subjects"]["credential_toolchain"]["checks"]
+        name = "secret_target_and_version_receipt_protocol"
+        old_receipt = gate.evidence(self.root, checks[name])
+        del old_receipt["runner_image"]
+        checks[name] = self.write("old-secret-check.json", old_receipt)
+        with self.assertRaisesRegex(ValueError, "check_proof_fields"):
             self.verify()
 
     def test_after_apply_requires_its_actual_reconciliation(self):

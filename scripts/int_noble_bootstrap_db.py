@@ -16,6 +16,7 @@ from urllib.error import HTTPError
 from scripts import int_bootstrap_containment as containment
 from scripts import int_bootstrap_db as legacy
 from scripts import int_bootstrap_vm as guest_contract
+from scripts import int_demo_a_db_runner as db_runner
 from scripts import check_int_demo_a as gate
 from scripts import int_db01_noble_read_iam as iam
 from scripts import int_demo_a_noble_policy as noble_policy
@@ -49,7 +50,8 @@ REQUIRED_SOURCES = {WORKFLOW, CONTROL, "scripts/int_noble_bootstrap_db.py", "scr
                     "scripts/int_bootstrap_containment.py", "scripts/int_guest_inventory.py", "scripts/int_guest_inventory_guest.py",
                     "scripts/int_guest_db_observe.py", "scripts/int_vm_hostkey_guest.py", "scripts/int_noble_guest_observation.py",
                     "scripts/int_noble_first_observation.py", "scripts/int_noble_hostkey.py", "scripts/int_noble_kernel_observation.py",
-                    "scripts/int_noble_apply.py", "scripts/int_db01_noble_read_iam.py", "scripts/int_release.py"}
+                    "scripts/int_noble_apply.py", "scripts/int_db01_noble_read_iam.py", "scripts/int_release.py",
+                    "scripts/int_demo_a_db_runner.py", "scripts/int_demo_a_publication_host.py"}
 MAX_OPERATION = legacy.MAX_OPERATION_SECONDS
 CLEANUP_MARGIN = legacy.CLEANUP_MARGIN_SECONDS
 require = transport.require
@@ -401,6 +403,8 @@ def launch(env, ready, work, reports):
         legacy.phase(work, journal, "bootstrap", "completed", native_exit=code, receipt_sha256=transport.sha(raw))
         require(snapshot() == before, "noble_compute_changed_during_bootstrap")
         result["status"] = receipt["status"]
+        if receipt["status"] == "configured_guest_verified_external_acceptance_pending":
+            result["ca_certificate_sha256"] = transport.sha(values["ca_cert"].encode("ascii"))
         legacy.phase(work, journal, "postcheck", "completed")
         if receipt["status"] == "partial_preserved":
             try:
@@ -435,7 +439,7 @@ def launch(env, ready, work, reports):
 def main(argv=None, *, env=None):
     env = os.environ if env is None else env
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("local", "protected-local", "cloud", "run", "cleanup"))
+    parser.add_argument("operation", choices=("local", "protected-admit", "protected-local", "cloud", "run", "cleanup"))
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--decision-sha256")
     parser.add_argument("--review-sha256")
@@ -447,6 +451,8 @@ def main(argv=None, *, env=None):
         if args.operation == "cleanup":
             result = legacy.cleanup(env, args.workdir, args.reports)
             return int(result["status"] not in {"own_key_removed", "key_already_absent", "no_registered_key"})
+        if args.operation == "protected-admit":
+            db_runner.require_secretless_admission(env)
         require(args.bundle is not None, "noble_bundle_required")
         ready = validate_local(env, args.bundle, args.decision_sha256, root=ROOT)
         binding_path = args.bundle / "binding.json"
@@ -464,7 +470,7 @@ def main(argv=None, *, env=None):
         if protected:
             arguments.append("--match-credential-runner")
         require(gate.main(arguments) == 0, "noble_activation_evidence_blocked")
-        if args.operation == "local":
+        if args.operation in {"local", "protected-admit"}:
             return 0
         work, reports = transport._validate_paths(env, args.workdir, args.reports)
         if args.operation == "protected-local":

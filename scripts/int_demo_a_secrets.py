@@ -2,13 +2,17 @@
 
 import argparse
 import base64
+from io import BytesIO
 import json
 import os
 from pathlib import Path
 import re
 from urllib.error import HTTPError
+from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
+from zipfile import BadZipFile, ZipFile
 
+from scripts import int_demo_a_db_runner as db_runner
 from scripts import int_demo_a_preflight as preflight
 from scripts import int_demo_a_receipts as receipts
 from scripts import int_guest_inventory as transport
@@ -40,18 +44,56 @@ def prerequisite(bundle, value):
             and native["approved_commit"] == value["bootstrap_controls"] and native["disk_id"] == "7382984635240536620"
             and native["operation_id"] == report["operation_id"] and native["exit_code"] == 0
             and report["cleanup"]["status"] in {"own_key_removed", "key_already_absent"}, "demo_a_bootstrap_not_ready")
+    require(report.get("ca_certificate_sha256") == value["ca_certificate_sha256"], "demo_a_bootstrap_ca_mismatch")
     return report
+
+
+def read_bootstrap_archive(endpoint, token):
+    opener = build_opener(ProxyHandler({}), github.apply.ArtifactRedirect())
+    try:
+        stream = opener.open(github.github_request(token, endpoint + "/zip"), timeout=30)
+    except HTTPError as error:
+        location = error.headers.get("Location", "")
+        target = urlsplit(location)
+        error.close()
+        require(error.code == 302 and target.scheme == "https" and not target.username and not target.password
+                and not target.fragment and target.port in (None, 443) and target.hostname
+                and target.hostname.endswith((".blob.core.windows.net", ".actions.githubusercontent.com")),
+                "demo_a_bootstrap_artifact_redirect")
+        stream = build_opener(ProxyHandler({}), transport.NoRedirect()).open(Request(location), timeout=30)
+    with stream:
+        return stream.read(github.apply.ARTIFACT_LIMIT + 1)
+
+
+def verify_bootstrap_archive(raw, archive_sha256, receipt_sha256):
+    require(0 < len(raw) <= github.apply.ARTIFACT_LIMIT and transport.sha(raw) == archive_sha256,
+            "demo_a_bootstrap_artifact_bytes")
+    try:
+        with ZipFile(BytesIO(raw)) as archive:
+            files = archive.infolist()
+            require(len(files) == 2 and {item.filename for item in files} == {"db01-result.json", "cleanup.json"}
+                    and all(0 < item.file_size <= 65536 and not item.flag_bits & 1 for item in files),
+                    "demo_a_bootstrap_artifact_members")
+            require(transport.sha(archive.read("db01-result.json")) == receipt_sha256, "demo_a_bootstrap_receipt_not_in_artifact")
+            cleanup = transport.decode(archive.read("cleanup.json"))
+            require(isinstance(cleanup, dict) and cleanup.get("schema") == "clipforge-int-guest-cleanup-1" and
+                    cleanup.get("status") in {"own_key_removed", "key_already_absent"}, "demo_a_bootstrap_artifact_cleanup")
+    except (BadZipFile, NotImplementedError, RuntimeError, UnicodeError):
+        raise transport.Blocked("demo_a_bootstrap_artifact_zip_invalid") from None
 
 
 def bootstrap_provenance(value, token):
     require(isinstance(token, str) and bool(token), "demo_a_bootstrap_provenance_requires_actions_read")
     run, commit = value["bootstrap_run"], value["bootstrap_controls"]
     github.verify_github_run(run, commit, token, ".github/workflows/int-db01-noble-bootstrap.yml", "success")
-    artifact = github.read_github(token, f"artifacts/{value['bootstrap_artifact']}")
-    require(artifact["name"] == f"int-db01-noble-bootstrap-{commit}-{run}-1" and artifact["expired"] is False
+    endpoint = f"artifacts/{value['bootstrap_artifact']}"
+    artifact = github.read_github(token, endpoint)
+    require(artifact["id"] == int(value["bootstrap_artifact"]) and
+            artifact["name"] == f"int-db01-noble-bootstrap-{commit}-{run}-1" and artifact["expired"] is False
             and artifact["digest"] == "sha256:" + value["bootstrap_artifact_sha256"]
             and artifact["workflow_run"]["id"] == int(run) and artifact["workflow_run"]["head_sha"] == commit,
             "demo_a_bootstrap_artifact_provenance")
+    verify_bootstrap_archive(read_bootstrap_archive(endpoint, token), value["bootstrap_artifact_sha256"], value["bootstrap_receipt_sha256"])
 
 
 def protected_values(env, expected_ca):
@@ -117,16 +159,18 @@ def execute(bundle, env, decision, approval_hash, values, bootstrap):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("local", "protected-local", "execute"))
+    parser.add_argument("phase", choices=("local", "protected-admit", "protected-local", "execute"))
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--decision-sha256", required=True)
     args = parser.parse_args(argv)
     env = os.environ
     try:
+        if args.phase == "protected-admit":
+            db_runner.require_secretless_admission(env)
         decision = preflight.local_decision(args.bundle, args.decision_sha256, OPERATION, WORKFLOW, env, protected=args.phase != "local")
         bootstrap = prerequisite(args.bundle, decision["inputs"])
         bootstrap_provenance(decision["inputs"], env.get("GH_TOKEN", ""))
-        if args.phase == "local":
+        if args.phase in {"local", "protected-admit"}:
             print('{"status":"validated","activation_authorized":false}')
             return 0
         values = protected_values(env, decision["inputs"]["ca_certificate_sha256"])

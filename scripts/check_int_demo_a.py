@@ -15,11 +15,15 @@ SCHEMA = "clipforge-int-demo-a-review-1"
 BOUNDARY = {"project": "clipforgebeta2", "repository": "AldemaroCruz/ClipForge",
             "branch": "ci/bootstrap-sec03", "environment": "int", "profile": "demo-a",
             "instance_id": "7365414160255801909", "data_disk_id": "7382984635240536620"}
+PERSONAL_SQL = "personal_sql_intervention"
+DB_RUNNER_OPERATIONS = {"bootstrap", "guest_intervention", "secret_versions", PERSONAL_SQL}
+DB_RUNNER_SOURCE = "scripts/int_demo_a_db_runner.py"
 OPERATION_ROLES = {
     "guest_safety": {"noble_guest", "credential_toolchain"},
     "guest_intervention": {"noble_guest", "credential_toolchain"},
     "bootstrap": {"noble_guest", "credential_toolchain"},
     "human_sql_access": {"noble_guest", "personal_windows"},
+    PERSONAL_SQL: {"noble_guest", "credential_toolchain"},
     "secret_versions": {"credential_toolchain"},
     "oci_publication": {"api", "migration_client", "artifact_builder", "attestation_toolchain", "demo_tests", "credential_toolchain"},
     "plan_generation": {"api", "noble_guest", "credential_toolchain"},
@@ -28,11 +32,12 @@ OPERATION_ROLES = {
     "admin_job": {"api", "noble_guest", "credential_toolchain"},
     "api_demo": {"api", "noble_guest", "demo_tests", "credential_toolchain"},
 }
-POST_APPLY = {"migration_job", "admin_job", "api_demo"}
+POST_APPLY = {"migration_job", "admin_job", "api_demo", PERSONAL_SQL}
 PLAN_BOUND = {"locked_plan_apply"} | POST_APPLY
 CREDENTIAL_CHECKS = {
     "guest_safety": ("guest_package_scope_and_recovery",),
     "guest_intervention": ("guest_package_scope_and_recovery", "exact_guest_intervention_transport"),
+    PERSONAL_SQL: ("exact_personal_sql_and_receipt_chain",),
     "bootstrap": ("controlled_bootstrap_and_stop", "scoped_iam_and_protected_inputs"),
     "secret_versions": ("secret_target_and_version_receipt_protocol",),
     "oci_publication": ("oci_bytes_before_wif", "registry_digest_and_custody", "pinned_docker_engine_runner"),
@@ -41,6 +46,10 @@ CREDENTIAL_CHECKS = {
     "migration_job": ("pinned_job_identity_and_numeric_secrets",),
     "admin_job": ("pinned_admin_identity_and_protected_input",),
     "api_demo": ("iap_identity_and_revision",),
+}
+RUNNER_IMAGE_CHECKS = {
+    "exact_guest_intervention_transport": "guest_intervention_runner_mismatch",
+    "secret_target_and_version_receipt_protocol": "secret_versions_runner_mismatch",
 }
 # Roles are fixed by the profile, independent of the reports a producer sends.
 ROLES = {
@@ -78,6 +87,13 @@ BOOTSTRAP_TOOL_PINS = {
 }
 BOOTSTRAP_TOOL_ROLES = set(BOOTSTRAP_TOOL_PINS) | {"runner_image", "node", "python", "ssh", "ssh_keygen", "ca_bundle", "bootstrap_sources"}
 BOOTSTRAP_WORKFLOW = ".github/workflows/int-db01-noble-bootstrap.yml"
+PERSONAL_SQL_WORKFLOW = ".github/workflows/int-db01-noble-intervention.yml"
+PERSONAL_SQL_ASSETS = {"scripts/personal_sql/" + leaf for leaf in
+                       ("20-personal-inspection.sql", "29-verify-personal-acl.sql", "90-revoke-personal.sql")}
+PERSONAL_SQL_SOURCES = {PERSONAL_SQL_WORKFLOW, "scripts/int_noble_personal_sql.py",
+                        "scripts/int_noble_personal_sql_contract.py", "scripts/int_noble_personal_sql_guest.py",
+                        "scripts/int_noble_guest_intervention.py", "scripts/int_demo_a_receipts.py",
+                        "scripts/check_int_demo_a.py", "config/int-demo-a-noble-policy.json", *PERSONAL_SQL_ASSETS}
 REQUIRED_BOOTSTRAP_SOURCES = {
     BOOTSTRAP_WORKFLOW, "scripts/check_int_demo_a.py", "scripts/int_noble_bootstrap_db.py",
     "scripts/int_bootstrap_containment.py", "scripts/int_guest_inventory.py", "scripts/int_noble_first_observation.py",
@@ -263,7 +279,8 @@ def native_rows(root, role, artifact, binding, record, at):
 def verify_sources(source_root, rows, required, scope):
     require(isinstance(rows, dict) and required <= set(rows), "missing_" + scope + "_source")
     for name, expected in rows.items():
-        require(re.fullmatch(r"(?:\.github/workflows/[a-z0-9-]+\.yml|scripts/[a-z0-9_]+\.py|config/[a-z0-9-]+\.json)", name)
+        require((re.fullmatch(r"(?:\.github/workflows/[a-z0-9-]+\.yml|scripts/[a-z0-9_]+\.py|config/[a-z0-9-]+\.json)", name)
+                 or scope == "personal_sql" and name in PERSONAL_SQL_ASSETS)
                 and HEX.fullmatch(expected), "invalid_" + scope + "_source")
         path = source_root / name
         require(path.resolve() == path, "changed_" + scope + "_source")
@@ -275,7 +292,8 @@ def verify_sources(source_root, rows, required, scope):
             if name == "scripts/check_int_demo_a.py":
                 # The complete gate source is scanned. Only imports on the active verifier branch are runtime dependencies.
                 conditional = {"verify_publication_sources": ("publication", {DOCKER_SOURCE, DOCKER_PREPARE_SOURCE}),
-                               "verify_native_publication_sources": ("native_publication", {NATIVE_HOST, NATIVE_PUBLISHER})}
+                               "verify_native_publication_sources": ("native_publication", {NATIVE_HOST, NATIVE_PUBLISHER}),
+                               "verify_db_runner": ("db_runner", {DB_RUNNER_SOURCE})}
                 for function in tree.body:
                     if isinstance(function, ast.FunctionDef) and function.name in conditional:
                         active_scope, allowed = conditional[function.name]
@@ -296,12 +314,46 @@ def verify_sources(source_root, rows, required, scope):
                         require(imported in rows, "missing_" + scope + "_import")
 
 
+def verify_db_runner(root, subject, binding, at, source_root, env):
+    from scripts import int_demo_a_db_runner as runner
+
+    reference = subject["runner_host"]
+    proof = exact(evidence(root, reference), "binding facts targets sources checked_at expires_at", "db_runner_receipt_fields")
+    operation = binding["operation"]
+    facts = runner.checked(proof["facts"], operation)
+    require(proof["binding"] == binding and utc(proof["checked_at"]) <= at < utc(proof["expires_at"]),
+            "db_runner_binding_or_expiry")
+    sources = proof["sources"]
+    require(isinstance(sources, dict) and set(sources) == {DB_RUNNER_SOURCE, NATIVE_HOST}
+            and all(digest(local_regular(source_root / path)) == sha for path, sha in sources.items()),
+            "db_runner_source_mismatch")
+    scopes = {row["kind"]: evidence(root, evidence(root, row["receipt"])["scope"]) for row in subject["analyses"]}
+    require(all(scopes["bandit"]["sha256_by_source_path"].get(path) == sha
+                and scopes["gitleaks"]["sha256_by_source_path"].get(path) == sha for path, sha in sources.items()),
+            "db_runner_source_scan_scope")
+    trivy = scopes["trivy_toolchain"]
+    targets = proof["targets"]
+    require(trivy["db_runner_host_sha256"] == reference["sha256"] and trivy["db_runner_targets"] == targets
+            and set(targets) == set(facts["tools"]) | {"runner_kernel"}
+            and all(isinstance(rows, list) and rows and len(rows) == len(set(rows)) for rows in targets.values())
+            and {name for rows in targets.values() for name in rows} == set(trivy["targets"]), "db_runner_scan_scope")
+    native_purls = [package for target in targets["runner_kernel"] for package in trivy["targets"][target]]
+    for name, revision, _, _ in facts["kernel"]["packages"]:
+        kernel_purl = rf"pkg:deb/ubuntu/{re.escape(name)}@{re.escape(revision)}(?:\?.+)?"
+        require(any(re.fullmatch(kernel_purl, package) for package in native_purls), "db_runner_running_kernel_scan")
+    if env is not None:
+        runner.verify(facts, operation, env, binding)
+
+
 def verify_bootstrap_toolchain(root, subject, binding, at, runner_version, source_root, entrypoint):
+    personal = binding["operation"] == PERSONAL_SQL
+    source_role = "personal_sql_sources" if personal else "bootstrap_sources"
+    tool_roles = (BOOTSTRAP_TOOL_ROLES - {"bootstrap_sources"}) | {source_role}
     chain = subject["toolchain"]
     value = exact(evidence(root, chain), "binding components", "toolchain_scope_fields")
     require(subject["identity"] == "sha256:" + chain["sha256"] and value["binding"] == binding,
             "toolchain_identity_mismatch")
-    require(set(value["components"]) == BOOTSTRAP_TOOL_ROLES, "bootstrap_toolchain_components_incomplete")
+    require(set(value["components"]) == tool_roles, "bootstrap_toolchain_components_incomplete")
     trivy = next(item for item in subject["analyses"] if item["kind"] == "trivy_toolchain")
     receipt = evidence(root, trivy["receipt"])
     inventory = evidence(root, receipt["scope"])
@@ -324,19 +376,21 @@ def verify_bootstrap_toolchain(root, subject, binding, at, runner_version, sourc
                 and set(targets) <= expected_targets, "toolchain_component_coverage_missing:" + role)
         proof = evidence(root, component["evidence"])
         fields = "binding component source version sha256 targets checked_at expires_at"
-        if role == "bootstrap_sources":
+        if role == source_role:
             fields += " files"
         exact(proof, fields, "toolchain_component_receipt_fields")
         expected = {"binding": binding, "component": role, **{key: component[key] for key in ("source", "version", "sha256", "targets")}}
         require({key: proof[key] for key in expected} == expected, "toolchain_component_receipt_mismatch:" + role)
         require(utc(proof["checked_at"]) <= at < utc(proof["expires_at"]), "toolchain_component_receipt_expired:" + role)
-        if role == "bootstrap_sources":
+        if role == source_role:
             require(component["source"] == "reviewed-checkout" and component["version"] == binding["source_commit"]
                     and component["sha256"] == digest(json.dumps(proof["files"], sort_keys=True, separators=(",", ":")).encode()),
                     "bootstrap_source_manifest_mismatch")
-            verify_sources(source_root, proof["files"], REQUIRED_BOOTSTRAP_SOURCES, "bootstrap")
+            verify_sources(source_root, proof["files"],
+                           PERSONAL_SQL_SOURCES if personal else REQUIRED_BOOTSTRAP_SOURCES, "personal_sql" if personal else "bootstrap")
             files = proof["files"]
-            require(files[BOOTSTRAP_WORKFLOW] == entrypoint, "bootstrap_promotion_entrypoint_mismatch")
+            require(files[PERSONAL_SQL_WORKFLOW if personal else BOOTSTRAP_WORKFLOW] == entrypoint,
+                    "bootstrap_promotion_entrypoint_mismatch")
             bandit_sources = scan_scopes["bandit"]["sha256_by_source_path"]
             gitleaks_sources = scan_scopes["gitleaks"]["sha256_by_source_path"]
             require(all(bandit_sources.get(name) == sha for name, sha in files.items() if name.endswith(".py")),
@@ -605,7 +659,7 @@ def decision_control(row, operation, action, subjects):
 
 
 def verify_review(root, review, expected_binding, at, *, runner_version=None, source_root=REPO, guest_action=None,
-                  publication_profile="docker"):
+                  publication_profile="docker", db_runner_env=None):
     exact(review, "schema binding operations global_history promotion_graph exclusions subjects decisions apply_receipt", "review_fields")
     binding = review["binding"]
     exact(binding, "project repository branch environment profile instance_id data_disk_id source_commit operation "
@@ -667,13 +721,18 @@ def verify_review(root, review, expected_binding, at, *, runner_version=None, so
     publication_rules = set()
     for role in sorted(expected_roles):
         analyses, checks = role_contract(operation, role, publication_profile)
-        toolchain = operation == "bootstrap" and role == "credential_toolchain"
+        toolchain = operation in {"bootstrap", PERSONAL_SQL} and role == "credential_toolchain"
         publication = operation == "oci_publication" and role == "credential_toolchain"
+        db_role = operation in DB_RUNNER_OPERATIONS and role == "credential_toolchain"
+        db_runner = db_role and "runner_host" in review["subjects"][role]
+        require(not db_role or db_runner_env is None or db_runner, "db_runner_review_missing")
         fields = "identity analyses checks"
         if toolchain:
             fields += " toolchain"
         if publication:
             fields += " publication"
+        if db_runner:
+            fields += " runner_host"
         if role == "noble_guest":
             fields += " guest_control"
         value = exact(review["subjects"][role], fields, "subject_fields")
@@ -682,6 +741,8 @@ def verify_review(root, review, expected_binding, at, *, runner_version=None, so
         require(sorted(i["kind"] for i in value["analyses"]) == sorted(analyses), "analysis_closure_missing:" + role)
         if toolchain:
             verify_bootstrap_toolchain(root, value, binding, at, runner_version, source_root, graph["entrypoint_sha256"])
+        if db_runner:
+            verify_db_runner(root, value, binding, at, source_root, db_runner_env)
         if publication and publication_profile == "native-skopeo":
             verify_native_publication_sources(root, value, binding, source_root, graph["entrypoint_sha256"], runner_version)
         elif publication:
@@ -691,15 +752,16 @@ def verify_review(root, review, expected_binding, at, *, runner_version=None, so
         require(set(value["checks"]) == set(checks), "checks_incomplete:" + role)
         for key, ref in value["checks"].items():
             fields = "binding role artifact check status checked_at expires_at"
-            if key == "exact_guest_intervention_transport":
+            runner_check = RUNNER_IMAGE_CHECKS.get(key)
+            if runner_check:
                 fields += " runner_image"
             proof = exact(evidence(root, ref), fields, "check_proof_fields")
             require(proof["binding"] == binding and proof["role"] == role and proof["artifact"] == artifact
                     and proof["check"] == key and proof["status"] == "passed", "check_proof_mismatch:" + key)
             require(utc(proof["checked_at"]) <= at < utc(proof["expires_at"]), "expired_check:" + key)
-            if key == "exact_guest_intervention_transport":
+            if runner_check:
                 require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", proof["runner_image"])
-                        and (runner_version is None or proof["runner_image"] == runner_version), "guest_intervention_runner_mismatch")
+                        and (runner_version is None or proof["runner_image"] == runner_version), runner_check)
         for report in value["analyses"]:
             for key, row in native_rows(root, role, artifact, binding, report, at):
                 require(key not in required_findings, "duplicate_native_finding_identity")
@@ -756,7 +818,7 @@ def main(argv=None):
     parser.add_argument("--operation", choices=sorted(OPERATION_ROLES), required=True)
     parser.add_argument("--guest-action", choices=GUEST_ACTIONS)
     parser.add_argument("--publication-profile", choices=("docker", "native-skopeo"), default="docker")
-    parser.add_argument("--match-credential-runner", action="store_true", help="Require the measured runner revision used by bootstrap")
+    parser.add_argument("--match-credential-runner", action="store_true", help="Require the measured revision of the credentialed runner")
     args = parser.parse_args(argv)
     try:
         raw = local_regular(args.review)
@@ -767,11 +829,12 @@ def main(argv=None):
         runner_version = None
         if args.match_credential_runner:
             runner_version = os.environ.get("ImageVersion")
-            require(args.operation in {"bootstrap", "oci_publication", "guest_intervention"}
+            require(args.operation in DB_RUNNER_OPERATIONS | {"oci_publication"}
                     and os.environ.get("ImageOS") == "ubuntu24" and runner_version,
                     "missing_hosted_runner_identity")
         count = verify_review(args.review.resolve().parent, closed(raw), binding, datetime.now(timezone.utc),
-                              runner_version=runner_version, guest_action=args.guest_action, publication_profile=args.publication_profile)
+                              runner_version=runner_version, guest_action=args.guest_action, publication_profile=args.publication_profile,
+                              db_runner_env=os.environ if args.match_credential_runner and args.operation in DB_RUNNER_OPERATIONS else None)
         result = {"status": "coverage_ready_for_owner_review", "operation": args.operation,
                   "findings_bound": count, "activation_authorized": False}
         print(json.dumps(result))

@@ -94,6 +94,28 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("noble_independent_protected_input_digest", output)
         gate.assert_not_called()
 
+    def test_secretless_admission_rejects_host_before_tls_and_guest(self):
+        self.env.pop("GCP_ACCESS_TOKEN")
+        with (patch.object(launcher, "validate_local", return_value={"gate": "global"}),
+              patch.object(launcher.gate, "main", return_value=1) as gate,
+              patch.object(launcher, "check_tls") as tls, patch.object(launcher, "launch") as launch):
+            code, output = self.cli("protected-admit")
+        self.assertEqual(code, 1)
+        self.assertIn("noble_activation_evidence_blocked", output)
+        self.assertIn("--match-credential-runner", gate.call_args.args[0])
+        tls.assert_not_called()
+        launch.assert_not_called()
+
+    def test_admission_rejects_any_unexpected_secret_before_reading_bundle(self):
+        self.env.pop("GCP_ACCESS_TOKEN")
+        self.env["INT_PG_SERVER_KEY"] = "fixture-key"
+        with patch.object(launcher, "validate_local") as decide:
+            code, output = self.cli("protected-admit")
+        self.assertEqual(code, 1)
+        self.assertIn("db_runner_admission_requires_no_secret_inputs", output)
+        self.assertNotIn("fixture-key", output)
+        decide.assert_not_called()
+
     def test_cloud_discrepancy_at_actual_actions_run_stops_before_profile_or_ssh(self):
         ready = {"pin": {"control_plane": {"disk": launcher.payloads.DATA}}, "summary": {"candidate": {}}}
         (self.temp / "reports").mkdir()
