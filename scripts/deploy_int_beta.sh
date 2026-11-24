@@ -54,15 +54,16 @@ publish_beta() {
 }
 
 verify_revision() {
-    local service="$1" revision image url="$2"
-    [[ "$(run services describe "$service" --format='value(status.url)')" == "$url" ]]
-    revision="$(run services describe "$service" --format='value(status.latestReadyRevisionName)')"
+    local service="$1" revision image url="$2" description active
+    description="$(run services describe "$service" --format=json)"
+    jq -e --arg url "$url" '(.metadata.annotations["run.googleapis.com/urls"] | fromjson | index($url)) != null' \
+        <<< "$description" > /dev/null
+    revision="$(jq -er '.status.latestReadyRevisionName' <<< "$description")"
     [[ "$revision" =~ ^$service-[a-z0-9-]+$ ]]
     image="$(run revisions describe "$revision" --format='value(status.imageDigest)')"
     [[ "$image" == "$TF_VAR_web_image" ]]
-    local active
-    active="$(run services describe "$service" --format=json |
-        jq -er '[.status.traffic[] | select(.percent == 100)] | select(length == 1) | .[0].revisionName')"
+    active="$(jq -er '[.status.traffic[] | select(.percent == 100)] | select(length == 1) | .[0].revisionName' \
+        <<< "$description")"
     [[ "$active" == "$revision" ]]
     printf '%s\n' "$revision"
 }
