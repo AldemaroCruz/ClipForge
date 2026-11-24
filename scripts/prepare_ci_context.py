@@ -115,6 +115,7 @@ SUPPORT_FILES = PERSONAL_SQL_FILES | frozenset({
     'infra/gcp/int-demo-a/runtime.tf',
     'infra/gcp/int-demo-a/tests/noble-runtime.tftest.hcl',
     'tests/fixtures/int_foundation_close/d67e581-bandit-native.json',
+    'tests/fixtures/int_foundation_close/d67e581-check_int_foundation.py.txt',
     'tests/fixtures/int_foundation_close/d67e581-sast-review.json',
 })
 SUPPORT_DIRECTORIES = frozenset(

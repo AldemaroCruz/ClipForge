@@ -196,6 +196,7 @@
       "docs/INT-FOUNDATION-CLOSE.md",
       "docs/INT-FOUNDATION-POSTVERIFICATION.md",
       "tests/fixtures/int_foundation_close/d67e581-bandit-native.json",
+      "tests/fixtures/int_foundation_close/d67e581-check_int_foundation.py.txt",
       "tests/fixtures/int_foundation_close/d67e581-sast-review.json"
     ]
   },

@@ -174,21 +174,18 @@ class FoundationCloseContract(unittest.TestCase):
         native_raw=(fixtures/'d67e581-bandit-native.json').read_bytes()
         self.assertEqual(custody.sha256(native_raw),projection['origin']['bandit_native_sha256'])
         self.assertEqual(projection['origin']['control_commit'],'d67e5819123b0c05502daff3e402c9adaee74ba1')
-        # Reproduce this historical native report with its exact source bytes.
-        # The only current checker delta is the new verification test command;
-        # reversal must recover the historical proof hash, never a fabricated
-        # source fingerprint. Current source/scanner coverage remains a separate
-        # foundation gate and this fixture does not claim that newer evidence.
+        # Reproduce the native report with exact historical bytes. The archived
+        # checker is parsed as source for this proof and is never executed.
         historical=self.root/'historical-native-sast'
         source_names={row['resource'] for row in projection['sast']['findings']}
         self.assertEqual(source_names,{'scripts/check_int_foundation.py','scripts/check_tf_int.py',
                                        'scripts/int_release.py','scripts/tf_int_plan.py'})
         for name in source_names:
-            raw=(foundation.ROOT/name).read_bytes()
             if name=='scripts/check_int_foundation.py':
-                added=b', "tests.test_int_foundation_verify"'
-                self.assertEqual(raw.count(added),1)
-                raw=raw.replace(added,b'')
+                source=fixtures/'d67e581-check_int_foundation.py.txt'
+            else:
+                source=foundation.ROOT/name
+            raw=source.read_bytes()
             hashes={row['source_sha256'] for row in projection['sast']['findings'] if row['resource']==name}
             self.assertEqual(hashes,{custody.sha256(raw)})
             target=historical/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(raw)
