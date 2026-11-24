@@ -71,7 +71,8 @@ def runtime_plan(state, nonce, *, action="create"):
         "deletion_protection": True, "iap_enabled": True, "invoker_iam_disabled": False,
         "template": [{
             "service_account": "clipforge-api-int@clipforgebeta2.iam.gserviceaccount.com",
-            "scaling": [{"max_instance_count": 1, "min_instance_count": 0}],
+            "scaling": [{"max_instance_count": 1, "min_instance_count": 0,
+                         "cpu_utilization": None, "concurrency_utilization": None}],
             "containers": [{"image": state["image"], "command": ["python"],
                             "args": ["-m", "uvicorn", "app.int_demo:app"],
                             "env": [{"name": key, "value": value} for key, value in common_env.items()]}],
@@ -340,6 +341,19 @@ class DeliveryContractTests(unittest.TestCase):
         destructive["resource_changes"][0]["change"]["actions"] = ["delete", "create"]
         with self.assertRaises(delivery.DeliveryBlocked):
             delivery._verify_plan(destructive, state, "verify-123-1")
+
+    def test_plan_rejects_set_scaling_targets_new_keys_and_changed_limits(self):
+        state = {"commit": COMMIT, "image": IMAGE}
+        nonce = "prepare-123-1"
+        for field, value in (("cpu_utilization", 50), ("concurrency_utilization", 50),
+                             ("unreviewed_option", None), ("max_instance_count", 2),
+                             ("min_instance_count", 1)):
+            with self.subTest(field=field):
+                plan = runtime_plan(state, nonce)
+                scaling = plan["planned_values"]["root_module"]["resources"][0]["values"]["template"][0]["scaling"][0]
+                scaling[field] = value
+                with self.assertRaisesRegex(delivery.DeliveryBlocked, "terraform_service_identity_or_scaling"):
+                    delivery._verify_plan(plan, state, nonce)
 
     def test_acceptance_private_state_is_not_copied_to_public_receipt(self):
         with mock.patch.object(delivery.int_release_image, "archive_digest", return_value=DIGEST):

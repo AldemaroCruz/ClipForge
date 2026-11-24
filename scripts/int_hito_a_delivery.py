@@ -630,10 +630,13 @@ def _verify_plan(plan, state, acceptance_nonce):
             and service.get("iap_enabled") is True and service.get("invoker_iam_disabled") is False,
             "terraform_service_protection")
     template = _one(service.get("template"), "terraform_service_template")
+    scaling = _one(template.get("scaling"), "terraform_service_scaling")
+    optional_targets = {"cpu_utilization", "concurrency_utilization"}
     require(template.get("service_account") == "clipforge-api-int@clipforgebeta2.iam.gserviceaccount.com"
-            and _one(template.get("scaling"), "terraform_service_scaling") == {
-                "max_instance_count": 1, "min_instance_count": 0
-            }, "terraform_service_identity_or_scaling")
+            and scaling.get("max_instance_count") == 1 and scaling.get("min_instance_count") == 0
+            and set(scaling) <= {"max_instance_count", "min_instance_count"} | optional_targets
+            and all(scaling.get(target) is None for target in optional_targets),
+            "terraform_service_identity_or_scaling")
     container = _one(template.get("containers"), "terraform_service_container")
     require(container.get("image") == image and container.get("command") == ["python"]
             and "app.int_demo:app" in container.get("args", []), "terraform_service_image")

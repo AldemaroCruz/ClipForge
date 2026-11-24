@@ -1505,7 +1505,7 @@
       "path": "scripts/int_hito_a_delivery.py",
       "reason": "Import supports bounded shell-free gcloud and Terraform invocations; protected binaries are required to be absolute and version-pinned before use.",
       "severity": "LOW",
-      "source_sha256": "6cac42b9bd08c835e26361904fb3265f3007ba8aeef52bb22197a60dd807d7cf",
+      "source_sha256": "3c9953fab751a2af1a98fd0846d46edabb703fb7f2b35ea8267abf6ef3f48a45",
       "test_id": "B404"
     },
     {
@@ -1516,7 +1516,7 @@
       "path": "scripts/int_hito_a_delivery.py",
       "reason": "INT_PG_APP_PASSWORD is an environment-variable name used to retrieve a protected runtime value; the literal is not credential material and cannot authenticate.",
       "severity": "LOW",
-      "source_sha256": "6cac42b9bd08c835e26361904fb3265f3007ba8aeef52bb22197a60dd807d7cf",
+      "source_sha256": "3c9953fab751a2af1a98fd0846d46edabb703fb7f2b35ea8267abf6ef3f48a45",
       "test_id": "B105"
     },
     {
@@ -1527,7 +1527,7 @@
       "path": "scripts/int_hito_a_delivery.py",
       "reason": "INT_PG_MIGRATOR_PASSWORD is an environment-variable name used to retrieve a protected runtime value; the literal is not credential material and cannot authenticate.",
       "severity": "LOW",
-      "source_sha256": "6cac42b9bd08c835e26361904fb3265f3007ba8aeef52bb22197a60dd807d7cf",
+      "source_sha256": "3c9953fab751a2af1a98fd0846d46edabb703fb7f2b35ea8267abf6ef3f48a45",
       "test_id": "B105"
     },
     {
@@ -1538,7 +1538,7 @@
       "path": "scripts/int_hito_a_delivery.py",
       "reason": "The gcloud path comes from shutil.which, must be absolute, and receives only constant version and format flags in this preflight invocation.",
       "severity": "LOW",
-      "source_sha256": "6cac42b9bd08c835e26361904fb3265f3007ba8aeef52bb22197a60dd807d7cf",
+      "source_sha256": "3c9953fab751a2af1a98fd0846d46edabb703fb7f2b35ea8267abf6ef3f48a45",
       "test_id": "B603"
     },
     {
@@ -1549,7 +1549,7 @@
       "path": "scripts/int_hito_a_delivery.py",
       "reason": "All callers build argv from fixed tools, hard-coded INT resource identities, validated digests and private scratch paths; protected data uses stdin, outputs and time are bounded, and shell is disabled.",
       "severity": "LOW",
-      "source_sha256": "6cac42b9bd08c835e26361904fb3265f3007ba8aeef52bb22197a60dd807d7cf",
+      "source_sha256": "3c9953fab751a2af1a98fd0846d46edabb703fb7f2b35ea8267abf6ef3f48a45",
       "test_id": "B603"
     },
     {
@@ -1560,7 +1560,7 @@
       "path": "scripts/int_hito_a_delivery.py",
       "reason": "Terraform must resolve to an absolute path and is checked against exact version 1.15.8 with constant version argv and a closed CLI configuration before protected use.",
       "severity": "LOW",
-      "source_sha256": "6cac42b9bd08c835e26361904fb3265f3007ba8aeef52bb22197a60dd807d7cf",
+      "source_sha256": "3c9953fab751a2af1a98fd0846d46edabb703fb7f2b35ea8267abf6ef3f48a45",
       "test_id": "B603"
     },
     {
@@ -1571,7 +1571,7 @@
       "path": "scripts/int_hito_a_delivery.py",
       "reason": "Terraform argv uses the pinned binary, reviewed subcommands and private validated plan/module paths; ambient TF options are rejected, output and time are bounded, and shell is disabled.",
       "severity": "LOW",
-      "source_sha256": "6cac42b9bd08c835e26361904fb3265f3007ba8aeef52bb22197a60dd807d7cf",
+      "source_sha256": "3c9953fab751a2af1a98fd0846d46edabb703fb7f2b35ea8267abf6ef3f48a45",
       "test_id": "B603"
     }
   ],
