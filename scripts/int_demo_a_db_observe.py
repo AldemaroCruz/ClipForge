@@ -1,6 +1,7 @@
 """Collect review-only host and native scan evidence for APT on a standard runner."""
 
 import argparse
+from collections import Counter
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
@@ -20,6 +21,8 @@ BRANCH = "ci/bootstrap-sec03"
 WORKFLOW = ".github/workflows/int-db01-noble-apt-runner-observe.yml"
 JOB = "observe-apt-runner"
 OPERATION = "guest_intervention"
+OBSERVATION = "runner_observation"
+APPLICABLE_OPERATIONS = ("apt_preflight", "apt_upgrade")
 SCHEMA = "clipforge-int-noble-apt-runner-observation-1"
 SCANNER = "ghcr.io/aquasecurity/trivy:0.76.2@sha256:6fa071ef8daa2e58b90cbf1710bedca91adbb3bf98693533226f442035b836a6"
 SYSTEM_ENV = {"PATH": "/usr/bin:/bin", "LC_ALL": "C"}
@@ -31,6 +34,10 @@ METADATA_NAMES = {"package.json", "package-lock.json", "npm-shrinkwrap.json", "y
                   "Pipfile.lock", "poetry.lock", "requirements.txt", "METADATA", "PKG-INFO"}
 MAX_REPORT = 32 * 1024 * 1024
 MAX_DATABASE = 3 * 1024 * 1024 * 1024
+OS_RELEASE_INPUTS = {
+    "etc/os-release": {"ID": "ubuntu", "VERSION_ID": "24.04"},
+    "etc/lsb-release": {"DISTRIB_ID": "Ubuntu", "DISTRIB_RELEASE": "24.04"},
+}
 
 
 def verify_context(env, work):
@@ -136,10 +143,12 @@ def stage_metadata(source, dest):
     return selected
 
 
-def stage_dpkg(root, package_names):
-    with Path("/var/lib/dpkg/status").open(encoding="utf-8") as stream:
-        content = stream.read(16 * 1024 * 1024 + 1)
-    db.require(len(content) <= 16 * 1024 * 1024, "apt_observation_dpkg_input_bound")
+def stage_dpkg(root, package_names, *, host_root=Path("/")):
+    dpkg_path = "var/lib/dpkg/status"
+    with (host_root / dpkg_path).open("rb") as stream:
+        data = stream.read(16 * 1024 * 1024 + 1)
+    db.require(len(data) <= 16 * 1024 * 1024, "apt_observation_dpkg_input_bound")
+    content = data.decode("utf-8")
     raw, found = [], set()
     for paragraph in content.strip().split("\n\n"):
         name = re.search(r"(?m)^Package: ([^ ]+)$", paragraph)
@@ -151,12 +160,51 @@ def stage_dpkg(root, package_names):
             found.update(names)
             raw.append(paragraph)
     db.require(found == package_names, "apt_observation_dpkg_input_incomplete")
-    status = root / "var/lib/dpkg/status"
-    status.parent.mkdir(parents=True)
-    status.write_text("\n\n".join(raw) + "\n\n", encoding="utf-8")
-    release = root / "etc/os-release"
-    release.parent.mkdir()
-    release.write_text(common.bounded_text("/etc/os-release", 16384), encoding="ascii")
+    inputs = {dpkg_path: ("\n\n".join(raw) + "\n\n").encode("utf-8")}
+    for relative, required in OS_RELEASE_INPUTS.items():
+        with (host_root / relative).open("rb") as stream:
+            identity = stream.read(16385)
+        db.require(0 < len(identity) <= 16384, "apt_observation_os_identity_bound")
+        text = identity.decode("utf-8")
+        for key, value in required.items():
+            valid = {value}
+            if relative == "etc/os-release":
+                valid.update((f'"{value}"', f"'{value}'"))
+            matches = re.findall(rf"(?m)^{key}=(.*)$", text)
+            db.require(len(matches) == 1 and matches[0] in valid,
+                       "apt_observation_os_identity_mismatch")
+        inputs[relative] = identity
+    for relative, value in inputs.items():
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("xb") as stream:
+            stream.write(value)
+    return {relative: common.file_identity(root / relative) for relative in inputs}
+
+
+def dpkg_version(version, epoch, release):
+    return (f"{epoch}:" if epoch else "") + version + (f"-{release}" if release else "")
+
+
+def native_os_coverage(raw, targets, expected):
+    identity = (raw.get("Metadata") or {}).get("OS") or {}
+    ubuntu = identity.get("Family") == "ubuntu" and identity.get("Name") == "24.04"
+    os_targets = [target for target in targets if target.get("Class") == "os-pkgs"
+                  and target.get("Type") == "ubuntu"]
+    names = {row[0] for row in expected}
+    actual = Counter()
+    for target in os_targets:
+        for row in target.get("Packages") or []:
+            name = row["Name"]
+            qualified = f"{name}:{row.get('Arch', '')}"
+            actual[(qualified if qualified in names else name,
+                    dpkg_version(row["Version"], row.get("Epoch"), row.get("Release")),
+                    row.get("SrcName"),
+                    dpkg_version(row.get("SrcVersion", ""), row.get("SrcEpoch"), row.get("SrcRelease")))] += 1
+    wanted = Counter(map(tuple, expected))
+    return {"ubuntu_24_04": ubuntu, "ubuntu_os_target": len(os_targets) == len(targets) == 1,
+            "expected_package_count": len(expected), "reported_package_count": sum(actual.values()),
+            "inventory_match": bool(wanted) and actual == wanted}
 
 
 def database_receipt(work, image):
@@ -189,7 +237,8 @@ def collect(env, work):
     inventory = {row[0]: row for row in inventory_rows}
     facts, boot_id = db.live_facts(OPERATION, env, runner_temp, inventory=inventory_rows)
     measured = {"schema": SCHEMA, "facts": facts, "boot_id": boot_id, "run": env["GITHUB_RUN_ID"], "attempt": 1,
-                "job": JOB, "commit": env["GITHUB_SHA"], "operation": "apt_upgrade",
+                "job": JOB, "commit": env["GITHUB_SHA"], "operation": OBSERVATION,
+                "measurement_scope": OPERATION, "applicable_operations": list(APPLICABLE_OPERATIONS),
                 "observed_at": datetime.now(timezone.utc).isoformat(), "activation_authorized": False}
     write_json(work / "reports/host-facts.json", measured)
     paths = db.runner_component_paths(OPERATION, runner_temp)
@@ -234,9 +283,10 @@ def collect(env, work):
                                       for name, (files, missing) in linked.items()},
                 "os_scan_packages": [inventory[name] for name in sorted(selected)]}
     write_json(work / "reports/host-observed.json", observed)
-    stage_dpkg(work / "scan/runner-os", selected)
+    os_input_files = stage_dpkg(work / "scan/runner-os", selected)
     metadata = {role: stage_metadata(path, work / "scan/app-metadata" / role) for role, path in app_roots.items()}
     write_json(work / "reports/scan-inputs.json", {"native_os_input": "runner-os", "native_app_input": "app-metadata",
+                                                  "native_os_input_files": os_input_files,
                                                   "app_dependency_metadata": metadata,
                                                   "app_metadata_proves_effective_use": False})
 
@@ -251,43 +301,55 @@ def summarize(env, work, native_stage):
                                                        "activation_authorized": False})
         return 1
     observed = read_json(reports / "host-observed.json")
-    receipt = {"status": "host_observed_review_required", "activation_authorized": False, "operation": "apt_upgrade",
+    receipt = {"status": "host_observed_review_required", "activation_authorized": False, "operation": OBSERVATION,
+               "measurement_scope": OPERATION, "applicable_operations": list(APPLICABLE_OPERATIONS),
                "run": observed["run"], "commit": observed["commit"], "boot_id": observed["boot_id"], "scanner": SCANNER,
                "measurement_sha256": common.file_identity(reports / "host-observed.json")["sha256"], "native_reports": {},
                "known_scope_gaps": ["owner_dispositions", "effective_use_of_bundled_and_language_metadata",
                                     "independent_binding_and_protected_host_continuity"]}
     if any(value["missing"] for value in observed.get("runtime_libraries", {}).values()):
         receipt.update(status="host_rejected", reason="apt_observation_runtime_library_missing")
-    expected = {(package.split(":", 1)[0], version) for package, version, _, _ in observed["os_scan_packages"]}
+    inventory = observed["os_scan_packages"]
+    expected = {(package.split(":", 1)[0], version) for package, version, _, _ in inventory}
     kernel_packages = {package for package, _, _, _ in observed["facts"]["kernel"]["packages"]}
+    coverage_gaps = []
+    receipt["native_os_coverage"] = native_os_coverage({}, [], inventory)
     for name in ("trivy-os.json", "trivy-app-metadata.json"):
         path = reports / name
         if not path.is_file():
-            receipt["known_scope_gaps"].append(name)
+            coverage_gaps.append(name)
             continue
         raw = read_json(path)
         db.require(raw.get("SchemaVersion") == 2, "apt_observation_native_trivy_schema")
-        targets = raw.get("Results", [])
+        targets = raw.get("Results") or []
         if not targets or any(not item.get("Packages") for item in targets):
-            receipt["known_scope_gaps"].append(name + ":package_coverage_missing")
-        blockers = [row for target in targets for row in target.get("Vulnerabilities", [])
+            coverage_gaps.append(name + ":package_coverage_missing")
+        blockers = [row for target in targets for row in (target.get("Vulnerabilities") or [])
                     if row.get("Severity") in {"HIGH", "CRITICAL", "UNKNOWN"}]
         receipt["native_reports"][name] = {**common.file_identity(path), "targets": [item["Target"] for item in targets],
                                            "threshold_rows": len(blockers)}
         if name == "trivy-os.json":
-            actual = {(row["Name"], row["Version"]) for target in targets for row in target.get("Packages", [])}
-            if actual != expected:
-                receipt["known_scope_gaps"].append("native_os_package_set_mismatch")
+            coverage = native_os_coverage(raw, targets, inventory)
+            receipt["native_os_coverage"] = coverage
+            if not coverage["ubuntu_24_04"]:
+                coverage_gaps.append("native_os_identity_mismatch")
+            if not coverage["ubuntu_os_target"]:
+                coverage_gaps.append("native_os_target_missing_or_unexpected")
+            if not coverage["inventory_match"]:
+                coverage_gaps.append("native_os_package_set_mismatch")
             attributed = [row for row in blockers if (row["PkgName"], row["InstalledVersion"]) in expected]
             if attributed:
                 first = next((row for row in attributed if row["PkgName"] in kernel_packages), attributed[0])
                 receipt.update(status="host_rejected", reason="native_image_threshold:credential_toolchain",
                                first_os_blocker={key: first.get(key) for key in (
                                    "VulnerabilityID", "PkgName", "InstalledVersion", "FixedVersion", "Severity", "PkgIdentifier")})
+    receipt["known_scope_gaps"].extend(coverage_gaps)
     if native_stage != "success" or not (reports / "trivy-db-receipt.json").is_file():
         receipt["known_scope_gaps"].append("native_scan_incomplete")
         if receipt["status"] != "host_rejected":
             receipt.update(status="host_observation_blocked", reason="native_scan_incomplete")
+    elif coverage_gaps and receipt["status"] != "host_rejected":
+        receipt.update(status="host_observation_blocked", reason="native_scan_coverage_incomplete")
     write_json(reports / "host-result.json", receipt)
     print(json.dumps({key: receipt.get(key) for key in ("status", "reason", "activation_authorized")}))
     return int(receipt["status"] != "host_observed_review_required")
