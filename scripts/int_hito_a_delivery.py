@@ -282,12 +282,13 @@ def _gcloud_binary():
     return binary
 
 
-def _run(command, *, input_data=None, timeout=300, output_limit=2 * 1024 * 1024):
+def _run(command, *, input_data=None, timeout=300, output_limit=2 * 1024 * 1024,
+         operation="protected_command"):
     result = subprocess.run(command, input=input_data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             timeout=timeout, check=False)
     require(len(result.stdout) <= output_limit and len(result.stderr) <= 65536, "bounded_command_output")
     if result.returncode != 0:
-        raise DeliveryBlocked("protected_command_failed")
+        raise DeliveryBlocked(f"{operation}_exit_{result.returncode}")
     return result.stdout
 
 
@@ -326,7 +327,7 @@ def _noble_host_pin(env):
     return path, {"guest_boot_id": NOBLE_GUEST_BOOT_ID}
 
 
-def _ssh_public(source, env, *, protected_input=None, timeout=720):
+def _ssh_public(source, env, *, protected_input=None, timeout=720, operation="noble_ssh"):
     digest = sha256(source)
     known_hosts, host_record = _noble_host_pin(env)
     gcloud = _gcloud_binary()
@@ -339,7 +340,7 @@ def _ssh_public(source, env, *, protected_input=None, timeout=720):
     with tempfile.TemporaryDirectory(prefix="noble-ssh-", dir=scratch(env)) as key_dir:
         private_key = Path(key_dir) / "id_ed25519"
         _run(["/usr/bin/ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(private_key)],
-             timeout=30, output_limit=4096)
+             timeout=30, output_limit=4096, operation="noble_ssh_keygen")
         require(private_key.is_file() and not private_key.is_symlink()
                 and private_key.stat().st_mode & 0o777 == 0o600, "noble_ephemeral_key")
         public, _ = guest_transport.host_guest.public_key(
@@ -363,7 +364,7 @@ def _ssh_public(source, env, *, protected_input=None, timeout=720):
                     "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3",
                     "-l", selected["username"], "--", INSTANCE, _remote_loader(source, digest),
                 ]
-                raw = _run(command, input_data=protected_input, timeout=timeout)
+                raw = _run(command, input_data=protected_input, timeout=timeout, operation=operation)
             finally:
                 if client.import_attempted:
                     observed = guest_transport.find_own_key(client.profile(), public, expiration)
@@ -385,7 +386,7 @@ def _ssh_public(source, env, *, protected_input=None, timeout=720):
 
 def _probe_database(env):
     source = Path(db_probe.__file__).read_bytes()
-    value, host_record = _ssh_public(source, env, timeout=240)
+    value, host_record = _ssh_public(source, env, timeout=240, operation="noble_database_probe")
     require(value.get("schema") == "clipforge-int-hito-a-db-probe-1"
             and value.get("state") in {"blank", "configured"}
             and value.get("read_only") is True
@@ -401,7 +402,8 @@ def _verify_existing_credentials(values, env, boot_id):
     source = Path(db_credentials.__file__).read_bytes()
     request = canonical({"app_password": values["app_password"],
                          "migrator_password": values["migrator_password"]})
-    result, host_record = _ssh_public(source, env, protected_input=request, timeout=240)
+    result, host_record = _ssh_public(source, env, protected_input=request, timeout=240,
+                                     operation="noble_database_roles")
     require(host_record.get("guest_boot_id") == boot_id
             and result == {
                 "schema": "clipforge-int-hito-a-db-credentials-1",
@@ -492,7 +494,8 @@ def _bootstrap_database(values, env):
     operator = noble_payloads.operator_contract(operator_source)
     operator.validate_input(request, operator_sha)
     receipt, host_record = _ssh_public(operator_source, env,
-                                       protected_input=canonical(request), timeout=720)
+                                       protected_input=canonical(request), timeout=720,
+                                       operation="noble_database_bootstrap")
     receipt = operator.validate_receipt(receipt)
     require(host_record.get("guest_boot_id") == proof["guest_boot_id"]
             and receipt.get("exit_code") == 0

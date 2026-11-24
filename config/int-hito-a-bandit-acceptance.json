@@ -1472,7 +1472,7 @@
       "path": "scripts/int_hito_a_db_probe.py",
       "reason": "Import supports bounded read-only commands selected exclusively from fixed absolute lsblk, wipefs and systemctl argv; request data cannot select an executable or argument.",
       "severity": "LOW",
-      "source_sha256": "203ad4146b09ded87765d895764e054dc5286bb3eb52be66fe1f46fb6a6ef998",
+      "source_sha256": "1af4d794b4d9d0cdce822a3de1a6ce1d3c2090a05b7e2ab48c321edafd2fd7aa",
       "test_id": "B404"
     },
     {
@@ -1483,18 +1483,18 @@
       "path": "scripts/int_hito_a_db_probe.py",
       "reason": "The helper is called only with locally authored absolute lsblk and wipefs argv; it bounds output and time, supplies a minimal environment and never enables a shell.",
       "severity": "LOW",
-      "source_sha256": "203ad4146b09ded87765d895764e054dc5286bb3eb52be66fe1f46fb6a6ef998",
+      "source_sha256": "1af4d794b4d9d0cdce822a3de1a6ce1d3c2090a05b7e2ab48c321edafd2fd7aa",
       "test_id": "B603"
     },
     {
       "confidence": "HIGH",
       "context_sha256": "aac0cc739d19a96b8c6e8a9e8b805559575a2f291ab41b44182140335a07de01",
       "cwe": 78,
-      "line": 121,
+      "line": 125,
       "path": "scripts/int_hito_a_db_probe.py",
       "reason": "Absolute systemctl path and constant is-active/postgresql.service arguments are used with no external input, bounded output, a timeout and shell disabled.",
       "severity": "LOW",
-      "source_sha256": "203ad4146b09ded87765d895764e054dc5286bb3eb52be66fe1f46fb6a6ef998",
+      "source_sha256": "1af4d794b4d9d0cdce822a3de1a6ce1d3c2090a05b7e2ab48c321edafd2fd7aa",
       "test_id": "B603"
     },
     {
@@ -1505,7 +1505,7 @@
       "path": "scripts/int_hito_a_delivery.py",
       "reason": "Import supports bounded shell-free gcloud and Terraform invocations; protected binaries are required to be absolute and version-pinned before use.",
       "severity": "LOW",
-      "source_sha256": "250370ee30417400695a92e2520aaff3f9fcc9156a37630201d29b1bc4aacc14",
+      "source_sha256": "cd4ddb130cac3756fe9cf5ed1ed1486d26113effc8a61cc6de241dc1293fd11e",
       "test_id": "B404"
     },
     {
@@ -1516,7 +1516,7 @@
       "path": "scripts/int_hito_a_delivery.py",
       "reason": "INT_PG_APP_PASSWORD is an environment-variable name used to retrieve a protected runtime value; the literal is not credential material and cannot authenticate.",
       "severity": "LOW",
-      "source_sha256": "250370ee30417400695a92e2520aaff3f9fcc9156a37630201d29b1bc4aacc14",
+      "source_sha256": "cd4ddb130cac3756fe9cf5ed1ed1486d26113effc8a61cc6de241dc1293fd11e",
       "test_id": "B105"
     },
     {
@@ -1527,7 +1527,7 @@
       "path": "scripts/int_hito_a_delivery.py",
       "reason": "INT_PG_MIGRATOR_PASSWORD is an environment-variable name used to retrieve a protected runtime value; the literal is not credential material and cannot authenticate.",
       "severity": "LOW",
-      "source_sha256": "250370ee30417400695a92e2520aaff3f9fcc9156a37630201d29b1bc4aacc14",
+      "source_sha256": "cd4ddb130cac3756fe9cf5ed1ed1486d26113effc8a61cc6de241dc1293fd11e",
       "test_id": "B105"
     },
     {
@@ -1538,40 +1538,40 @@
       "path": "scripts/int_hito_a_delivery.py",
       "reason": "The gcloud path comes from shutil.which, must be absolute, and receives only constant version and format flags in this preflight invocation.",
       "severity": "LOW",
-      "source_sha256": "250370ee30417400695a92e2520aaff3f9fcc9156a37630201d29b1bc4aacc14",
+      "source_sha256": "cd4ddb130cac3756fe9cf5ed1ed1486d26113effc8a61cc6de241dc1293fd11e",
       "test_id": "B603"
     },
     {
       "confidence": "HIGH",
       "context_sha256": "d0e895305ce4fff2206d8d9ba3639d5465cf13521c715bca925d47d3a2210ea8",
       "cwe": 78,
-      "line": 286,
+      "line": 287,
       "path": "scripts/int_hito_a_delivery.py",
       "reason": "All callers build argv from fixed tools, hard-coded INT resource identities, validated digests and private scratch paths; protected data uses stdin, outputs and time are bounded, and shell is disabled.",
       "severity": "LOW",
-      "source_sha256": "250370ee30417400695a92e2520aaff3f9fcc9156a37630201d29b1bc4aacc14",
+      "source_sha256": "cd4ddb130cac3756fe9cf5ed1ed1486d26113effc8a61cc6de241dc1293fd11e",
       "test_id": "B603"
     },
     {
       "confidence": "HIGH",
       "context_sha256": "370b2cc0fcde6866d209dd4daa5379a68e200e21a2e94169821fa14d6849c5d8",
       "cwe": 78,
-      "line": 563,
+      "line": 566,
       "path": "scripts/int_hito_a_delivery.py",
       "reason": "Terraform must resolve to an absolute path and is checked against exact version 1.15.8 with constant version argv and a closed CLI configuration before protected use.",
       "severity": "LOW",
-      "source_sha256": "250370ee30417400695a92e2520aaff3f9fcc9156a37630201d29b1bc4aacc14",
+      "source_sha256": "cd4ddb130cac3756fe9cf5ed1ed1486d26113effc8a61cc6de241dc1293fd11e",
       "test_id": "B603"
     },
     {
       "confidence": "HIGH",
       "context_sha256": "4ee1c84a65b6fe9e01151e63ae76a23269b13ba122aa756567bb69332892cce6",
       "cwe": 78,
-      "line": 578,
+      "line": 581,
       "path": "scripts/int_hito_a_delivery.py",
       "reason": "Terraform argv uses the pinned binary, reviewed subcommands and private validated plan/module paths; ambient TF options are rejected, output and time are bounded, and shell is disabled.",
       "severity": "LOW",
-      "source_sha256": "250370ee30417400695a92e2520aaff3f9fcc9156a37630201d29b1bc4aacc14",
+      "source_sha256": "cd4ddb130cac3756fe9cf5ed1ed1486d26113effc8a61cc6de241dc1293fd11e",
       "test_id": "B603"
     }
   ],

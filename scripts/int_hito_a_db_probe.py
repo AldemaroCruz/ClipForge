@@ -93,11 +93,15 @@ def disk_metadata():
     require(len(rows) == 1 and rows[0].get("maj:min") == major_minor and rows[0].get("type") == "disk"
             and rows[0].get("size") == 20 * 1024 ** 3, "disk_identity")
     row = rows[0]
+    mounts = row.get("mountpoints")
+    require(isinstance(mounts, list)
+            and all(path is None or isinstance(path, str) and path for path in mounts),
+            "disk_mountpoints")
     return {
         "major_minor": major_minor,
         "serial": row.get("serial") or "clipforge-noble-pg-data",
         "fstype": row.get("fstype"),
-        "mountpoints": row.get("mountpoints") or [],
+        "mountpoints": [path for path in mounts if path is not None],
         "signature_count": len(signatures.get("signatures", [])),
     }
 

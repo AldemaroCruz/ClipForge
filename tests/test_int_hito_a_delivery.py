@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import tempfile
 import unittest
 from unittest import mock
@@ -285,6 +286,36 @@ class DeliveryContractTests(unittest.TestCase):
         with mock.patch.object(delivery, "NOBLE_HOST_ED25519", "ssh-ed25519 changed"), \
                 self.assertRaisesRegex(delivery.DeliveryBlocked, "noble_host_pin"):
             delivery._noble_host_pin(self.env)
+
+    def test_database_probe_distinguishes_null_mount_entries_from_real_mounts(self):
+        probe = delivery.db_probe
+        block = mock.Mock(st_mode=stat.S_IFBLK, st_rdev=0)
+        device = mock.Mock()
+        device.lstat.return_value = mock.Mock(st_mode=stat.S_IFLNK, st_uid=0)
+        device.resolve.return_value.stat.return_value = block
+        for mounts, expected in (([None], []), ([None, "/mounted"], ["/mounted"]),
+                                 ([False], None), ("", None)):
+            with self.subTest(mounts=mounts):
+                row = {"maj:min": "8:16", "type": "disk", "size": 20 * 1024 ** 3,
+                       "mountpoints": mounts}
+                with mock.patch.object(probe, "DEVICE", device), \
+                        mock.patch.object(probe.os, "major", return_value=8, create=True), \
+                        mock.patch.object(probe.os, "minor", return_value=16, create=True), \
+                        mock.patch.object(probe, "fixed", side_effect=[
+                            json.dumps({"blockdevices": [row]}).encode("ascii"), b'{"signatures":[]}',
+                        ]):
+                    if expected is None:
+                        with self.assertRaisesRegex(ValueError, "disk_mountpoints"):
+                            probe.disk_metadata()
+                    else:
+                        self.assertEqual(probe.disk_metadata()["mountpoints"], expected)
+
+    def test_remote_command_failure_reports_only_operation_and_exit(self):
+        failure = mock.Mock(stdout=b"fixture-private-stdout", stderr=b"fixture-private-stderr",
+                            returncode=2)
+        with mock.patch.object(delivery.subprocess, "run", return_value=failure), \
+                self.assertRaisesRegex(delivery.DeliveryBlocked, "^noble_database_probe_exit_2$"):
+            delivery._run(["/usr/bin/ssh"], operation="noble_database_probe")
 
     def test_noble_ssh_requires_the_published_ed25519_pin_and_private_key(self):
         known = "/private/known-hosts.fixture"
