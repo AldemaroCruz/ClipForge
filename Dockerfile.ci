@@ -52,6 +52,10 @@ COPY .gitleaks.toml ./
 COPY Dockerfile requirements.txt requirements-test.txt requirements-ci.lock requirements-ci-tools.txt requirements-ci-tools.lock ./
 # AUTH-01 packaging regressions inspect only these additional, explicit sources.
 COPY Dockerfile.dev Dockerfile.dev.dockerignore compose.dev.yaml ./
+# The verified context is prepared under umask 077. Keep its contents immutable
+# in the image while making them readable by the explicit non-root CI UID/GID.
+RUN find /app -xdev -type d -exec chmod 0555 {} + \
+ && find /app -xdev -type f -exec chmod 0444 {} +
 CMD ["python", "scripts/run_ci_tests.py", "--report", "/ci-results/test-summary.json"]
 
 # Separate browser preparation. Every added tool/library remains in the image
