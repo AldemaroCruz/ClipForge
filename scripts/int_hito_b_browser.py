@@ -42,7 +42,11 @@ MAX_CLIP_BYTES = 200 * 1024 * 1024
 TIMEOUT = 30_000
 SCHEMA = "clipforge-int-hito-b-browser-1"
 MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}")
-EDITORIAL_BRIEF = "Elige un momento claro sobre cómo se conservaron las semillas del huerto comunitario."
+EDITORIAL_BRIEF = (
+    "Elige un fragmento del catálogo que cuente cómo los vecinos recuperaron el huerto comunitario. "
+    "Puede mostrar cualquiera de estas acciones: guardar semillas de maíz, turnarse para regar "
+    "o enseñar a las escuelas. Una acción clara basta para proponer un clip."
+)
 
 
 def cloud_revisions(frontend, api):
@@ -473,9 +477,12 @@ def finish_selection(page, job, receipt, model, duration):
     models = selection.get("provider_models_received", [])
     require(selection.get("provider") == "openai" and selection.get("model") == model
             and selection.get("provider_response_received") is True
-            and 1 <= selection.get("provider_responses", 0) <= selection.get("provider_calls", 0)
-            and models and all(MODEL.fullmatch(value) for value in models)
-            and 1 <= len(candidates) <= 5 and windows, "real_provider_proposal_receipt")
+            and 1 <= selection.get("provider_responses", 0) <= selection.get("provider_calls", 0),
+            "real_provider_response_receipt")
+    require(isinstance(models, list) and models
+            and all(isinstance(value, str) and MODEL.fullmatch(value) for value in models),
+            "real_provider_model_receipt")
+    require(1 <= len(candidates) <= 5 and windows, "real_provider_proposal_receipt")
     require(abs(windows[0]["start"]) <= .1 and windows[-1]["end"] >= duration - .1
             and selection.get("last_transcript_end", 0) >= duration - 45,
             "editorial_selection_did_not_cover_full_video")
