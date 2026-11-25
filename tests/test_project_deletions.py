@@ -156,6 +156,9 @@ class ProjectDeletionDatabaseTests(unittest.TestCase):
         self.assertEqual(repository.document(surviving)["payload"]["status"], "completed")
         with self.engine.begin() as connection:
             self.assertEqual(connection.execute(text("SELECT sum(planned) FROM cloud_deleted_selection_calls")).scalar_one(), 2)
+            with self.assertRaises(HTTPException) as budget:
+                repository.admit_selection(connection, surviving, "2026-11-25", 1, 2, 5)
+            self.assertEqual(budget.exception.status_code, 429)
         with self.assertRaises(HTTPException) as rejected:
             pilot._reserve(self.owner, key, upload["filename"], upload["bytes"])
         self.assertEqual(rejected.exception.status_code, 404)

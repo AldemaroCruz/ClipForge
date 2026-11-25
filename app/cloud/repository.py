@@ -143,7 +143,7 @@ def admit_selection(c, job_id, day, planned_calls, daily_limit, max_runs):
         raise HTTPException(409, "Este trabajo alcanzó el máximo de análisis guardados.")
     reserved = c.execute(text("""
         SELECT COALESCE(sum(CAST(payload->>'provider_calls_planned' AS integer)),0)
-             + COALESCE((SELECT planned FROM cloud_deleted_selection_calls WHERE day_utc=CAST(:day AS date)),0)
+             + COALESCE((SELECT planned FROM cloud_deleted_selection_calls WHERE day_utc=CAST(CAST(:day AS text) AS date)),0)
         FROM cloud_documents WHERE kind='selection' AND payload->>'day_utc'=:day
         """), {"day": day}).scalar_one()
     if reserved + planned_calls > daily_limit:
