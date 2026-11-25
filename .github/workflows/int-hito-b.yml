@@ -320,22 +320,22 @@ jobs:
           workload_identity_provider: ${{ env.WIF_PROVIDER }}
           service_account: clipforge-terraform-int@clipforgebeta2.iam.gserviceaccount.com
           token_format: access_token
-          access_token_lifetime: 1800s
+          access_token_lifetime: 3600s
           create_credentials_file: true
           export_environment_variables: true
           cleanup_credentials: true
       - name: Apply only the scoped beta plan
         env:
           GOOGLE_OAUTH_ACCESS_TOKEN: ${{ steps.terraform_identity.outputs.access_token }}
+          CLOUDSDK_AUTH_ACCESS_TOKEN: ${{ steps.terraform_identity.outputs.access_token }}
         run: bash scripts/deploy_int_beta.sh prepare
 
       - name: Run the additive PostgreSQL migration from INT
         env:
-          CLOUDSDK_AUTH_ACCESS_TOKEN: ${{ steps.publishing.outputs.access_token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          gcloud run jobs execute clipforge-int-beta-migrate --project clipforgebeta2 --region us-central1 --wait
+          CLIPFORGE_GCP_DEPLOY_TOKEN: ${{ steps.publishing.outputs.access_token }}
+          GOOGLE_OAUTH_ACCESS_TOKEN: ${{ steps.terraform_identity.outputs.access_token }}
+          CLOUDSDK_AUTH_ACCESS_TOKEN: ${{ steps.terraform_identity.outputs.access_token }}
+        run: bash scripts/deploy_int_beta.sh migrate
 
       - name: Open the public frontend and check the real creator flow
         env:

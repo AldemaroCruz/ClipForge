@@ -18,6 +18,7 @@ import tempfile
 from time import monotonic
 from urllib.parse import urlsplit
 
+from app.cloud.config import BETA_MAX_BYTES, BETA_MAX_DIMENSION, BETA_MAX_SECONDS, BETA_WORKER_CONCURRENCY
 from app.media import probe_media
 from scripts import int_hito_a_acceptance as shared_http
 from scripts.int_hito_a_browser import (
@@ -188,16 +189,17 @@ def upload_video(page, path, report, transfer):
     response = browser_get(page, "/beta/limits")
     limits = response["body"]
     require(response["status"] == 200 and isinstance(limits, dict), "pilot_limits_unavailable")
-    require(limits["selection_mode"] == "heuristic_voice" and limits["worker_concurrency"] == 1
+    require(limits["selection_mode"] == "heuristic_voice" and limits["worker_concurrency"] == BETA_WORKER_CONCURRENCY
             and limits["active_jobs_per_user"] == 1 and
-            limits["formats"] == ["MP4 (H.264 + AAC)"] and limits["max_bytes"] == 100 * 1024 * 1024
-            and limits["min_duration_seconds"] == 20 and limits["max_duration_seconds"] == 600
-            and limits["max_dimension"] == 1920, "pilot_limits_unexpected")
+            limits["formats"] == ["MP4 (H.264 + AAC)"] and limits["max_bytes"] == BETA_MAX_BYTES
+            and limits["min_duration_seconds"] == 20 and limits["max_duration_seconds"] == BETA_MAX_SECONDS
+            and limits["max_dimension"] == BETA_MAX_DIMENSION, "pilot_limits_unexpected")
     report["limits"] = {key: limits[key] for key in (
         "selection_mode", "worker_concurrency", "active_jobs_per_user", "formats", "max_bytes",
         "min_duration_seconds", "max_duration_seconds", "max_dimension",
     )}
-    require("100 MiB" in page.locator("#upload-limits").inner_text(), "pilot_limits_hidden")
+    require(f"{BETA_MAX_BYTES // (1024 * 1024)} MiB" in page.locator("#upload-limits").inner_text(),
+            "pilot_limits_hidden")
     page.locator("#upload-video").evaluate("""(input, bytes) => {
       const data = new DataTransfer();
       const unit = new Blob([new Uint8Array(1024 * 1024)]);

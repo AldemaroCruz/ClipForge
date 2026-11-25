@@ -105,6 +105,10 @@ resource "google_cloud_run_v2_service" "api" {
   invoker_iam_disabled = false
   iap_enabled          = false
   custom_audiences     = ["https://clipforge-int-beta-api-816643438938.us-central1.run.app"]
+  traffic {
+    type    = "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST"
+    percent = 100
+  }
   template {
     service_account                  = local.api_identity
     timeout                          = "180s"
@@ -179,6 +183,10 @@ resource "google_cloud_run_v2_service" "frontend" {
   ingress              = "INGRESS_TRAFFIC_ALL"
   invoker_iam_disabled = var.serve_public
   iap_enabled          = false
+  traffic {
+    type    = "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST"
+    percent = 100
+  }
   template {
     service_account                  = local.frontend_identity
     timeout                          = "180s"

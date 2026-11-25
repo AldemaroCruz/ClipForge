@@ -199,24 +199,28 @@ def process(job_id: str) -> None:
 
 def _beta_audio(source: Path) -> Any:
     import numpy as np
-    from .cloud.config import BETA_MAX_SECONDS
+    from .cloud.config import BETA_AUDIO_PADDING_SECONDS, BETA_MAX_SECONDS
 
     samples_per_second = 16000
     # Permit normal AAC rounding and detect media with timelines that exceed
     # the admitted duration instead of silently transcribing a truncated file.
     probe_seconds = BETA_MAX_SECONDS + 1
     byte_limit = probe_seconds * samples_per_second * 2
+    admitted_bytes = int((BETA_MAX_SECONDS + BETA_AUDIO_PADDING_SECONDS) * samples_per_second) * 2
     with tempfile.TemporaryDirectory(prefix=".audio-", dir=source.parent) as directory:
         pcm = Path(directory) / "voice.pcm"
         run_ffmpeg(
             "-protocol_whitelist", "file,pipe", "-f", "mov", "-i", source.resolve(),
             "-map", "0:a:0", "-vn", "-sn", "-dn",
+            # PCM has no timestamps. Fill timeline gaps so Whisper offsets
+            # still refer to positions in the original video.
+            "-af", "aresample=async=1:first_pts=0",
             "-ar", samples_per_second, "-ac", 1, "-c:a", "pcm_s16le",
             "-t", probe_seconds, "-fs", byte_limit, "-f", "s16le", pcm,
         )
         with pcm.open("rb") as audio:
             data = audio.read(byte_limit + 1)
-    if len(data) >= byte_limit:
+    if len(data) > admitted_bytes:
         raise MediaValidationError("VIDEO_OUTSIDE_LIMITS", "La pista de audio excede la duración admitida.")
     if not data or len(data) % 2:
         raise MediaValidationError("UNSUPPORTED_MEDIA", "No se pudo decodificar la pista de audio.")

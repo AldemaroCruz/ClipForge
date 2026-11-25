@@ -7,8 +7,8 @@ cuando el administrador te confirme la invitación. Inicia sesión con los datos
 de tu cuenta ClipForge. En **Mi cuenta** puedes cambiar tu contraseña y cerrar
 sesión.
 
-1. Selecciona un MP4 con video H.264 y audio AAC. La beta admite hasta 100 MiB,
-   entre 20 segundos y 10 minutos de duración y hasta 1920 píxeles por lado.
+1. Selecciona un MP4 con video H.264 y audio AAC. La beta admite hasta 300 MiB,
+   entre 20 segundos y 20 minutos de duración y hasta 1920 píxeles por lado.
 2. Pulsa **Subir y procesar**. La página muestra la carga y el estado del
    procesamiento por separado. Puedes volver al trabajo desde **Mis trabajos**
    al recargar o iniciar sesión de nuevo. La carga directa se reanuda tras
@@ -22,7 +22,7 @@ sesión.
    disponibles como archivos separados.
 
 El piloto admite un trabajo activo por creador y cuatro trabajos activos en
-total, incluidas las cargas vigentes. El worker procesa uno a la vez. Las
+total, incluidas las cargas vigentes. Hasta tres trabajos pueden procesarse a la vez. Las
 reservas caducan a las 24 horas y un fallo recuperable admite un reintento.
 El editor avanzado y la publicación automática quedan fuera del piloto.
 Envía tus comentarios por escrito fuera de ClipForge.
@@ -63,7 +63,8 @@ entrega, se deshabilita el acceso público del frontend beta mediante el plan re
 de `infra/gcp/int-beta` con `serve_public=false`. El Hito A sigue disponible
 en su servicio con IAP. Para revertir una entrega posterior, restaura los
 digest de la última entrega aceptada en los servicios beta y el job worker,
-y aplica el plan del mismo módulo. Conserva la base, los objetos y las
+y aplica el plan del mismo módulo. El workflow restaura las revisiones activas
+y el digest del worker anterior si falla la aceptación. Conserva la base, los objetos y las
 migraciones. No ejecutes `terraform destroy` ni reviertas el esquema.
 
 La entrega registra el commit, las revisiones, los digest y la prueba de

@@ -81,6 +81,42 @@ capture_rollout() {
         > "$reports/$phase-rollout.json"
 }
 
+capture_previous() {
+    local version front previous_api worker
+    if ! version="$(curl --silent --fail --max-time 10 "$public/environment" |
+        jq -er 'select(.environment == "INT") | .revision')"; then
+        return 0
+    fi
+    [[ "$version" =~ ^[a-f0-9]{40}$ ]]
+    front="$(run services describe "$frontend" --format=json |
+        jq -er '.status.traffic[] | select(.percent == 100) | .revisionName')"
+    previous_api="$(run services describe "$api" --format=json |
+        jq -er '.status.traffic[] | select(.percent == 100) | .revisionName')"
+    worker="$(run jobs describe clipforge-int-worker --format='value(spec.template.spec.template.spec.containers[0].image)')"
+    [[ "$front" =~ ^clipforge-int-beta-[0-9][0-9a-z-]+$ &&
+       "$previous_api" =~ ^clipforge-int-beta-api-[0-9][0-9a-z-]+$ &&
+       "$worker" =~ ^us-central1-docker\.pkg\.dev/clipforgebeta2/clipforge-int/beta-worker@sha256:[a-f0-9]{64}$ ]]
+    jq -n --arg commit "$version" --arg frontend "$front" --arg api "$previous_api" --arg worker "$worker" \
+        '{commit:$commit,frontend_revision:$frontend,api_revision:$api,worker_image:$worker}' \
+        > "$reports/previous-live.json"
+}
+
+restore_previous() {
+    local previous="$reports/previous-live.json" version front previous_api worker
+    version="$(jq -er '.commit' "$previous")" || return
+    front="$(jq -er '.frontend_revision' "$previous")" || return
+    previous_api="$(jq -er '.api_revision' "$previous")" || return
+    worker="$(jq -er '.worker_image' "$previous")" || return
+    run services update "$frontend" --invoker-iam-check || return
+    run jobs update clipforge-int-worker --image "$worker" --update-env-vars "CLIPFORGE_REVISION=$version" || return
+    run services update-traffic "$api" --to-revisions "$previous_api=100" || return
+    run services update-traffic "$frontend" --to-revisions "$front=100" || return
+    run services update "$frontend" --no-invoker-iam-check || return
+    curl --silent --fail --max-time 15 --retry 3 "$public/health" | jq -e '.status == "ok"' >/dev/null || return
+    curl --silent --fail --max-time 15 "$public/environment" |
+        jq -e --arg version "$version" '.revision == $version' >/dev/null
+}
+
 create_fixture() {
     local speech
     speech='Este es un ejemplo real para comprobar la beta de ClipForge. Primero voy a subir mi video. Después voy a revisar varios clips. El audio se debe entender con claridad. Me interesa compartir una historia corta, con cortes que conservan la idea principal. Cuando termine puedo descargar los resultados y enviar un comentario sobre el clip.'
@@ -93,6 +129,27 @@ create_fixture() {
     [[ "$(stat -c %s "$DELIVERY_DIR/fixture.mp4")" -gt 8388608 ]]
 }
 
+create_capacity_fixtures() {
+    local minutes
+    mkdir "$DELIVERY_DIR/capacity"
+    for minutes in 3 5 10 20; do
+        ffmpeg -hide_banner -loglevel error -nostdin \
+            -f lavfi -i 'testsrc2=size=854x480:rate=24' -stream_loop -1 -i "$DELIVERY_DIR/voice.wav" \
+            -t "$((minutes * 60))" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -threads 2 \
+            -b:v 1300k -minrate 1300k -maxrate 1300k -bufsize 2600k -x264-params nal-hrd=cbr \
+            -c:a aac -b:a 96k -movflags +faststart "$DELIVERY_DIR/capacity/${minutes}m.mp4"
+    done
+}
+
+capacity_acceptance() {
+    create_capacity_fixtures
+    env -u CLOUDSDK_AUTH_ACCESS_TOKEN -u GOOGLE_OAUTH_ACCESS_TOKEN \
+        -u GOOGLE_APPLICATION_CREDENTIALS -u CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE \
+        python -m scripts.int_hito_b_capacity_browser --commit "$GITHUB_SHA" \
+        --frontend-revision "$FRONTEND_REVISION" --api-revision "$API_REVISION" \
+        --fixture-dir "$DELIVERY_DIR/capacity" --report "$reports/browser-capacity.json"
+}
+
 browser_acceptance() {
     local phase="$1"
     shift
@@ -103,10 +160,12 @@ browser_acceptance() {
         --state "$DELIVERY_DIR/browser-private.json" --report "$reports/browser-$phase.json" "$@"
 }
 
-rollback_first_delivery() {
+rollback_delivery() {
     local result="$?"
     if [[ "$result" -ne 0 ]]; then
-        if apply_beta false "run-$GITHUB_RUN_ID-b$GITHUB_RUN_ATTEMPT" hidden; then
+        if [[ -f "$reports/previous-live.json" ]] && restore_previous; then
+            printf '%s\n' 'The last healthy public beta revisions and worker digest were restored.' > "$reports/acceptance-failure.txt"
+        elif apply_beta false "run-$GITHUB_RUN_ID-b$GITHUB_RUN_ATTEMPT" hidden; then
             printf '%s\n' 'Public access disabled after unsuccessful Hito B acceptance.' > "$reports/acceptance-failure.txt"
         else
             printf '%s\n' 'Hito B acceptance failed and disabling public access also failed.' > "$reports/acceptance-failure.txt"
@@ -122,10 +181,18 @@ case "${1:-}" in
         tf init -input=false -lockfile=readonly -no-color \
             -backend-config=bucket=clipforgebeta2-tfstate-int -backend-config=prefix=terraform/int-beta
         tf validate -no-color
+        capture_previous
+        trap rollback_delivery EXIT
         apply_beta false "run-$GITHUB_RUN_ID-b$GITHUB_RUN_ATTEMPT" private
+        trap - EXIT
+        ;;
+    migrate)
+        trap rollback_delivery EXIT
+        CLOUDSDK_AUTH_ACCESS_TOKEN="$CLIPFORGE_GCP_DEPLOY_TOKEN" run jobs execute clipforge-int-beta-migrate --wait
+        trap - EXIT
         ;;
     acceptance)
-        trap rollback_first_delivery EXIT
+        trap rollback_delivery EXIT
         create_fixture
         apply_beta true "run-$GITHUB_RUN_ID-b$GITHUB_RUN_ATTEMPT" public
         capture_rollout before
@@ -133,6 +200,7 @@ case "${1:-}" in
         apply_beta true "run-$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT" replacement
         capture_rollout after
         browser_acceptance verify
+        capacity_acceptance
         trap - EXIT
         ;;
     *)

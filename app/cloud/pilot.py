@@ -16,7 +16,7 @@ from . import repository as repo
 from . import storage
 from .config import (
     BETA_MAX_ACTIVE, BETA_MAX_BYTES, BETA_MAX_DIMENSION, BETA_MAX_SECONDS,
-    BETA_MIN_SECONDS, BETA_UPLOAD_SECONDS,
+    BETA_MIN_SECONDS, BETA_UPLOAD_SECONDS, BETA_WORKER_CONCURRENCY,
 )
 from .router import _dispatch
 
@@ -34,7 +34,7 @@ class Upload(BaseModel):
 def limits():
     return {"max_bytes": BETA_MAX_BYTES, "min_duration_seconds": BETA_MIN_SECONDS,
             "max_duration_seconds": BETA_MAX_SECONDS, "max_dimension": BETA_MAX_DIMENSION,
-            "formats": ["MP4 (H.264 + AAC)"], "worker_concurrency": 1,
+            "formats": ["MP4 (H.264 + AAC)"], "worker_concurrency": BETA_WORKER_CONCURRENCY,
             "active_jobs_per_user": 1, "queue_capacity": BETA_MAX_ACTIVE,
             "selection_mode": "heuristic_voice"}
 
@@ -80,7 +80,7 @@ def create_upload(payload: Upload, request: Request):
             or re.search(r"[\x00-\x1f\x7f]", filename)):
         raise HTTPException(422, "Selecciona un archivo MP4 con un nombre válido.")
     if payload.bytes > BETA_MAX_BYTES:
-        raise HTTPException(413, "El video supera el máximo de 100 MiB del piloto.")
+        raise HTTPException(413, f"El video supera el máximo de {BETA_MAX_BYTES // (1024 * 1024)} MiB del piloto.")
     key = request.headers.get("Idempotency-Key")
     if not key:
         raise HTTPException(428, "Se requiere Idempotency-Key para crear una carga.")

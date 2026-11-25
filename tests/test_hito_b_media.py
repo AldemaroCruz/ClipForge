@@ -178,9 +178,15 @@ class PilotMediaTests(TestCase):
         with patch.object(media, "probe_media", return_value=valid) as probe:
             self.assertEqual(media.inspect_beta_media(original), valid)
             probe.assert_called_once_with(original, pilot=True)
+            boundary = {**valid, "duration_seconds": BETA_MAX_SECONDS,
+                        "container_duration_seconds": BETA_MAX_SECONDS + 0.02,
+                        "audio_duration_seconds": BETA_MAX_SECONDS + 0.02}
+            probe.return_value = boundary
+            self.assertEqual(media.inspect_beta_media(original), boundary)
             for changes, code in (
                 ({"duration_seconds": 19}, "VIDEO_TOO_SHORT"),
                 ({"duration_seconds": None}, "VIDEO_OUTSIDE_LIMITS"),
+                ({"duration_seconds": BETA_MAX_SECONDS + 0.02}, "VIDEO_OUTSIDE_LIMITS"),
                 ({"audio_duration_seconds": BETA_MAX_SECONDS + 1}, "VIDEO_OUTSIDE_LIMITS"),
                 ({"width": 1921}, "VIDEO_OUTSIDE_LIMITS"),
                 ({"sample_aspect_ratio": "100:1"}, "VIDEO_OUTSIDE_LIMITS"),
@@ -208,9 +214,24 @@ class PilotMediaTests(TestCase):
                 command = run.call_args.args
                 self.assertEqual(command[:6], ("-protocol_whitelist", "file,pipe", "-f", "mov", "-i", source.resolve()))
                 self.assertIn(16000, command)
+                self.assertEqual(command[command.index("-af") + 1], "aresample=async=1:first_pts=0")
                 self.assertEqual(command[command.index("-t") + 1], BETA_MAX_SECONDS + 1)
                 self.assertEqual(command[command.index("-fs") + 1], (BETA_MAX_SECONDS + 1) * 32000)
                 self.assertFalse(command[-1].parent.exists())
+
+    def test_audio_budget_exhaustion_fails_before_passing_truncated_pcm_to_asr(self):
+        with TemporaryDirectory() as temporary, patch.dict(os.environ, {"CLIPFORGE_DATA_DIR": temporary}):
+            from app import main
+            from app.cloud import config
+
+            def decode(*args):
+                args[-1].write_bytes(bytes(args[args.index("-fs") + 1]))
+
+            with (patch.object(config, "BETA_MAX_SECONDS", 1),
+                  patch.object(main, "run_ffmpeg", side_effect=decode),
+                  self.assertRaises(media.MediaValidationError) as rejected):
+                main._beta_audio(Path(temporary) / "input.mp4")
+            self.assertEqual(rejected.exception.code, "VIDEO_OUTSIDE_LIMITS")
 
     def test_pilot_clip_has_bounded_encoding_options(self):
         from app.presentation import Presentation

@@ -9,9 +9,9 @@
       "severity": "LOW",
       "confidence": "HIGH",
       "cwe": 78,
-      "line": 13,
+      "line": 12,
       "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
-      "source_sha256": "53942d2e9962d153fef5c2a368fa7795bb0ff8c76b041aa1f2a6de591929b112",
+      "source_sha256": "dfe7f5d53aea91b4921ae46c4b04fe305c90c89537af5a2fb440407072d57a55",
       "reason": "Imports subprocess for the reviewed worker child, bounded waits and process-group termination."
     },
     {
@@ -20,9 +20,9 @@
       "severity": "LOW",
       "confidence": "HIGH",
       "cwe": 78,
-      "line": 191,
+      "line": 225,
       "context_sha256": "8415e97bd461f03909d1aacf75962f85fa0562255b9f8ac40d2e096d52e95aae",
-      "source_sha256": "53942d2e9962d153fef5c2a368fa7795bb0ff8c76b041aa1f2a6de591929b112",
+      "source_sha256": "dfe7f5d53aea91b4921ae46c4b04fe305c90c89537af5a2fb440407072d57a55",
       "reason": "A fixed Python interpreter and worker module run without a shell. The UUID and fence come from the claimed PostgreSQL task and the child validates both before execution."
     },
     {
@@ -33,7 +33,7 @@
       "cwe": 377,
       "line": 39,
       "context_sha256": "0efe935ca8a29845fb3caad89d0989ee45c5286fab44f8c5106bc737c4b9aef6",
-      "source_sha256": "42ac844545aa60a25af8c08b051d994a4c10eb5ed7c815e5b25d82ad900f3110",
+      "source_sha256": "56326b76d5c3f6edec3483432568fecc0032c1f48c839f087e50bef9fc8c01a9",
       "reason": "The beta worker sets its exclusively created private TemporaryDirectory as CLIPFORGE_DATA_DIR before importing main. The public and private beta HTTP entrypoints do not mount app.main."
     },
     {
@@ -44,7 +44,7 @@
       "cwe": 78,
       "line": 12,
       "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
-      "source_sha256": "627738163282857db9c905c6282338f895cf2e16330381b4ef496055d380584d",
+      "source_sha256": "25da804297d62c6eb2b60e2218b377a31baef07329551b13839ad93085355e91",
       "reason": "Imports subprocess for the reviewed read-only ffprobe inspection and its timeout handling."
     },
     {
@@ -55,7 +55,7 @@
       "cwe": 78,
       "line": 51,
       "context_sha256": "933014ae61106957400bd9d47333950a3a19343209234ba8b95f1c910a3ad4f5",
-      "source_sha256": "627738163282857db9c905c6282338f895cf2e16330381b4ef496055d380584d",
+      "source_sha256": "25da804297d62c6eb2b60e2218b377a31baef07329551b13839ad93085355e91",
       "reason": "Launches the verified ffprobe binary without a shell and with fixed switches, the fixed MOV demuxer in beta, file/pipe protocols and a 30-second timeout. The worker supplies its private local input.mp4 path."
     },
     {

@@ -135,7 +135,7 @@ def inspect_media(path: Path, *, require_video: bool = True,
 
 
 def inspect_beta_media(path: Path) -> dict[str, Any]:
-    from .cloud.config import BETA_MAX_DIMENSION, BETA_MAX_SECONDS, BETA_MIN_SECONDS
+    from .cloud.config import BETA_AUDIO_PADDING_SECONDS, BETA_MAX_DIMENSION, BETA_MAX_SECONDS, BETA_MIN_SECONDS
 
     media = probe_media(path, pilot=True)
     validate_media(media, min_duration=BETA_MIN_SECONDS)
@@ -145,9 +145,13 @@ def inspect_beta_media(path: Path) -> dict[str, Any]:
             or media["video_codec"] != "h264" or media["audio_codec"] != "aac"):
         raise MediaValidationError("UNSUPPORTED_MEDIA", "Se requiere MP4 con una pista de video H.264 y una de audio AAC.")
     duration = media["duration_seconds"]
-    durations = [media["container_duration_seconds"], media["audio_duration_seconds"], duration]
+    padded_durations = (media["container_duration_seconds"], media["audio_duration_seconds"])
     dimensions = (media["width"], media["height"])
-    if (duration is None or any(value is not None and value > BETA_MAX_SECONDS for value in durations)
+    # The primary video duration is the limit. AAC packet padding can add a
+    # fraction of a second to the declared secondary and container durations.
+    if (duration is None or duration > BETA_MAX_SECONDS
+            or any(value is not None and value > BETA_MAX_SECONDS + BETA_AUDIO_PADDING_SECONDS
+                   for value in padded_durations)
             or any(type(value) is not int or not 1 <= value <= BETA_MAX_DIMENSION for value in dimensions)):
         raise MediaValidationError("VIDEO_OUTSIDE_LIMITS",
                                    f"El piloto admite hasta {BETA_MAX_SECONDS} segundos y {BETA_MAX_DIMENSION} px por lado.")

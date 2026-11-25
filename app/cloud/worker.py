@@ -1,8 +1,7 @@
-"""Cloud Run Jobs entrypoint: fenced durable queue, one global media process.
+"""Cloud Run Jobs entrypoint for the fenced PostgreSQL queue.
 
-The supervisor owns the PostgreSQL session advisory lock. Media runs in its own
-process group, which is stopped before releasing the lock if heartbeats fail.
-Expired interrupted work is failed explicitly; it is never silently replayed.
+Legacy processing keeps the exclusive supervisor lock. Pilot supervisors hold
+its shared form and serialize claims to enforce the pilot's lease capacity.
 """
 import argparse
 import json
@@ -18,7 +17,7 @@ from sqlalchemy import text
 from ..auth_db import get_engine
 from ..media import MediaValidationError, inspect_beta_media
 from . import enabled
-from .config import beta_enabled, settings
+from .config import BETA_WORKER_CONCURRENCY, beta_enabled, settings
 from . import repository as repo
 from . import storage
 
@@ -40,28 +39,33 @@ def _terminate(child):
         child.wait(timeout=5)
 
 
+BETA_CLAIM_LOCK = 1837086411
+
+
 def _claim(connection, job_id=None):
-    # The global advisory lock has already excluded every other supervisor.
-    # A worker whose supervisor lost its connection may still hold a live lease.
-    # Honor that lease across profiles before handling expired or queued work.
-    active = connection.execute(text("""
+    beta = beta_enabled()
+    # The legacy supervisor holds the exclusive form. After losing its lock a
+    # disconnected peer may retain a valid lease, so also check the task rows.
+    if not beta and connection.execute(text("""
         SELECT EXISTS(SELECT 1 FROM cloud_tasks WHERE status='running' AND lease_until>clock_timestamp())
-        """)).scalar()
-    if active:
+        """)).scalar():
         return "wait"
-    profile = {"beta": beta_enabled(), "job": job_id}
-    running = connection.execute(text("""
-        SELECT t.* FROM cloud_tasks t
-        LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
-        LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
-        WHERE t.status='running' AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-          AND (NOT :beta OR t.kind='process' OR e.payload->'pilot'=CAST('true' AS jsonb))
-        ORDER BY t.created_at LIMIT 1
-        """), profile).mappings().first()
-    if running:
-        # Crash recovery fences the previous child before publishing failure.
-        with get_engine().begin() as c:
-            row = c.execute(text("SELECT * FROM cloud_tasks WHERE id=:i FOR UPDATE"), {"i": running["id"]}).mappings().one()
+    profile = {"beta": beta, "job": job_id}
+    with get_engine().begin() as c:
+        if beta:
+            c.execute(text("SET LOCAL statement_timeout='10s'"))
+            c.execute(text("SELECT pg_advisory_xact_lock(:lock)"), {"lock": BETA_CLAIM_LOCK})
+        expired = c.execute(text("""
+            SELECT t.* FROM cloud_tasks t
+            LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
+            LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
+            WHERE t.status='running' AND (t.lease_until IS NULL OR t.lease_until<=clock_timestamp())
+              AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
+              AND (NOT :beta OR t.kind='process' OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (CAST(:job AS text) IS NULL OR t.job_id=:job)
+            ORDER BY t.created_at,t.id LIMIT :limit FOR UPDATE OF t SKIP LOCKED
+            """), {**profile, "limit": BETA_WORKER_CONCURRENCY if beta else 1}).mappings().all()
+        for row in expired:
             kind = "job" if row["kind"] == "process" else "export"
             doc = repo.document(row["job_id"], kind, row["item_id"], c)
             item = doc["payload"]
@@ -69,7 +73,22 @@ def _claim(connection, job_id=None):
             repo.public_beta_failure(item)
             repo.update_document(c, row["job_id"], kind, item)
             c.execute(text("UPDATE cloud_tasks SET status='failed',fence=fence+1,lease_until=NULL,updated_at=clock_timestamp() WHERE id=:i"), {"i": row["id"]})
-    with get_engine().begin() as c:
+        if beta:
+            active, other_profile = c.execute(text("""
+                SELECT count(*), count(*) FILTER (
+                    WHERE NOT (COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)
+                      AND (t.kind='process' OR COALESCE(e.payload->'pilot'=CAST('true' AS jsonb),false))))
+                FROM cloud_tasks t
+                LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
+                LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
+                WHERE t.status='running' AND t.lease_until>clock_timestamp()
+                """)).one()
+            if other_profile:
+                return "wait"
+            if active >= BETA_WORKER_CONCURRENCY:
+                # Extra wakeups are harmless. Supervisors with a live lease
+                # will return here after processing to handle remaining work.
+                return None
         row = c.execute(text("""
             SELECT t.* FROM cloud_tasks t
             LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
@@ -87,8 +106,8 @@ def _claim(connection, job_id=None):
 def cleanup_failed():
     """Delete only unpublished generations owned by failed task attempts.
 
-    The supervisor still owns the global advisory lock. Originals are outside
-    this namespace, and every manifest reference is checked before deletion.
+    The supervisor still owns a global advisory lock. The task row serializes
+    cleanup and retry. Originals are outside the staged namespace.
     """
     with get_engine().connect() as c:
         tasks = c.execute(text("""
@@ -104,8 +123,11 @@ def cleanup_failed():
         prefix = f"workspaces/{task['workspace_id']}/jobs/{task['job_id']}/tasks/{task['id']}/"
         try:
             with get_engine().begin() as c:
-                current = c.execute(text("SELECT status FROM cloud_tasks WHERE id=:i FOR UPDATE"), {"i": task["id"]}).scalar()
-                if current != "failed":
+                current = c.execute(text("""
+                    SELECT status,cleaned_at FROM cloud_tasks
+                    WHERE id=:i FOR UPDATE SKIP LOCKED
+                    """), {"i": task["id"]}).mappings().first()
+                if current is None or current["status"] != "failed" or current["cleaned_at"] is not None:
                     continue
                 manifests = c.execute(text("SELECT manifest FROM cloud_documents WHERE job_id=:j"), {"j": task["job_id"]}).scalars().all()
                 references = {(value["name"], value["generation"]) for manifest in manifests for value in manifest.values()}
@@ -159,6 +181,12 @@ def drain(max_tasks=None, recovery=None):
     child = None
     interrupted = False
     previous = {}
+    beta = beta_enabled()
+    # The exact recovery command reserves and claims its target exclusively
+    # so a normal shared supervisor cannot claim it between those operations.
+    shared = beta and recovery is None
+    acquire = "SELECT pg_advisory_lock_shared(:i)" if shared else "SELECT pg_advisory_lock(:i)"
+    release = "SELECT pg_advisory_unlock_shared(:i)" if shared else "SELECT pg_advisory_unlock(:i)"
     def stop(signum, frame):
         nonlocal interrupted
         interrupted = True
@@ -169,7 +197,7 @@ def drain(max_tasks=None, recovery=None):
         previous[signum] = signal.signal(signum, stop)
     try:
         with get_engine().connect().execution_options(isolation_level="AUTOCOMMIT") as lock:
-            lock.execute(text("SELECT pg_advisory_lock(:i)"), {"i": repo.GLOBAL_LOCK})
+            lock.execute(text(acquire), {"i": repo.GLOBAL_LOCK})
             lock.execute(text("SET statement_timeout='10s'"))
             try:
                 cleanup_failed()
@@ -186,6 +214,12 @@ def drain(max_tasks=None, recovery=None):
                     if task is None:
                         cleanup_failed()
                         break
+                    execution = os.getenv("CLOUD_RUN_EXECUTION")
+                    if beta and execution:
+                        print(json.dumps({
+                            "event": "worker_claim", "execution": execution, "job_id": task["job_id"],
+                            "task_id": task["id"], "fence": task["fence"],
+                        }), flush=True)
                     command = [sys.executable, "-m", "app.cloud.worker", "--execute", task["id"], "--fence", str(task["fence"])]
                     # Fixed interpreter/module; only database-generated UUID/fence arguments.
                     child = subprocess.Popen(command, start_new_session=os.name == "posix")
@@ -203,6 +237,12 @@ def drain(max_tasks=None, recovery=None):
                             status = c.execute(text("SELECT status FROM cloud_tasks WHERE id=:i"), {"i": task["id"]}).scalar()
                         if status == "running":
                             repo.mark_crashed(task)
+                            status = "failed"
+                        if beta and execution:
+                            print(json.dumps({
+                                "event": "worker_finish", "execution": execution, "job_id": task["job_id"],
+                                "task_id": task["id"], "fence": task["fence"], "status": status,
+                            }), flush=True)
                     except BaseException:
                         _terminate(child)
                         raise
@@ -215,7 +255,7 @@ def drain(max_tasks=None, recovery=None):
                 if child is not None:
                     _terminate(child)
                 if not lock.invalidated:
-                    lock.execute(text("SELECT pg_advisory_unlock(:i)"), {"i": repo.GLOBAL_LOCK})
+                    lock.execute(text(release), {"i": repo.GLOBAL_LOCK})
     finally:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
