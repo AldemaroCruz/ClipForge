@@ -120,10 +120,10 @@ class BrowserHitoBTest(unittest.TestCase):
         if path == "/jobs/" + JOB:
             state = self.state["status"]
             return {"id": JOB, "status": state, "pilot": True,
-                    "media": {"duration_seconds": 426.55},
+                    "media": {"duration_seconds": self.state.get("duration", 426.55)},
                     "clips": [{"file": CLIP, "start": 0, "end": 22}] if state == "completed" else []}, 200
         if path == f"/jobs/{JOB}/workspace":
-            return {"source_duration": 426.55}, 200
+            return {"source_duration": self.state.get("duration", 426.55)}, 200
         if path == f"/jobs/{JOB}/editor/range" and method == "POST":
             data = request.post_data_json
             self.state["range_posts"].append(data)
@@ -385,6 +385,49 @@ class BrowserHitoBTest(unittest.TestCase):
         self.page.locator("#editorial-export").click()
         self.page.get_by_role("link", name="Descargar VTT").wait_for()
         self.assertEqual([], self.state["selection_posts"])
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
+    def test_late_manual_draft_keeps_editor_disabled_until_its_list_loads(self):
+        self.state.update(status="completed", ai_configured=False, duration=1200)
+        self.page.add_init_script("""(() => {
+            const original = window.fetch.bind(window);
+            let draftCreated = false;
+            window.fetch = async (url, options) => {
+                const hold = draftCreated && String(url).endsWith("/drafts?limit=100");
+                const response = await original(url, options);
+                if (String(url).endsWith("/drafts") && options?.method === "POST" && response.ok) {
+                    draftCreated = true;
+                }
+                if (hold) {
+                    await new Promise(resolve => { window.releaseDraftList = resolve; });
+                }
+                return response;
+            };
+        })();""")
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        self.page.get_by_text("Elegir fragmento del original").click()
+        self.page.locator("#mvp-start").fill("1166")
+        self.page.locator("#mvp-end").fill("1195")
+        self.page.locator("#mvp-edit-draft").click()
+        self.page.wait_for_function("() => typeof window.releaseDraftList === 'function'")
+        self.page.locator("#editorial-draft-form").wait_for()
+        save = self.page.locator("#editorial-save")
+        self.assertTrue(save.is_disabled())
+        self.assertTrue(self.page.locator("#editorial-export").is_disabled())
+        self.assertEqual([], self.state["draft_updates"])
+
+        self.page.evaluate("() => window.releaseDraftList()")
+        self.page.locator("#editorial-burn").check()
+        self.page.locator("#editorial-color").fill("#ff0000")
+        with self.page.expect_response(lambda item: item.url == f"{ORIGIN}/jobs/{JOB}/drafts/{DRAFT}"
+                                       and item.request.method == "PUT") as saved:
+            save.click()
+        result = saved.value.json()
+        self.assertEqual(200, saved.value.status)
+        self.assertEqual((1166, 1195, 2), (result["start"], result["end"], result["revision"]))
+        self.assertEqual("#FF0000", result["options"]["subtitle_color"])
+        self.assertEqual(1, len(self.state["draft_updates"]))
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])
 

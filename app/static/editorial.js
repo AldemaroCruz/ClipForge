@@ -254,12 +254,17 @@
     await source.play();
   }
 
+  function setDraftBusy(state, busy) {
+    state.draftBusy = busy;
+    if (view === state) el("draft-fields").disabled = busy;
+  }
+
   async function createDraft(state, runId, candidateId, control) {
     if (!visible(state) || state.draftBusy) return;
     const current = state.draft;
     if (current && !formMatches(current) && !window.confirm("¿Descartar los cambios sin guardar del borrador?")) return;
     control.disabled = true;
-    state.draftBusy = true;
+    setDraftBusy(state, true);
     try {
       const item = await request(state, "/selections/" + runId + "/candidates/" + candidateId + "/draft", auth.payload({}));
       if (!visible(state)) return;
@@ -270,7 +275,7 @@
     } catch (error) {
       status(state, error.message);
     } finally {
-      state.draftBusy = false;
+      setDraftBusy(state, false);
       control.disabled = false;
     }
   }
@@ -280,7 +285,7 @@
     if (state?.id !== id || state.draftBusy) return;
     if (state.draft && !formMatches(state.draft)
       && !window.confirm("¿Descartar los cambios sin guardar del borrador?")) return;
-    state.draftBusy = true;
+    setDraftBusy(state, true);
     details.open = true;
     try {
       const options = await request(state, "/editor/range", auth.payload(range));
@@ -301,7 +306,7 @@
       status(state, error.message, "draft-status");
       throw error;
     } finally {
-      state.draftBusy = false;
+      setDraftBusy(state, false);
     }
   }
 
@@ -328,7 +333,7 @@
       el("drafts").value = state.draft.id;
       return;
     }
-    state.draftBusy = true;
+    setDraftBusy(state, true);
     try {
       const item = await request(state, "/drafts/" + id);
       if (!visible(state)) return;
@@ -338,7 +343,7 @@
       if (visible(state)) el("drafts").value = state.draft?.id ?? "";
       status(state, error.message, "draft-status");
     } finally {
-      state.draftBusy = false;
+      setDraftBusy(state, false);
     }
   }
 
@@ -456,8 +461,7 @@
   async function draftAction(action) {
     const state = view;
     if (!state?.draft || state.draftBusy || !el("draft-form").reportValidity()) return;
-    state.draftBusy = true;
-    el("draft-fields").disabled = true;
+    setDraftBusy(state, true);
     status(state, "", "draft-status");
     try {
       const range = await applyRange(state);
@@ -494,8 +498,7 @@
     } catch (error) {
       status(state, error.message, "draft-status");
     } finally {
-      state.draftBusy = false;
-      if (view === state) el("draft-fields").disabled = false;
+      setDraftBusy(state, false);
     }
   }
 

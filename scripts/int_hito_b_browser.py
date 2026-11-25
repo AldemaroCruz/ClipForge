@@ -363,9 +363,14 @@ def check_manual_export(page, job_id, scratch, report):
     check(report, "original_preview_manual_range_and_idempotent_export")
 
 
-def click_response(page, control, path, method, status):
-    with page.expect_response(lambda response: response.url.startswith(PUBLIC + path)
-                              and response.request.method == method) as event:
+def click_response(page, control, path, method, status, *, failing_prerequisite=None):
+    def match(response):
+        return response.request.method == method and (
+            response.url.startswith(PUBLIC + path)
+            or (failing_prerequisite and response.url == PUBLIC + failing_prerequisite and response.status >= 400)
+        )
+
+    with page.expect_response(match) as event:
         control.click()
     response = event.value
     require(response.status == status, "editorial_http_" + str(response.status))
@@ -469,7 +474,9 @@ def open_late_draft(page, job, start, end, *, generated):
             details.locator("summary").click()
         page.locator("#mvp-start").fill(str(start))
         page.locator("#mvp-end").fill(str(end))
-        click_response(page, page.locator("#mvp-edit-draft"), f"/jobs/{job}/drafts", "POST", 201)
+        draft_path = f"/jobs/{job}/drafts"
+        click_response(page, page.locator("#mvp-edit-draft"), draft_path, "POST", 201,
+                       failing_prerequisite=f"/jobs/{job}/editor/range")
     page.locator("#editorial-save").wait_for()
 
 
@@ -478,7 +485,6 @@ def save_style(page, job, size, color, text):
     page.locator("#editorial-size").fill(str(size))
     page.locator("#editorial-color").fill(color.lower())
     rows = page.locator("#editorial-cues .editorial-cue")
-    rows.first.wait_for()
     require(rows.count() > 0, "editorial_persisted_transcript_cues_missing")
     for index in reversed(range(1, rows.count())):
         row = rows.nth(index)
