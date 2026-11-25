@@ -1,14 +1,19 @@
 """Scoped deletion on disposable PostgreSQL and contracted Cloud Storage calls."""
 
-from hashlib import sha256
+from base64 import b64encode
+from hashlib import md5, sha256
+from io import BytesIO
 import os
+from pathlib import Path
 import secrets
+from tempfile import TemporaryDirectory
 import time
 import unittest
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from fastapi import HTTPException
+from requests import ConnectionError as RequestConnectionError
 from sqlalchemy import text
 
 from app.auth import create_user, register_project
@@ -262,3 +267,98 @@ class ProjectStorageContractTests(unittest.TestCase):
         with patch.object(storage, "request") as request, self.assertRaises(storage.StorageError):
             storage.delete_staged(item, self.prefix + f"tasks/{'d'*32}/", live_only=True)
         request.assert_not_called()
+
+    def test_create_only_upload_recovers_a_committed_transport_failure(self):
+        data = b"synthetic exported video"
+        response = Mock()
+        response.json.return_value = {
+            "name": self.name, "generation": "345", "size": str(len(data)),
+            "contentType": "video/mp4", "md5Hash": b64encode(md5(data, usedforsecurity=False).digest()).decode(),
+        }
+        with (patch.object(storage, "request", side_effect=[storage.TransportError, response]) as request,
+              patch.object(storage, "close")):
+            item = storage.upload(self.name, BytesIO(data), "video/mp4")
+        self.assertEqual(item["generation"], "345")
+        self.assertEqual(item["sha256"], sha256(data).hexdigest())
+        self.assertEqual([call.args[0] for call in request.call_args_list], ["POST", "GET"])
+        self.assertEqual(request.call_args_list[0].kwargs["params"]["ifGenerationMatch"], "0")
+        self.assertEqual(request.call_args_list[1].args[1], storage.object_url(self.name))
+
+        response.json.return_value["contentType"] = "text/plain"
+        with (patch.object(storage, "request", side_effect=[storage.TransportError, response]) as request,
+              patch.object(storage, "close"), self.assertRaisesRegex(storage.StorageError, "metadata mismatch")):
+            storage.upload(self.name, BytesIO(data), "video/mp4")
+        self.assertEqual(request.call_count, 2)
+        response.json.return_value["contentType"] = "video/mp4"
+        response.json.return_value["md5Hash"] = b64encode(b"x"*16).decode()
+        with (patch.object(storage, "request", side_effect=[storage.TransportError, response]) as request,
+              patch.object(storage, "close"), self.assertRaisesRegex(storage.StorageError, "metadata mismatch")):
+            storage.upload(self.name, BytesIO(data), "video/mp4")
+        self.assertEqual(request.call_count, 2)
+
+    def test_create_only_retry_rewinds_and_reconciles_a_late_precondition(self):
+        data = b"synthetic exported video"
+        response = Mock()
+        response.json.return_value = {
+            "name": self.name, "generation": "123", "size": str(len(data)), "contentType": "video/mp4",
+            "md5Hash": b64encode(md5(data, usedforsecurity=False).digest()).decode(),
+        }
+        remaining = iter([storage.TransportError(), storage.ObjectMissing(), storage.PreconditionFailed(), response])
+
+        def transport(method, _url, **options):
+            if method == "POST":
+                self.assertEqual(options["params"]["ifGenerationMatch"], "0")
+                self.assertEqual(options["data"].read(), data)
+            result = next(remaining)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        with patch.object(storage, "request", side_effect=transport) as request, patch.object(storage, "close"):
+            self.assertEqual(storage.upload(self.name, BytesIO(data), "video/mp4")["generation"], "123")
+            self.assertEqual([call.args[0] for call in request.call_args_list], ["POST", "GET", "POST", "GET"])
+        for error in (storage.PreconditionFailed("Already exists"), storage.StorageError("Denied")):
+            with patch.object(storage, "request", side_effect=error) as request, self.assertRaises(type(error)):
+                storage.upload(self.name, BytesIO(data), "video/mp4")
+            request.assert_called_once()
+
+    def test_stream_retry_keeps_exact_generation_and_restarts_only_an_owned_file(self):
+        data = b"synthetic video"
+        item = {"name": self.name, "generation": "42", "bytes": len(data), "sha256": sha256(data).hexdigest()}
+        first = Mock()
+        second = Mock()
+
+        def interrupted(_size):
+            yield data[:3]
+            raise RequestConnectionError("Synthetic broken stream")
+
+        first.iter_content.side_effect = interrupted
+        second.iter_content.return_value = [data]
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "clip.mp4"
+            with (patch.object(storage, "request", side_effect=[first, second]) as request,
+                  patch.object(storage, "close") as close):
+                storage.download(item, path)
+                self.assertEqual(path.read_bytes(), data)
+                self.assertEqual(request.call_count, 2)
+                self.assertEqual(close.call_count, 2)
+                for call in request.call_args_list:
+                    self.assertEqual(call.kwargs["params"], {"alt": "media", "generation": "42"})
+            with (patch.object(storage, "request", return_value=first) as request,
+                  patch.object(storage, "close"), self.assertRaises(FileExistsError)):
+                storage.download(item, path)
+            request.assert_called_once()
+            self.assertEqual(path.read_bytes(), data)
+
+    def test_generation_read_retries_only_transport_with_the_same_range(self):
+        item = {"name": self.name, "generation": "42"}
+        response = Mock()
+        with patch.object(storage, "request", side_effect=[storage.TransportError, response]) as request:
+            self.assertIs(storage.open_object(item, "bytes=0-3"), response)
+            self.assertEqual(request.call_count, 2)
+            self.assertEqual(request.call_args_list[0], request.call_args_list[1])
+            self.assertEqual(request.call_args.kwargs["params"], {"alt": "media", "generation": "42"})
+        with (patch.object(storage, "request", side_effect=storage.ObjectMissing) as request,
+              self.assertRaises(storage.ObjectMissing)):
+            storage.open_object(item)
+        request.assert_called_once()

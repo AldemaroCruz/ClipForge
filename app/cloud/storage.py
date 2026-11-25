@@ -8,8 +8,18 @@ from urllib.parse import parse_qs, quote, urlsplit
 import requests
 from .config import settings
 
+_TRANSPORT_ERRORS = (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError)
+
 
 class StorageError(RuntimeError):
+    pass
+
+
+class TransportError(StorageError):
+    pass
+
+
+class PreconditionFailed(StorageError):
     pass
 
 
@@ -37,16 +47,22 @@ def token():
 
 def request(method, url, *, stream=False, timeout=(5, 120), extra_statuses=(), **kwargs):
     cfg = settings()
-    headers = kwargs.pop("headers", {})
-    if not cfg.local_test:
-        headers["Authorization"] = "Bearer " + token()
+    headers = dict(kwargs.pop("headers", {}))
     session = requests.Session()
     session.trust_env = False
     try:
+        if not cfg.local_test:
+            headers["Authorization"] = "Bearer " + token()
         response = session.request(method, url, headers=headers, timeout=timeout, stream=stream, allow_redirects=False, **kwargs)
+    except _TRANSPORT_ERRORS:
+        session.close()
+        raise TransportError("Cloud request transport failed") from None
     except requests.RequestException:
         session.close()
-        raise StorageError("Cloud request transport failed") from None
+        raise StorageError("Cloud request invalid") from None
+    except BaseException:
+        session.close()
+        raise
     if (response.status_code not in {200, 201, 206} and response.status_code not in extra_statuses
             and not (method == "DELETE" and response.status_code == 204)):
         status = response.status_code
@@ -54,6 +70,8 @@ def request(method, url, *, stream=False, timeout=(5, 120), extra_statuses=(), *
         session.close()
         if status == 404:
             raise ObjectMissing("Cloud object or endpoint unavailable (HTTP 404)")
+        if status == 412:
+            raise PreconditionFailed("Cloud request denied or unavailable (HTTP 412)")
         raise StorageError(f"Cloud request denied or unavailable (HTTP {status})")
     # Closing the response also returns its connection; retain session for stream.
     response._clipforge_session = session
@@ -159,41 +177,99 @@ def beta_original_metadata(name):
         close(response)
 
 
-def upload(name, source, content_type):
-    cfg = settings()
-    source.seek(0)
-    digest = hashlib.sha256()
-    size = 0
-    for chunk in iter(lambda: source.read(1024 * 1024), b""):
-        digest.update(chunk)
-        size += len(chunk)
-    source.seek(0)
-    url = cfg.endpoint + "/upload/storage/v1/b/" + quote(cfg.bucket, safe="") + "/o"
-    response = request("POST", url, params={"uploadType": "media", "name": name, "ifGenerationMatch": "0"},
-                       data=source, headers={"Content-Type": content_type, "Content-Length": str(size)})
+def _read_with_retry(url, **options):
     try:
-        result = response.json()
-        if result.get("name") != name or not str(result.get("generation", "")).isdigit() or int(result.get("size", -1)) != size:
-            raise StorageError("Object publication metadata mismatch")
-        return {"name": name, "generation": str(result["generation"]), "bytes": size,
-                "sha256": digest.hexdigest(), "content_type": content_type}
+        return request("GET", url, **options)
+    except TransportError:
+        return request("GET", url, **options)
+
+
+def _recover_upload(name, size, content_type, md5):
+    """Verify the exact live object after losing a create-only POST response."""
+    try:
+        response = _read_with_retry(object_url(name), timeout=(4, 10),
+                                    params={"fields": "name,generation,size,contentType,contentEncoding,md5Hash"})
+    except ObjectMissing:
+        return None
+    try:
+        item = response.json()
+        generation = item["generation"]
+        if (item["name"] != name or not isinstance(generation, str)
+                or not re.fullmatch(r"[1-9][0-9]{0,30}", generation)
+                or item["size"] != str(size) or item["contentType"] != content_type
+                or item.get("contentEncoding")
+                or base64.b64decode(item["md5Hash"], validate=True) != md5):
+            raise ValueError("Upload receipt mismatch")
+        return generation
+    except (KeyError, TypeError, ValueError, binascii.Error):
+        raise StorageError("Object publication metadata mismatch") from None
     finally:
         close(response)
 
 
-def open_object(item, range_header=None):
+def _publish_upload(url, name, source, size, content_type):
+    response = request("POST", url, params={"uploadType": "media", "name": name, "ifGenerationMatch": "0"},
+                       data=source, headers={"Content-Type": content_type, "Content-Length": str(size)})
+    try:
+        item = response.json()
+        generation = str(item["generation"])
+        if item["name"] != name or not re.fullmatch(r"[1-9][0-9]{0,30}", generation) or int(item["size"]) != size:
+            raise ValueError("Upload receipt mismatch")
+        return generation
+    except (KeyError, TypeError, ValueError):
+        raise StorageError("Object publication metadata mismatch") from None
+    finally:
+        close(response)
+
+
+def upload(name, source, content_type):
+    cfg = settings()
+    source.seek(0)
+    digest = hashlib.sha256()
+    checksum = hashlib.md5(usedforsecurity=False)
+    size = 0
+    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+        digest.update(chunk)
+        checksum.update(chunk)
+        size += len(chunk)
+    url = cfg.endpoint + "/upload/storage/v1/b/" + quote(cfg.bucket, safe="") + "/o"
+    for attempt in range(2):
+        source.seek(0)
+        try:
+            generation = _publish_upload(url, name, source, size, content_type)
+        except (TransportError, PreconditionFailed) as error:
+            if attempt == 0 and isinstance(error, PreconditionFailed):
+                raise
+            generation = _recover_upload(name, size, content_type, checksum.digest())
+            if generation is None:
+                if attempt:
+                    raise
+                continue
+        return {"name": name, "generation": generation, "bytes": size,
+                "sha256": digest.hexdigest(), "content_type": content_type}
+
+
+def _pinned_options(item, range_header=None):
+    generation = item["generation"]
+    if not isinstance(generation, str) or not re.fullmatch(r"[1-9][0-9]{0,30}", generation):
+        raise StorageError("Invalid stored object generation")
     headers = {}
     if range_header:
         if not re.fullmatch(r"bytes=(?:[0-9]+-[0-9]*|-[0-9]+)", range_header):
             raise StorageError("Unsupported byte range")
         headers["Range"] = range_header
-    return request("GET", object_url(item["name"]), params={"alt": "media", "generation": item["generation"]}, headers=headers, stream=True)
+    return {"params": {"alt": "media", "generation": generation}, "headers": headers, "stream": True}
 
 
-def download(item, path):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    response = open_object(item)
+def open_object(item, range_header=None, *, retry=True):
+    url = object_url(item["name"])
+    options = _pinned_options(item, range_header)
+    if retry:
+        return _read_with_retry(url, **options)
+    return request("GET", url, **options)
+
+
+def _download_once(item, path):
     # GCS exposes MD5 for non-composite browser uploads. This checks the
     # transport checksum, while the immutable object generation pins identity.
     if "sha256" in item:
@@ -201,8 +277,12 @@ def download(item, path):
     else:
         digest, expected = hashlib.md5(usedforsecurity=False), item["md5"]
     size = 0
+    created = False
+    complete = False
+    response = open_object(item, retry=False)
     try:
         with path.open("xb") as target:
+            created = True
             for chunk in response.iter_content(1024 * 1024):
                 size += len(chunk)
                 if size > item["bytes"]:
@@ -211,8 +291,22 @@ def download(item, path):
                 digest.update(chunk)
         if size != item["bytes"] or digest.hexdigest() != expected:
             raise StorageError("Stored object integrity mismatch")
+        complete = True
+    except _TRANSPORT_ERRORS:
+        raise TransportError("Cloud object transfer interrupted") from None
     finally:
         close(response)
+        if created and not complete:
+            path.unlink(missing_ok=True)
+
+
+def download(item, path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _download_once(item, path)
+    except TransportError:
+        _download_once(item, path)
 
 
 def list_staged(prefix):
