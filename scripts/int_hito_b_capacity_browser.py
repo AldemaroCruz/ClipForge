@@ -7,10 +7,11 @@ durations and media receipts without accounts, job IDs, URLs, or media text.
 from __future__ import annotations
 
 import argparse
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
+from itertools import product
 import json
 import math
 import os
@@ -302,15 +303,94 @@ def check_isolation(cases, report):
     browser_test.check(report, "three_way_owner_isolation")
 
 
+@contextmanager
+def hold_selection(page, path):
+    url = PUBLIC + path
+    requests, responses = [], []
+
+    def hold(route):
+        if route.request.method == "POST":
+            requests.append(route)
+        else:
+            route.fallback()
+
+    def capture(response):
+        if response.url == url and response.request.method == "POST":
+            responses.append(response)
+
+    page.route(url, hold)
+    page.on("response", capture)
+    try:
+        yield requests, responses
+    finally:
+        page.remove_listener("response", capture)
+        page.unroute(url, hold)
+        for route in requests:
+            route.abort()
+
+
+def start_parallel_selections(cases, model, report):
+    """Finish all previews and consent before dispatching any selection."""
+    report["step"] = "three_editorial_previews"
+    previews = []
+    for case in cases:
+        report["case"] = case.label
+        previews.append(browser_test.prepare_selection(case.page, case.job_id, model))
+    report["editorial"]["planned_provider_calls"] = {
+        case.label: calls for case, (_, calls) in zip(cases, previews, strict=True)
+    }
+    with ExitStack() as stack:
+        pending = [stack.enter_context(hold_selection(case.page, path))
+                   for case, (path, _) in zip(cases, previews, strict=True)]
+        report["step"] = "three_editorial_requests_submitted"
+        for case in cases:
+            report["case"] = case.label
+            case.page.locator("#editorial-run").click()
+        del report["case"]
+        deadline = monotonic() + 30
+        while not all(requests for requests, _ in pending):
+            require(monotonic() < deadline, "editorial_submission_barrier_timeout")
+            cases[0].page.wait_for_timeout(100)
+        require(all(len(requests) == 1 for requests, _ in pending), "editorial_submission_count")
+        released = []
+        for requests, _ in pending:
+            released.append(monotonic())
+            requests.pop().fallback()
+        report["editorial"]["submission_skew_seconds"] = round(max(released) - min(released), 3)
+        deadline = monotonic() + 60
+        while not all(responses for _, responses in pending):
+            require(monotonic() < deadline, "editorial_submission_response_timeout")
+            cases[0].page.wait_for_timeout(100)
+        require(all(len(responses) == 1 for _, responses in pending), "editorial_submission_response_count")
+        return [browser_test.selection_receipt(responses[0], case.job_id, calls, began)
+                for case, (_, calls), (_, responses), began in zip(cases, previews, pending, released, strict=True)]
+
+
+def provider_overlap(selections):
+    """Measure the largest intersection of one successful call per account."""
+    intervals = (selection["provider_call_intervals"] for selection in selections)
+    maximum = max(
+        min(call["finished_at"] for call in group) - max(call["started_at"] for call in group)
+        for group in product(*intervals)
+    )
+    seconds = round(max(0, maximum), 3)
+    return {"status": "observed" if seconds else "not_observed", "three_way_seconds": seconds}
+
+
 def editorial_capacity(cases, args, report):
     editorial = {}
     report["editorial"] = editorial
     if args.editorial_model:
-        report["step"] = "three_editorial_requests_submitted"
-        pending = [browser_test.start_selection(case.page, case.job_id, args.editorial_model) for case in cases]
+        pending = start_parallel_selections(cases, args.editorial_model, report)
         report["step"] = "three_real_editorial_selections"
-        selections = [browser_test.finish_selection(case.page, case.job_id, receipt, args.editorial_model, 1200)
-                      for case, receipt in zip(cases, pending, strict=True)]
+        selections = []
+        for case, receipt in zip(cases, pending, strict=True):
+            report["case"] = case.label
+            selection = browser_test.finish_selection(case.page, case.job_id, receipt, args.editorial_model, 1200)
+            selections.append(selection)
+            editorial[case.label] = {"selection": {key: value for key, value in selection.items() if key != "id"}}
+        del report["case"]
+        editorial["provider_overlap"] = provider_overlap(selections)
     else:
         selections = [None] * len(cases)
     drafts = []
@@ -347,10 +427,9 @@ def editorial_capacity(cases, args, report):
     for case, selection, (draft, receipt) in zip(cases, selections, queued, strict=True):
         output = browser_test.fetch_editorial_export(case.page, case.job_id, draft, receipt, args.report.parent,
                                                      ready_seconds=ready[case.label])
-        editorial[case.label] = {"export": output}
+        editorial.setdefault(case.label, {})["export"] = output
         denied = [f"/drafts/{draft['id']}", f"/exports/{receipt[0]}/files/clip.mp4"]
         if selection:
-            editorial[case.label]["selection"] = {key: value for key, value in selection.items() if key != "id"}
             denied.append(f"/selections/{selection['id']}")
         for other in cases:
             if case is not other:

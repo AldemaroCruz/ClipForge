@@ -10,6 +10,7 @@ import argparse
 from contextlib import contextmanager
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -401,7 +402,7 @@ def open_editorial(page):
         page.locator("#editorial-heading").click()
 
 
-def start_selection(page, job, model, *, brief=EDITORIAL_BRIEF):
+def prepare_selection(page, job, model, *, brief=EDITORIAL_BRIEF):
     config = browser_get(page, "/ai/config")
     require(config["status"] == 200 and config["body"].get("provider") == "openai"
             and config["body"].get("model") == model and config["body"].get("configured") is True,
@@ -409,13 +410,45 @@ def start_selection(page, job, model, *, brief=EDITORIAL_BRIEF):
     open_editorial(page)
     page.locator("#editorial-brief").fill(brief)
     path = f"/jobs/{job}/selections"
-    click_response(page, page.locator("#editorial-preview-button"), path + "/preview", "POST", 200)
+    preview = click_response(page, page.locator("#editorial-preview-button"), path + "/preview", "POST", 200).json()
+    calls = preview.get("budget", {}).get("provider_calls")
+    require(type(calls) is int and calls > 0, "editorial_preview_call_budget")
     page.locator("#editorial-consent").check()
+    return path, calls
+
+
+def selection_receipt(response, job, planned_calls, began):
+    require(response.status == 202, f"editorial_selection_http_{response.status}")
+    selection = response.json()
+    body = response.request.post_data_json
+    require(ID.fullmatch(selection.get("id", "")) and selection.get("job_id") == job
+            and selection.get("provider_calls_planned") == planned_calls
+            and isinstance(body, dict) and body.get("consent") is True, "editorial_run_identity")
+    return selection["id"], body, began
+
+
+def start_selection(page, job, model, *, brief=EDITORIAL_BRIEF):
+    path, planned_calls = prepare_selection(page, job, model, brief=brief)
     began = monotonic()
     response = click_response(page, page.locator("#editorial-run"), path, "POST", 202)
-    selection = response.json()
-    require(ID.fullmatch(selection.get("id", "")), "editorial_run_identity")
-    return selection["id"], response.request.post_data_json, began
+    return selection_receipt(response, job, planned_calls, began)
+
+
+def provider_call_intervals(selection):
+    intervals = selection.get("provider_call_intervals")
+    require(isinstance(intervals, list) and len(intervals) == selection["provider_responses"],
+            "editorial_provider_interval_count")
+    observed = []
+    previous_end = 0
+    for interval in intervals:
+        require(isinstance(interval, dict), "editorial_provider_interval_shape")
+        start, end = interval.get("started_at"), interval.get("finished_at")
+        require(type(start) in {int, float} and type(end) in {int, float}
+                and math.isfinite(start) and math.isfinite(end)
+                and 0 < start < end and start >= previous_end, "editorial_provider_interval_bounds")
+        observed.append({"started_at": start, "finished_at": end})
+        previous_end = end
+    return observed
 
 
 def finish_selection(page, job, receipt, model, duration):
@@ -464,6 +497,7 @@ def finish_selection(page, job, receipt, model, duration):
             "editorial_replay_called_provider")
     return {"id": identity, "provider": "openai", "model": model, "models_received": models, "proposals": len(candidates),
             "provider_calls": selection["provider_calls"], "provider_responses": selection["provider_responses"],
+            "provider_call_intervals": provider_call_intervals(selection),
             "analysis_windows": windows, "last_transcript_end": selection["last_transcript_end"],
             "provider_seconds": selection.get("provider_elapsed_seconds"),
             "worker_seconds": selection.get("elapsed_seconds"), "wall_seconds": round(monotonic() - began, 3)}

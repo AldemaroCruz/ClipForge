@@ -276,7 +276,7 @@ def create(job_id, request, principal):
                 "provider": config.provider, "model": config.model, "prompt_version": PROMPT_VERSION,
                 "day_utc": day, "created_at": now, "consent_at": now, "provider_calls_planned": len(batches),
                 "provider_calls": 0, "provider_responses": 0, "provider_response_received": False,
-                "provider_elapsed_seconds": 0.0,
+                "provider_elapsed_seconds": 0.0, "provider_call_intervals": [],
                 "provider_models_received": [],
                 "analysis_windows": [batch["summary"] for batch in batches],
                 "segment_count": len(prepared["segments"]), "last_transcript_end": prepared["segments"][-1]["end"],
@@ -311,6 +311,7 @@ def _progress(task, item):
 def execute_task(task):
     job_id = task["job_id"]
     item = repo.document(job_id, "selection", task["item_id"])["payload"]
+    call_intervals = item.setdefault("provider_call_intervals", [])
     started = time.monotonic()
     item.update(status="running", started_at=time.time())
     _progress(task, item)
@@ -324,12 +325,14 @@ def execute_task(task):
             item["provider_calls"] += 1
             _progress(task, item)
             receipt = {}
+            call_started_at = time.time()
             call_started = time.monotonic()
             try:
                 data, usage = request_selection(prepared["config"], batch["content"], receipt=receipt)
             finally:
-                item["provider_elapsed_seconds"] = round(item["provider_elapsed_seconds"] +
-                                                         time.monotonic() - call_started, 3)
+                call_elapsed = time.monotonic() - call_started
+                item["provider_elapsed_seconds"] = round(item["provider_elapsed_seconds"] + call_elapsed, 3)
+            call_intervals.append({"started_at": call_started_at, "finished_at": call_started_at + call_elapsed})
             item["provider_responses"] += 1
             item["provider_response_received"] = True
             actual_model = receipt.get("model")

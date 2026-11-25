@@ -89,6 +89,41 @@ class EditorialCatalogTests(unittest.TestCase):
         selected = editor.combine_proposals(candidates, 5)
         self.assertEqual([(row["start"], row["id"]) for row in selected], [(23, "1"), (840, "2")])
 
+    def test_persists_intervals_for_each_successful_provider_response(self):
+        item = {"spec": SelectionSpec().model_dump(), "preview_token": "test-preview",
+                "provider_calls_planned": 3, "provider_calls": 0, "provider_responses": 0,
+                "provider_elapsed_seconds": 0.0, "provider_models_received": [], "usage": {}, "warnings": []}
+        task = {"job_id": "test-job", "item_id": "test-selection"}
+        prepared = {"preview_token": "test-preview", "config": Mock(), "batches": [{"content": {}}] * 3}
+        clock = SimpleNamespace(
+            time=Mock(side_effect=[9000, 9001, 9002, 9003, 9004]),
+            monotonic=Mock(side_effect=[100, 101, 101.25, 102, 102.5, 103, 104, 104.25]),
+        )
+        snapshots = []
+
+        def progress(_task, selection):
+            snapshots.append((selection["provider_calls"], list(selection["provider_call_intervals"])))
+
+        response = ({}, {})
+        with (patch.object(editor.repo, "document", return_value={"payload": item}),
+              patch.object(editor.repo, "finish_task") as finish,
+              patch.object(editor, "prepare", return_value=prepared),
+              patch.object(editor, "_progress", side_effect=progress),
+              patch.object(editor, "time", clock),
+              patch.object(editor, "request_selection", side_effect=[response, response, AIError("AI_TIMEOUT", "timeout")]),
+              patch.object(editor, "validate_answer", return_value=("summary", [], []))):
+            editor.execute_task(task)
+
+        first = {"started_at": 9001, "finished_at": 9001.25}
+        second = {"started_at": 9002, "finished_at": 9002.5}
+        self.assertEqual(snapshots, [(0, []), (1, []), (1, [first]), (2, [first]),
+                                     (2, [first, second]), (3, [first, second])])
+        finish.assert_called_once_with(task, item, {})
+        self.assertEqual(item["provider_call_intervals"], [first, second])
+        self.assertEqual(item["provider_elapsed_seconds"], 1.75)
+        self.assertEqual(item["provider_responses"], 2)
+        self.assertEqual((item["status"], item["error_code"]), ("failed", "AI_TIMEOUT"))
+
 
 class EditorialDatabaseTests(unittest.TestCase):
     def setUp(self):
@@ -157,6 +192,7 @@ class EditorialDatabaseTests(unittest.TestCase):
             other = pool.submit(submit)
             first = submit()
             self.assertEqual(first["id"], other.result(timeout=10)["id"])
+        self.assertEqual(first["provider_call_intervals"], [])
         with self.engine.connect() as connection:
             task = worker._claim(connection)
             self.assertEqual((task["kind"], task["item_id"]), ("selection", first["id"]))
@@ -179,6 +215,9 @@ class EditorialDatabaseTests(unittest.TestCase):
         read.assert_not_called()
         self.assertEqual((analysis["status"], analysis["provider_calls"], analysis["provider_responses"]),
                          ("completed", 1, 1))
+        self.assertEqual(len(analysis["provider_call_intervals"]), 1)
+        interval = analysis["provider_call_intervals"][0]
+        self.assertLessEqual(interval["started_at"], interval["finished_at"])
         self.assertEqual(analysis["provider_models_received"], ["editorial-fixture-versioned"])
         request = SimpleNamespace(state=SimpleNamespace(principal=self.owner), headers={})
         draft = router.candidate_to_draft(self.job_id, analysis["id"], 1, request)
