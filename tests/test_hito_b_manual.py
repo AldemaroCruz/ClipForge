@@ -69,7 +69,7 @@ class ManualMvpTest(unittest.TestCase):
         connection = object()
         with (
             patch.object(router.repo, "request_transaction", return_value=nullcontext((connection, None, "manual-key"))),
-            patch.object(router.repo, "check_active_workspace"),
+            patch.object(router.repo, "beta_document") as guard,
             patch.object(router.repo, "admit_beta"),
             patch.object(router.repo, "insert_document") as insert,
             patch.object(router.repo, "enqueue"),
@@ -77,6 +77,7 @@ class ManualMvpTest(unittest.TestCase):
             patch.object(router, "_dispatch", side_effect=lambda result: result),
         ):
             self.assertIs(router._submit_export(JOB, item, self.request, pilot=True)["pilot"], True)
+        guard.assert_called_once_with(connection, self.request.state.principal, JOB)
         insert.assert_called_once_with(connection, JOB, "export", item)
 
     def test_job_reads_wake_queued_pilot_without_touching_finished_work(self):

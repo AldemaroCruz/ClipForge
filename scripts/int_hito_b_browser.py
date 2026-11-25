@@ -240,6 +240,8 @@ def upload_video(page, path, report, transfer):
     request = sent.value
     request_key = request.headers.get("idempotency-key")
     require(request_key, "upload_idempotency_key_missing")
+    require(request.post_data_json.get("burn_subtitles") is True
+            and page.locator("#upload-burn-subtitles").is_checked(), "automatic_caption_default_disabled")
     page.wait_for_function("""() => /Video guardado/.test(document.querySelector('#upload-status').textContent)
         || !document.querySelector('#upload-submit').disabled""", timeout=360_000)
     report["upload_http_statuses"] = transfer.copy()
@@ -286,16 +288,68 @@ def close_preview(player):
     player.evaluate("el => { el.pause(); el.removeAttribute('src'); el.load(); }")
 
 
+def save_download(page, link, target, *, timeout=120_000):
+    with page.expect_download(timeout=timeout) as event:
+        link.click()
+    download = event.value
+    try:
+        download.save_as(target)
+        require(0 < target.stat().st_size <= MAX_CLIP_BYTES, "clip_download_size")
+        return download.suggested_filename
+    finally:
+        download.delete()
+
+
+def caption_receipt(page, card, target, item, output, *, verify_pixels=True):
+    duration = round(item["end"] - item["start"], 3)
+    cues = validate_cues(item["cues"], duration)
+    require(cues and output.get("burn_subtitles") is True and
+            0 <= cues[0]["start"] < cues[-1]["end"] <= duration, "relative_clip_cues_missing")
+    digests = {}
+    for suffix, label, expected in (("srt", "SRT", to_srt(cues)), ("vtt", "WebVTT", to_vtt(cues))):
+        link = card.get_by_role("link", name="Descargar " + label, exact=True)
+        require(link.get_attribute("href") == output.get(suffix), "caption_sidecar_link")
+        sidecar = target.with_suffix("." + suffix)
+        save_download(page, link, sidecar)
+        require(sidecar.read_text(encoding="utf-8") == expected, "clip_sidecar_contents_or_timing")
+        digests[suffix] = digest_of(sidecar)
+    position = item["options"].get("subtitle_position", "bottom")
+    color = item["options"]["subtitle_color"]
+    observed = {"source_start": item["start"], "source_end": item["end"], "cues": len(cues),
+                "first_caption_local": cues[0]["start"], "last_caption_local": cues[-1]["end"],
+                "size": item["options"]["subtitle_font_size"], "color": color, "position": position,
+                "sidecars": digests}
+    if verify_pixels:
+        cue = max(cues, key=lambda value: value["end"] - value["start"])
+        seconds = (cue["start"] + cue["end"]) / 2
+        pixels = caption_color_stats(target, color, seconds=seconds, position=position)
+        require(pixels["matching_pixels"] >= 75, "automatic_or_custom_caption_pixels_missing")
+        if position == "top":
+            below = caption_color_stats(target, color, seconds=seconds)["matching_pixels"]
+            require(below <= 10, "top_caption_also_visible_at_bottom")
+            pixels["opposite_position_matching_pixels"] = below
+        observed["burned_pixels"] = pixels
+    return observed
+
+
 def results(page, job, scratch):
     files = [clip["file"] for clip in job["clips"]]
     require(1 <= len(files) <= 10 and len(set(files)) == len(files) and all(CLIP.fullmatch(file) for file in files),
             "clip_manifest_shape")
     result = {}
     with tempfile.TemporaryDirectory(prefix="beta-clips-", dir=scratch) as temporary:
-        for file in files:
+        for clip in job["clips"]:
+            file = clip["file"]
             label = "Clip " + str(int(file[5:7]))
-            player = page.locator("video[aria-label='" + label + "']")
+            card = page.locator(f'#clip-list [data-clip-file="{file}"]')
+            player = card.locator("video")
             player.wait_for(state="visible")
+            caption = clip.get("captions", {})
+            output = caption.get("output", {})
+            original = f'/jobs/{job["id"]}/clips/{file}'
+            require(caption.get("status") == "completed" and isinstance(output, dict) and output.get("mp4") == original
+                    and clip.get("caption_rendered") is True, "automatic_caption_manifest_missing")
+            require(player.get_attribute("src") == original + "?inline=true", "automatic_caption_preview_url")
             player.click(position={"x": 8, "y": 8})
             player.evaluate("el => { el.muted = false; return el.play(); }")
             page.wait_for_function("""label => {
@@ -304,23 +358,21 @@ def results(page, job, scratch):
                 (video.webkitAudioDecodedByteCount === undefined || video.webkitAudioDecodedByteCount > 0);
             }""", arg=label)
             close_preview(player)
-            with page.expect_download(timeout=120_000) as event:
-                page.get_by_role("link", name="Descargar " + label + " en MP4").click()
-            download = event.value
-            require(download.suggested_filename == file, "clip_download_filename")
             target = Path(temporary) / file
-            download.save_as(target)
+            link = card.get_by_role("link", name="Descargar " + label + " en MP4", exact=True)
+            require(save_download(page, link, target) == file, "clip_download_filename")
             length = target.stat().st_size
-            require(0 < length <= MAX_CLIP_BYTES, "clip_download_size")
             media = probe_media(target, pilot=True)
             require("mp4" in media["format_name"].split(",") and media["video_codec"] == "h264"
                     and media["audio_codec"] == "aac" and media["audio_streams"] == 1 and
                     media["video_streams"] == 1 and media["duration_seconds"] > 0, "clip_media_unplayable")
             with target.open("rb") as stream:
                 digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            require(abs(media["duration_seconds"] - (clip["end"] - clip["start"])) < .2,
+                    "automatic_clip_duration_mismatch")
             result[file] = {"sha256": digest, "bytes": length, "duration_seconds": media["duration_seconds"],
-                            "video_codec": media["video_codec"], "audio_codec": media["audio_codec"]}
-            download.delete()
+                            "video_codec": media["video_codec"], "audio_codec": media["audio_codec"],
+                            "captions": caption_receipt(page, card, target, clip, output)}
     return result
 
 
@@ -336,6 +388,139 @@ def open_saved_job(page, job_id):
     observed = browser_get(page, "/jobs/" + job_id)["body"]
     require(observed["id"] == job_id and observed["status"] == "completed", "saved_job_not_completed")
     return observed
+
+
+def read_caption(page, job_id, file):
+    result = browser_get(page, f"/jobs/{job_id}/clips/{file}/captions")
+    require(result["status"] == 200 and isinstance(result["body"], dict), "clip_caption_read")
+    return result["body"]
+
+
+def caption_output(page, job_id, file, previous, *, timeout=540):
+    began = monotonic()
+    while True:
+        state = read_caption(page, job_id, file)
+        output = state.get("output")
+        if state.get("status") == "completed" and output and output["id"] != previous:
+            require(ID.fullmatch(output["id"])
+                    and output.get("mp4") == f'/jobs/{job_id}/exports/{output["id"]}/files/clip.mp4',
+                    "clip_caption_variant_identity")
+            return state
+        require(state.get("status") != "failed", "clip_caption_render_failed")
+        require(monotonic() - began < timeout, "clip_caption_render_timeout")
+        page.wait_for_timeout(2000)
+
+
+def read_caption_variant(page, job_id, file, state, scratch, *, check_pixels=True):
+    card = page.locator(f'#clip-list [data-clip-file="{file}"]')
+    output = state["output"]
+    page.wait_for_function("""([file, url]) =>
+        document.querySelector('#clip-list [data-clip-file="' + file + '"] video')
+          ?.getAttribute('src') === url + '?inline=true'""", arg=[file, output["mp4"]])
+    link = card.get_by_role("link", name="Descargar Clip " + str(int(file[5:7])) + " en MP4", exact=True)
+    require(link.get_attribute("href") == output["mp4"], "custom_clip_download_variant")
+    with tempfile.TemporaryDirectory(prefix="beta-caption-variant-", dir=scratch) as directory:
+        media = Path(directory) / file
+        save_download(page, link, media)
+        duration = probe_media(media, pilot=True)["duration_seconds"]
+        require(abs(duration - state["duration"]) < .2, "custom_clip_duration_changed")
+        receipt = caption_receipt(page, card, media, {**state, "options": state["style"]},
+                                  output, verify_pixels=check_pixels)
+        receipt["sha256"] = digest_of(media)
+    return receipt
+
+
+def prepare_clip_styles(page, job, original, scratch, report):
+    """Edit a rendered clip and then replace only presentation across its project."""
+    report["step"] = "generated_clip_personalization"
+    job_id = job["id"]
+    file = max(original, key=lambda item: original[item]["captions"]["source_start"])
+    initial = {clip["file"]: clip["captions"]["output"]["id"] for clip in job["clips"]}
+    baseline = {name: read_caption(page, job_id, name)["cues"] for name in initial}
+    card = page.locator(f'#clip-list [data-clip-file="{file}"]')
+    card.get_by_role("button", name="Editar subtítulos", exact=True).click()
+    editor = page.locator("#clip-caption-form")
+    editor.wait_for()
+    index = next((offset for offset, cue in enumerate(baseline[file])
+                  if cue["end"] - cue["start"] >= .25), None)
+    require(index is not None, "clip_personalization_fixture_cue")
+    new_start = round(baseline[file][index]["start"] + .125, 3)
+    text = "Subtítulo editado del recorte."
+    editor.locator('[data-field="text"]').nth(index).fill(text)
+    editor.locator('[data-field="start"]').nth(index).fill(str(new_start))
+    page.locator("#clip-caption-size").fill("76")
+    page.locator("#clip-caption-color").fill("#ff0000")
+    page.locator("#clip-caption-position").select_option("top")
+    page.locator("#clip-caption-edge").fill("6")
+    path = f"/jobs/{job_id}/clips/{file}/captions"
+    with page.expect_response(lambda item: item.url == PUBLIC + path and item.request.method == "PUT") as saved:
+        page.locator("#clip-caption-save").click()
+    require(saved.value.ok, "clip_personalization_http_" + str(saved.value.status))
+    edited = caption_output(page, job_id, file, initial[file])
+    require(edited["cues"][index]["start"] == new_start and edited["cues"][index]["text"] == text
+            and edited["style"]["subtitle_outline"] == 6, "clip_personalization_not_persisted")
+    interim = browser_get(page, "/jobs/" + job_id)["body"]
+    require(all(clip["captions"]["output"]["id"] == initial[clip["file"]] for clip in interim["clips"]
+                if clip["file"] != file), "individual_caption_change_affected_other_clips")
+    single = read_caption_variant(page, job_id, file, edited, scratch)
+    require((single["color"], single["position"], single["size"]) == ("#FF0000", "top", 76),
+            "individual_caption_style_changed")
+    page.wait_for_function("""url => document.querySelector('#clip-caption-preview')
+        ?.getAttribute('src') === url + '?inline=true'""", arg=edited["output"]["mp4"])
+    with tempfile.TemporaryDirectory(prefix="beta-caption-original-", dir=scratch) as directory:
+        target = Path(directory) / file
+        save_download(page, card.get_by_role("link", name="MP4 inicial", exact=True), target)
+        require(digest_of(target) == original[file]["sha256"], "caption_edit_changed_initial_mp4")
+    check(report, "existing_clip_caption_edit_without_upload_or_retranscription")
+
+    report["step"] = "project_caption_style"
+    page.locator("#clip-caption-size").fill("88")
+    page.locator("#clip-caption-color").fill("#0000ff")
+    confirmations = []
+
+    def approve(dialog):
+        confirmations.append(dialog.message)
+        dialog.accept()
+
+    page.once("dialog", approve)
+    with page.expect_response(lambda item: item.url == PUBLIC + f"/jobs/{job_id}/captions"
+                              and item.request.method == "PUT") as all_saved:
+        page.locator("#clip-caption-apply-all").click()
+    require(all_saved.value.ok and confirmations and "reemplazará" in confirmations[0], "project_style_confirmation")
+    project = all_saved.value.json()
+    initial[file] = edited["output"]["id"]
+    after = {name: caption_output(page, job_id, name, previous) for name, previous in initial.items()}
+    require(all(item["style"] == project["style"] for item in after.values())
+            and all(after[name]["cues"] == (edited["cues"] if name == file else baseline[name]) for name in after),
+            "project_style_did_not_preserve_text_or_replace_overrides")
+    latest = read_caption_variant(page, job_id, file, after[file], scratch)
+    require(latest["sha256"] != single["sha256"] and latest["color"] == "#0000FF"
+            and latest["size"] == 88 and latest["position"] == "top"
+            and latest["sidecars"] == single["sidecars"], "project_style_not_reflected_in_mp4")
+    report["caption_customization"] = {"individual": single, "project": latest, "updated_clips": len(after)}
+    check(report, "project_caption_style_applied_to_all_with_individual_timing_preserved")
+    return {"file": file, "project": project, "clips": after, "receipt": latest}
+
+
+def verify_clip_styles(page, job, saved, original, scratch, report):
+    require(job["caption_style"] == saved["project"], "project_caption_style_lost_after_replacement")
+    job_id = job["id"]
+    states = {name: read_caption(page, job_id, name) for name in saved["clips"]}
+    for name, item in states.items():
+        require(all(item.get(key) == saved["clips"][name].get(key) for key in
+                    ("style", "cues", "start", "end", "revision", "status", "output")),
+                "clip_caption_state_lost_after_replacement")
+    file = saved["file"]
+    observed = read_caption_variant(page, job_id, file, states[file], scratch, check_pixels=False)
+    expected = {key: value for key, value in saved["receipt"].items() if key != "burned_pixels"}
+    require(observed == expected, "clip_caption_files_changed_after_replacement")
+    with tempfile.TemporaryDirectory(prefix="beta-caption-originals-", dir=scratch) as directory:
+        for name, before in original.items():
+            card = page.locator(f'#clip-list [data-clip-file="{name}"]')
+            target = Path(directory) / name
+            save_download(page, card.get_by_role("link", name="MP4 inicial", exact=True), target)
+            require(digest_of(target) == before["sha256"], "initial_clip_bytes_changed_after_replacement")
+    check(report, "automatic_clips_and_saved_caption_versions_after_replacement")
 
 
 def check_manual_export(page, job_id, scratch, report):
@@ -510,7 +695,7 @@ def finish_selection(page, job, receipt, model, duration):
             "worker_seconds": selection.get("elapsed_seconds"), "wall_seconds": round(monotonic() - began, 3)}
 
 
-def open_late_draft(page, job, start, end, *, generated):
+def open_late_draft(page, job, start, end, *, generated, expected_style=None):
     if generated:
         candidates = page.locator("#editorial-candidates")
         candidates.get_by_role("button", name="Reproducir intervalo").first.click()
@@ -522,6 +707,9 @@ def open_late_draft(page, job, start, end, *, generated):
         close_preview(source)
         create = candidates.get_by_role("button", name="Crear / abrir borrador").first
         observed = click_response(page, create, f"/jobs/{job}/selections/", "POST", 201).json()
+        if expected_style is not None:
+            require(all(observed["options"].get(key) == value for key, value in expected_style.items()),
+                    "editorial_candidate_did_not_inherit_project_caption_style")
         page.locator("#editorial-save").wait_for()
         if (observed["start"], observed["end"]) != (start, end):
             page.locator("#editorial-start").fill(str(start))
@@ -610,7 +798,8 @@ def fetch_editorial_export(page, job, draft, receipt, scratch, *, check_pixels=T
         require((root / "clip.srt").read_text(encoding="utf-8") == to_srt(cues)
                 and (root / "clip.vtt").read_text(encoding="utf-8") == to_vtt(cues),
                 "editorial_sidecar_contents_or_timing")
-        pixels = caption_color_stats(root / "clip.mp4", draft["options"]["subtitle_color"]) if check_pixels else {}
+        pixels = caption_color_stats(root / "clip.mp4", draft["options"]["subtitle_color"],
+                                    position=draft["options"].get("subtitle_position", "bottom")) if check_pixels else {}
         require(not check_pixels or pixels["matching_pixels"] >= 75, "editorial_pixels_not_burned")
     if key:
         replay = browser_post(page, f"/jobs/{job}/drafts/{draft['id']}/exports", {"revision": draft["revision"]}, key)
@@ -621,7 +810,7 @@ def fetch_editorial_export(page, job, draft, receipt, scratch, *, check_pixels=T
             "size": draft["options"]["subtitle_font_size"], "burned_pixels": pixels, "wall_seconds": ready_seconds}
 
 
-def prepare_editorial(page, job, args, report):
+def prepare_editorial(page, job, args, report, style):
     editorial = {}
     selection = None
     if args.editorial_model:
@@ -638,7 +827,7 @@ def prepare_editorial(page, job, args, report):
                                   "status": "provider_not_configured"}
     report["editorial"] = editorial
     report["step"] = "editorial_draft_and_burned_subtitles"
-    open_late_draft(page, job, 86, 109, generated=selection is not None)
+    open_late_draft(page, job, 86, 109, generated=selection is not None, expected_style=style)
     exports = []
     variants = (
         ("Edición y acción.\nCorazón y mañana.", 32, "#FF0000"),
@@ -723,16 +912,18 @@ def prepare(browser, args, admin, report, revisions):
         observed = results(page, job, args.state.parent)
         report["clips"] = observed
         check(report, "browser_video_and_download_mp4_audio_video")
+        check(report, "automatic_burned_mp4_srt_webvtt_without_editor")
         first = next(iter(observed))
         report["step"] = "manual_export"
         check_manual_export(page, job["id"], args.state.parent, report)
-        editorial_state = prepare_editorial(page, job["id"], args, report)
+        captions = prepare_clip_styles(page, job, observed, args.state.parent, report)
+        editorial_state = prepare_editorial(page, job["id"], args, report, captions["project"]["style"])
         logout(page)
     report["step"] = "isolation"
     verify_isolation(browser, accounts[1], args.commit, job["id"], first, report)
     shared_http.write_new(args.state, {"schema": SCHEMA, "origin": PUBLIC, "commit": args.commit,
                                       "revisions": revisions, "accounts": accounts, "job": job["id"],
-                                      "clips": observed, "editorial": editorial_state})
+                                      "clips": observed, "captions": captions, "editorial": editorial_state})
 
 
 def load_state(args, revisions):
@@ -759,9 +950,8 @@ def verify(browser, args, admin, report, revisions):
     with browser_page(browser) as page:
         login(page, creator, args.commit)
         job = open_saved_job(page, state["job"])
-        observed = results(page, job, args.state.parent)
-        require(observed == state["clips"], "clip_bytes_changed_after_replacement")
-        report["clips"] = observed
+        verify_clip_styles(page, job, state["captions"], state["clips"], args.state.parent, report)
+        report["clips"] = state["clips"]
         check_feedback_removed(page, report)
         report["step"] = "editorial_persistence"
         verify_editorial(page, state["job"], state["editorial"], args.state.parent, report)
@@ -769,6 +959,8 @@ def verify(browser, args, admin, report, revisions):
     check(report, "saved_job_and_identical_clip_bytes_after_replacement")
     report["step"] = "isolation"
     verify_isolation(browser, other, args.commit, state["job"], first, report)
+    from scripts.int_hito_b_deletion_browser import acceptance as deletion_acceptance
+    deletion_acceptance(browser, args, state, report)
     with browser_page(browser) as page:
         login(page, admin, args.commit)
         check_feedback_removed(page, report)

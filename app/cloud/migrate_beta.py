@@ -5,6 +5,7 @@ from sqlalchemy import text
 
 from ..auth_db import get_engine
 from .migrate import upgrade as upgrade_base
+from .migrate_project_deletions import REVISION as DELETION_REVISION, upgrade_project_deletions
 
 BETA_REVISION = "cloud_beta01_0001"
 EDITORIAL_REVISION = "cloud_editorial01_0001"
@@ -70,8 +71,10 @@ def upgrade_beta(engine=None):
                 connection.execute(text(statement))
             connection.execute(text("INSERT INTO cloud_beta_schema_migrations(revision) VALUES (:r)"), {"r": BETA_REVISION})
         editorial = upgrade_editorial(connection)
+        deletion = upgrade_project_deletions(connection)
     return {"status": "applied" if not revisions else "current", "revision": BETA_REVISION,
-            "editorial_status": editorial, "editorial_revision": EDITORIAL_REVISION}
+            "editorial_status": editorial, "editorial_revision": EDITORIAL_REVISION,
+            "deletion_status": deletion, "deletion_revision": DELETION_REVISION}
 
 
 def beta_schema_ready(connection):

@@ -12,6 +12,15 @@ const BETA_STATUS = {
   rendering: "Procesando · generando los clips",
   completed: "Completado",
   failed: "Fallido",
+  deleting: "Eliminando proyecto",
+  deleted: "Proyecto eliminado",
+};
+const BETA_CAPTION_STATUS = {
+  unmodified: "Puedes generar subtítulos desde el original guardado.",
+  queued: "Subtítulos en cola.",
+  rendering: "Generando una nueva versión del clip.",
+  failed: "Falló la generación de subtítulos.",
+  no_speech: "No hay voz detectable en este recorte.",
 };
 
 function betaUploadLocation(value) {
@@ -141,6 +150,41 @@ function betaSafeMessage(value, fallback) {
   return typeof value === "string" && value.length <= 200 && !value.includes("://") ? value : fallback;
 }
 
+function betaCaptionOutput(jobId, file, captions) {
+  if (!["completed", "no_speech"].includes(captions?.status)
+    || !BETA_CLIP.test(file) || !BETA_JOB_ID.test(jobId)) return null;
+  const output = captions.output;
+  const jobPath = "/jobs/" + jobId;
+  const original = jobPath + "/clips/" + file;
+  const variant = BETA_JOB_ID.test(output?.id) ? jobPath + "/exports/" + output.id + "/files/clip" : "";
+  if (!output || (output.mp4 !== original && (!variant || output.mp4 !== variant + ".mp4"))) return null;
+  const files = {mp4: output.mp4, burn_subtitles: output.burn_subtitles === true};
+  for (const format of ["srt", "vtt"]) {
+    const expected = output.mp4 === original ? original + "/subtitles/" + format : variant + "." + format;
+    if (output[format] === expected) files[format] = expected;
+  }
+  return files;
+}
+
+function betaCaptionMessage(captions, output) {
+  if (captions?.status === "queued" || captions?.status === "rendering") {
+    return BETA_CAPTION_STATUS[captions.status];
+  }
+  const fallback = output?.burn_subtitles ? "Subtítulos incrustados"
+    : BETA_CAPTION_STATUS[captions?.status] || "";
+  return betaSafeMessage(captions?.notice, fallback);
+}
+
+function betaDeletionMessage(deletion) {
+  if (deletion?.status === "deleted") return "Proyecto eliminado.";
+  if (Number.isFinite(deletion?.retry_at) && deletion.retry_at * 1000 > Date.now()) {
+    const when = new Date(deletion.retry_at * 1000).toLocaleString("es");
+    return "Eliminación pendiente. La limpieza puede continuar a partir de " + when + ".";
+  }
+  return deletion?.status === "delete_error" ? "La limpieza quedó incompleta. Puedes reintentar la eliminación."
+    : "Eliminando proyecto. Los resultados ya no están disponibles.";
+}
+
 async function betaJson(auth, path, options) {
   const response = await auth.fetch(path, options);
   let payload;
@@ -170,6 +214,10 @@ async function initBeta() {
   const uploadSubmit = element("upload-submit");
   const uploadProgress = element("upload-progress");
   const uploadStatus = element("upload-status");
+  const uploadBurnSubtitles = element("upload-burn-subtitles");
+  const caption = suffix => element("clip-caption-" + suffix);
+  const captionFields = window.ClipForgeCaptionFields;
+  const deleteDialog = element("project-delete-dialog");
 
   let limits;
   let uploadBusy = false;
@@ -181,6 +229,10 @@ async function initBeta() {
   let projects = [];
   let loadingProjects = false;
   let renderKey;
+  let captionView;
+  let deleteTarget;
+  let deleteBusy = false;
+  const deletedProjects = new Set();
 
   function renderProjects() {
     const list = element("project-list");
@@ -196,7 +248,9 @@ async function initBeta() {
         event.preventDefault();
         void openJob(project.id);
       });
-      item.append(link, betaText("p", betaStatus(project.status, project.lease_expired), "muted"));
+      const state = project.status === "deleting" ? betaDeletionMessage(project.deletion)
+        : betaStatus(project.status, project.lease_expired);
+      item.append(link, betaText("p", state, "muted"));
       list.append(item);
     }
   }
@@ -210,7 +264,8 @@ async function initBeta() {
     try {
       const offset = append ? projects.length : 0;
       const data = await json("/projects?limit=" + BETA_PAGE_SIZE + "&offset=" + offset);
-      projects = append ? [...projects, ...data.projects] : data.projects;
+      const incoming = data.projects.filter(project => !deletedProjects.has(project.id));
+      projects = append ? [...projects, ...incoming] : incoming;
       renderProjects();
       more.hidden = data.has_more !== true;
       status.textContent = projects.length ? "" : "Todavía no tienes trabajos. Sube un video para empezar.";
@@ -232,7 +287,14 @@ async function initBeta() {
     startExisting.textContent = job?.status === "queued" ? "Intentar activar el trabajo" : "Procesar video guardado";
     const retryJob = element("retry-job");
     retryJob.hidden = job?.status !== "failed" || job.retryable !== true;
-    element("job-actions").hidden = startExisting.hidden && retryJob.hidden;
+    const deleting = job?.status === "deleting";
+    const removeJob = element("delete-project");
+    const retryDelete = element("retry-project-deletion");
+    removeJob.hidden = !job || deleting || job.status === "deleted";
+    retryDelete.hidden = !deleting || job.deletion?.retryable !== true;
+    retryDelete.disabled = deleteBusy || (job?.deletion?.retry_at ?? 0) * 1000 > Date.now();
+    element("job-actions").hidden = startExisting.hidden && retryJob.hidden && removeJob.hidden && retryDelete.hidden;
+    if (deleting || captionView?.id !== selectedId) closeCaptions();
     element("job-error").textContent = job?.status === "failed"
       ? betaSafeMessage(job.pilot === true ? job.error : null, "El procesamiento falló.")
       : "";
@@ -242,43 +304,297 @@ async function initBeta() {
     element("job-status").textContent = !job ? "Consultando el trabajo…"
       : job.status === "awaiting_upload" ? "Carga pendiente. Si terminaste de transferir el video, puedes procesarlo desde aquí."
       : job.status === "completed" ? "Completado · " + clips.length + (clips.length === 1 ? " clip" : " clips")
+      : deleting ? betaDeletionMessage(job.deletion)
       : job.status === "queued" && job.dispatch_status === "pending"
         ? "Pendiente. No se pudo activar el procesamiento. Se volverá a intentar."
       : betaStatus(job.status, job.lease_expired);
-    const key = selectedId + ":" + Boolean(job) + ":" + clips.map(clip => clip.file).join(",");
+    syncCaptionRender();
+    const key = selectedId + ":" + Boolean(job) + ":" + JSON.stringify(clips.map(clip => [clip.file, clip.captions]));
     if (key === renderKey) return;
     renderKey = key;
     const cards = element("clip-list");
-    cards.replaceChildren();
+    const currentCards = new Map([...cards.children].map(card => [card.dataset.clipFile, card]));
+    const nextCards = [];
     for (const clip of clips) {
+      const cardKey = selectedId + ":" + JSON.stringify([clip.file, clip.captions, clip.start, clip.end]);
+      const current = currentCards.get(clip.file);
+      if (current?.dataset.renderKey === cardKey) {
+        nextCards.push(current);
+        continue;
+      }
       const card = document.createElement("article");
       card.className = "beta-clip";
+      card.dataset.clipFile = clip.file;
+      card.dataset.renderKey = cardKey;
       const label = "Clip " + Number(clip.file.slice(5, 7));
       const path = "/jobs/" + selectedId + "/clips/" + clip.file;
+      const output = betaCaptionOutput(selectedId, clip.file, clip.captions);
+      const filePath = output?.mp4 || path;
       const player = document.createElement("video");
       player.controls = true;
       player.playsInline = true;
       player.preload = "none";
-      player.src = path + "?inline=true";
+      player.src = filePath + "?inline=true";
       player.setAttribute("aria-label", label);
       const actions = document.createElement("div");
       actions.className = "actions";
-      const download = betaText("a", "Descargar MP4");
-      download.href = path;
+      const initial = ["queued", "rendering", "failed"].includes(clip.captions?.status) && !output;
+      const download = betaText("a", initial ? "Descargar MP4 inicial" : "Descargar MP4");
+      download.href = filePath;
       download.download = clip.file;
       download.setAttribute("aria-label", "Descargar " + label + " en MP4");
       actions.append(download);
+      if (output?.mp4 && output.mp4 !== path) {
+        const original = betaText("a", "MP4 inicial");
+        original.href = path;
+        original.download = clip.file;
+        actions.append(original);
+      }
+      for (const [format, name] of [["srt", "SRT"], ["vtt", "WebVTT"]]) {
+        if (!output?.[format]) continue;
+        const link = betaText("a", "Descargar " + name);
+        link.href = output[format];
+        link.download = clip.file.replace(/mp4$/, format);
+        actions.append(link);
+      }
+      const edit = betaText("button", "Editar subtítulos", "secondary");
+      edit.type = "button";
+      edit.addEventListener("click", () => openCaptions(clip.file));
+      actions.append(edit);
+      if (clip.captions?.retryable === true) {
+        const retry = betaText("button", "Reintentar subtítulos", "secondary");
+        retry.type = "button";
+        retry.addEventListener("click", () => retryCaptions(clip.file, retry));
+        actions.append(retry);
+      }
       card.append(betaText("h3", label));
       if (Number.isFinite(clip.start) && Number.isFinite(clip.end)) {
         card.append(betaText("p", clip.start.toFixed(1) + "–" + clip.end.toFixed(1) + " s del original", "muted"));
       }
+      const captionsMessage = betaCaptionMessage(clip.captions, output);
+      if (captionsMessage) {
+        const state = betaText("p", captionsMessage, "muted");
+        state.setAttribute("role", "status");
+        card.append(state);
+      }
       card.append(player, actions);
-      cards.append(card);
+      nextCards.push(card);
+    }
+    for (const card of [...cards.children]) {
+      if (!nextCards.includes(card)) card.remove();
+    }
+    nextCards.forEach((card, index) => {
+      if (cards.children[index] !== card) cards.insertBefore(card, cards.children[index] ?? null);
+    });
+  }
+
+  function captionPath(id, file) {
+    return "/jobs/" + id + "/clips/" + file + "/captions";
+  }
+
+  function closeCaptions() {
+    if (!captionView) return;
+    captionView = undefined;
+    caption("editor").hidden = true;
+    caption("form").hidden = true;
+    caption("fields").disabled = false;
+    caption("cues").replaceChildren();
+    const player = caption("preview");
+    player.pause();
+    player.removeAttribute("src");
+    player.load();
+    player.hidden = true;
+  }
+
+  function captionStyle(view) {
+    return {...view.data.style, burn_subtitles: caption("burn").checked,
+      subtitle_font_size: caption("size").valueAsNumber, subtitle_color: caption("color").value.toUpperCase(),
+      subtitle_position: caption("position").value, subtitle_outline: caption("edge").valueAsNumber};
+  }
+
+  function updateCaptionSample() {
+    if (!captionView?.data) return;
+    captionFields.showCaptionSample(caption("sample"), caption("cues"), captionStyle(captionView));
+  }
+
+  function syncCaptionRender(state) {
+    const view = captionView;
+    if (!view || view.id !== selectedId) return;
+    const current = state || job?.clips?.find(clip => clip.file === view.file)?.captions;
+    const output = betaCaptionOutput(view.id, view.file, current);
+    const base = "/jobs/" + view.id + "/clips/" + view.file;
+    const mediaPath = (output?.mp4 || base) + "?inline=true";
+    const player = caption("preview");
+    const key = JSON.stringify([current?.status, current?.notice, current?.revision, mediaPath]);
+    if (key === view.renderKey) return;
+    view.renderKey = key;
+    if (player.getAttribute("src") !== mediaPath) player.src = mediaPath;
+    player.hidden = false;
+    const message = betaCaptionMessage(current, output);
+    caption("status").textContent = message;
+    player.setAttribute("aria-label", output ? "Vista previa del MP4 disponible" : "Vista previa del clip inicial");
+  }
+
+  function mountCaptions(view, data, {preserveCues = false} = {}) {
+    if (captionView !== view) return;
+    if (!Number.isFinite(data.duration) || data.duration <= 0 || !data.style
+      || !Array.isArray(data.cues) || !Number.isSafeInteger(data.revision)) {
+      throw new Error("No se pudo verificar la versión del clip.");
+    }
+    view.data = data;
+    caption("range").textContent = data.start.toFixed(3) + "–" + data.end.toFixed(3)
+      + " s del original. Los tiempos de los subtítulos empiezan en cero para este recorte.";
+    caption("burn").checked = data.style.burn_subtitles === true;
+    caption("size").value = data.style.subtitle_font_size ?? 52;
+    caption("color").value = data.style.subtitle_color ?? "#ffffff";
+    caption("position").value = data.style.subtitle_position ?? "bottom";
+    caption("edge").value = data.style.subtitle_outline ?? 3;
+    if (!preserveCues) {
+      caption("cues").replaceChildren(...data.cues.map(cue =>
+        captionFields.cueRow(cue, data.duration, updateCaptionSample)));
+    }
+    caption("form").hidden = false;
+    syncCaptionRender(data);
+    updateCaptionSample();
+  }
+
+  async function openCaptions(file) {
+    if (job?.status !== "completed" || !BETA_CLIP.test(file) || !captionFields) return;
+    if (captionView?.busy) return;
+    closeCaptions();
+    const view = {id: selectedId, file, busy: true};
+    captionView = view;
+    caption("editor").hidden = false;
+    caption("heading").textContent = "Editar subtítulos · Clip " + Number(file.slice(5, 7));
+    caption("range").textContent = "";
+    caption("status").textContent = "Cargando subtítulos del recorte.";
+    caption("editor").scrollIntoView({block: "nearest"});
+    try {
+      const data = await json(captionPath(view.id, file));
+      mountCaptions(view, data);
+    } catch (error) {
+      if (captionView === view) caption("status").textContent = error.message;
+    } finally {
+      view.busy = false;
+    }
+  }
+
+  async function saveCaptions(applyAll = false) {
+    const view = captionView;
+    if (!view?.data || view.busy || job?.status !== "completed") return;
+    const valid = applyAll ? ["size", "edge"].every(name => caption(name).reportValidity())
+      : caption("form").reportValidity();
+    if (!valid) return;
+    const style = captionStyle(view);
+    const projectRevision = job.caption_style?.revision;
+    if (applyAll) {
+      if (!Number.isSafeInteger(projectRevision)) {
+        caption("status").textContent = "Actualiza el proyecto para consultar el estilo guardado.";
+        return;
+      }
+      const confirmed = window.confirm("Este estilo se guardará para el proyecto y reemplazará los ajustes de estilo "
+        + "individuales de todos sus clips. Se conservarán sus textos y tiempos guardados. ¿Continuar?");
+      if (!confirmed) return;
+    }
+    const cues = captionFields.readCues(caption("cues"));
+    view.busy = true;
+    caption("fields").disabled = true;
+    caption("status").textContent = applyAll ? "Aplicando estilo al proyecto." : "Guardando los subtítulos.";
+    try {
+      const path = applyAll ? "/jobs/" + view.id + "/captions" : captionPath(view.id, view.file);
+      const options = auth.payload(applyAll ? {style, revision: projectRevision, apply_to_all: true}
+        : {style, cues, revision: view.data.revision});
+      options.method = "PUT";
+      const result = await json(path, options);
+      if (captionView !== view) return;
+      const data = applyAll ? await json(captionPath(view.id, view.file)) : result;
+      mountCaptions(view, data, {preserveCues: applyAll});
+      if (captionView === view) {
+        const action = applyAll ? "Estilo del proyecto guardado." : "Subtítulos guardados.";
+        const state = betaCaptionMessage(data, betaCaptionOutput(view.id, view.file, data));
+        caption("status").textContent = state ? action + " " + state : action;
+        await openJob(view.id);
+      }
+    } catch (error) {
+      if (captionView === view) caption("status").textContent = error.status === 409
+        ? betaSafeMessage(error.message, "Actualiza el clip y vuelve a intentarlo.") : error.message;
+    } finally {
+      view.busy = false;
+      if (captionView === view) caption("fields").disabled = false;
+    }
+  }
+
+  async function retryCaptions(file, control) {
+    const id = selectedId;
+    if (job?.status !== "completed" || !BETA_CLIP.test(file) || control.disabled) return;
+    control.disabled = true;
+    try {
+      const result = await json(captionPath(id, file) + "/retry", auth.payload({}));
+      if (selectedId !== id) return;
+      if (captionView?.file === file) syncCaptionRender(result);
+      await openJob(id);
+    } catch (error) {
+      if (selectedId === id) element("job-error").textContent = error.message;
+    } finally {
+      control.disabled = false;
+    }
+  }
+
+  function completeDeletion(id) {
+    deletedProjects.add(id);
+    projects = projects.filter(project => project.id !== id);
+    if (selectedId === id) {
+      clearTimeout(pollTimer);
+      selectionVersion += 1;
+      selectedId = undefined;
+      job = undefined;
+      history.replaceState(null, "", "/" + location.hash);
+      renderJob();
+      element("job-status").textContent = "Proyecto eliminado.";
+    }
+    renderProjects();
+    void loadProjects();
+  }
+
+  async function deleteProject(id, confirmed = false) {
+    if (deleteBusy || selectedId !== id || !BETA_JOB_ID.test(id)) return;
+    if (confirmed ? deleteTarget !== id : job?.deletion?.retryable !== true) return;
+    deleteBusy = true;
+    const confirm = element("project-delete-confirm");
+    const cancel = element("project-delete-cancel");
+    const status = element(confirmed ? "project-delete-error" : "job-error");
+    confirm.disabled = true;
+    cancel.disabled = true;
+    element("retry-project-deletion").disabled = true;
+    status.textContent = "";
+    try {
+      const result = await json("/jobs/" + id + "/deletion", auth.payload({}));
+      if (result.id !== id || !["deleting", "delete_error", "deleted"].includes(result.status)) {
+        throw new Error("No se pudo verificar el estado de eliminación del proyecto.");
+      }
+      if (deleteDialog.open) deleteDialog.close();
+      if (result.status === "deleted") {
+        completeDeletion(id);
+        return;
+      }
+      if (selectedId === id) {
+        job = {...job, id, status: "deleting", deletion: result};
+        renderJob();
+        await openJob(id);
+      }
+      await loadProjects();
+    } catch (error) {
+      if (selectedId === id) status.textContent = error.message;
+    } finally {
+      deleteBusy = false;
+      confirm.disabled = false;
+      cancel.disabled = false;
+      element("retry-project-deletion").disabled = (job?.deletion?.retry_at ?? 0) * 1000 > Date.now();
     }
   }
 
   async function openJob(id) {
-    if (!BETA_JOB_ID.test(id)) return;
+    if (!BETA_JOB_ID.test(id) || deletedProjects.has(id)) return;
     clearTimeout(pollTimer);
     const originalSelection = selectedId;
     selectedId = id;
@@ -295,20 +611,33 @@ async function initBeta() {
         const value = await json("/jobs/" + id);
         if (version !== selectionVersion) return;
         if (value.id !== id) throw new Error("No se pudo verificar el trabajo.");
+        if (value.status === "deleted") {
+          completeDeletion(id);
+          return;
+        }
         const project = projects.find(item => item.id === id);
-        if (project && (project.status !== value.status || project.lease_expired !== value.lease_expired)) {
-          project.status = value.status;
-          project.lease_expired = value.lease_expired;
+        if (project && (project.status !== value.status || project.lease_expired !== value.lease_expired
+          || project.deletion?.status !== value.deletion?.status || project.deletion?.retry_at !== value.deletion?.retry_at)) {
+          Object.assign(project, {status: value.status, lease_expired: value.lease_expired, deletion: value.deletion});
           renderProjects();
         }
         job = value;
         hasJob = true;
         renderJob();
-        if (["queued", "validating", "transcribing", "rendering"].includes(job.status)) {
-          pollTimer = setTimeout(refresh, 3000);
+        const captionsPending = job.clips?.some(clip => ["queued", "rendering"].includes(clip.captions?.status));
+        if (["queued", "validating", "transcribing", "rendering", "deleting"].includes(job.status) || captionsPending) {
+          pollTimer = setTimeout(refresh, job.status === "deleting" ? 5000 : 3000);
         }
       } catch (error) {
         if (version !== selectionVersion) return;
+        if (error.status === 404 && (job?.status === "deleting" || !hasJob)) {
+          const deletion = await json("/jobs/" + id + "/deletion").catch(() => null);
+          if (version !== selectionVersion) return;
+          if (deletion?.id === id && deletion.status === "deleted") {
+            completeDeletion(id);
+            return;
+          }
+        }
         if (error.status === 403 || error.status === 404 || !hasJob) {
           job = undefined;
           renderJob();
@@ -344,6 +673,7 @@ async function initBeta() {
 
   uploadInput.addEventListener("change", () => {
     pendingUpload = undefined;
+    uploadBurnSubtitles.disabled = false;
     uploadProgress.hidden = true;
     uploadStatus.textContent = "";
     try {
@@ -358,14 +688,18 @@ async function initBeta() {
     if (!limits || uploadBusy) return;
     uploadBusy = true;
     uploadInput.disabled = true;
+    uploadBurnSubtitles.disabled = true;
     uploadSubmit.disabled = true;
     uploadProgress.hidden = true;
     uploadStatus.textContent = "";
     try {
       const file = uploadInput.files[0];
       betaValidateFile(file, limits);
-      if (pendingUpload?.file !== file) pendingUpload = { file, key: crypto.randomUUID() };
-      const request = auth.payload({ filename: file.name, bytes: file.size });
+      if (pendingUpload?.file !== file) {
+        pendingUpload = {file, key: crypto.randomUUID(), burnSubtitles: uploadBurnSubtitles.checked};
+      }
+      const request = auth.payload({filename: file.name, bytes: file.size,
+        burn_subtitles: pendingUpload.burnSubtitles});
       request.headers["Idempotency-Key"] = pendingUpload.key;
       uploadStatus.textContent = "Solicitando una carga privada…";
       const reservation = await json("/beta/uploads", request);
@@ -394,6 +728,7 @@ async function initBeta() {
     } finally {
       uploadBusy = false;
       uploadInput.disabled = false;
+      uploadBurnSubtitles.disabled = Boolean(pendingUpload);
       uploadSubmit.disabled = false;
       uploadProgress.hidden = true;
     }
@@ -406,6 +741,33 @@ async function initBeta() {
   element("more-projects").addEventListener("click", () => loadProjects(true));
   element("start-existing").addEventListener("click", event => startOrRetry(event.currentTarget, id => "/beta/uploads/" + id + "/start"));
   element("retry-job").addEventListener("click", event => startOrRetry(event.currentTarget, id => "/beta/jobs/" + id + "/retry"));
+  element("delete-project").addEventListener("click", () => {
+    if (!job || job.status === "deleting" || deleteBusy) return;
+    deleteTarget = selectedId;
+    element("project-delete-title").textContent = element("job-title").textContent;
+    element("project-delete-error").textContent = "";
+    deleteDialog.showModal();
+  });
+  element("project-delete-cancel").addEventListener("click", () => deleteDialog.close());
+  element("project-delete-confirm").addEventListener("click", () => deleteProject(deleteTarget, true));
+  element("retry-project-deletion").addEventListener("click", () => deleteProject(selectedId));
+  deleteDialog.addEventListener("cancel", event => {
+    if (deleteBusy) event.preventDefault();
+  });
+  deleteDialog.addEventListener("close", () => { deleteTarget = undefined; });
+  caption("form").addEventListener("submit", event => {
+    event.preventDefault();
+    void saveCaptions();
+  });
+  caption("form").addEventListener("input", updateCaptionSample);
+  caption("apply-all").addEventListener("click", () => saveCaptions(true));
+  caption("add").addEventListener("click", () => {
+    if (!captionView?.data) return;
+    if (!captionFields.addCue(caption("cues"), captionView.data.duration, updateCaptionSample)) {
+      caption("status").textContent = "Ajusta el fin del último subtítulo para añadir otro.";
+    }
+  });
+  caption("close").addEventListener("click", closeCaptions);
   workspace.hidden = false;
   const current = new URLSearchParams(location.search).get("job");
   void loadProjects().then(() => {

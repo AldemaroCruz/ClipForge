@@ -36,7 +36,8 @@ ROUTES = {
         rf"/projects|/jobs/{JOB}(?:/clips/{CLIP}|/source|/workspace|/exports|/exports/{JOB}/files/{EXPORT_FILE})?",
         r"/beta/limits",
         r"/ai/config",
-        rf"/jobs/{JOB}/(?:selections(?:/context|/{JOB})?|drafts(?:/{JOB})?)",
+        rf"/jobs/{JOB}/(?:selections(?:/context|/{JOB})?|drafts(?:/{JOB})?|deletion)",
+        rf"/jobs/{JOB}/clips/{CLIP}/(?:captions|subtitles/(?:srt|vtt))",
     ),
     "POST": (
         r"/auth/(?:login|logout|password|recover|users)",
@@ -44,9 +45,10 @@ ROUTES = {
         rf"/beta/(?:uploads|uploads/{JOB}/start|jobs/{JOB}/retry)",
         rf"/jobs/{JOB}/editor/(?:range|exports)",
         rf"/jobs/{JOB}/exports/{JOB}/retry",
-        rf"/jobs/{JOB}/(?:selections(?:/preview|/{JOB}/candidates/[1-5]/draft)?|drafts(?:/{JOB}/exports)?)",
+        rf"/jobs/{JOB}/(?:selections(?:/preview|/{JOB}/candidates/[1-5]/draft)?|drafts(?:/{JOB}/exports)?|deletion)",
+        rf"/jobs/{JOB}/clips/{CLIP}/captions/retry",
     ),
-    "PUT": (rf"/jobs/{JOB}/drafts/{JOB}",),
+    "PUT": (rf"/jobs/{JOB}/(?:drafts/{JOB}|clips/{CLIP}/captions|captions)",),
 }
 INBOUND = {
     "accept", "content-type", "cookie", "idempotency-key", "origin",

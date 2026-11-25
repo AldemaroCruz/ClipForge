@@ -266,6 +266,10 @@ class PilotMediaTests(TestCase):
             {"start": 1185.0, "end": 1200.0, "text": "llega al final del video"},
         ])
         render.assert_called_once()
+        self.assertTrue(render.call_args.kwargs["options"].burn_subtitles)
+        self.assertTrue(job["clips"][0]["caption_rendered"])
+        self.assertEqual(render.call_args.kwargs["cues"][0]["start"], 0.0)
+        self.assertEqual(render.call_args.kwargs["cues"][-1]["end"], 26.0)
         self.assertEqual((render.call_args.kwargs["start"], render.call_args.kwargs["end"]),
                          (1174.0, 1200.0))
 

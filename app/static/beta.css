@@ -101,6 +101,71 @@
 .beta-clip .actions {
   margin-top: 12px;
 }
+.beta-check {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.beta-check input {
+  width: auto;
+  flex: 0 0 auto;
+}
+.beta-caption-editor {
+  margin-top: 20px;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+.beta-caption-editor h3 {
+  margin: 0;
+}
+.beta-caption-editor video {
+  display: block;
+  width: min(100%, 270px);
+  max-height: 380px;
+  aspect-ratio: 9 / 16;
+  background: #080e18;
+  border-radius: 8px;
+  margin: 12px auto;
+}
+.beta-caption-editor textarea {
+  display: block;
+  width: 100%;
+  padding: 9px 12px;
+  color: inherit;
+  background: #0f192b;
+  border: 1px solid #49607f;
+  border-radius: 8px;
+  font: inherit;
+  resize: vertical;
+}
+.beta-caption-editor textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.beta-caption-editor input[type="color"] {
+  min-height: 46px;
+}
+.beta-caption-fields {
+  min-width: 0;
+  margin: 16px 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.beta-dialog {
+  width: min(90vw, 34rem);
+  margin: auto;
+  color: inherit;
+}
+.beta-dialog::backdrop {
+  background: rgb(5 10 18 / 78%);
+}
+.beta button.beta-danger.secondary {
+  color: #ffd0dc;
+}
+.beta-dialog button.beta-danger {
+  background: #ffd0dc;
+}
 @media (max-width: 760px) {
   .beta-layout {
     grid-template-columns: 1fr;

@@ -356,7 +356,7 @@
     }
   }
 
-  function cueInput(label, name, value) {
+  function cueInput(label, name, value, duration) {
     const container = node("label", label);
     const input = node(name === "text" ? "textarea" : "input");
     input.value = value;
@@ -369,40 +369,71 @@
       input.type = "number";
       input.step = "0.001";
       input.min = name === "start" ? 0 : 0.001;
-      input.max = 60;
+      input.max = duration;
     }
     container.append(input);
     return container;
   }
 
-  function cueRow(cue) {
+  function cueRow(cue, duration, onChange) {
     const row = node("div", undefined, "editorial-cue");
     const times = node("div", undefined, "mvp-range");
-    times.append(cueInput("Inicio desde el recorte (s)", "start", cue.start),
-      cueInput("Fin desde el recorte (s)", "end", cue.end));
+    times.append(cueInput("Inicio desde el recorte (s)", "start", cue.start, duration),
+      cueInput("Fin desde el recorte (s)", "end", cue.end, duration));
     row.append(times, cueInput("Texto del subtítulo", "text", cue.text),
       button("Quitar subtítulo", () => {
         row.remove();
-        updateSample();
+        onChange();
       }));
     return row;
   }
 
-  function readCues() {
-    return [...el("cues").querySelectorAll(".editorial-cue")].map(row => ({
+  function readCues(container = el("cues")) {
+    return [...container.querySelectorAll(".editorial-cue")].map(row => ({
       start: row.querySelector('[data-field="start"]').valueAsNumber,
       end: row.querySelector('[data-field="end"]').valueAsNumber,
       text: row.querySelector('[data-field="text"]').value,
     }));
   }
 
-  function updateSample() {
-    const sample = el("sample");
+  function addCue(container, duration, onChange) {
+    const cues = readCues(container);
+    if (cues.length >= 400) return false;
+    const start = cues.at(-1)?.end || 0;
+    const end = Math.min(duration, start + 2);
+    if (end - start < .04) return false;
+    const row = cueRow({start, end, text: ""}, duration, onChange);
+    container.append(row);
+    row.querySelector("textarea").focus();
+    onChange();
+    return true;
+  }
+
+  function showCaptionSample(sample, container, style) {
     const span = sample.firstElementChild;
-    sample.hidden = !el("burn").checked;
-    span.textContent = el("cues").querySelector('[data-field="text"]')?.value || "Texto de muestra";
-    span.style.color = el("color").value;
-    span.style.fontSize = Math.min(48, Math.max(10, el("size").valueAsNumber * .36)) + "px";
+    sample.hidden = !style.burn_subtitles;
+    sample.dataset.position = style.subtitle_position;
+    span.textContent = container.querySelector('[data-field="text"]')?.value || "Texto de muestra";
+    span.style.color = style.subtitle_color;
+    span.style.fontSize = Math.min(48, Math.max(10, (style.subtitle_font_size || 52) * .36)) + "px";
+    span.style.webkitTextStroke = ((style.subtitle_outline || 0) * .25) + "px "
+      + (style.subtitle_outline_color ?? "#201510");
+    span.style.textShadow = (style.subtitle_shadow ?? 1) ? "1px 1px 2px #000" : "none";
+  }
+
+  function captionStyle(options) {
+    return {...options, burn_subtitles: el("burn").checked,
+      subtitle_font_size: el("size").valueAsNumber, subtitle_color: el("color").value.toUpperCase(),
+      subtitle_position: el("position").value, subtitle_outline: el("edge").valueAsNumber};
+  }
+
+  function updateSample() {
+    showCaptionSample(el("sample"), el("cues"), captionStyle(view?.draft?.options));
+  }
+
+  function setCues(cues, start, end) {
+    const duration = Math.round((end - start) * 1000) / 1000;
+    el("cues").replaceChildren(...cues.map(cue => cueRow(cue, duration, updateSample)));
   }
 
   function mountDraft(state, item) {
@@ -418,7 +449,9 @@
     el("size").value = item.options.subtitle_font_size ?? 52;
     el("color").value = item.options.subtitle_color || "#ffffff";
     el("burn").checked = item.options.burn_subtitles === true;
-    el("cues").replaceChildren(...item.cues.map(cueRow));
+    el("position").value = item.options.subtitle_position ?? "bottom";
+    el("edge").value = item.options.subtitle_outline ?? 3;
+    setCues(item.cues, item.start, item.end);
     el("revision").textContent = "Revisión guardada " + item.revision;
     updateSample();
   }
@@ -432,8 +465,7 @@
       title: el("title").value.trim(),
       clip_file: item.clip_file ?? null,
       ...range,
-      options: {...item.options, burn_subtitles: el("burn").checked,
-        subtitle_font_size: el("size").valueAsNumber, subtitle_color: el("color").value.toUpperCase()},
+      options: captionStyle(item.options),
       cues: readCues(),
     };
   }
@@ -444,6 +476,8 @@
       && value.options.burn_subtitles === (item.options.burn_subtitles === true)
       && value.options.subtitle_font_size === (item.options.subtitle_font_size ?? 52)
       && value.options.subtitle_color === (item.options.subtitle_color ?? "#FFFFFF").toUpperCase()
+      && value.options.subtitle_position === (item.options.subtitle_position ?? "bottom")
+      && value.options.subtitle_outline === (item.options.subtitle_outline ?? 3)
       && value.cues.length === item.cues.length
       && value.cues.every((cue, index) => {
         const saved = item.cues[index];
@@ -462,7 +496,7 @@
     state.range = {start: result.start, end: result.end};
     el("start").value = result.start;
     el("end").value = result.end;
-    el("cues").replaceChildren(...result.cues.map(cueRow));
+    setCues(result.cues, result.start, result.end);
     updateSample();
     return state.range;
   }
@@ -515,8 +549,9 @@
     const title = item.title || "Clip editado";
     const card = node("article", undefined, "beta-clip");
     card.dataset.exportId = item.id;
+    const hasCues = Array.isArray(item.cues) ? item.cues.length > 0 : true;
     card.append(node("h3", title), node("p", "Revisión " + item.draft_revision
-      + (item.options?.burn_subtitles ? " · Subtítulos incrustados" : ""), "muted"));
+      + (item.status === "completed" && hasCues && item.options?.burn_subtitles ? " · Subtítulos incrustados" : ""), "muted"));
     if (item.status === "completed") {
       const files = "/jobs/" + state.id + "/exports/" + item.id + "/files/";
       const player = node("video");
@@ -527,6 +562,7 @@
       player.setAttribute("aria-label", title);
       const links = node("div", undefined, "actions");
       for (const [name, label] of [["clip.mp4", "Descargar MP4 editado"], ["clip.srt", "Descargar SRT"], ["clip.vtt", "Descargar VTT"]]) {
+        if (!hasCues && name !== "clip.mp4") continue;
         const link = node("a", label);
         link.href = files + name;
         links.append(link);
@@ -609,22 +645,16 @@
   el("range-preview").addEventListener("click", () => draftAction("preview"));
   el("export").addEventListener("click", () => draftAction("export"));
   el("add-cue").addEventListener("click", () => {
-    const cues = readCues();
-    if (cues.length >= 400) return;
-    const start = cues.at(-1)?.end || 0;
     const range = view.range;
-    const end = Math.min(Math.round((range.end - range.start) * 1000) / 1000, start + 2);
-    if (end - start < .04) {
+    const duration = Math.round((range.end - range.start) * 1000) / 1000;
+    if (!addCue(el("cues"), duration, updateSample)) {
       status(view, "Ajusta el fin del último subtítulo para añadir otro.", "draft-status");
-      return;
     }
-    const row = cueRow({start, end, text: ""});
-    el("cues").append(row);
-    row.querySelector("textarea").focus();
   });
   source.addEventListener("timeupdate", () => {
     if (previewEnd !== null && source.currentTime >= previewEnd) stopPreview();
   });
 
   window.ClipForgeEditorial = {selectJob, createManualDraft};
+  window.ClipForgeCaptionFields = {cueRow, readCues, addCue, showCaptionSample};
 })();

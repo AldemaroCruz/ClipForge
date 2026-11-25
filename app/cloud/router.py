@@ -9,7 +9,7 @@ import tempfile
 import time
 import uuid
 
-from fastapi import APIRouter, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 from sqlalchemy import text
@@ -20,8 +20,10 @@ from ..auth_db import get_engine
 from ..editorial import EditorialContent, DraftUpdate, ProjectName, RangeChange, RevisionRequest, retime_cues, validate_range
 from ..presentation import Presentation, ExportRequest
 from ..subtitles import SubtitleError, cues_from_segments, to_srt, to_vtt, validate_cues
+from . import clip_captions, project_deletion
 from . import editorial_selection as selection
 from . import repository as repo
+from .config import beta_enabled
 from . import storage
 from .dispatch import reconcile
 
@@ -29,10 +31,15 @@ router = APIRouter()
 VERSION = "0.4.2"
 
 
+def _int_product_route():
+    if not beta_enabled():
+        raise HTTPException(404, "Función no disponible")
+
+
 def _doc(job_id, kind="job", item_id=None):
     if not re.fullmatch(r"[a-f0-9]{32}", job_id) or (item_id and not re.fullmatch(r"[a-f0-9]{32}", item_id)):
         raise HTTPException(404, "Documento no encontrado")
-    return repo.document(job_id, kind, item_id)
+    return repo.document(job_id, kind, item_id, live=beta_enabled())
 
 
 def _dispatch(item):
@@ -121,12 +128,37 @@ async def create_job(request: Request, file: UploadFile = File(...)):
 @router.get("/jobs/{job_id}")
 def get_job(job_id: str, response: Response):
     response.headers["Cache-Control"] = "no-store"
-    item = _doc(job_id)["payload"]
+    if beta_enabled():
+        deletion = project_deletion.public_status(job_id)
+        if deletion is not None:
+            if deletion["status"] == "deleted":
+                raise HTTPException(404, "Proyecto no encontrado")
+            item = {"id": job_id, "status": deletion["status"], "clips": [], "deletion": deletion}
+            return _dispatch(item)
+    doc = _doc(job_id)
+    item = doc["payload"]
     if item.get("pilot") is True and _needs_dispatch(job_id, "process", [item]):
         if item["status"] != "queued":
             item = {**item, "lease_expired": True}
         return _dispatch(item)
+    if item.get("pilot") is True and item["status"] == "completed":
+        item = clip_captions.enrich_job(doc)
+        captions = [clip["captions"] for clip in item["clips"] if "captions" in clip]
+        if _needs_dispatch(job_id, "export", captions):
+            return _dispatch(item)
     return item
+
+
+@router.get("/jobs/{project_id}/deletion", dependencies=[Depends(_int_product_route)])
+def deletion_status(project_id: str, request: Request):
+    item = project_deletion.status(request.state.principal, project_id)
+    return _dispatch(item) if item["status"] != "deleted" else item
+
+
+@router.post("/jobs/{project_id}/deletion", status_code=202, dependencies=[Depends(_int_product_route)])
+def delete_project(project_id: str, request: Request):
+    item = project_deletion.begin(request.state.principal, project_id)
+    return _dispatch(item) if item["status"] != "deleted" else item
 
 
 def _needs_dispatch(job_id, kind, items):
@@ -199,13 +231,41 @@ def editor(job_id: str, filename: str):
 
 
 @router.get("/jobs/{job_id}/clips/{filename}/subtitles/{kind}")
-def subtitles(job_id: str, filename: str, kind: str):
+def subtitles(job_id: str, filename: str, kind: str, request: Request):
     if kind not in {"srt", "vtt"}:
         raise HTTPException(404, "Formato no disponible")
+    if beta_enabled():
+        doc, _ = _clip(job_id, filename)
+        name = f"{Path(filename).stem}.{kind}"
+        if name not in doc["manifest"]:
+            raise HTTPException(404, "Archivo no encontrado")
+        return _stream(doc["manifest"][name], request, name)
     context = editor(job_id, filename)
     return Response(to_srt(context["cues"]) if kind == "srt" else to_vtt(context["cues"]),
                     media_type="application/x-subrip" if kind == "srt" else "text/vtt",
                     headers={"Content-Disposition": f'attachment; filename="{Path(filename).stem}.{kind}"', "Cache-Control": "no-store"})
+
+
+@router.get("/jobs/{job_id}/clips/{filename}/captions", dependencies=[Depends(_int_product_route)])
+def clip_caption_context(job_id: str, filename: str):
+    return clip_captions.clip_context(_doc(job_id), filename)
+
+
+@router.put("/jobs/{job_id}/clips/{filename}/captions", status_code=202, dependencies=[Depends(_int_product_route)])
+def save_clip_captions(job_id: str, filename: str, payload: clip_captions.ClipCaptionUpdate, request: Request):
+    item = clip_captions.save_clip(job_id, filename, payload, request.state.principal)
+    return _dispatch(item) if item["status"] == "queued" else item
+
+
+@router.post("/jobs/{job_id}/clips/{filename}/captions/retry", status_code=202, dependencies=[Depends(_int_product_route)])
+def retry_clip_captions(job_id: str, filename: str, request: Request):
+    item = clip_captions.retry_clip(job_id, filename, request.state.principal)
+    return _dispatch(item) if item["status"] == "queued" else item
+
+
+@router.put("/jobs/{job_id}/captions", status_code=202, dependencies=[Depends(_int_product_route)])
+def save_project_captions(job_id: str, payload: clip_captions.ProjectCaptionUpdate, request: Request):
+    return _dispatch(clip_captions.save_project(job_id, payload, request.state.principal))
 
 
 def _workspace(job_id):
@@ -326,11 +386,11 @@ def candidate_to_draft(job_id: str, run_id: str, candidate_id: int, request: Req
         end = indexed[candidate["end_segment"]]["end"]
         if start != candidate["start"] or end != candidate["end"] or not 20 <= round(end - start, 3) <= 60:
             raise ValueError("Candidate limits")
-        draft_content = EditorialContent(
-            title=candidate["title"], start=start, end=end,
-            cues=cues_from_segments(segments, start, end),
-            options=Presentation.model_validate(job["payload"].get("options", {})),
-        )
+        cues = cues_from_segments(segments, start, end)
+        options = clip_captions.project_presentation(job["payload"])
+        if not cues:
+            options = options.model_copy(update={"burn_subtitles": False})
+        draft_content = EditorialContent(title=candidate["title"], start=start, end=end, cues=cues, options=options)
     except (ValueError, KeyError, TypeError):
         raise HTTPException(409, "La propuesta guardada no tiene límites o subtítulos válidos.") from None
     now = time.time()
@@ -380,6 +440,8 @@ def create_draft(job_id: str, payload: EditorialContent, request: Request):
     owner = request.state.principal.id
     fingerprint = hashlib.sha256(repo.packed({"job_id": job_id, "kind": "draft", "content": content}).encode()).hexdigest()
     with repo.request_transaction(owner, request.headers.get("Idempotency-Key"), fingerprint) as (c, previous, key):
+        if beta_enabled():
+            repo.beta_document(c, request.state.principal, job_id)
         if previous:
             if previous["kind"] != "draft" or previous["job_id"] != job_id:
                 raise HTTPException(409, "La clave identifica otra solicitud")
@@ -396,14 +458,16 @@ def draft(job_id: str, draft_id: str):
 
 
 @router.put("/jobs/{job_id}/drafts/{draft_id}")
-def update_draft(job_id: str, draft_id: str, request: DraftUpdate):
-    content = _content(job_id, request)
+def update_draft(job_id: str, draft_id: str, payload: DraftUpdate, request: Request):
+    content = _content(job_id, payload)
     with get_engine().begin() as c:
+        if beta_enabled():
+            repo.beta_document(c, request.state.principal, job_id)
         previous = repo.document(job_id, "draft", draft_id, c)
-        if previous["revision"] != request.revision:
+        if previous["revision"] != payload.revision:
             raise HTTPException(409, "El borrador cambió en otra pestaña")
-        item = {**previous["payload"], **content, "revision": request.revision+1, "updated_at": time.time()}
-        repo.update_document(c, job_id, "draft", item, request.revision)
+        item = {**previous["payload"], **content, "revision": payload.revision+1, "updated_at": time.time()}
+        repo.update_document(c, job_id, "draft", item, payload.revision)
     return item
 
 
@@ -413,7 +477,7 @@ def _submit_export(job_id, item, request, *, pilot=False, request_key=None):
     idempotency_key = request_key or request.headers.get("Idempotency-Key")
     with repo.request_transaction(owner, idempotency_key, fingerprint) as (c, previous, key):
         if pilot:
-            repo.check_active_workspace(c, request.state.principal)
+            repo.beta_document(c, request.state.principal, job_id)
         if previous:
             if previous["kind"] != "export" or previous["job_id"] != job_id:
                 raise HTTPException(409, "La clave identifica otra solicitud")
@@ -552,6 +616,12 @@ def export_file(job_id: str, export_id: str, filename: str, request: Request, in
 def _summary(c, doc):
     item = doc["payload"]
     metadata = c.execute(text("SELECT payload FROM cloud_documents WHERE job_id=:j AND kind='project' AND id=:j"), {"j": item["id"]}).scalar() or {}
+    if beta_enabled():
+        deletion = project_deletion.public_status(item["id"], c)
+        if deletion is not None:
+            return {"id": item["id"], "title": metadata.get("title") or item.get("source_filename") or f"Proyecto {item['id'][:8]}",
+                    "status": deletion["status"], "created_at": item["created_at"], "clips_count": 0,
+                    "source_available": False, "deletion": deletion}
     counts = dict(c.execute(text("SELECT kind,count(*) FROM cloud_documents WHERE job_id=:j GROUP BY kind"), {"j": item["id"]}).all())
     return {"id": item["id"], "title": metadata.get("title") or item.get("source_filename") or f"Proyecto {item['id'][:8]}",
             "source_filename": item.get("source_filename"), "status": item["status"], "created_at": item["created_at"],
@@ -567,6 +637,9 @@ def projects(request: Request, q: str = Query("", max_length=150), offset: int =
     with get_engine().connect() as c:
         rows = c.execute(text("SELECT d.payload,d.manifest FROM cloud_documents d JOIN auth_projects p ON p.id=d.job_id WHERE d.kind='job' AND p.owner_id=:o AND p.workspace_id=:w ORDER BY d.updated_at DESC,d.id DESC"), {"o": principal.id, "w": principal.workspace_id}).mappings()
         items = [_summary(c, row) for row in rows]
+    items = [item for item in items if item["status"] != "deleted"]
+    if any(item["status"] in {"deleting", "delete_error"} for item in items):
+        _dispatch({})
     if q.strip():
         items = [item for item in items if q.strip().casefold() in f"{item['title']} {item['id']} {item.get('source_filename') or ''}".casefold()]
     return {"projects": items[offset:offset+limit], "total": len(items), "offset": offset, "limit": limit, "has_more": offset+limit < len(items), "unreadable": 0}

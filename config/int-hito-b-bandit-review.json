@@ -4,14 +4,69 @@
   "reference": "3caca7533844bdc43d7c0293a93a59c806d75b58",
   "reviewed": [
     {
+      "path": "app/check_presentation.py",
+      "test_id": "B404",
+      "severity": "LOW",
+      "confidence": "HIGH",
+      "cwe": 78,
+      "line": 7,
+      "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
+      "source_sha256": "f557e11a0d56bd13665c1b712fb4739375ddc5db9fc52f09da9efb06cf45bb98",
+      "reason": "Imports subprocess for offline FFmpeg checks on synthetic media in private test scratch."
+    },
+    {
+      "path": "app/check_presentation.py",
+      "test_id": "B603",
+      "severity": "LOW",
+      "confidence": "HIGH",
+      "cwe": 78,
+      "line": 17,
+      "context_sha256": "4effd9f6e1ddd3cff1e34d38f4cb9e64142e56b489a76b1248e819041b1de3a9",
+      "source_sha256": "f557e11a0d56bd13665c1b712fb4739375ddc5db9fc52f09da9efb06cf45bb98",
+      "reason": "Uses the verified FFmpeg and fixed synthetic video and audio filters. Test callers supply a private fixture path and fixed duration. The argv runs without a shell and has a 30-second timeout."
+    },
+    {
+      "path": "app/check_presentation.py",
+      "test_id": "B603",
+      "severity": "LOW",
+      "confidence": "HIGH",
+      "cwe": 78,
+      "line": 27,
+      "context_sha256": "682d6cbb80434480fd623e7afdce4a4d75be44793dbd3899211961ed9ccdb411",
+      "source_sha256": "f557e11a0d56bd13665c1b712fb4739375ddc5db9fc52f09da9efb06cf45bb98",
+      "reason": "Uses the verified FFmpeg with fixed arguments to inspect one grayscale frame from a synthetic render in private scratch. The command runs without a shell and has a 30-second timeout."
+    },
+    {
+      "path": "app/check_presentation.py",
+      "test_id": "B603",
+      "severity": "LOW",
+      "confidence": "HIGH",
+      "cwe": 78,
+      "line": 45,
+      "context_sha256": "78bbd863b01c0eb6217f71c72f24b8c83b7826b5bbbcb26c69a7111882ac6afa",
+      "source_sha256": "f557e11a0d56bd13665c1b712fb4739375ddc5db9fc52f09da9efb06cf45bb98",
+      "reason": "Uses the verified FFmpeg without a shell to inspect one RGB frame from a synthetic acceptance export in private scratch. The sample time is finite and bounded to the clip interval. A fixed table supplies the crop position and the process has a 30-second timeout."
+    },
+    {
+      "path": "app/check_presentation.py",
+      "test_id": "B603",
+      "severity": "LOW",
+      "confidence": "HIGH",
+      "cwe": 78,
+      "line": 89,
+      "context_sha256": "1ee38f0f7cb68ed2bb0a71a55d95ca89a0d95b570837c956e145ed556ad508e8",
+      "source_sha256": "f557e11a0d56bd13665c1b712fb4739375ddc5db9fc52f09da9efb06cf45bb98",
+      "reason": "Uses the verified FFmpeg with fixed argv to decode a synthetic render created in private scratch. The command runs without a shell, discards decoded output and has a 30-second timeout."
+    },
+    {
       "path": "app/cloud/worker.py",
       "test_id": "B404",
       "severity": "LOW",
       "confidence": "HIGH",
       "cwe": 78,
-      "line": 12,
+      "line": 13,
       "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
-      "source_sha256": "f9b28f7dd0225e20336bc0922c36d87d79618c0f007972a2eed78849ea8f6443",
+      "source_sha256": "e5c7f1c1b4e730e61f67d78a5f04523f2a04423b60032ce26bd1f637f6b789ec",
       "reason": "Imports subprocess for the reviewed worker child, bounded waits and process-group termination."
     },
     {
@@ -20,9 +75,9 @@
       "severity": "LOW",
       "confidence": "HIGH",
       "cwe": 78,
-      "line": 229,
+      "line": 274,
       "context_sha256": "8415e97bd461f03909d1aacf75962f85fa0562255b9f8ac40d2e096d52e95aae",
-      "source_sha256": "f9b28f7dd0225e20336bc0922c36d87d79618c0f007972a2eed78849ea8f6443",
+      "source_sha256": "e5c7f1c1b4e730e61f67d78a5f04523f2a04423b60032ce26bd1f637f6b789ec",
       "reason": "A fixed Python interpreter and worker module run without a shell. The UUID and fence come from the claimed PostgreSQL task and the child validates both before execution."
     },
     {
@@ -33,7 +88,7 @@
       "cwe": 377,
       "line": 39,
       "context_sha256": "0efe935ca8a29845fb3caad89d0989ee45c5286fab44f8c5106bc737c4b9aef6",
-      "source_sha256": "045334f8386872a2308a9de33ae717360fd64c394bf5dbd0ed02580fca9e81a3",
+      "source_sha256": "43e3dbbf8213b2cfa8be7da3a85a978ec9ec1f699cfe32ffb003bf670f9abc1a",
       "reason": "The beta worker sets its exclusively created private TemporaryDirectory as CLIPFORGE_DATA_DIR before importing main. The public and private beta HTTP entrypoints do not mount app.main."
     },
     {

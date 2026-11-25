@@ -144,6 +144,7 @@ def wait_for_uploads(cases, report):
         release_times = []
         for case in cases:
             require(bool(case.upload_key)
+                    and case.reservation_body.get("burn_subtitles") is True
                     and case.reservation_body.get("bytes") == case.fixture.size, "browser_reservation_contract")
             require(any(status in {200, 201} for status in case.transfer), "direct_storage_upload_missing")
             if case.fixture.size > browser_test.CHUNK_BYTES:
@@ -274,7 +275,9 @@ def finish_case(case, args, report):
             and case.fixture.duration - 45 <= speech <= case.fixture.duration + 1,
             "full_length_and_tail_speech_not_observed")
     require(job.get("selection_mode") == "heuristic_voice" and job.get("clips"), "worker_clips_missing")
+    began_inspection = monotonic()
     case.results = browser_test.results(case.page, job, args.report.parent)
+    started.update(automatic_captions_verified=True, subtitle_inspection_seconds=elapsed(began_inspection))
     ids = project_ids(case.page)
     require(case.job_id in ids, "completed_project_not_listed")
     replay = browser_test.browser_post(case.page, "/beta/uploads", case.reservation_body, case.upload_key)
@@ -295,7 +298,8 @@ def check_isolation(cases, report):
                 continue
             clip = next(iter(foreign.results))
             base = "/jobs/" + foreign.job_id
-            for suffix in ("", "/source", "/clips/" + clip, "/clips/" + clip + "?inline=true"):
+            for suffix in ("", "/source", "/clips/" + clip, "/clips/" + clip + "?inline=true",
+                           "/clips/" + clip + "/subtitles/srt", "/clips/" + clip + "/subtitles/vtt"):
                 require(browser_test.browser_get(case.page, base + suffix)["status"] in {403, 404},
                         "other_creator_media_visible")
             require(browser_test.browser_post(case.page, f"/beta/uploads/{foreign.job_id}/start", {})["status"]
@@ -457,8 +461,18 @@ def run_batch(cases, args, report, overlap=None):
     wait_for_completion(cases, report, args.case_timeout)
     report["step"] = "verify_output"
     for case in cases:
-        report["cases"][case.label]["processing_wall_seconds"] = round(case.completed_at - case.activated_at, 3)
+        row = report["cases"][case.label]
+        row["processing_wall_seconds"] = round(case.completed_at - case.activated_at, 3)
+        row["upload_to_automatic_captioned_clips_seconds"] = round(case.completed_at - case.upload_start, 3)
         finish_case(case, args, report)
+    if overlap:
+        late = max((clip["captions"] for case in cases for clip in case.results.values()),
+                   key=lambda item: item["source_start"])
+        require(late["source_start"] >= 180 and
+                0 <= late["first_caption_local"] < late["last_caption_local"] <= late["source_end"] - late["source_start"] + .001,
+                "late_automatic_clip_subtitles_not_observed")
+        report["late_automatic_caption"] = late
+        browser_test.check(report, "three_twenty_minute_videos_automatic_mp4_srt_webvtt_and_late_sync")
 
 
 def deactivate(browser, args, admin, accounts, report):

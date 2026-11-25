@@ -4,6 +4,7 @@ Legacy processing keeps the exclusive supervisor lock. Pilot supervisors hold
 its shared form and serialize claims to enforce the pilot's lease capacity.
 """
 import argparse
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,7 @@ from ..auth_db import get_engine
 from ..media import MediaValidationError, inspect_beta_media
 from . import enabled
 from .config import BETA_WORKER_CONCURRENCY, beta_enabled, settings
+from . import project_deletion
 from . import repository as repo
 from . import storage
 
@@ -61,11 +63,14 @@ def _claim(connection, job_id=None):
             LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE t.status='running' AND (t.lease_until IS NULL OR t.lease_until<=clock_timestamp())
               AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind IN ('process','selection') OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (NOT :beta OR t.kind IN ('process','selection','delete') OR e.payload->'pilot'=CAST('true' AS jsonb))
               AND (CAST(:job AS text) IS NULL OR t.job_id=:job)
             ORDER BY t.created_at,t.id LIMIT :limit FOR UPDATE OF t SKIP LOCKED
             """), {**profile, "limit": BETA_WORKER_CONCURRENCY if beta else 1}).mappings().all()
         for row in expired:
+            if row["kind"] == "delete":
+                project_deletion.release_expired(row, c)
+                continue
             kind = "job" if row["kind"] == "process" else row["kind"]
             doc = repo.document(row["job_id"], kind, row["item_id"], c)
             item = doc["payload"]
@@ -80,11 +85,11 @@ def _claim(connection, job_id=None):
             active, other_profile = c.execute(text("""
                 SELECT count(*), count(*) FILTER (
                     WHERE NOT (COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)
-                      AND (t.kind IN ('process','selection') OR COALESCE(e.payload->'pilot'=CAST('true' AS jsonb),false))))
+                      AND (t.kind IN ('process','selection','delete') OR COALESCE(e.payload->'pilot'=CAST('true' AS jsonb),false))))
                 FROM cloud_tasks t
                 LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
                 LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
-                WHERE t.status='running' AND t.lease_until>clock_timestamp()
+                WHERE t.status IN ('running','cancelled') AND t.lease_until>clock_timestamp()
                 """)).one()
             if other_profile:
                 return "wait"
@@ -92,15 +97,23 @@ def _claim(connection, job_id=None):
                 # Extra wakeups are harmless. Supervisors with a live lease
                 # will return here after processing to handle remaining work.
                 return None
+        deferred = project_deletion.deferred_tasks(c) if beta else []
         row = c.execute(text("""
             SELECT t.* FROM cloud_tasks t
+            JOIN auth_projects p ON p.id=t.job_id
             LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
             LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE t.status='queued' AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind IN ('process','selection') OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (NOT :beta OR t.kind IN ('process','selection','delete') OR e.payload->'pilot'=CAST('true' AS jsonb))
               AND (CAST(:job AS text) IS NULL OR t.job_id=:job)
+              AND NOT (t.id=ANY(CAST(:deferred AS varchar[])))
+              AND (NOT COALESCE(e.payload->'clip_captions'=CAST('true' AS jsonb),false) OR NOT EXISTS (
+                SELECT 1 FROM cloud_tasks peer JOIN auth_projects peer_project ON peer_project.id=peer.job_id
+                WHERE peer_project.owner_id=p.owner_id AND peer.status IN ('running','cancelled')
+                  AND peer.lease_until>clock_timestamp()
+              ))
             ORDER BY t.created_at,t.id LIMIT 1 FOR UPDATE OF t SKIP LOCKED
-            """), profile).mappings().first()
+            """), {**profile, "deferred": deferred}).mappings().first()
         if row is None:
             return None
         return dict(c.execute(text("UPDATE cloud_tasks SET status='running',fence=fence+1,lease_until=clock_timestamp()+interval '60 seconds',updated_at=clock_timestamp() WHERE id=:i RETURNING *"), {"i": row["id"]}).mappings().one())
@@ -138,7 +151,10 @@ def cleanup_failed():
                     for item in storage.list_staged(prefix):
                         if (item["name"], item["generation"]) in references:
                             raise RuntimeError("Failed task has a published manifest reference; cleanup refused")
-                        storage.delete_staged(item, prefix)
+                        if beta_enabled():
+                            storage.delete_staged(item, prefix, live_only=True)
+                        else:
+                            storage.delete_staged(item, prefix)
                 c.execute(text("UPDATE cloud_tasks SET cleaned_at=clock_timestamp() WHERE id=:i AND status='failed'"), {"i": task["id"]})
         except Exception:
             # Keep the exact task/fence durable so the operator can reconcile.
@@ -175,6 +191,35 @@ def prepare_recovery(job_id, generation):
         print(json.dumps({"status": "recovery_queued", "job_id": job_id,
                           "previous_error": "VIDEO_OUTSIDE_LIMITS", "generation": generation}), flush=True)
         return True
+
+
+def _child_status(connection, task):
+    return connection.execute(text("""
+        SELECT status FROM cloud_tasks WHERE id=:i AND (
+            fence=:f OR (status='cancelled' AND fence=:f + 1)
+        )
+        """), {"i": task["id"], "f": task["fence"]}).scalar()
+
+
+def _finish_child(task):
+    with get_engine().begin() as connection:
+        status = _child_status(connection, task)
+        if status == "running" and task["kind"] == "delete":
+            project_deletion.release_expired(task, connection)
+            return "queued"
+    if status == "cancelled":
+        project_deletion.ack_stopped(task)
+    elif status == "running":
+        try:
+            repo.mark_crashed(task)
+            return "failed"
+        except RuntimeError:
+            if project_deletion.ack_stopped(task):
+                return "cancelled"
+            raise
+    elif status is None and task["kind"] == "delete":
+        return "succeeded"
+    return status
 
 
 def drain(max_tasks=None, recovery=None):
@@ -234,14 +279,15 @@ def drain(max_tasks=None, recovery=None):
                             except subprocess.TimeoutExpired:
                                 result = lock.execute(text("UPDATE cloud_tasks SET lease_until=clock_timestamp()+interval '60 seconds',updated_at=clock_timestamp() WHERE id=:i AND fence=:f AND status='running' AND lease_until>clock_timestamp()"), {"i": task["id"], "f": task["fence"]})
                                 if result.rowcount != 1:
-                                    status = lock.execute(text("SELECT status FROM cloud_tasks WHERE id=:i AND fence=:f"), {"i": task["id"], "f": task["fence"]}).scalar()
-                                    if status not in {"succeeded", "failed"}:
+                                    status = _child_status(lock, task)
+                                    if status == "cancelled":
+                                        _terminate(child)
+                                        break
+                                    if status not in {"succeeded", "failed"} and not (
+                                        task["kind"] == "delete" and status in {None, "queued"}
+                                    ):
                                         raise RuntimeError("Worker lease lost")
-                        with get_engine().connect() as c:
-                            status = c.execute(text("SELECT status FROM cloud_tasks WHERE id=:i"), {"i": task["id"]}).scalar()
-                        if status == "running":
-                            repo.mark_crashed(task)
-                            status = "failed"
+                        status = _finish_child(task)
                         if beta and execution:
                             print(json.dumps({
                                 "event": "worker_finish", "execution": execution, "job_id": task["job_id"],
@@ -249,6 +295,8 @@ def drain(max_tasks=None, recovery=None):
                             }), flush=True)
                     except BaseException:
                         _terminate(child)
+                        if beta:
+                            project_deletion.ack_stopped(task)
                         raise
                     finally:
                         child = None
@@ -285,12 +333,14 @@ def execute(task_id, fence):
             LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE t.id=:i AND t.fence=:f AND t.status='running' AND t.lease_until>clock_timestamp()
               AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind IN ('process','selection') OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (NOT :beta OR t.kind IN ('process','selection','delete') OR e.payload->'pilot'=CAST('true' AS jsonb))
             """), {"i": task_id, "f": fence, "beta": beta_enabled()}).mappings().first()
         if task is None:
             raise RuntimeError("Task lease unavailable")
         task = dict(task)
         workspace = task.pop("workspace_id")
+    if task["kind"] == "delete":
+        return project_deletion.execute(task)
     if task["kind"] == "selection":
         from .editorial_selection import execute_task
         return execute_task(task)
@@ -362,7 +412,8 @@ def execute(task_id, fence):
                         raise RuntimeError("Incomplete worker artifact set")
                     mime = {".mp4": "video/mp4", ".srt": "application/x-subrip", ".vtt": "text/vtt", ".json": "application/json"}[path.suffix]
                     object_name = f"workspaces/{workspace}/jobs/{task['job_id']}/tasks/{task['id']}/{task['fence']}/{name}"
-                    with path.open("rb") as source:
+                    publication = project_deletion.publication(task) if pilot else nullcontext()
+                    with publication, path.open("rb") as source:
                         manifest[name] = storage.upload(object_name, source, mime)
             repo.finish_task(task, payload, manifest)
         finally:

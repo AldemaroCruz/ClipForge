@@ -36,6 +36,43 @@ total, incluidas las cargas vigentes. Hasta tres trabajos pueden procesarse a la
 reservas caducan a las 24 horas y un fallo recuperable admite un reintento.
 Envía tus comentarios por escrito fuera de ClipForge.
 
+## Subtítulos de clips automáticos
+
+Al subir un video, **Generar clips con subtítulos incrustados** está activado.
+Cada clip con voz muestra su MP4 y las descargas SRT y WebVTT con tiempos
+relativos al intervalo. La opción de carga permite obtener el MP4 sin texto
+incrustado. Los archivos de subtítulos siguen disponibles cuando hay voz.
+Si el procesado detecta silencio o voz no transcribible, muestra ese estado.
+
+Usa **Editar subtítulos** en un clip generado para modificar texto, tiempos,
+tamaño, color, posición y contorno. El clip anterior se conserva como
+**MP4 inicial** cuando una variante guardada está disponible. La vista previa
+reproduce el propio MP4 de la variante. **Aplicar a todos los clips** cambia
+el estilo base y reemplaza los estilos individuales, conservando los textos
+y tiempos de cada clip. Los borradores nuevos de propuestas de IA heredan
+el estilo del proyecto. Las exportaciones ya aprobadas conservan su versión.
+
+El editor puede regenerar un clip anterior desde su original y transcripción
+guardados. El cambio de estilo o texto genera únicamente las variantes
+afectadas. Las vistas del clip muestran el estado de la última versión
+solicitada, aunque una versión anterior termine después.
+
+## Eliminación de proyectos
+
+Abre el proyecto en **Mis trabajos**, pulsa **Eliminar proyecto** y verifica
+el título y alcance en la confirmación. La orden impide operaciones nuevas,
+cancela las tareas del proyecto y retira su contenido activo. El estado y el
+reintento de la limpieza aparecen en el proyecto hasta que termine el borrado.
+Una reserva antigua sin seguimiento de la sesión reanudable puede quedar
+pendiente hasta que venza esa capacidad, dentro de los siete días posteriores
+al vencimiento de su reserva. El proyecto queda inaccesible durante esa espera.
+
+Cloud Storage retira la generación activa mediante una precondición de
+generación. El bucket conserva versionado, retención mínima de siete días y
+borrado recuperable por siete días. Su regla de ciclo de vida requiere al
+menos 30 días como no vigente y tres versiones más recientes. Las copias
+no vigentes pueden permanecer bajo esas políticas. [Versionado y retención de Google Cloud](https://docs.cloud.google.com/storage/docs/bucket-lock)
+
 ## Administración
 
 Entra con la cuenta administrativa existente y usa **Mi cuenta** para crear

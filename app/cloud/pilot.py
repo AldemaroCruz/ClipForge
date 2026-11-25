@@ -28,6 +28,7 @@ class Upload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     filename: str = Field(min_length=5, max_length=255)
     bytes: int = Field(gt=0, strict=True)
+    burn_subtitles: bool = Field(default=True, strict=True)
 
 
 @router.get("/limits")
@@ -39,8 +40,11 @@ def limits():
             "selection_mode": "heuristic_voice"}
 
 
-def _reserve(principal, key, filename, size):
-    fingerprint = sha256(repo.packed({"kind": "beta_upload", "filename": filename, "bytes": size}).encode()).hexdigest()
+def _reserve(principal, key, filename, size, burn_subtitles=True):
+    content = {"kind": "beta_upload", "filename": filename, "bytes": size}
+    if not burn_subtitles:
+        content["burn_subtitles"] = False
+    fingerprint = sha256(repo.packed(content).encode()).hexdigest()
     with repo.request_transaction(principal.id, key, fingerprint) as (connection, previous, key):
         if previous:
             if previous["kind"] != "beta_upload":
@@ -56,11 +60,12 @@ def _reserve(principal, key, filename, size):
             """), {"i": job_id, "w": principal.workspace_id, "o": principal.id})
         item = {
             "pilot": True, "id": job_id, "status": "awaiting_upload", "clips": [],
-            "options": Presentation().model_dump(), "processing_mode": "auto",
+            "options": Presentation(burn_subtitles=burn_subtitles).model_dump(), "processing_mode": "auto",
+            "caption_style": {"burn_subtitles": burn_subtitles},
             "selection_mode": "heuristic_voice", "version": identity()["revision"],
             "created_at": now, "upload_expires_at": now + BETA_UPLOAD_SECONDS,
             "source_filename": filename, "source_bytes": size, "retry_count": 0,
-            "retryable": False,
+            "retryable": False, "upload_tracking": True,
         }
         repo.insert_document(connection, job_id, "job", item)
         repo.remember_request(connection, principal.id, key, fingerprint, job_id, "beta_upload", job_id)
@@ -71,6 +76,32 @@ def _original(principal, item):
     if item["upload_expires_at"] <= time.time():
         raise HTTPException(409, "La carga caducó. Crea un trabajo nuevo y vuelve a seleccionar el video.")
     return storage.beta_original(principal.workspace_id, item["id"])
+
+
+def _open_upload(principal, job_id):
+    with get_engine().begin() as connection:
+        # Keep the owner/project lock through issuance and persistence so a
+        # concurrent deletion can either revoke this exact URI or prevent it.
+        item = repo.beta_document(connection, principal, job_id)["payload"]
+        result = {"id": job_id, "status": item["status"], "upload_url": None}
+        if item["status"] != "awaiting_upload":
+            return result
+        name = _original(principal, item)
+        if storage.beta_original_metadata(name) is not None:
+            return result
+        previous = connection.execute(text("SELECT url FROM cloud_upload_sessions WHERE job_id=:j"),
+                                      {"j": job_id}).scalar()
+        if previous:
+            storage.cancel_resumable(previous, name)
+            if storage.beta_original_metadata(name) is not None:
+                return result
+        location = storage.start_resumable(name, item["source_bytes"], auth_settings().origin)
+        connection.execute(text("""
+            INSERT INTO cloud_upload_sessions(job_id,url) VALUES (:j,:u)
+            ON CONFLICT (job_id) DO UPDATE SET url=EXCLUDED.url
+            """), {"j": job_id, "u": location})
+        result["upload_url"] = location
+        return result
 
 
 @router.post("/uploads", status_code=201)
@@ -85,23 +116,18 @@ def create_upload(payload: Upload, request: Request):
     if not key:
         raise HTTPException(428, "Se requiere Idempotency-Key para crear una carga.")
     principal = request.state.principal
-    item = _reserve(principal, key, filename, payload.bytes)
+    item = _reserve(principal, key, filename, payload.bytes, payload.burn_subtitles)
     result = {"id": item["id"], "status": item["status"], "upload_url": None}
     if item["status"] != "awaiting_upload":
         return result
-    name = _original(principal, item)
     try:
-        # A replay can mint another session for an incomplete upload only.
-        # Both sessions carry the same create-only generation precondition.
-        if storage.beta_original_metadata(name) is None:
-            result["upload_url"] = storage.start_resumable(name, item["source_bytes"], auth_settings().origin)
+        return _open_upload(principal, item["id"])
     except storage.InvalidUpload:
         # The object exists. The start transaction records the terminal error
         # without creating a task or granting a new upload capability.
         return result
     except storage.StorageError:
         raise HTTPException(503, "No se pudo abrir la carga privada. Reintenta con el mismo archivo.") from None
-    return result
 
 
 @router.post("/uploads/{job_id}/start", status_code=202)
@@ -130,6 +156,8 @@ def start_job(job_id: str, request: Request):
                 repo.admit_beta(connection, principal.id, current_job=job_id)
                 _original(principal, item)  # Check expiry again after GCS and the admission lock.
                 item["status"] = "queued"
+                if item.get("upload_tracking") is True:
+                    connection.execute(text("DELETE FROM cloud_upload_sessions WHERE job_id=:j"), {"j": job_id})
                 repo.update_document(connection, job_id, "job", item, manifest={"input.mp4": original})
                 repo.enqueue(connection, job_id, "process", job_id)
     if mismatch:

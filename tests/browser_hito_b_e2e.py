@@ -18,6 +18,7 @@ JOB = "a" * 32
 CLIP = "clip_01.mp4"
 EXPORT = "c" * 32
 DRAFT = "d" * 32
+CAPTION = "f" * 32
 CHUNK = 8 * 1024 * 1024
 MAX_SIZE = 2 * CHUNK
 CSP = "default-src 'self'; connect-src 'self' https://storage.googleapis.com; media-src 'self'"
@@ -37,7 +38,8 @@ class BrowserHitoBTest(unittest.TestCase):
                       "puts": [], "unexpected": [], "hide_range": False,
                       "manual": None, "manual_keys": [], "manual_retries": [],
                       "ai_configured": True, "analysis": None, "selection_posts": [], "draft": None,
-                      "range_posts": [], "draft_updates": [], "approved": {}}
+                      "range_posts": [], "draft_updates": [], "approved": {},
+                      "caption": None, "project_caption": None, "caption_updates": [], "deletions": []}
         self.context = self.browser.new_context(service_workers="block")
         self.addCleanup(self.context.close)
         self.context.route("**/*", self.handle)
@@ -115,13 +117,52 @@ class BrowserHitoBTest(unittest.TestCase):
             return {"id": JOB, "status": "queued", "dispatch_status": "pending"}, 202
         if path == "/projects":
             state = self.state["status"]
-            return {"projects": [{"id": JOB, "status": state, "title": "Video de prueba"}] if state else [],
+            return {"projects": [{"id": JOB, "status": state, "title": "Video de prueba",
+                                  "deletion": self.state.get("deletion")}]
+                    if state not in {None, "deleted"} else [],
                     "has_more": False}, 200
         if path == "/jobs/" + JOB:
             state = self.state["status"]
+            if state == "deleted":
+                return {}, 404
+            clip = {"file": CLIP, "start": 0, "end": 22}
+            if self.state["caption"]:
+                caption = self.state["caption"]
+                clip.update(start=caption["start"], end=caption["end"],
+                            captions={key: caption[key] for key in ("status", "output", "revision")})
             return {"id": JOB, "status": state, "pilot": True,
                     "media": {"duration_seconds": self.state.get("duration", 426.55)},
-                    "clips": [{"file": CLIP, "start": 0, "end": 22}] if state == "completed" else []}, 200
+                    "clips": [clip] if state == "completed" else [],
+                    "caption_style": self.state["project_caption"], "deletion": self.state.get("deletion")}, 200
+        if path == f"/jobs/{JOB}/clips/{CLIP}/captions" and self.state["caption"]:
+            caption = self.state["caption"]
+            if method == "PUT":
+                update = request.post_data_json
+                self.assertEqual(caption["revision"], update["revision"])
+                self.state["caption_updates"].append(update)
+                caption.update(style=update["style"], cues=update["cues"], revision=caption["revision"] + 1,
+                               status="queued", output=None)
+            return caption, 200
+        if path == f"/jobs/{JOB}/captions" and method == "PUT" and self.state["project_caption"]:
+            update = request.post_data_json
+            self.assertTrue(update["apply_to_all"])
+            self.assertNotIn("cues", update)
+            self.state["caption_updates"].append(update)
+            self.assertEqual(self.state["project_caption"]["revision"], update["revision"])
+            state = {"style": update["style"], "revision": update["revision"] + 1}
+            self.state["project_caption"] = state
+            self.state["caption"].update(style=state["style"], revision=self.state["caption"]["revision"] + 1)
+            return state, 200
+        if path == f"/jobs/{JOB}/deletion":
+            if method == "POST":
+                self.state["deletions"].append(path)
+                if self.state["status"] == "completed":
+                    self.state.update(status="deleting", deletion={"id": JOB, "status": "delete_error",
+                                                                  "retryable": True})
+                else:
+                    self.state.update(status="deleted", deletion={"id": JOB, "status": "deleted",
+                                                                 "retryable": False})
+            return self.state.get("deletion", {}), 202 if method == "POST" else 200
         if path == f"/jobs/{JOB}/workspace":
             return {"source_duration": self.state.get("duration", 426.55)}, 200
         if path == f"/jobs/{JOB}/editor/range" and method == "POST":
@@ -239,7 +280,7 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertEqual(1, len(self.state["reservations"]))
         key, body = self.state["reservations"][0]
         self.assertRegex(key, r"^[a-f0-9-]{36}$")
-        self.assertEqual({"filename": "valido.mp4", "bytes": size}, body)
+        self.assertEqual({"filename": "valido.mp4", "bytes": size, "burn_subtitles": True}, body)
         self.assertTrue(self.page.evaluate("() => !JSON.stringify(localStorage).includes('storage.googleapis.com')"))
 
         self.page.locator("#start-existing").click()
@@ -252,7 +293,9 @@ class BrowserHitoBTest(unittest.TestCase):
         download = self.page.get_by_role("link", name="Descargar Clip 1 en MP4")
         self.assertEqual(f"/jobs/{JOB}/clips/{CLIP}", download.get_attribute("href"))
         self.assertEqual(0, self.page.locator("#feedback, #feedback-job, #admin-feedback").count())
-        self.assertTrue(self.page.locator("#job-actions").is_hidden())
+        self.assertTrue(self.page.locator("#start-existing").is_hidden())
+        self.assertTrue(self.page.locator("#retry-job").is_hidden())
+        self.assertTrue(self.page.locator("#delete-project").is_visible())
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])
 
@@ -264,12 +307,96 @@ class BrowserHitoBTest(unittest.TestCase):
         self.page.locator("#upload-video").set_input_files(
             {"name": "respaldo.mp4", "mimeType": "video/mp4", "buffer": bytes(size)}
         )
+        self.page.locator("#upload-burn-subtitles").uncheck()
         self.page.locator("#upload-submit").click()
         self.until_text("#upload-status", "Video guardado")
         self.assertEqual([("PUT", f"bytes 0-{CHUNK - 1}/{size}", False),
                           ("PUT", f"bytes 0-{size - 1}/{size}", False)], self.state["puts"])
         self.assertEqual(1, len(self.state["reservations"]))
+        self.assertFalse(self.state["reservations"][0][1]["burn_subtitles"])
         self.assertEqual(1, len(self.state["starts"]))
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
+    def test_automatic_clip_subtitle_download_and_saved_clip_style(self):
+        style = {"burn_subtitles": True, "subtitle_font_size": 52, "subtitle_color": "#FFFFFF",
+                 "subtitle_position": "bottom", "subtitle_outline": 3}
+        base = f"/jobs/{JOB}/clips/{CLIP}"
+        variant = f"/jobs/{JOB}/exports/{CAPTION}/files/clip"
+        self.state.update(status="completed", caption={
+            "start": 392.0, "end": 421.5, "duration": 29.5, "cues": self.cue_fixture(),
+            "style": style.copy(), "revision": 0, "status": "completed",
+            "output": {"id": "f" * 64, "mp4": base, "srt": base + "/subtitles/srt",
+                       "vtt": base + "/subtitles/vtt", "burn_subtitles": True},
+        }, project_caption={"style": style.copy(), "revision": 0})
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        card = self.page.locator("#clip-list article")
+        srt = card.get_by_role("link", name="Descargar SRT")
+        srt.wait_for()
+        self.assertEqual(base + "/subtitles/srt", srt.get_attribute("href"))
+        self.assertEqual(base + "/subtitles/vtt",
+                         card.get_by_role("link", name="Descargar WebVTT").get_attribute("href"))
+        self.assertTrue(self.page.locator("#clip-caption-editor").is_hidden())
+        card.get_by_role("button", name="Editar subtítulos").click()
+        editor = self.page.locator("#clip-caption-form")
+        editor.wait_for()
+        self.until_text("#clip-caption-range", "392.000–421.500")
+        self.assertEqual("1", editor.locator('[data-field="start"]').input_value())
+        editor.locator('[data-field="start"]').fill("1.250")
+        editor.locator("textarea").fill("Texto del recorte.")
+        self.page.locator("#clip-caption-size").fill("76")
+        self.page.locator("#clip-caption-color").fill("#edad42")
+        self.page.locator("#clip-caption-position").select_option("top")
+        self.page.locator("#clip-caption-edge").fill("6")
+        self.page.locator("#clip-caption-save").click()
+        self.until_text("#clip-caption-status", "en cola")
+        saved = self.state["caption"]
+        self.assertEqual((1.25, "Texto del recorte."), (saved["cues"][0]["start"], saved["cues"][0]["text"]))
+        self.assertEqual((76, "#EDAD42", "top", 6), tuple(saved["style"][key] for key in
+            ("subtitle_font_size", "subtitle_color", "subtitle_position", "subtitle_outline")))
+        saved.update(status="completed", output={"id": CAPTION, "mp4": variant + ".mp4",
+                                                 "srt": variant + ".srt", "vtt": variant + ".vtt",
+                                                 "burn_subtitles": True})
+        self.page.wait_for_function("""expected => document.querySelector('#clip-caption-preview')
+                                     .getAttribute('src') === expected""", arg=variant + ".mp4?inline=true")
+        self.assertEqual(base, card.get_by_role("link", name="MP4 inicial").get_attribute("href"))
+        self.assertEqual(variant + ".srt", srt.get_attribute("href"))
+        self.page.locator("#clip-caption-size").fill("88")
+        self.page.once("dialog", lambda dialog: dialog.accept())
+        self.page.locator("#clip-caption-apply-all").click()
+        self.until_text("#clip-caption-status", "Estilo del proyecto guardado")
+        self.assertEqual(88, self.state["project_caption"]["style"]["subtitle_font_size"])
+        self.assertEqual("Texto del recorte.", self.state["caption"]["cues"][0]["text"])
+        self.page.reload()
+        card.get_by_role("button", name="Editar subtítulos").click()
+        editor.wait_for()
+        self.assertEqual("88", self.page.locator("#clip-caption-size").input_value())
+        self.assertEqual("Texto del recorte.", editor.locator("textarea").input_value())
+        self.assertEqual([], self.state["selection_posts"])
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
+    def test_project_deletion_requires_confirmation_and_can_retry_after_reload(self):
+        self.state["status"] = "completed"
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        delete = self.page.locator("#delete-project")
+        delete.click()
+        dialog = self.page.locator("#project-delete-dialog")
+        dialog.wait_for()
+        self.until_text("#project-delete-title", "Video de prueba")
+        self.until_text("#project-delete-scope", "la transcripción")
+        self.page.locator("#project-delete-cancel").click()
+        self.assertEqual([], self.state["deletions"])
+        delete.click()
+        self.page.locator("#project-delete-confirm").click()
+        self.until_text("#job-status", "Puedes reintentar")
+        self.assertTrue(self.page.locator("#editorial").is_hidden())
+        self.assertEqual(0, self.page.locator("#clip-list article").count())
+        self.page.reload()
+        self.page.locator("#retry-project-deletion").click()
+        self.until_text("#job-status", "Proyecto eliminado.")
+        self.assertEqual(0, self.page.locator("#project-list a").count())
+        self.assertEqual([f"/jobs/{JOB}/deletion"] * 2, self.state["deletions"])
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])
 

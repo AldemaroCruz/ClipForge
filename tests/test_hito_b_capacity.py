@@ -11,7 +11,7 @@ from sqlalchemy import text
 
 from app.auth import create_user, register_project
 from app.auth_db import reset_engine
-from app.cloud import dispatch, migrate, migrate_beta, repository, worker
+from app.cloud import dispatch, migrate_beta, repository, worker
 from app.cloud.config import BETA_WORKER_CONCURRENCY, Settings
 from auth_support import auth_environment, prepare_database
 
@@ -29,7 +29,7 @@ class PilotCapacityDatabaseTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.addCleanup(reset_engine)
         self.engine = prepare_database()
-        migrate.upgrade(self.engine)
+        migrate_beta.upgrade_beta(self.engine)
         self.table = {}
         self.run_settings = Settings(
             "pilot-test", "https://storage.googleapis.com", False, "cloud_run",
@@ -180,6 +180,35 @@ class PilotCapacityDatabaseTests(unittest.TestCase):
         with patch.object(worker.storage, "list_staged") as storage:
             worker.cleanup_failed()
         storage.assert_not_called()
+
+    def test_caption_batch_reserves_one_wakeup_and_leaves_room_for_other_creators(self):
+        principal = create_user("qa_capacity_" + secrets.token_hex(8), secrets.token_urlsafe(24))
+        job_id = uuid.uuid4().hex
+        register_project(job_id, principal)
+        with self.engine.begin() as connection:
+            repository.insert_document(connection, job_id, "job", {
+                "id": job_id, "pilot": True, "status": "completed", "clips": [],
+            })
+            captions = []
+            for _ in range(5):
+                item_id = uuid.uuid4().hex
+                repository.insert_document(connection, job_id, "export", {
+                    "id": item_id, "pilot": True, "status": "queued", "clip_captions": True,
+                })
+                captions.append(repository.enqueue(connection, job_id, "export", item_id))
+        others = [self.enqueue(), self.enqueue()]
+        cloud = Mock()
+        cloud.json.return_value = {"name": "projects/pilot/locations/test/operations/start"}
+        with (patch.object(dispatch, "settings", return_value=self.run_settings),
+              patch.object(dispatch, "request", return_value=cloud) as request):
+            self.assertEqual(dispatch.reconcile()["dispatched"], 3)
+            self.assertEqual(dispatch.reconcile()["dispatched"], 0)
+            self.assertEqual(self.claim(job_id=job_id)["id"], captions[0])
+            self.assertEqual(dispatch.reconcile()["dispatched"], 0)
+        self.assertEqual(request.call_count, 3)
+        with self.engine.connect() as connection:
+            claimed = connection.execute(text("SELECT task_id FROM cloud_outbox WHERE dispatched_at IS NOT NULL")).scalars().all()
+        self.assertEqual(set(claimed), {captions[0], *others})
 
     def test_ambiguous_cloud_failure_has_cooldown_before_retry(self):
         task_id = self.enqueue()

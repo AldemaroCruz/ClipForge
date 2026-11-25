@@ -26,10 +26,15 @@ def packed(value):
     return json.dumps(value, allow_nan=False, separators=(",", ":"))
 
 
-def document(job_id, kind="job", item_id=None, connection=None, *, required=True):
+def document(job_id, kind="job", item_id=None, connection=None, *, required=True, live=False):
     item_id = item_id or job_id
     def read(c):
-        row = c.execute(text("SELECT payload,manifest,revision FROM cloud_documents WHERE job_id=:j AND kind=:k AND id=:i"),
+        statement = ("SELECT payload,manifest,revision FROM cloud_documents "
+                     "WHERE job_id=:j AND kind=:k AND id=:i")
+        if live:
+            statement += (" AND EXISTS (SELECT 1 FROM auth_projects p WHERE p.id=:j "
+                          "AND p.deletion_started_at IS NULL)")
+        row = c.execute(text(statement),
                         {"j": job_id, "k": kind, "i": item_id}).mappings().first()
         if row is None:
             if required:
@@ -102,21 +107,27 @@ def remember_request(c, owner, key, fingerprint, job_id, kind, item_id):
               {"o": owner, "k": key, "f": fingerprint, "j": job_id, "t": kind, "i": item_id})
 
 
-def admit_beta(c, owner, current_job=""):
+def admit_beta(c, owner, current_job="", *, caption_job=""):
     # One lock covers independent accounts and replicas. Pending uploads
     # release their capacity when their server-controlled deadline expires.
     c.execute(text("SELECT pg_advisory_xact_lock(:lock)"), {"lock": BETA_ADMISSION_LOCK})
     active, own = c.execute(text("""
-        SELECT count(*), count(*) FILTER (WHERE p.owner_id=:o)
-        FROM cloud_documents d JOIN auth_projects p ON p.id=d.job_id
-        WHERE d.kind IN ('job','export','selection') AND d.payload->'pilot'=CAST('true' AS jsonb)
-          AND d.job_id<>:j AND (
+        WITH candidates AS (
+          SELECT p.owner_id,
+                 CASE WHEN d.payload->'clip_captions'=CAST('true' AS jsonb)
+                      THEN d.job_id ELSE d.id END AS slot
+          FROM cloud_documents d JOIN auth_projects p ON p.id=d.job_id
+          WHERE d.kind IN ('job','export','selection') AND d.payload->'pilot'=CAST('true' AS jsonb)
+            AND p.deletion_started_at IS NULL AND d.job_id<>:j
+            AND NOT (d.job_id=:caption AND COALESCE(d.payload->'clip_captions'=CAST('true' AS jsonb),false))
+            AND (
             d.payload->>'status' IN ('queued','validating','transcribing','rendering','running')
             OR (d.payload->>'status'='awaiting_upload' AND
                 CASE WHEN jsonb_typeof(d.payload->'upload_expires_at')='number'
                     THEN (d.payload->>'upload_expires_at')::double precision > extract(epoch from clock_timestamp())
-                    ELSE false END))
-        """), {"o": owner, "j": current_job}).one()
+                    ELSE false END)))
+        SELECT count(DISTINCT slot),count(DISTINCT slot) FILTER (WHERE owner_id=:o) FROM candidates
+        """), {"o": owner, "j": current_job, "caption": caption_job}).one()
     if own:
         raise HTTPException(409, "Ya tienes una carga o un procesamiento pendiente. Continúa desde Tus trabajos.")
     if active >= BETA_MAX_ACTIVE:
@@ -132,6 +143,7 @@ def admit_selection(c, job_id, day, planned_calls, daily_limit, max_runs):
         raise HTTPException(409, "Este trabajo alcanzó el máximo de análisis guardados.")
     reserved = c.execute(text("""
         SELECT COALESCE(sum(CAST(payload->>'provider_calls_planned' AS integer)),0)
+             + COALESCE((SELECT planned FROM cloud_deleted_selection_calls WHERE day_utc=CAST(:day AS date)),0)
         FROM cloud_documents WHERE kind='selection' AND payload->>'day_utc'=:day
         """), {"day": day}).scalar_one()
     if reserved + planned_calls > daily_limit:
@@ -154,7 +166,7 @@ def beta_document(c, principal, job_id):
     check_active_workspace(c, principal)
     owned = c.execute(text("""
         SELECT id FROM auth_projects
-        WHERE id=:i AND owner_id=:o AND workspace_id=:w FOR UPDATE
+        WHERE id=:i AND owner_id=:o AND workspace_id=:w AND deletion_started_at IS NULL FOR UPDATE
         """), {"i": job_id, "o": principal.id, "w": principal.workspace_id}).scalar()
     if owned is None:
         raise HTTPException(404, "Trabajo no encontrado")
@@ -218,7 +230,10 @@ def retry_manual_export(c, job_id, document, owner):
     item = document["payload"]
     if document["manifest"] or not manual_export_retryable(item):
         raise HTTPException(409, "Este clip manual ya no admite un reintento.")
-    admit_beta(c, owner)
+    if item.get("clip_captions") is True:
+        admit_beta(c, owner, caption_job=job_id)
+    else:
+        admit_beta(c, owner)
     task = _failed_task(c, job_id, "export", item["id"])
     item["pilot"] = True
     _requeue_failed_task(c, job_id, "export", item, task)

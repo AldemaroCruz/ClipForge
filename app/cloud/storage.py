@@ -35,7 +35,7 @@ def token():
         return value
 
 
-def request(method, url, *, stream=False, timeout=(5, 120), **kwargs):
+def request(method, url, *, stream=False, timeout=(5, 120), extra_statuses=(), **kwargs):
     cfg = settings()
     headers = kwargs.pop("headers", {})
     if not cfg.local_test:
@@ -47,7 +47,8 @@ def request(method, url, *, stream=False, timeout=(5, 120), **kwargs):
     except requests.RequestException:
         session.close()
         raise StorageError("Cloud request transport failed") from None
-    if response.status_code not in {200, 201, 206} and not (method == "DELETE" and response.status_code == 204):
+    if (response.status_code not in {200, 201, 206} and response.status_code not in extra_statuses
+            and not (method == "DELETE" and response.status_code == 204)):
         status = response.status_code
         response.close()
         session.close()
@@ -78,6 +79,30 @@ def beta_original(workspace_id, job_id):
     return f"workspaces/{workspace_id}/jobs/{job_id}/original/input.mp4"
 
 
+def _resumable_location(location, name):
+    """Check a private resumable capability against its server-owned destination."""
+    cfg = settings()
+    endpoint = urlsplit(cfg.endpoint)
+    path = "/upload/storage/v1/b/" + quote(cfg.bucket, safe="") + "/o"
+    if not isinstance(location, str) or len(location) > 4096 or not location.isascii() \
+            or any(ord(char) < 33 or ord(char) > 126 for char in location):
+        raise StorageError("Invalid resumable upload destination")
+    try:
+        parsed = urlsplit(location)
+        query = parse_qs(parsed.query, keep_blank_values=True, max_num_fields=8)
+        upload_id = query.get("upload_id", [])
+        if (parsed.scheme != endpoint.scheme or parsed.netloc != endpoint.netloc or parsed.path != path
+                or parsed.fragment or len(upload_id) != 1
+                or not re.fullmatch(r"[A-Za-z0-9_-]+", upload_id[0])
+                or query.get("name", [name]) != [name]
+                or query.get("uploadType", ["resumable"]) != ["resumable"]
+                or query.get("ifGenerationMatch", ["0"]) != ["0"]):
+            raise ValueError("Invalid resumable upload destination")
+    except ValueError:
+        raise StorageError("Invalid resumable upload destination") from None
+    return location
+
+
 def start_resumable(name, size, origin):
     """Mint a create-only capability for exactly one server-selected object."""
     cfg = settings()
@@ -92,25 +117,19 @@ def start_resumable(name, size, origin):
         timeout=(4, 10),
     )
     try:
-        location = response.headers.get("Location", "")
-        if not isinstance(location, str) or len(location) > 4096 or not location.isascii() \
-                or any(ord(char) < 33 or ord(char) == 127 for char in location):
-            raise StorageError("Invalid resumable upload destination")
-        parsed = urlsplit(location)
-        query = parse_qs(parsed.query, keep_blank_values=True, max_num_fields=8)
-        upload_id = query.get("upload_id", [])
-        if (parsed.scheme != endpoint.scheme or parsed.netloc != endpoint.netloc or parsed.path != path
-                or parsed.fragment or len(upload_id) != 1
-                or not re.fullmatch(r"[A-Za-z0-9_-]+", upload_id[0])
-                or query.get("name", [name]) != [name]
-                or query.get("uploadType", ["resumable"]) != ["resumable"]
-                or query.get("ifGenerationMatch", ["0"]) != ["0"]):
-            raise StorageError("Invalid resumable upload destination")
-        return location
-    except ValueError:
-        raise StorageError("Invalid resumable upload destination") from None
+        return _resumable_location(response.headers.get("Location", ""), name)
     finally:
         close(response)
+
+
+def cancel_resumable(location, name):
+    location = _resumable_location(location, name)
+    try:
+        response = request("DELETE", location, timeout=(4, 10), extra_statuses=(410, 499),
+                           headers={"Content-Length": "0"})
+    except ObjectMissing:
+        return
+    close(response)
 
 
 def beta_original_metadata(name):
@@ -220,8 +239,65 @@ def list_staged(prefix):
             close(response)
 
 
-def delete_staged(item, prefix):
+def delete_staged(item, prefix, *, live_only=False):
     if not item["name"].startswith(prefix) or not re.fullmatch(r"workspaces/[a-f0-9]{32}/jobs/[a-f0-9]{32}/tasks/[a-f0-9]{32}/", prefix):
         raise StorageError("Cleanup escaped its task prefix")
+    if live_only:
+        project_scope = prefix.split("tasks/", 1)[0]
+        return delete_project_live(item, project_scope)
     response = request("DELETE", object_url(item["name"]), params={"generation": item["generation"], "ifGenerationMatch": item["generation"]})
+    close(response)
+
+
+def _project_prefix(prefix):
+    if not re.fullmatch(r"workspaces/[a-f0-9]{32}/jobs/[a-f0-9]{32}/", prefix):
+        raise StorageError("Invalid project cleanup prefix")
+
+
+def _project_object(item, prefix):
+    name, generation = item.get("name", ""), item.get("generation", "")
+    if (not isinstance(name, str) or not name.startswith(prefix)
+            or not re.fullmatch(r"(?:original/(?:input|[a-f0-9]{32})[.]mp4|"
+                                r"tasks/[a-f0-9]{32}/[1-9][0-9]*/[a-z0-9._-]+)",
+                                name[len(prefix):])
+            or not isinstance(generation, str) or not re.fullmatch(r"[1-9][0-9]{0,30}", generation)):
+        raise StorageError("Unexpected project object inventory")
+    return name, generation
+
+
+def list_project_live(prefix):
+    """Enumerate only current objects, after project publishers were fenced."""
+    _project_prefix(prefix)
+    cfg = settings()
+    listing = cfg.endpoint + "/storage/v1/b/" + quote(cfg.bucket, safe="") + "/o"
+    params = {"prefix": prefix, "fields": "items(name,generation),nextPageToken"}
+    result = []
+    pages = set()
+    while True:
+        response = request("GET", listing, params=params, timeout=(4, 15))
+        try:
+            data = response.json()
+        finally:
+            close(response)
+        for item in data.get("items", []):
+            name, generation = _project_object(item, prefix)
+            result.append({"name": name, "generation": generation})
+        page = data.get("nextPageToken")
+        if not page:
+            return result
+        if not isinstance(page, str) or page in pages or len(page) > 4096:
+            raise StorageError("Invalid project inventory pagination")
+        pages.add(page)
+        params["pageToken"] = page
+
+
+def delete_project_live(item, prefix):
+    """Detach the live version while preserving bucket retention and versioning."""
+    _project_prefix(prefix)
+    name, generation = _project_object(item, prefix)
+    try:
+        response = request("DELETE", object_url(name), timeout=(4, 15),
+                           params={"ifGenerationMatch": generation})
+    except ObjectMissing:
+        return
     close(response)

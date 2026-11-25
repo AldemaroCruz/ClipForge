@@ -290,20 +290,28 @@ def _process(job_id: str, recorder: Recorder | None = None, *,
         if not chosen:
             raise MediaValidationError("NO_CLIP_WINDOWS", "No se encontraron ventanas de voz de entre 20 y 60 segundos. Se obtuvo una transcripción, pero no alcanza el rango del selector actual. Prueba una conversación más larga.", job["media"])
         recorder.phase("render")
+        options = Presentation.model_validate(job.get("options", {}))
+        if validated_media is not None:
+            from .cloud.clip_captions import project_presentation
+            options = project_presentation(job)
         for index, clip in enumerate(chosen, 1):
             filename = f"clip_{index:02}.mp4"
             output = folder / filename
-            options = Presentation.model_validate(job.get("options", {}))
             cues = cues_from_segments(segs, clip["start"], clip["end"])
+            render_options = options
+            if validated_media is not None and not cues:
+                render_options = options.model_copy(update={"burn_subtitles": False})
             LOGGER.info("Job %s: renderizando clip %s/%s (%s)", job_id, index, len(chosen), options.framing)
             render_clip(
                 folder / "input.mp4", output, start=clip["start"], end=clip["end"],
-                options=options, cues=cues, video_index=job["media"]["video_stream_index"],
+                options=render_options, cues=cues, video_index=job["media"]["video_stream_index"],
                 threads=FFMPEG_THREADS, runner=ffmpeg, pilot=validated_media is not None,
             )
             clip["cues"] = cues
-            clip["options"] = options.model_dump()
+            clip["options"] = render_options.model_dump()
             clip["file"] = filename
+            if validated_media is not None:
+                clip["caption_rendered"] = True
             # Only publish links after FFmpeg has successfully closed the file.
             job["clips"] = chosen[:index]
             persist(job_id, job)

@@ -31,6 +31,7 @@
           <form id="upload-form" aria-describedby="upload-limits">
             <label for="upload-video">Video original</label>
             <input type="file" id="upload-video" name="video" accept=".mp4,video/mp4" required disabled>
+            <label class="beta-check"><input type="checkbox" id="upload-burn-subtitles" checked>Incrustar subtítulos en los clips automáticos</label>
             <div class="actions"><button type="submit" id="upload-submit" disabled>Subir y procesar</button></div>
             <progress id="upload-progress" aria-label="Bytes de video guardados" hidden></progress>
             <p id="upload-status" class="status beta-message" role="status"></p>
@@ -53,9 +54,39 @@
         <div class="actions" id="job-actions" hidden>
           <button id="start-existing" type="button" class="secondary" hidden>Procesar video guardado</button>
           <button id="retry-job" type="button" class="secondary" hidden>Reintentar procesamiento</button>
+          <button id="delete-project" type="button" class="secondary beta-danger" hidden>Eliminar proyecto</button>
+          <button id="retry-project-deletion" type="button" class="secondary" hidden>Reintentar eliminación</button>
         </div>
         <h3 id="heuristic-heading" hidden>Clips automáticos por heurística</h3>
         <div id="clip-list" class="beta-clips"></div>
+        <section id="clip-caption-editor" class="beta-caption-editor" aria-labelledby="clip-caption-heading" hidden>
+          <div class="beta-panel-heading">
+            <h3 id="clip-caption-heading">Editar subtítulos</h3>
+            <button id="clip-caption-close" type="button" class="secondary">Cerrar editor</button>
+          </div>
+          <p id="clip-caption-range" class="muted"></p>
+          <p id="clip-caption-status" class="status beta-message" role="status"></p>
+          <video id="clip-caption-preview" controls playsinline preload="none" aria-label="Vista previa del clip guardado" hidden></video>
+          <form id="clip-caption-form" hidden>
+            <fieldset id="clip-caption-fields" class="beta-caption-fields">
+              <legend>Estilo y sincronización</legend>
+              <label class="beta-check"><input type="checkbox" id="clip-caption-burn">Incrustar subtítulos en el MP4</label>
+              <div class="mvp-range">
+                <div><label for="clip-caption-size">Tamaño del texto</label><input type="number" id="clip-caption-size" min="24" max="120" step="1" value="52" required></div>
+                <div><label for="clip-caption-color">Color del texto</label><input type="color" id="clip-caption-color" value="#ffffff"></div>
+                <div><label for="clip-caption-position">Posición</label><select id="clip-caption-position"><option value="bottom">Abajo</option><option value="center">Centro</option><option value="top">Arriba</option></select></div>
+                <div><label for="clip-caption-edge">Grosor del contorno</label><input type="number" id="clip-caption-edge" min="0" max="12" step="1" value="3" required></div>
+              </div>
+              <p id="clip-caption-sample" class="editorial-sample" hidden><span></span></p>
+              <div id="clip-caption-cues"></div>
+              <button id="clip-caption-add" type="button" class="secondary">Añadir subtítulo</button>
+              <div class="actions">
+                <button id="clip-caption-save" type="submit">Guardar y generar clip</button>
+                <button id="clip-caption-apply-all" type="button" class="secondary">Aplicar a todos los clips</button>
+              </div>
+            </fieldset>
+          </form>
+        </section>
         <section id="editorial" aria-labelledby="editorial-heading" hidden>
           <details id="editorial-details">
             <summary id="editorial-heading">Propuestas por IA y edición</summary>
@@ -111,6 +142,8 @@
                 <div class="mvp-range">
                   <div><label for="editorial-size">Tamaño del texto</label><input type="number" id="editorial-size" min="24" max="120" step="1" value="52" required></div>
                   <div><label for="editorial-color">Color del texto</label><input type="color" id="editorial-color" value="#ffffff"></div>
+                  <div><label for="editorial-position">Posición</label><select id="editorial-position"><option value="bottom">Abajo</option><option value="center">Centro</option><option value="top">Arriba</option></select></div>
+                  <div><label for="editorial-edge">Grosor del contorno</label><input type="number" id="editorial-edge" min="0" max="12" step="1" value="3" required></div>
                 </div>
                 <p id="editorial-sample" class="editorial-sample" hidden><span></span></p>
                 <div id="editorial-cues"></div>
@@ -164,10 +197,20 @@
       <ol>
         <li>Entra con la cuenta que te entregó el administrador y selecciona un MP4 con voz audible.</li>
         <li>Elige «Subir y procesar». Puedes salir cuando el trabajo figure como pendiente o procesando y retomarlo en «Mis trabajos».</li>
-        <li>Reproduce los clips automáticos y descárgalos en MP4. También puedes elegir un fragmento del original.</li>
+        <li>Reproduce los clips automáticos y descarga el MP4, SRT o WebVTT cuando estén disponibles. Usa «Editar subtítulos» para personalizar un clip.</li>
         <li>Abre «Propuestas por IA y edición». Define un objetivo, revisa el texto por enviar y autoriza el análisis. Elige una propuesta para ajustar el recorte y los subtítulos antes de aprobar la exportación.</li>
       </ol>
     </section>
   </main>
+  <dialog id="project-delete-dialog" class="panel beta-dialog" aria-labelledby="project-delete-heading" aria-describedby="project-delete-scope">
+    <h2 id="project-delete-heading">Eliminar proyecto</h2>
+    <p id="project-delete-title"></p>
+    <p id="project-delete-scope">Se retirarán el original, la transcripción, las propuestas, los borradores, los clips y las exportaciones de este proyecto. Se cancelarán los procesamientos pendientes y activos que le correspondan.</p>
+    <p id="project-delete-error" class="status beta-message" role="alert"></p>
+    <div class="actions">
+      <button id="project-delete-cancel" type="button" class="secondary" autofocus>Cancelar</button>
+      <button id="project-delete-confirm" type="button" class="beta-danger">Eliminar proyecto</button>
+    </div>
+  </dialog>
 </body>
 </html>

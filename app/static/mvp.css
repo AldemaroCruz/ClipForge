@@ -76,12 +76,21 @@
   margin-bottom: 12px;
 }
 .editorial-sample {
+  display: grid;
+  min-height: 120px;
+  align-content: end;
   padding: 12px;
   background: #09101e;
   border-radius: 8px;
   text-align: center;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+.editorial-sample[data-position="top"] {
+  align-content: start;
+}
+.editorial-sample[data-position="center"] {
+  align-content: center;
 }
 .editorial-sample span {
   font-family: "DejaVu Sans", sans-serif;

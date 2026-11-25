@@ -3,6 +3,7 @@
 No Whisper, no model downloads, no external services or user data.
 """
 import json
+import math
 import subprocess
 import tempfile
 from pathlib import Path
@@ -30,16 +31,20 @@ def caption_pixels(path: Path) -> bytes:
     ], check=True, capture_output=True, timeout=30).stdout
 
 
-def caption_color_stats(path: Path, color: str) -> dict:
-    """Inspect actual encoded RGB pixels in a lower black-bar region.
+def caption_color_stats(path: Path, color: str, *, seconds: float = 0.8,
+                        position: str = "bottom") -> dict:
+    """Inspect actual encoded RGB pixels in a black-bar region.
 
     Pure red/blue detect an RGB-to-ASS BGR swap, not just non-black text. Small and
     large yellow use the same one-line text to verify size in the final MP4.
     """
     width, height = 1080, 480
+    if not math.isfinite(seconds) or not 0 <= seconds <= 60:
+        raise ValueError("Subtitle sample is outside the supported clip interval")
+    origin_y = {"top": 120, "bottom": 1320}[position]
     pixels = subprocess.run([
-        resolve_media_binary("ffmpeg"), "-nostdin", "-v", "error", "-ss", "0.8", "-i", str(path),
-        "-frames:v", "1", "-vf", f"crop={width}:{height}:0:1320,format=rgb24",
+        resolve_media_binary("ffmpeg"), "-nostdin", "-v", "error", "-ss", str(seconds), "-i", str(path),
+        "-frames:v", "1", "-vf", f"crop={width}:{height}:0:{origin_y},format=rgb24",
         "-f", "rawvideo", "-",
     ], check=True, capture_output=True, timeout=30).stdout
     if len(pixels) != width * height * 3:
