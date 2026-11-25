@@ -1,5 +1,6 @@
 """INT pilot upload, admission and media processing regressions."""
 import base64
+from datetime import datetime, timezone
 import hashlib
 import os
 from pathlib import Path
@@ -150,6 +151,7 @@ class AdmissionTests(TestCase):
         connection = MagicMock()
         connection.execute.return_value.mappings.return_value.first.return_value = {
             "id": task_id, "status": "failed", "cleaned_at": object(),
+            "fence": 1, "updated_at": datetime(2026, 11, 25, tzinfo=timezone.utc), "attempts": 1,
         }
         item = {"id": JOB, "pilot": True, "status": "failed", "error_code": "WORKER_INTERRUPTED", "error": "raw"}
         with patch.object(repository, "update_document") as update:
@@ -158,6 +160,7 @@ class AdmissionTests(TestCase):
             self.assertEqual(connection.execute.call_args.args[1], {"i": task_id})
             self.assertEqual((item["status"], item["retry_count"]), ("queued", 1))
             self.assertNotIn("error", item)
+            self.assertEqual(item["attempt_history"][0]["error_code"], "WORKER_INTERRUPTED")
             item.update(status="failed", error_code="WORKER_INTERRUPTED")
             repository.public_beta_failure(item)
             self.assertFalse(item["retryable"])
@@ -205,7 +208,8 @@ class PilotMediaTests(TestCase):
                 command = run.call_args.args
                 self.assertEqual(command[:6], ("-protocol_whitelist", "file,pipe", "-f", "mov", "-i", source.resolve()))
                 self.assertIn(16000, command)
-                self.assertIn(BETA_MAX_SECONDS, command)
+                self.assertEqual(command[command.index("-t") + 1], BETA_MAX_SECONDS + 1)
+                self.assertEqual(command[command.index("-fs") + 1], (BETA_MAX_SECONDS + 1) * 32000)
                 self.assertFalse(command[-1].parent.exists())
 
     def test_pilot_clip_has_bounded_encoding_options(self):

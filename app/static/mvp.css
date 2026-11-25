@@ -1,0 +1,28 @@
+#mvp-editor {
+  margin-top: 20px;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+#mvp-editor summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+#mvp-source {
+  display: block;
+  width: 100%;
+  max-height: 360px;
+  margin-block: 16px;
+  background: #09101e;
+  border-radius: 10px;
+}
+.mvp-range {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 165px), 1fr));
+  gap: 12px;
+}
+.mvp-range input {
+  margin-bottom: 6px;
+}
+#mvp-status {
+  margin-block: 12px;
+}

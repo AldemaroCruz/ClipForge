@@ -202,18 +202,23 @@ def _beta_audio(source: Path) -> Any:
     from .cloud.config import BETA_MAX_SECONDS
 
     samples_per_second = 16000
-    byte_limit = BETA_MAX_SECONDS * samples_per_second * 2
+    # Permit normal AAC rounding and detect media with timelines that exceed
+    # the admitted duration instead of silently transcribing a truncated file.
+    probe_seconds = BETA_MAX_SECONDS + 1
+    byte_limit = probe_seconds * samples_per_second * 2
     with tempfile.TemporaryDirectory(prefix=".audio-", dir=source.parent) as directory:
         pcm = Path(directory) / "voice.pcm"
         run_ffmpeg(
             "-protocol_whitelist", "file,pipe", "-f", "mov", "-i", source.resolve(),
             "-map", "0:a:0", "-vn", "-sn", "-dn",
             "-ar", samples_per_second, "-ac", 1, "-c:a", "pcm_s16le",
-            "-t", BETA_MAX_SECONDS, "-fs", byte_limit, "-f", "s16le", pcm,
+            "-t", probe_seconds, "-fs", byte_limit, "-f", "s16le", pcm,
         )
         with pcm.open("rb") as audio:
             data = audio.read(byte_limit + 1)
-    if not data or len(data) > byte_limit or len(data) % 2:
+    if len(data) >= byte_limit:
+        raise MediaValidationError("VIDEO_OUTSIDE_LIMITS", "La pista de audio excede la duración admitida.")
+    if not data or len(data) % 2:
         raise MediaValidationError("UNSUPPORTED_MEDIA", "No se pudo decodificar la pista de audio.")
     return np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
 
@@ -254,6 +259,9 @@ def _process(job_id: str, recorder: Recorder | None = None, *,
         segments, info = model.transcribe(audio, beam_size=1, vad_filter=True)
         segs = [{"start": s.start, "end": s.end, "text": s.text.strip()}
                 for s in segments if s.text.strip()]
+        if validated_media is not None:
+            job["analysis_seconds"] = round(len(audio) / 16000, 2)
+            job["speech_until_seconds"] = round(segs[-1]["end"], 2) if segs else 0.0
         write_json_atomic(folder / "transcript.json", segs)
         if not segs:
             raise MediaValidationError("NO_SPEECH_DETECTED", "No se detectó voz transcribible en el video. Hay una pista de audio, pero podría contener silencio, música o voz poco clara. Prueba una conversación audible de 1–3 minutos.", job["media"])
@@ -561,7 +569,7 @@ def mark_interrupted_exports() -> None:
             LOGGER.warning("No se modificó la variante ilegible %s", path)
 
 
-def process_export(job_id: str, export_id: str) -> None:
+def process_export(job_id: str, export_id: str, *, pilot: bool = False) -> None:
     recorder = Recorder(ROOT, job_id, "export", export_id)
     recorder.phase("queue")
     item = None
@@ -573,20 +581,27 @@ def process_export(job_id: str, export_id: str) -> None:
             source = ROOT / job_id / "input.mp4"
             recorder.phase("validation")
             # Validate the actual source; legacy job metadata may omit stream IDs.
-            media = inspect_media(source, min_duration=0)
+            if pilot:
+                from .media import inspect_beta_media
+                media = inspect_beta_media(source)
+            else:
+                media = inspect_media(source, min_duration=0)
             options = Presentation.model_validate(item["options"])
             target = export_path(job_id, export_id) / "clip.mp4"
             LOGGER.info("Variante %s: renderizando %s sin repetir Whisper", export_id, options.framing)
             recorder.phase("render")
             render_clip(source, target, start=item["start"], end=item["end"],
                         options=options, cues=item["cues"], video_index=media["video_stream_index"],
-                        threads=FFMPEG_THREADS)
+                        threads=FFMPEG_THREADS, pilot=pilot)
             item.update(status="completed", completed_at=time.time())
             persist_export(job_id, item)
     except Exception as exc:
-        LOGGER.exception("Variante %s falló", export_id)
+        if pilot:
+            LOGGER.warning("Variante beta %s: %s", export_id, type(exc).__name__)
+        else:
+            LOGGER.exception("Variante %s falló", export_id)
         if item is not None:
-            item.update(status="failed", error=str(exc))
+            item.update(status="failed", error="No se pudo generar la variante." if pilot else str(exc))
             try:
                 persist_export(job_id, item)
             except Exception:

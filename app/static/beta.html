@@ -7,14 +7,15 @@
   <title>ClipForge · Tus videos</title>
   <link rel="stylesheet" href="/static/account.css">
   <link rel="stylesheet" href="/static/beta.css">
+  <link rel="stylesheet" href="/static/mvp.css">
   <script src="/static/auth.js" defer></script>
+  <script src="/static/mvp.js" defer></script>
   <script src="/static/beta.js" defer></script>
 </head>
 <body class="beta">
   <header>
     <div><a class="beta-brand" href="/">ClipForge</a><h1>Tus videos y clips</h1></div>
-    <nav class="actions" aria-label="Cuenta y ayuda">
-      <a href="#feedback">Enviar feedback</a>
+    <nav class="actions" aria-label="Cuenta">
       <a href="/account">Mi cuenta <span data-auth-user></span></a>
       <button type="button" class="secondary" data-auth-logout>Cerrar sesión</button>
     </nav>
@@ -51,60 +52,43 @@
         <div class="actions" id="job-actions" hidden>
           <button id="start-existing" type="button" class="secondary" hidden>Procesar video guardado</button>
           <button id="retry-job" type="button" class="secondary" hidden>Reintentar procesamiento</button>
-          <button id="feedback-job" type="button" class="secondary">Enviar feedback sobre este trabajo</button>
         </div>
         <div id="clip-list" class="beta-clips"></div>
+        <section id="mvp-editor" aria-labelledby="mvp-heading" hidden>
+          <details id="mvp-editor-details">
+            <summary id="mvp-heading">Elegir fragmento del original</summary>
+            <video id="mvp-source" controls playsinline preload="metadata" aria-label="Video original"></video>
+            <form id="mvp-range-form">
+              <div class="mvp-range">
+                <div>
+                  <label for="mvp-start">Inicio en segundos</label>
+                  <input id="mvp-start" type="number" min="0" step="0.001" required>
+                  <button type="button" id="mvp-mark-start" class="secondary">Marcar inicio aquí</button>
+                </div>
+                <div>
+                  <label for="mvp-end">Fin en segundos</label>
+                  <input id="mvp-end" type="number" min="1" step="0.001" required>
+                  <button type="button" id="mvp-mark-end" class="secondary">Marcar fin aquí</button>
+                </div>
+              </div>
+              <p class="muted">Elige un tramo de 1 a 60 segundos. Los subtítulos disponibles se descargan por separado.</p>
+              <div class="actions">
+                <button type="button" id="mvp-preview" class="secondary">Previsualizar fragmento</button>
+                <button type="submit" id="mvp-export">Generar clip manual</button>
+              </div>
+            </form>
+            <p role="status" id="mvp-status" class="beta-message"></p>
+            <div id="mvp-results" class="beta-clips"></div>
+          </details>
+        </section>
       </section>
     </div>
-    <section id="feedback" class="panel" aria-labelledby="feedback-heading">
-      <h2 id="feedback-heading">Enviar feedback</h2>
-      <form id="feedback-form" class="beta-feedback">
-        <div>
-          <label for="feedback-category">Categoría</label>
-          <select id="feedback-category" required>
-            <option value="error">Error</option>
-            <option value="suggestion">Sugerencia</option>
-            <option value="quality">Calidad del resultado</option>
-          </select>
-          <label for="feedback-context">Asociar comentario con</label>
-          <select id="feedback-context"><option value="">Experiencia general</option></select>
-          <fieldset id="clip-rating" hidden disabled>
-            <legend>Valoración del clip (opcional)</legend>
-            <label for="clip-useful">¿Te resulta útil?</label>
-            <select id="clip-useful"><option value="">Sin valoración</option><option value="yes">Sí</option><option value="no">No</option></select>
-            <label for="clip-publishable">¿Lo publicarías?</label>
-            <select id="clip-publishable"><option value="">Sin valoración</option><option value="yes">Sí</option><option value="no">No</option></select>
-          </fieldset>
-        </div>
-        <div>
-          <label for="feedback-comment">Comentario</label>
-          <textarea id="feedback-comment" required maxlength="2000" rows="5" aria-describedby="feedback-privacy"></textarea>
-          <small id="feedback-privacy">Evita incluir contraseñas, enlaces privados o datos personales de terceros.</small>
-          <div class="actions"><button type="submit">Enviar feedback</button></div>
-          <p id="feedback-status" class="status beta-message" role="status"></p>
-        </div>
-      </form>
-      <h3>Mis comentarios</h3>
-      <p id="feedback-history-status" class="status beta-message" role="status"></p>
-      <ul id="feedback-history" class="beta-list beta-comments"></ul>
-      <button id="more-feedback" type="button" class="secondary" hidden>Ver más comentarios</button>
-    </section>
-    <section id="admin-feedback" class="panel" aria-labelledby="admin-feedback-heading" hidden>
-      <div class="beta-panel-heading">
-        <h2 id="admin-feedback-heading">Feedback recibido</h2>
-        <button id="refresh-admin-feedback" type="button" class="secondary">Actualizar</button>
-      </div>
-      <p id="admin-feedback-status" class="status beta-message" role="status"></p>
-      <ul id="admin-feedback-list" class="beta-list beta-comments"></ul>
-      <button id="more-admin-feedback" type="button" class="secondary" hidden>Ver más comentarios</button>
-    </section>
     <section class="panel" aria-labelledby="beta-guide-heading">
       <h2 id="beta-guide-heading">Guía de la beta</h2>
       <ol>
         <li>Entra con la cuenta que te entregó el administrador y selecciona un MP4 con voz audible.</li>
         <li>Elige «Subir y procesar». Puedes salir cuando el trabajo figure como pendiente o procesando y retomarlo en «Mis trabajos».</li>
-        <li>Reproduce los clips y descárgalos en MP4. La selección es heurística: usa la transcripción para encontrar tramos con voz.</li>
-        <li>Envía feedback desde el formulario, incluso si un trabajo falla. Puedes asociarlo con un trabajo o clip concreto.</li>
+        <li>Reproduce los clips y descárgalos en MP4. La selección automática usa la transcripción. También puedes elegir un fragmento del original.</li>
       </ol>
       <p class="muted">La beta por invitación no incluye edición avanzada ni publicación en redes.</p>
     </section>

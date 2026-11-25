@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -39,7 +40,7 @@ def _terminate(child):
         child.wait(timeout=5)
 
 
-def _claim(connection):
+def _claim(connection, job_id=None):
     # The global advisory lock has already excluded every other supervisor.
     # A worker whose supervisor lost its connection may still hold a live lease.
     # Honor that lease across profiles before handling expired or queued work.
@@ -48,12 +49,13 @@ def _claim(connection):
         """)).scalar()
     if active:
         return "wait"
-    profile = {"beta": beta_enabled()}
+    profile = {"beta": beta_enabled(), "job": job_id}
     running = connection.execute(text("""
         SELECT t.* FROM cloud_tasks t
         LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
+        LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
         WHERE t.status='running' AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-          AND (NOT :beta OR t.kind='process')
+          AND (NOT :beta OR t.kind='process' OR e.payload->'pilot'=CAST('true' AS jsonb))
         ORDER BY t.created_at LIMIT 1
         """), profile).mappings().first()
     if running:
@@ -71,8 +73,10 @@ def _claim(connection):
         row = c.execute(text("""
             SELECT t.* FROM cloud_tasks t
             LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
+            LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE t.status='queued' AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind='process')
+              AND (NOT :beta OR t.kind='process' OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (CAST(:job AS text) IS NULL OR t.job_id=:job)
             ORDER BY t.created_at,t.id LIMIT 1 FOR UPDATE OF t SKIP LOCKED
             """), profile).mappings().first()
         if row is None:
@@ -90,9 +94,10 @@ def cleanup_failed():
         tasks = c.execute(text("""
             SELECT t.*,p.workspace_id FROM cloud_tasks t JOIN auth_projects p ON p.id=t.job_id
             LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
+            LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE t.status='failed' AND t.cleaned_at IS NULL
               AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind='process')
+              AND (NOT :beta OR t.kind='process' OR e.payload->'pilot'=CAST('true' AS jsonb))
             ORDER BY t.created_at LIMIT 100
             """), {"beta": beta_enabled()}).mappings().all()
     for task in tasks:
@@ -114,7 +119,39 @@ def cleanup_failed():
             print(json.dumps({"status": "cleanup_pending", "task_id": task["id"]}), file=sys.stderr)
 
 
-def drain(max_tasks=None):
+def prepare_recovery(job_id, generation):
+    """Only retry the confirmed generation of an existing beta limit rejection."""
+    with get_engine().begin() as c:
+        project = c.execute(text("""
+            SELECT p.owner_id,p.workspace_id FROM auth_projects p
+            JOIN auth_users u ON u.id=p.owner_id AND u.is_active
+            WHERE p.id=:job FOR UPDATE OF p
+            """), {"job": job_id}).mappings().first()
+        if project is None:
+            raise ValueError("The approved recovery project is unavailable")
+        doc = repo.document(job_id, connection=c)
+        item, manifest = doc["payload"], doc["manifest"]
+        original = manifest.get("input.mp4", {})
+        if (item.get("pilot") is not True or original.get("generation") != generation
+                or original.get("name") != storage.beta_original(project["workspace_id"], job_id)):
+            raise ValueError("Recovery source identity did not match the approved original")
+        if item["status"] == "completed":
+            return False
+        if item["status"] == "queued" and item.get("attempt_history"):
+            return True
+        if item["status"] != "failed" or set(manifest) != {"input.mp4"}:
+            raise ValueError("Recovery requires a failed job without published results")
+        observed = storage.beta_original_metadata(original["name"])
+        if observed != original:
+            raise ValueError("Recovery source metadata or generation changed")
+        repo.admit_beta(c, project["owner_id"])
+        repo.retry_beta(c, job_id, item, expected_error="VIDEO_OUTSIDE_LIMITS")
+        print(json.dumps({"status": "recovery_queued", "job_id": job_id,
+                          "previous_error": "VIDEO_OUTSIDE_LIMITS", "generation": generation}), flush=True)
+        return True
+
+
+def drain(max_tasks=None, recovery=None):
     cfg = settings()
     if not enabled():
         raise ValueError("Worker requires the explicit cloud backend")
@@ -136,8 +173,13 @@ def drain(max_tasks=None):
             lock.execute(text("SET statement_timeout='10s'"))
             try:
                 cleanup_failed()
+                recover_job = None
+                if recovery:
+                    recover_job, generation = recovery
+                    if not prepare_recovery(recover_job, generation):
+                        return {"status": "already_completed", "job_id": recover_job}
                 while max_tasks is None or completed < max_tasks:
-                    task = _claim(lock)
+                    task = _claim(lock, recover_job) if recover_job else _claim(lock)
                     if task == "wait":
                         time.sleep(1)
                         continue
@@ -177,6 +219,15 @@ def drain(max_tasks=None):
     finally:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
+    if recovery:
+        item = repo.document(recover_job)["payload"]
+        report = {"status": item["status"], "job_id": recover_job, "clips": len(item["clips"]),
+                  "error_code": item.get("error_code"), "analysis_seconds": item.get("analysis_seconds"),
+                  "speech_until_seconds": item.get("speech_until_seconds")}
+        print(json.dumps(report), flush=True)
+        if item["status"] != "completed" or not item["clips"]:
+            raise ValueError("The recovery did not publish clips")
+        return report
     return {"status": "interrupted" if interrupted else "drained", "tasks": completed, "local_test": cfg.local_test}
 
 
@@ -186,9 +237,10 @@ def execute(task_id, fence):
         task = c.execute(text("""
             SELECT t.* FROM cloud_tasks t
             LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
+            LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE t.id=:i AND t.fence=:f AND t.status='running' AND t.lease_until>clock_timestamp()
               AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind='process')
+              AND (NOT :beta OR t.kind='process' OR e.payload->'pilot'=CAST('true' AS jsonb))
             """), {"i": task_id, "f": fence, "beta": beta_enabled()}).mappings().first()
         if task is None:
             raise RuntimeError("Task lease unavailable")
@@ -206,15 +258,17 @@ def execute(task_id, fence):
         folder = main.ROOT / task["job_id"]
         folder.mkdir()
         job = repo.document(task["job_id"])
-        pilot = task["kind"] == "process" and job["payload"].get("pilot") is True
+        pilot = job["payload"].get("pilot") is True
         try:
             storage.download(job["manifest"]["input.mp4"], folder / "input.mp4")
         except storage.StorageError:
             if not pilot:
                 raise
-            item = job["payload"]
+            item = (job["payload"] if task["kind"] == "process" else
+                    repo.document(task["job_id"], "export", task["item_id"])["payload"])
             item.update(status="failed", error_code="SOURCE_UNAVAILABLE")
-            repo.finish_task(task, item, job["manifest"])
+            manifest = job["manifest"] if task["kind"] == "process" else {}
+            repo.finish_task(task, item, manifest)
             return
         if "transcript.json" in job["manifest"]:
             storage.download(job["manifest"]["transcript.json"], folder / "transcript.json")
@@ -229,6 +283,8 @@ def execute(task_id, fence):
                     try:
                         media = inspect_beta_media(folder / "input.mp4")
                     except MediaValidationError as exc:
+                        print(json.dumps({"status": "media_rejected", "job_id": task["job_id"],
+                                          "error_code": exc.code}), flush=True)
                         item.update(status="failed", error_code=exc.code)
                         repo.finish_task(task, item, job["manifest"])
                         return
@@ -238,7 +294,7 @@ def execute(task_id, fence):
                 kind, directory = "job", folder
             else:
                 (folder / "exports" / task["item_id"]).mkdir(parents=True)
-                main.process_export(task["job_id"], task["item_id"])
+                main.process_export(task["job_id"], task["item_id"], pilot=pilot)
                 kind, directory = "export", folder / "exports" / task["item_id"]
             payload = context["staged"]
             if payload is None:
@@ -270,17 +326,24 @@ def main(argv=None):
     parser.add_argument("--max-tasks", type=int)
     parser.add_argument("--execute", help=argparse.SUPPRESS)
     parser.add_argument("--fence", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--recover-job")
+    parser.add_argument("--expected-generation")
     args = parser.parse_args(argv)
     try:
         if args.execute:
-            import re
             if not re.fullmatch("[a-f0-9]{32}", args.execute) or not args.fence or args.fence < 1:
                 raise ValueError("Invalid task identity")
             execute(args.execute, args.fence)
         else:
             if args.max_tasks is not None and args.max_tasks < 1:
                 raise ValueError("Invalid task limit")
-            print(json.dumps(drain(args.max_tasks)))
+            if args.recover_job or args.expected_generation:
+                if (not beta_enabled() or not re.fullmatch(r"[a-f0-9]{32}", args.recover_job or "")
+                        or not re.fullmatch(r"[1-9][0-9]{0,30}", args.expected_generation or "")):
+                    raise ValueError("Approved recovery job and generation required")
+                print(json.dumps(drain(1, (args.recover_job, args.expected_generation))))
+            else:
+                print(json.dumps(drain(args.max_tasks)))
         return 0
     except (Exception, KeyboardInterrupt) as exc:
         result = {"status": "failed", "error_type": type(exc).__name__,

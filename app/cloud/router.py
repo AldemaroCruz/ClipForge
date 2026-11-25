@@ -119,10 +119,26 @@ async def create_job(request: Request, file: UploadFile = File(...)):
 @router.get("/jobs/{job_id}")
 def get_job(job_id: str, response: Response):
     response.headers["Cache-Control"] = "no-store"
-    return _doc(job_id)["payload"]
+    item = _doc(job_id)["payload"]
+    if item.get("pilot") is True and _needs_dispatch(job_id, "process", [item]):
+        return _dispatch(item)
+    return item
 
 
-def _stream(item, request, filename, inline=False):
+def _needs_dispatch(job_id, kind, items):
+    if any(item["status"] == "queued" for item in items):
+        return True
+    if not any(item["status"] in {"validating", "transcribing", "rendering"} for item in items):
+        return False
+    with get_engine().connect() as connection:
+        return connection.execute(text("""
+            SELECT EXISTS(SELECT 1 FROM cloud_tasks
+                          WHERE job_id=:job AND kind=:kind AND status='running'
+                            AND lease_until<=clock_timestamp())
+            """), {"job": job_id, "kind": kind}).scalar_one()
+
+
+def _stream(item, request, filename, inline=False, *, chunk_large=False):
     try:
         upstream = storage.open_object(item, request.headers.get("Range"))
     except storage.StorageError:
@@ -134,9 +150,13 @@ def _stream(item, request, filename, inline=False):
             storage.close(upstream)
     headers = {"Cache-Control": "private, no-store", "Accept-Ranges": "bytes",
                "Content-Disposition": f'{"inline" if inline else "attachment"}; filename="{filename}"'}
-    for name in ("Content-Length", "Content-Range"):
-        if name in upstream.headers:
-            headers[name] = upstream.headers[name]
+    content_range = upstream.headers.get("Content-Range")
+    if content_range is not None:
+        headers["Content-Range"] = content_range
+    length = upstream.headers.get("Content-Length")
+    # Large open-ended ranges must remain chunked across both Cloud Run hops.
+    if length is not None and (not chunk_large or (length.isdecimal() and int(length) <= 30 * 1024 * 1024)):
+        headers["Content-Length"] = length
     return StreamingResponse(chunks(), status_code=upstream.status_code, media_type=item["content_type"], headers=headers)
 
 
@@ -145,7 +165,7 @@ def source(job_id: str, request: Request):
     item = _doc(job_id)["manifest"].get("input.mp4")
     if not item:
         raise HTTPException(404, "Original no disponible")
-    return _stream(item, request, "input.mp4", True)
+    return _stream(item, request, "input.mp4", True, chunk_large=True)
 
 
 def _clip(job_id, filename):
@@ -189,6 +209,8 @@ def _workspace(job_id):
     job = doc["payload"]
     if job["status"] not in {"completed", "failed"}:
         raise HTTPException(409, "Espera a que termine el procesamiento")
+    if "input.mp4" not in doc["manifest"]:
+        raise HTTPException(409, "Original no disponible")
     media = job.get("media", {})
     duration = media.get("duration_seconds")
     if type(duration) not in {int, float} or not math.isfinite(duration) or duration <= 0:
@@ -293,20 +315,43 @@ def update_draft(job_id: str, draft_id: str, request: DraftUpdate):
     return item
 
 
-def _submit_export(job_id, item, request):
+def _submit_export(job_id, item, request, *, pilot=False):
     owner = request.state.principal.id
     fingerprint = hashlib.sha256(repo.packed({k: v for k, v in item.items() if k not in {"id", "created_at"}}).encode()).hexdigest()
     with repo.request_transaction(owner, request.headers.get("Idempotency-Key"), fingerprint) as (c, previous, key):
+        if pilot:
+            repo.check_active_workspace(c, request.state.principal)
         if previous:
             if previous["kind"] != "export" or previous["job_id"] != job_id:
                 raise HTTPException(409, "La clave identifica otra solicitud")
             item = repo.document(job_id, "export", previous["item_id"], c)["payload"]
         else:
+            if pilot:
+                repo.admit_beta(c, owner)
             item["request_id"] = key
             repo.insert_document(c, job_id, "export", item)
             repo.enqueue(c, job_id, "export", item["id"])
             repo.remember_request(c, owner, key, fingerprint, job_id, "export", item["id"])
     return _dispatch(item)
+
+
+@router.post("/jobs/{job_id}/editor/exports", status_code=202)
+def export_manual_range(job_id: str, payload: RangeChange, request: Request):
+    doc, source_duration = _workspace(job_id)
+    if doc["payload"].get("pilot") is not True:
+        raise HTTPException(404, "Trabajo del piloto no encontrado")
+    if payload.previous_start is not None or payload.previous_end is not None or payload.cues:
+        raise HTTPException(422, "Indica solamente el inicio y el fin del fragmento.")
+    try:
+        start, end = validate_range(payload.start, payload.end, source_duration)
+        cues, _ = retime_cues([], None, None, start, end, _transcript(doc))
+    except (SubtitleError, TypeError, ValueError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    item = {"id": uuid.uuid4().hex, "job_id": job_id, "title": "Fragmento manual",
+            "clip_file": "manual.mp4", "status": "queued", "created_at": time.time(),
+            "version": VERSION, "start": start, "end": end,
+            "options": Presentation().model_dump(), "cues": cues}
+    return _submit_export(job_id, item, request, pilot=True)
 
 
 @router.post("/jobs/{job_id}/drafts/{draft_id}/exports", status_code=202)
@@ -341,8 +386,10 @@ def create_export(job_id: str, filename: str, payload: ExportRequest, request: R
 
 @router.get("/jobs/{job_id}/exports")
 def exports(job_id: str):
-    _doc(job_id)
+    job = _doc(job_id)["payload"]
     items = [d["payload"] for d in repo.list_documents(job_id, "export")]
+    if job.get("pilot") is True and _needs_dispatch(job_id, "export", items):
+        _dispatch({})
     return {"exports": items[:100], "limit": 100, "has_more": len(items) > 100}
 
 

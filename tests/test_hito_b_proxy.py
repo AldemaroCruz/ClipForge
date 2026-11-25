@@ -40,8 +40,10 @@ class PublicProxyTests(unittest.TestCase):
             ("POST", "/beta/uploads", {"Origin": proxy.PUBLIC_ORIGIN, "Sec-Fetch-Site": "cross-site"}, 403),
             ("GET", "/jobs", {}, 404),
             ("POST", "/jobs", {"Origin": proxy.PUBLIC_ORIGIN}, 404),
-            ("POST", f"/jobs/{JOB_ID}/editor/range", {"Origin": proxy.PUBLIC_ORIGIN}, 404),
-            ("GET", f"/jobs/{JOB_ID}/source", {}, 404),
+            ("POST", f"/jobs/{JOB_ID}/drafts", {"Origin": proxy.PUBLIC_ORIGIN}, 404),
+            ("GET", "/beta/feedback", {}, 404),
+            ("GET", "/beta/admin/feedback", {}, 404),
+            ("POST", "/beta/feedback", {"Origin": proxy.PUBLIC_ORIGIN}, 404),
         )
         for method, path, headers, expected in rejected:
             with self.subTest(method=method, path=path, headers=headers):
@@ -52,7 +54,7 @@ class PublicProxyTests(unittest.TestCase):
     def test_uses_fixed_upstream_and_replaces_browser_supplied_identity_headers(self):
         self.response.headers.update({"Content-Type": "application/json", "X-Private-Header": "internal"})
         self.response.raw.headers.getlist.return_value = ["sample=value; Secure; HttpOnly; SameSite=Strict"]
-        result = self.client.post("/beta/feedback?limit=5&limit=10", json={"comment": "prueba"}, headers={
+        result = self.client.post("/beta/uploads?limit=5&limit=10", json={"filename": "fixture.mp4"}, headers={
             "Origin": proxy.PUBLIC_ORIGIN,
             "Cookie": "sample=fixture",
             "X-CSRF-Token": "browser-csrf",
@@ -66,7 +68,7 @@ class PublicProxyTests(unittest.TestCase):
         self.assertEqual(result.status_code, 200)
         self.identity.assert_called_once_with()
         args, outbound = self.upstream.request.call_args
-        self.assertEqual(args, ("POST", proxy.API_ORIGIN + "/beta/feedback"))
+        self.assertEqual(args, ("POST", proxy.API_ORIGIN + "/beta/uploads"))
         self.assertEqual(outbound["params"], [("limit", "5"), ("limit", "10")])
         self.assertFalse(outbound["allow_redirects"])
         headers = CaseInsensitiveDict(outbound["headers"])
@@ -126,9 +128,11 @@ class PrivateApiBoundaryTests(unittest.TestCase):
 
         headers = {proxy.PROXY_ORIGIN_HEADER: proxy.PUBLIC_ORIGIN, "Origin": proxy.PUBLIC_ORIGIN}
         config = auth.Settings(proxy.PUBLIC_ORIGIN, secure=True, ttl_seconds=3600)
+        database = Mock()
+        database.execute.return_value.scalar_one_or_none.return_value = None
         with (
             patch.object(auth, "settings", return_value=config),
-            patch.object(auth, "_http_storage", side_effect=lambda: nullcontext(object())),
+            patch.object(auth, "_http_storage", side_effect=lambda: nullcontext(database)),
             patch.object(auth, "_session", side_effect=fixture_session),
         ):
             self.assertEqual(self.client.post("/beta/uploads", headers=headers, json={}).status_code, 401)
@@ -139,6 +143,9 @@ class PrivateApiBoundaryTests(unittest.TestCase):
                                               json={}).status_code, 403)
             self.assertEqual(self.client.post("/beta/uploads", headers=headers, json={}).status_code, 422)
             self.assertEqual(self.client.post("/jobs", headers=headers, json={}).status_code, 404)
+            self.assertEqual(self.client.get("/beta/feedback", headers=headers).status_code, 404)
+            self.assertEqual(self.client.post("/beta/feedback", headers=headers, json={}).status_code, 404)
+            self.assertEqual(self.client.get("/beta/admin/feedback", headers=headers).status_code, 404)
             self.assertEqual(self.client.post(f"/jobs/{JOB_ID}/editor/range", headers=headers,
                                               json={}).status_code, 404)
             self.assertEqual(self.client.get(f"/jobs/{JOB_ID}/source", headers=headers).status_code, 404)

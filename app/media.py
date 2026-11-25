@@ -149,7 +149,8 @@ def inspect_beta_media(path: Path) -> dict[str, Any]:
     dimensions = (media["width"], media["height"])
     if (duration is None or any(value is not None and value > BETA_MAX_SECONDS for value in durations)
             or any(type(value) is not int or not 1 <= value <= BETA_MAX_DIMENSION for value in dimensions)):
-        raise MediaValidationError("VIDEO_OUTSIDE_LIMITS", "El piloto admite hasta 180 segundos y 1920 px por lado.")
+        raise MediaValidationError("VIDEO_OUTSIDE_LIMITS",
+                                   f"El piloto admite hasta {BETA_MAX_SECONDS} segundos y {BETA_MAX_DIMENSION} px por lado.")
     sar = media["sample_aspect_ratio"]
     if sar is not None and sar != "N/A":
         # Match the scale filter's square-pixel normalization before allocating

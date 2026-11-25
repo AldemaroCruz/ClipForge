@@ -4,7 +4,6 @@ const BETA_JOB_ID = /^[a-f0-9]{32}$/;
 const BETA_CLIP = /^clip_[0-9]{2}\.mp4$/;
 const BETA_CHUNK_BYTES = 8 * 1024 * 1024;
 const BETA_PAGE_SIZE = 12;
-const BETA_FEEDBACK_PAGE_SIZE = 20;
 const BETA_STATUS = {
   awaiting_upload: "Carga pendiente",
   queued: "Pendiente",
@@ -13,11 +12,6 @@ const BETA_STATUS = {
   rendering: "Procesando · generando los clips",
   completed: "Completado",
   failed: "Fallido",
-};
-const BETA_CATEGORIES = {
-  error: "Error",
-  suggestion: "Sugerencia",
-  quality: "Calidad del resultado",
 };
 
 function betaUploadLocation(value) {
@@ -163,12 +157,6 @@ async function betaJson(auth, path, options) {
   return payload;
 }
 
-function betaSetFeedbackContext(context, clip, shouldFocus) {
-  context.value = clip;
-  context.dispatchEvent(new Event("change"));
-  if (shouldFocus) document.getElementById("feedback-comment").focus();
-}
-
 async function initBeta() {
   const auth = window.ClipForgeAuth;
   const element = id => document.getElementById(id);
@@ -181,7 +169,6 @@ async function initBeta() {
   const uploadSubmit = element("upload-submit");
   const uploadProgress = element("upload-progress");
   const uploadStatus = element("upload-status");
-  const feedbackContext = element("feedback-context");
 
   let limits;
   let uploadBusy = false;
@@ -193,7 +180,6 @@ async function initBeta() {
   let projects = [];
   let loadingProjects = false;
   let renderKey;
-  const canReview = user.is_admin === true && user.permissions.includes("users:manage");
 
   function renderProjects() {
     const list = element("project-list");
@@ -235,25 +221,18 @@ async function initBeta() {
     }
   }
 
-  function renderFeedbackContext(clips) {
-    const previous = feedbackContext.value;
-    const options = [new Option("Experiencia general", "")];
-    if (job) options.push(new Option("Trabajo abierto", "job"));
-    for (const clip of clips) options.push(new Option("Clip " + Number(clip.file.slice(5, 7)), clip.file));
-    feedbackContext.replaceChildren(...options);
-    betaSetFeedbackContext(feedbackContext, options.some(option => option.value === previous) ? previous : "", false);
-  }
-
   function renderJob() {
+    window.ClipForgeMvp?.selectJob(job);
     const title = projects.find(project => project.id === selectedId)?.title;
     element("job-title").textContent = title || job?.source_filename || "Revisar clips";
-    element("job-actions").hidden = !job;
     const startExisting = element("start-existing");
     startExisting.hidden = !["awaiting_upload", "queued"].includes(job?.status);
     startExisting.textContent = job?.status === "queued" ? "Intentar activar el trabajo" : "Procesar video guardado";
-    element("retry-job").hidden = job?.status !== "failed" || job.retryable !== true;
+    const retryJob = element("retry-job");
+    retryJob.hidden = job?.status !== "failed" || job.retryable !== true;
+    element("job-actions").hidden = startExisting.hidden && retryJob.hidden;
     element("job-error").textContent = job?.status === "failed"
-      ? betaSafeMessage(job.pilot === true ? job.error : null, "El procesamiento falló. Puedes enviar feedback desde aquí.")
+      ? betaSafeMessage(job.pilot === true ? job.error : null, "El procesamiento falló.")
       : "";
     const clips = job?.status === "completed" && Array.isArray(job.clips)
       ? job.clips.filter(clip => BETA_CLIP.test(clip.file)) : [];
@@ -264,7 +243,6 @@ async function initBeta() {
     const key = selectedId + ":" + Boolean(job) + ":" + clips.map(clip => clip.file).join(",");
     if (key === renderKey) return;
     renderKey = key;
-    renderFeedbackContext(clips);
     const cards = element("clip-list");
     cards.replaceChildren();
     for (const clip of clips) {
@@ -284,11 +262,7 @@ async function initBeta() {
       download.href = path;
       download.download = clip.file;
       download.setAttribute("aria-label", "Descargar " + label + " en MP4");
-      const comment = betaText("button", "Enviar feedback", "secondary");
-      comment.type = "button";
-      comment.setAttribute("aria-label", "Enviar feedback sobre " + label);
-      comment.addEventListener("click", () => betaSetFeedbackContext(feedbackContext, clip.file, true));
-      actions.append(download, comment);
+      actions.append(download);
       card.append(betaText("h3", label));
       if (Number.isFinite(clip.start) && Number.isFinite(clip.end)) {
         card.append(betaText("p", clip.start.toFixed(1) + "–" + clip.end.toFixed(1) + " s del original", "muted"));
@@ -306,7 +280,6 @@ async function initBeta() {
     const version = ++selectionVersion;
     if (id !== originalSelection) {
       job = undefined;
-      betaSetFeedbackContext(feedbackContext, "", false);
       history.replaceState(null, "", "/?job=" + id + location.hash);
       renderProjects();
       renderJob();
@@ -427,112 +400,11 @@ async function initBeta() {
   element("more-projects").addEventListener("click", () => loadProjects(true));
   element("start-existing").addEventListener("click", event => startOrRetry(event.currentTarget, id => "/beta/uploads/" + id + "/start"));
   element("retry-job").addEventListener("click", event => startOrRetry(event.currentTarget, id => "/beta/jobs/" + id + "/retry"));
-  element("feedback-job").addEventListener("click", () => betaSetFeedbackContext(feedbackContext, "job", true));
-  feedbackContext.addEventListener("change", () => {
-    const clipSelected = BETA_CLIP.test(feedbackContext.value);
-    const rating = element("clip-rating");
-    rating.disabled = !clipSelected;
-    rating.hidden = !clipSelected;
-    element("clip-useful").value = "";
-    element("clip-publishable").value = "";
-  });
-
-  function pager(path, listId, statusId, moreId, review) {
-    let offset = 0;
-    let running = false;
-    const list = element(listId);
-    const status = element(statusId);
-    const more = element(moreId);
-    async function load(append = false) {
-      if (running) return;
-      running = true;
-      more.disabled = true;
-      try {
-        const data = await json(path + "?limit=" + BETA_FEEDBACK_PAGE_SIZE + "&offset=" + (append ? offset : 0));
-        if (!append) {
-          list.replaceChildren();
-          offset = 0;
-        }
-        for (const item of data.items) {
-          const row = document.createElement("li");
-          const category = Object.hasOwn(BETA_CATEGORIES, item.category) ? BETA_CATEGORIES[item.category] : "Comentario";
-          const when = new Date(item.created_at);
-          const date = Number.isFinite(when.getTime()) ? when.toLocaleString("es") : "";
-          row.append(betaText("strong", [category, review ? item.username : "", date].filter(Boolean).join(" · ")));
-          row.append(betaText("p", item.comment, "beta-comment"));
-          const details = [];
-          if (BETA_JOB_ID.test(item.job_id)) details.push("Trabajo " + item.job_id);
-          if (BETA_CLIP.test(item.clip_file)) details.push(item.clip_file);
-          if (item.error_code) details.push("Error " + item.error_code);
-          if (typeof item.useful === "boolean") details.push(item.useful ? "Útil" : "No le resultó útil");
-          if (typeof item.publishable === "boolean") details.push(item.publishable ? "Publicable" : "No lo publicaría");
-          if (review && item.application_revision) details.push("Versión " + item.application_revision);
-          if (details.length) row.append(betaText("p", details.join(" · "), "muted"));
-          list.append(row);
-        }
-        offset += data.items.length;
-        more.hidden = data.has_more !== true;
-        status.textContent = offset ? "" : "Todavía no hay comentarios.";
-      } catch (error) {
-        status.textContent = error.message;
-      } finally {
-        running = false;
-        more.disabled = false;
-      }
-    }
-    more.addEventListener("click", () => load(true));
-    return load;
-  }
-
-  const loadFeedback = pager("/beta/feedback", "feedback-history", "feedback-history-status", "more-feedback", false);
-  const loadAdmin = canReview
-    ? pager("/beta/admin/feedback", "admin-feedback-list", "admin-feedback-status", "more-admin-feedback", true)
-    : null;
-  if (loadAdmin) {
-    element("admin-feedback").hidden = false;
-    element("refresh-admin-feedback").addEventListener("click", () => loadAdmin());
-    void loadAdmin();
-  }
-
-  element("feedback-form").addEventListener("submit", async event => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const button = form.querySelector("button[type=submit]");
-    const status = element("feedback-status");
-    if (button.disabled) return;
-    button.disabled = true;
-    status.textContent = "";
-    try {
-      const payload = { category: element("feedback-category").value, comment: element("feedback-comment").value.trim() };
-      if (!payload.comment) throw new Error("Escribe un comentario.");
-      const context = feedbackContext.value;
-      if (context && job) payload.job_id = job.id;
-      if (payload.job_id && BETA_CLIP.test(context)) {
-        payload.clip_file = context;
-        for (const field of ["useful", "publishable"]) {
-          const value = element("clip-" + field).value;
-          if (value) payload[field] = value === "yes";
-        }
-      }
-      await json("/beta/feedback", auth.payload(payload));
-      form.reset();
-      betaSetFeedbackContext(feedbackContext, "", false);
-      status.textContent = "Recibimos tu feedback. Gracias por ayudarnos a mejorar.";
-      await loadFeedback();
-      if (loadAdmin) await loadAdmin();
-    } catch (error) {
-      status.textContent = error.message;
-    } finally {
-      button.disabled = false;
-    }
-  });
-
   workspace.hidden = false;
   const current = new URLSearchParams(location.search).get("job");
   void loadProjects().then(() => {
     if (BETA_JOB_ID.test(current) && !selectedId) void openJob(current);
   });
-  void loadFeedback();
   try {
     limits = await json("/beta/limits");
     if (!betaLimitsAreValid(limits)) throw new Error("No se pudieron confirmar los límites de carga.");

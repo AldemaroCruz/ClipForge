@@ -48,6 +48,7 @@ jobs:
           python -m pip install --no-deps --only-binary=:all: --require-hashes -r requirements-ci-tools.lock
           command -v google-chrome
           node --check app/static/beta.js
+          node --check app/static/mvp.js
           node --check app/static/auth.js
           node --check app/static/account.js
           node --check app/static/recover.js

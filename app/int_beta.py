@@ -10,7 +10,6 @@ from sqlalchemy.exc import SQLAlchemyError
 from .auth import AuthenticationBoundary, require_access, router as auth_router, settings
 from .auth_db import AuthConfigurationError, database_ready, get_engine
 from .cloud.config import beta_enabled, settings as cloud_settings
-from .cloud.feedback import router as feedback_router
 from .cloud.migrate import REVISION
 from .cloud.migrate_beta import beta_schema_ready
 from .cloud.pilot import router as pilot_router
@@ -57,14 +56,18 @@ app = FastAPI(title="ClipForge INT beta API", lifespan=lifespan, docs_url=None, 
 app.add_middleware(AuthenticationBoundary)
 app.add_middleware(TrustedPublicOrigin)
 app.include_router(auth_router, dependencies=[Depends(require_access)])
-media_reads = APIRouter(routes=[
+media_gets = {
+    "/projects", "/jobs/{job_id}", "/jobs/{job_id}/clips/{filename}", "/jobs/{job_id}/source",
+    "/jobs/{job_id}/workspace", "/jobs/{job_id}/exports", "/jobs/{job_id}/exports/{export_id}/files/{filename}",
+}
+media_posts = {"/jobs/{job_id}/editor/range", "/jobs/{job_id}/editor/exports"}
+media_routes = APIRouter(routes=[
     route for route in media_router.routes
-    if route.methods == {"GET"}
-    and route.path in {"/projects", "/jobs/{job_id}", "/jobs/{job_id}/clips/{filename}"}
+    if ((route.methods == {"GET"} and route.path in media_gets)
+        or (route.methods == {"POST"} and route.path in media_posts))
 ])
-app.include_router(media_reads, dependencies=[Depends(require_access)])
+app.include_router(media_routes, dependencies=[Depends(require_access)])
 app.include_router(pilot_router, dependencies=[Depends(require_access)])
-app.include_router(feedback_router, dependencies=[Depends(require_access)])
 
 
 @app.get("/", dependencies=[Depends(require_access)])

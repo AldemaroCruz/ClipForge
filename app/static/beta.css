@@ -101,43 +101,8 @@
 .beta-clip .actions {
   margin-top: 12px;
 }
-.beta-feedback {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
-  gap: 20px;
-}
-.beta textarea {
-  box-sizing: border-box;
-  width: 100%;
-  min-height: 125px;
-  padding: 11px 12px;
-  border: 1px solid #49607f;
-  border-radius: 8px;
-  background: #0f192b;
-  color: inherit;
-  font: inherit;
-  resize: vertical;
-}
-.beta textarea:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
-}
-.beta fieldset {
-  min-width: 0;
-  margin: 16px 0 0;
-  padding: 0 12px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-}
-.beta-comments p.beta-comment {
-  white-space: pre-wrap;
-  margin-block: .5rem;
-}
-.beta-comments code {
-  overflow-wrap: anywhere;
-}
 @media (max-width: 760px) {
-  .beta-layout, .beta-feedback {
+  .beta-layout {
     grid-template-columns: 1fr;
     gap: 0;
   }

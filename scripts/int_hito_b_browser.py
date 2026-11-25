@@ -33,7 +33,6 @@ ID = re.compile(r"[0-9a-f]{32}")
 CLIP = re.compile(r"clip_[0-9]{2}[.]mp4")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 ACCOUNT = re.compile(r"qa_beta_[0-9a-f]{20}")
-COMMENT = re.compile(r"Prueba piloto [0-9a-f]{20}")
 CHUNK_BYTES = 8 * 1024 * 1024
 MAX_CLIP_BYTES = 200 * 1024 * 1024
 TIMEOUT = 30_000
@@ -162,10 +161,8 @@ def deactivate_accounts(page, accounts):
 
 
 def check_normal_permissions(page, report):
-    require(page.locator("#admin-feedback").is_hidden(), "admin_feedback_present_for_normal_user")
-    for path in ("/auth/users", "/beta/admin/feedback"):
-        require(browser_get(page, path)["status"] == 403, "normal_has_administration_access")
-    unsigned = browser_post(page, "/beta/feedback", {"category": "suggestion", "comment": "CSRF check"}, csrf=False)
+    require(browser_get(page, "/auth/users")["status"] == 403, "normal_has_administration_access")
+    unsigned = browser_post(page, "/beta/uploads", {"filename": "csrf.mp4", "bytes": 1024}, csrf=False)
     require(unsigned["status"] == 403, "csrf_missing_accepted")
     page.get_by_role("link", name=re.compile("^Mi cuenta")).click()
     page.wait_for_function("() => document.querySelector('#account-role')?.textContent === 'Usuario'")
@@ -173,6 +170,15 @@ def check_normal_permissions(page, report):
     page.goto(PUBLIC + "/", wait_until="domcontentloaded")
     page.locator("#upload-video").wait_for()
     check(report, "normal_user_role_and_csrf")
+
+
+def check_feedback_removed(page, report):
+    require(page.locator("#feedback-form, #admin-feedback, #feedback-history").count() == 0,
+            "feedback_controls_still_present")
+    for path in ("/beta/feedback", "/beta/admin/feedback"):
+        require(browser_get(page, path)["status"] == 404, "feedback_read_route_still_present")
+    require(browser_post(page, "/beta/feedback", {})["status"] == 404, "feedback_write_route_still_present")
+    check(report, "feedback_controls_and_routes_removed")
 
 
 def upload_video(page, path, report, transfer):
@@ -185,7 +191,7 @@ def upload_video(page, path, report, transfer):
     require(limits["selection_mode"] == "heuristic_voice" and limits["worker_concurrency"] == 1
             and limits["active_jobs_per_user"] == 1 and
             limits["formats"] == ["MP4 (H.264 + AAC)"] and limits["max_bytes"] == 100 * 1024 * 1024
-            and limits["min_duration_seconds"] == 20 and limits["max_duration_seconds"] == 180
+            and limits["min_duration_seconds"] == 20 and limits["max_duration_seconds"] == 600
             and limits["max_dimension"] == 1920, "pilot_limits_unexpected")
     report["limits"] = {key: limits[key] for key in (
         "selection_mode", "worker_concurrency", "active_jobs_per_user", "formats", "max_bytes",
@@ -317,26 +323,38 @@ def open_saved_job(page, job_id):
     return observed
 
 
-def feedback(page, marker, first_clip):
-    label = "Clip " + str(int(first_clip[5:7]))
-    page.get_by_role("button", name="Enviar feedback sobre " + label).click()
-    require(page.locator("#feedback-context").input_value() == first_clip, "clip_feedback_context_missing")
-    page.locator("#feedback-category").select_option("quality")
-    page.locator("#clip-useful").select_option("yes")
-    page.locator("#clip-publishable").select_option("no")
-    page.locator("#feedback-comment").fill(marker)
-    page.locator("#feedback-form button[type=submit]").click()
-    page.wait_for_function("() => document.querySelector('#feedback-status').textContent.includes('Recibimos tu feedback')")
-    feedback_visible(page, marker, first_clip)
-
-
-def feedback_visible(page, marker, clip, username=None):
-    selector = "#admin-feedback-list" if username else "#feedback-history"
-    row = page.locator(selector + " li").filter(has_text=marker)
-    row.wait_for()
-    details = row.inner_text()
-    require(all(value in details for value in ("Calidad del resultado", clip, "Útil", "No lo publicaría"))
-            and (username is None or username in details), "feedback_context_not_preserved")
+def check_manual_export(page, job_id, scratch, report):
+    panel = page.get_by_text("Elegir fragmento del original", exact=True)
+    panel.click()
+    original = page.locator("#mvp-source")
+    original.wait_for()
+    page.wait_for_function("() => document.querySelector('#mvp-source').videoWidth > 0")
+    page.locator("#mvp-start").fill("5")
+    page.locator("#mvp-end").fill("25")
+    path = f"/jobs/{job_id}/editor/exports"
+    with page.expect_response(lambda item: item.url == PUBLIC + path
+                              and item.request.method == "POST") as response:
+        page.get_by_role("button", name="Generar clip manual").click()
+    result = response.value
+    require(result.status == 202, "manual_export_rejected")
+    item = result.json()
+    require(ID.fullmatch(item["id"]) and item["start"] == 5 and item["end"] == 25, "manual_export_range")
+    link = page.get_by_role("link", name="Descargar clip manual", exact=True)
+    link.wait_for(timeout=480_000)
+    replay = browser_post(page, path, {"start": 5, "end": 25},
+                          result.request.headers["idempotency-key"])
+    require(replay["status"] == 202 and replay["id"] == item["id"], "manual_export_duplicated")
+    with page.expect_download(timeout=60_000) as download:
+        link.click()
+    with tempfile.TemporaryDirectory(prefix="beta-manual-", dir=scratch) as directory:
+        filename = Path(directory) / "manual.mp4"
+        download.value.save_as(filename)
+        media = probe_media(filename, pilot=True)
+        require(media["video_codec"] == "h264" and media["audio_codec"] == "aac"
+                and 19.8 <= media["duration_seconds"] <= 20.2, "manual_export_media")
+        report["manual_clip_seconds"] = media["duration_seconds"]
+    download.value.delete()
+    check(report, "original_preview_manual_range_and_idempotent_export")
 
 
 def verify_isolation(browser, account, commit, job_id, clip, report):
@@ -345,23 +363,21 @@ def verify_isolation(browser, account, commit, job_id, clip, report):
         own_projects = browser_get(page, "/projects")
         require(own_projects["status"] == 200 and not own_projects["body"]["projects"],
                 "other_user_projects_visible")
-        for path in ("/jobs/" + job_id, f"/jobs/{job_id}/clips/{clip}", f"/jobs/{job_id}/clips/{clip}?inline=true"):
+        for path in ("/jobs/" + job_id, f"/jobs/{job_id}/source", f"/jobs/{job_id}/clips/{clip}",
+                     f"/jobs/{job_id}/clips/{clip}?inline=true", f"/jobs/{job_id}/exports"):
             require(browser_get(page, path)["status"] in {403, 404}, "other_user_content_visible")
-        forged = browser_post(page, "/beta/feedback", {"category": "quality", "comment": "Isolation check",
-                                                        "job_id": job_id, "clip_file": clip})
-        require(forged["status"] in {403, 404}, "other_user_feedback_association_allowed")
         logout(page)
-    check(report, "second_user_job_playback_download_and_feedback_denied")
+    check(report, "second_user_job_original_clip_and_exports_denied")
 
 
 def prepare(browser, args, admin, report, revisions):
     accounts = [{"username": "qa_beta_" + secrets.token_hex(10),
                  "password": secrets.token_urlsafe(36)} for _ in range(2)]
-    marker = "Prueba piloto " + secrets.token_hex(10)
     report["step"] = "creator_accounts"
     with browser_page(browser) as page:
         report["step"] = "administrator_sign_in"
         login(page, admin, args.commit)
+        check_feedback_removed(page, report)
         page.goto(PUBLIC + "/account", wait_until="domcontentloaded")
         for index, account in enumerate(accounts, start=1):
             report["step"] = "creator_account_create_" + str(index)
@@ -374,6 +390,7 @@ def prepare(browser, args, admin, report, revisions):
         report["step"] = "creator_permissions"
         login(page, accounts[0], args.commit)
         check_normal_permissions(page, report)
+        check_feedback_removed(page, report)
         job = upload_video(page, args.video, report, transfer)
         job = open_saved_job(page, job["id"])
         report["step"] = "browser_playback_and_download"
@@ -381,21 +398,14 @@ def prepare(browser, args, admin, report, revisions):
         report["clips"] = observed
         check(report, "browser_video_and_download_mp4_audio_video")
         first = next(iter(observed))
-        report["step"] = "creator_feedback"
-        feedback(page, marker, first)
+        report["step"] = "manual_export"
+        check_manual_export(page, job["id"], args.state.parent, report)
         logout(page)
-    check(report, "clip_feedback_confirmed")
     report["step"] = "isolation"
     verify_isolation(browser, accounts[1], args.commit, job["id"], first, report)
-    with browser_page(browser) as page:
-        report["step"] = "admin_feedback"
-        login(page, admin, args.commit)
-        feedback_visible(page, marker, first, accounts[0]["username"])
-        logout(page)
-    check(report, "admin_feedback_context_visible")
     shared_http.write_new(args.state, {"schema": SCHEMA, "origin": PUBLIC, "commit": args.commit,
                                       "revisions": revisions, "accounts": accounts, "job": job["id"],
-                                      "clips": observed, "feedback_clip": first, "marker": marker})
+                                      "clips": observed})
 
 
 def load_state(args, revisions):
@@ -403,22 +413,21 @@ def load_state(args, revisions):
     require(state["schema"] == SCHEMA and state["origin"] == PUBLIC and state["commit"] == args.commit
             and set(state["revisions"]) == {"frontend", "api"} and
             all(state["revisions"][name] != revisions[name] for name in revisions)
-            and ID.fullmatch(state["job"]) and COMMENT.fullmatch(state["marker"]), "replacement_state_identity")
+            and ID.fullmatch(state["job"]), "replacement_state_identity")
     cloud_revisions(**state["revisions"])
     accounts = state["accounts"]
     require(len(accounts) == 2 and all(
         ACCOUNT.fullmatch(account["username"]) and 32 <= len(account["password"]) <= 128 for account in accounts
     ) and accounts[0]["username"] != accounts[1]["username"], "replacement_state_accounts")
     require(1 <= len(state["clips"]) <= 10 and all(CLIP.fullmatch(name) and SHA256.fullmatch(clip["sha256"])
-            for name, clip in state["clips"].items())
-            and state["feedback_clip"] in state["clips"], "replacement_state_clips")
+            for name, clip in state["clips"].items()), "replacement_state_clips")
     return state
 
 
 def verify(browser, args, admin, report, revisions):
     state = load_state(args, revisions)
     creator, other = state["accounts"]
-    first = state["feedback_clip"]
+    first = next(iter(state["clips"]))
     report["step"] = "creator_persistence"
     with browser_page(browser) as page:
         login(page, creator, args.commit)
@@ -426,19 +435,18 @@ def verify(browser, args, admin, report, revisions):
         observed = results(page, job, args.state.parent)
         require(observed == state["clips"], "clip_bytes_changed_after_replacement")
         report["clips"] = observed
-        feedback_visible(page, state["marker"], first)
+        check_feedback_removed(page, report)
         logout(page)
-    check(report, "saved_job_identical_clip_bytes_and_feedback_after_replacement")
+    check(report, "saved_job_and_identical_clip_bytes_after_replacement")
     report["step"] = "isolation"
     verify_isolation(browser, other, args.commit, state["job"], first, report)
     with browser_page(browser) as page:
-        report["step"] = "admin_feedback_persistence"
         login(page, admin, args.commit)
-        feedback_visible(page, state["marker"], first, creator["username"])
+        check_feedback_removed(page, report)
         report["step"] = "synthetic_account_deactivation"
         deactivate_accounts(page, state["accounts"])
         logout(page)
-    check(report, "admin_feedback_persistent_and_synthetic_accounts_deactivated")
+    check(report, "synthetic_accounts_deactivated")
     report["replaced"] = state["revisions"]
 
 

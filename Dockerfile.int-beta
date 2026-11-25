@@ -54,7 +54,7 @@ COPY app/__init__.py app/auth.py app/auth_db.py app/auth_models.py app/auth_migr
 COPY app/cloud/ /app/app/cloud/
 COPY app/static/account.css app/static/account.html app/static/account.js app/static/auth.js \
      app/static/login.html app/static/recover.html app/static/recover.js \
-     app/static/beta.html app/static/beta.css app/static/beta.js /app/app/static/
+     app/static/beta.html app/static/beta.css app/static/beta.js app/static/mvp.css app/static/mvp.js /app/app/static/
 RUN find /app -xdev -type d -exec chmod 0555 {} + && find /app -xdev -type f -exec chmod 0444 {} +
 USER 10001:10001
 RUN --network=none python -c 'import app.int_beta, app.int_beta_proxy, psycopg; assert psycopg.pq.__impl__ == "python"'

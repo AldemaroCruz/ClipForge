@@ -16,6 +16,7 @@ ORIGIN = "http://127.0.0.1:48129"
 GCS = "https://storage.googleapis.com/clipforge-fixture/session"
 JOB = "a" * 32
 CLIP = "clip_01.mp4"
+EXPORT = "c" * 32
 CHUNK = 8 * 1024 * 1024
 MAX_SIZE = 2 * CHUNK
 CSP = "default-src 'self'; connect-src 'self' https://storage.googleapis.com; media-src 'self'"
@@ -32,7 +33,8 @@ class BrowserHitoBTest(unittest.TestCase):
 
     def setUp(self):
         self.state = {"admin": False, "status": None, "reservations": [], "starts": [],
-                      "puts": [], "feedback": [], "admin_reads": 0, "unexpected": [], "hide_range": False}
+                      "puts": [], "unexpected": [], "hide_range": False,
+                      "manual": None, "manual_keys": []}
         self.context = self.browser.new_context(service_workers="block")
         self.addCleanup(self.context.close)
         self.context.route("**/*", self.handle)
@@ -51,6 +53,7 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertEqual(ORIGIN, f"{parsed.scheme}://{parsed.netloc}")
         path = parsed.path
         assets = {"beta.js": "text/javascript", "auth.js": "text/javascript",
+                  "mvp.js": "text/javascript", "mvp.css": "text/css",
                   "beta.css": "text/css", "account.css": "text/css"}
         if path == "/":
             route.fulfill(status=200, content_type="text/html", headers={"Content-Security-Policy": CSP},
@@ -60,7 +63,7 @@ class BrowserHitoBTest(unittest.TestCase):
         if path.startswith("/static/") and asset in assets:
             route.fulfill(status=200, content_type=assets[asset], body=(STATIC / asset).read_bytes())
             return
-        if path.endswith("/clips/" + CLIP):
+        if path in {f"/jobs/{JOB}/clips/{CLIP}", f"/jobs/{JOB}/source"}:
             route.fulfill(status=503, content_type="video/mp4")
             return
         data, status = self.api(path, request)
@@ -114,17 +117,20 @@ class BrowserHitoBTest(unittest.TestCase):
         if path == "/jobs/" + JOB:
             state = self.state["status"]
             return {"id": JOB, "status": state, "pilot": True,
+                    "media": {"duration_seconds": 426.55},
                     "clips": [{"file": CLIP, "start": 0, "end": 22}] if state == "completed" else []}, 200
-        if path == "/beta/feedback":
-            if method == "GET":
-                return {"items": self.state["feedback"], "has_more": False}, 200
-            data = dict(request.post_data_json, created_at="2026-11-24T18:30:00Z")
-            self.state["feedback"].insert(0, data)
-            return {"item": data}, 201
-        if path == "/beta/admin/feedback":
-            self.state["admin_reads"] += 1
-            return {"items": [dict(item, username="creador_fixture", application_revision="b" * 40)
-                              for item in self.state["feedback"]], "has_more": False}, 200
+        if path == f"/jobs/{JOB}/workspace":
+            return {"source_duration": 426.55}, 200
+        if path == f"/jobs/{JOB}/editor/range" and method == "POST":
+            return request.post_data_json, 200
+        if path == f"/jobs/{JOB}/editor/exports" and method == "POST":
+            self.state["manual_keys"].append(request.headers.get("idempotency-key"))
+            if self.state["manual"] is None:
+                self.state["manual"] = {"id": EXPORT, "clip_file": "manual.mp4", "status": "queued",
+                                        **request.post_data_json}
+            return self.state["manual"], 202
+        if path == f"/jobs/{JOB}/exports":
+            return {"exports": [self.state["manual"]] if self.state["manual"] else []}, 200
         self.state["unexpected"].append(path)
         return {}, 404
 
@@ -132,16 +138,10 @@ class BrowserHitoBTest(unittest.TestCase):
         self.page.wait_for_function("""([selector, contains]) =>
             document.querySelector(selector).textContent.includes(contains)""", arg=[selector, contains])
 
-    def send_feedback(self, text):
-        self.page.locator("#feedback-comment").fill(text)
-        self.page.locator("#feedback-form button[type=submit]").click()
-        self.until_text("#feedback-status", "Recibimos tu feedback")
-
-    def test_creator_resumable_upload_context_reactivation_and_reload(self):
+    def test_creator_resumable_upload_reactivation_and_reload(self):
         self.page.goto(ORIGIN + "/")
         self.until_text("#upload-limits", "16 MiB")
-        self.assertTrue(self.page.locator("#admin-feedback").is_hidden())
-        self.assertEqual(0, self.state["admin_reads"])
+        self.assertEqual(0, self.page.locator("#feedback, #admin-feedback").count())
         field = self.page.locator("#upload-video")
         field.evaluate("""(input, maximum) => {
             const transfer = new DataTransfer();
@@ -170,27 +170,14 @@ class BrowserHitoBTest(unittest.TestCase):
         self.page.locator("#start-existing").click()
         self.until_text("#job-status", "volver a intentar")
         self.assertEqual([f"/beta/uploads/{JOB}/start"] * 2, self.state["starts"])
-        self.page.locator("#feedback-job").click()
-        self.assertEqual("job", self.page.locator("#feedback-context").input_value())
-        self.send_feedback("Estado del trabajo")
-        self.assertEqual(JOB, self.state["feedback"][0]["job_id"])
-
         self.state["status"] = "completed"
         self.page.reload()
         self.until_text("#job-status", "Completado")
-        self.assertEqual(f"/jobs/{JOB}/clips/{CLIP}?inline=true", self.page.locator("video").get_attribute("src"))
+        self.assertEqual(f"/jobs/{JOB}/clips/{CLIP}?inline=true", self.page.locator("#clip-list video").get_attribute("src"))
         download = self.page.get_by_role("link", name="Descargar Clip 1 en MP4")
         self.assertEqual(f"/jobs/{JOB}/clips/{CLIP}", download.get_attribute("href"))
-        self.page.get_by_role("button", name="Enviar feedback sobre Clip 1").click()
-        self.page.locator("#feedback-category").select_option("quality")
-        self.page.locator("#clip-useful").select_option("yes")
-        self.page.locator("#clip-publishable").select_option("no")
-        self.send_feedback("<em>Comentario de prueba</em>")
-        self.until_text("#feedback-history", "<em>Comentario de prueba</em>")
-        self.assertEqual(0, self.page.locator("#feedback-history em").count())
-        passed = self.state["feedback"][0]
-        self.assertEqual((JOB, CLIP, True, False), tuple(passed[key] for key in
-                         ("job_id", "clip_file", "useful", "publishable")))
+        self.assertEqual(0, self.page.locator("#feedback, #feedback-job, #admin-feedback").count())
+        self.assertTrue(self.page.locator("#job-actions").is_hidden())
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])
 
@@ -211,17 +198,37 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])
 
-    def test_admin_feedback_presents_context(self):
+
+    def test_admin_workspace_has_no_feedback_controls_or_requests(self):
         self.state["admin"] = True
-        self.state["feedback"] = [{"category": "quality", "comment": "Comentario privado de prueba",
-                                   "job_id": JOB, "clip_file": CLIP, "useful": False, "publishable": True,
-                                   "created_at": "2026-11-24T18:30:00Z"}]
         self.page.goto(ORIGIN + "/")
-        self.until_text("#admin-feedback-list", "creador_fixture")
-        self.assertTrue(self.page.locator("#admin-feedback").is_visible())
-        self.assertEqual(1, self.state["admin_reads"])
-        self.assertIn(JOB, self.page.locator("#admin-feedback-list").inner_text())
-        self.assertIn(CLIP, self.page.locator("#admin-feedback-list").inner_text())
+        self.until_text("#upload-limits", "16 MiB")
+        self.assertTrue(self.page.get_by_role("link", name="Mi cuenta fixture").is_visible())
+        self.assertEqual(0, self.page.locator("#feedback, #admin-feedback, [href='#feedback']").count())
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
+    def test_validated_failed_original_can_generate_and_reopen_a_manual_clip(self):
+        self.state["status"] = "failed"
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        self.page.get_by_text("Elegir fragmento del original").click()
+        self.page.wait_for_function("() => !document.querySelector('#mvp-start').disabled")
+        self.assertEqual(f"/jobs/{JOB}/source", self.page.locator("#mvp-source").get_attribute("src"))
+        self.page.locator("#mvp-start").fill("392")
+        self.page.locator("#mvp-end").fill("421.5")
+        submit = self.page.get_by_role("button", name="Generar clip manual")
+        submit.click()
+        self.until_text("#mvp-results", "Clip en cola")
+        submit.click()
+        self.page.wait_for_function("() => !document.querySelector('#mvp-export').disabled")
+        self.assertEqual(["manual-" + JOB + "-392000-421500"] * 2, self.state["manual_keys"])
+        self.state["manual"]["status"] = "completed"
+        download = self.page.get_by_role("link", name="Descargar clip manual")
+        download.wait_for()
+        self.assertEqual(f"/jobs/{JOB}/exports/{EXPORT}/files/clip.mp4", download.get_attribute("href"))
+        self.page.reload()
+        self.page.get_by_text("Elegir fragmento del original").click()
+        download.wait_for()
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])
 

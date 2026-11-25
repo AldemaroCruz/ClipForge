@@ -22,23 +22,25 @@ METADATA_IDENTITY = (
 )
 REQUEST_SIZE = 32 * 1024
 ASSETS = frozenset({
-    "account.css", "account.js", "auth.js", "recover.js", "beta.css", "beta.js",
+    "account.css", "account.js", "auth.js", "recover.js", "beta.css", "beta.js", "mvp.css", "mvp.js",
 })
 STATIC = Path(__file__).with_name("static")
 JOB = r"[a-f0-9]{32}"
 CLIP = r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.mp4"
-CLIP_ROUTE = rf"/jobs/{JOB}/clips/{CLIP}"
+EXPORT_FILE = r"clip\.(?:mp4|srt|vtt)"
+MEDIA_ROUTE = rf"/jobs/{JOB}/(?:clips/{CLIP}|source|exports/{JOB}/files/clip\.mp4)"
 ROUTES = {
     "GET": (
         r"/(?:|login|recover|account|health|environment)",
         r"/auth/(?:csrf|me|users|admin/audit)",
-        rf"/projects|/jobs/{JOB}(?:/clips/{CLIP})?",
-        r"/beta/(?:limits|feedback|admin/feedback)",
+        rf"/projects|/jobs/{JOB}(?:/clips/{CLIP}|/source|/workspace|/exports|/exports/{JOB}/files/{EXPORT_FILE})?",
+        r"/beta/limits",
     ),
     "POST": (
         r"/auth/(?:login|logout|password|recover|users)",
         rf"/auth/(?:users/{JOB}/deactivate|admin/users/{JOB}/recovery)",
-        rf"/beta/(?:feedback|uploads|uploads/{JOB}/start|jobs/{JOB}/retry)",
+        rf"/beta/(?:uploads|uploads/{JOB}/start|jobs/{JOB}/retry)",
+        rf"/jobs/{JOB}/editor/(?:range|exports)",
     ),
 }
 INBOUND = {
@@ -105,7 +107,7 @@ def upstream(request, path, body):
     # Host, Authorization and forwarded headers supplied by the browser are
     # never propagated. Cloud Run checks this credentials header before ASGI.
     headers = {name: request.headers[name] for name in INBOUND if name in request.headers}
-    if request.method in READ_METHODS and re.fullmatch(CLIP_ROUTE, path) and "range" in request.headers:
+    if request.method in READ_METHODS and re.fullmatch(MEDIA_ROUTE, path) and "range" in request.headers:
         headers["range"] = request.headers["range"]
     headers.update({
         "X-Serverless-Authorization": "Bearer " + identity.token(),
@@ -179,7 +181,7 @@ async def forward(request: Request, path: str):
     path = "/" + path
     if not allowed(request.method, path):
         raise HTTPException(404, "Recurso no disponible.")
-    if request.method in READ_METHODS and re.fullmatch(CLIP_ROUTE, path):
+    if request.method in READ_METHODS and re.fullmatch(MEDIA_ROUTE, path):
         ranges = request.headers.getlist("range")
         if ranges and (len(ranges) != 1 or not re.fullmatch(r"bytes=(?:[0-9]{1,19}-[0-9]{0,19}|-[1-9][0-9]{0,18})", ranges[0])):
             raise HTTPException(416, "Rango de reproducción no válido.")

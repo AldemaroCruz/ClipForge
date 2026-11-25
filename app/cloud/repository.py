@@ -106,7 +106,8 @@ def admit_beta(c, owner, current_job=""):
     active, own = c.execute(text("""
         SELECT count(*), count(*) FILTER (WHERE p.owner_id=:o)
         FROM cloud_documents d JOIN auth_projects p ON p.id=d.job_id
-        WHERE d.kind='job' AND d.job_id<>:j AND (
+        WHERE d.kind IN ('job','export') AND d.payload->'pilot'=CAST('true' AS jsonb)
+          AND d.job_id<>:j AND (
             d.payload->>'status' IN ('queued','validating','transcribing','rendering')
             OR (d.payload->>'status'='awaiting_upload' AND
                 CASE WHEN jsonb_typeof(d.payload->'upload_expires_at')='number'
@@ -145,18 +146,26 @@ def beta_document(c, principal, job_id):
     return doc
 
 
-def retry_beta(c, job_id, item):
+def retry_beta(c, job_id, item, *, expected_error=None):
     """Reuse the unique task on the original generation and issue a new fence."""
     task = c.execute(text("""
-        SELECT id,status,cleaned_at FROM cloud_tasks
-        WHERE job_id=:j AND kind='process' AND item_id=:j FOR UPDATE
+        SELECT t.id,t.status,t.cleaned_at,t.fence,t.updated_at,o.attempts
+        FROM cloud_tasks t LEFT JOIN cloud_outbox o ON o.task_id=t.id
+        WHERE t.job_id=:j AND t.kind='process' AND t.item_id=:j FOR UPDATE OF t
         """), {"j": job_id}).mappings().first()
     if task is None or task["status"] != "failed" or task["cleaned_at"] is None:
         raise HTTPException(409, "La tarea anterior aún se está conciliando. Intenta de nuevo en unos segundos.")
-    if item.get("error_code") not in BETA_RETRYABLE or item.get("retry_count", 0) >= BETA_RETRIES:
+    code = item.get("error_code")
+    eligible = code == expected_error if expected_error is not None else code in BETA_RETRYABLE
+    if not eligible or item.get("retry_count", 0) >= BETA_RETRIES:
         raise HTTPException(409, "Este trabajo no se puede reintentar. Puedes subir otro video.")
+    item.setdefault("attempt_history", []).append({
+        "error_code": public_beta_error_code(code), "fence": task["fence"],
+        "finished_at": task["updated_at"].isoformat(), "dispatches": task["attempts"],
+    })
     item.update(status="queued", retryable=False, clips=[], retry_count=item.get("retry_count", 0) + 1)
-    for key in ("error", "error_code", "media", "language", "dispatch_status"):
+    for key in ("error", "error_code", "media", "language", "dispatch_status",
+                "analysis_seconds", "speech_until_seconds"):
         item.pop(key, None)
     update_document(c, job_id, "job", item)
     c.execute(text("""

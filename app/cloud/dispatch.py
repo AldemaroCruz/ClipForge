@@ -24,8 +24,9 @@ def reconcile():
         pending = c.execute(text("""
             SELECT o.task_id FROM cloud_outbox o JOIN cloud_tasks t ON t.id=o.task_id
             LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
+            LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind='process')
+              AND (NOT :beta OR t.kind='process' OR e.payload->'pilot'=CAST('true' AS jsonb))
               AND ((t.status='queued' AND
                   (o.dispatched_at IS NULL OR o.dispatched_at<clock_timestamp()-interval '5 minutes'))
                 OR (t.status='running' AND t.lease_until<=clock_timestamp() AND
