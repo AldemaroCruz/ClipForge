@@ -22,4 +22,4 @@ python3.12	3.12.3-1ubuntu0.17	amd64	6745c9463432e619d7402b117ad4ac86c31dcd3999ba
 python3.12-minimal	3.12.3-1ubuntu0.17	amd64	d452689b9660845345a4c3e05e4ad82c082d5474e04031b7aa47f1a6d5610a6e	https://archive.ubuntu.com/ubuntu/pool/main/p/python3.12/python3.12-minimal_3.12.3-1ubuntu0.17_amd64.deb
 python3.12-venv	3.12.3-1ubuntu0.17	amd64	b8d4bfea3df63945b6a202bd0773caf7727dde86d2df91df6e88a8ccf7c18b7e	https://archive.ubuntu.com/ubuntu/pool/universe/p/python3.12/python3.12-venv_3.12.3-1ubuntu0.17_amd64.deb
 readline-common	8.2-4build1	all	879bfd7f8a9bc4c0f7cdc777cdd8bc6de5f8c4a2ac80c060322a1b22f13504bb	https://archive.ubuntu.com/ubuntu/pool/main/r/readline/readline-common_8.2-4build1_all.deb
-tzdata	2026e-0ubuntu0.24.04.1	all	2f6794a7f31753fc947d9ac02ff03ea46510f34864f9d132a93d7b105e3c4447	https://archive.ubuntu.com/ubuntu/pool/main/t/tzdata/tzdata_2026e-0ubuntu0.24.04.1_all.deb
+tzdata	2026f-0ubuntu0.24.04.1	all	9e6592d18ebbe2ac04f931089bb1d01836fc9702eb2514e3ad4a65eac5b50ca3	https://archive.ubuntu.com/ubuntu/pool/main/t/tzdata/tzdata_2026f-0ubuntu0.24.04.1_all.deb
