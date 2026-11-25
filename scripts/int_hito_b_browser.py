@@ -375,7 +375,7 @@ def click_response(page, control, path, method, status):
 def open_editorial(page):
     panel = page.locator("#editorial-details")
     if panel.get_attribute("open") is None:
-        panel.locator("summary").click()
+        page.locator("#editorial-heading").click()
 
 
 def start_selection(page, job, model, *, brief=EDITORIAL_BRIEF):
