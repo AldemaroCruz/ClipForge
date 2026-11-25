@@ -487,7 +487,8 @@ def prepare_clip_styles(page, job, original, scratch, report):
                               and item.request.method == "PUT") as all_saved:
         page.locator("#clip-caption-apply-all").click()
     require(all_saved.value.ok and confirmations and "reemplazará" in confirmations[0], "project_style_confirmation")
-    project = all_saved.value.json()
+    saved_project = all_saved.value.json()
+    project = {key: saved_project[key] for key in ("style", "revision")}
     initial[file] = edited["output"]["id"]
     after = {name: caption_output(page, job_id, name, previous) for name, previous in initial.items()}
     require(all(item["style"] == project["style"] for item in after.values())
@@ -499,7 +500,13 @@ def prepare_clip_styles(page, job, original, scratch, report):
             and latest["sidecars"] == single["sidecars"], "project_style_not_reflected_in_mp4")
     report["caption_customization"] = {"individual": single, "project": latest, "updated_clips": len(after)}
     check(report, "project_caption_style_applied_to_all_with_individual_timing_preserved")
-    return {"file": file, "project": project, "clips": after, "receipt": latest}
+    return {"file": file, "project": project,
+            "clips": {name: caption_state_digest(item) for name, item in after.items()}, "receipt": latest}
+
+
+def caption_state_digest(item):
+    persisted = {key: item.get(key) for key in ("style", "cues", "start", "end", "revision", "status", "output")}
+    return shared_http.digest(shared_http.canonical(persisted))
 
 
 def verify_clip_styles(page, job, saved, original, scratch, report):
@@ -507,9 +514,7 @@ def verify_clip_styles(page, job, saved, original, scratch, report):
     job_id = job["id"]
     states = {name: read_caption(page, job_id, name) for name in saved["clips"]}
     for name, item in states.items():
-        require(all(item.get(key) == saved["clips"][name].get(key) for key in
-                    ("style", "cues", "start", "end", "revision", "status", "output")),
-                "clip_caption_state_lost_after_replacement")
+        require(caption_state_digest(item) == saved["clips"][name], "clip_caption_state_lost_after_replacement")
     file = saved["file"]
     observed = read_caption_variant(page, job_id, file, states[file], scratch, check_pixels=False)
     expected = {key: value for key, value in saved["receipt"].items() if key != "burned_pixels"}
@@ -921,9 +926,13 @@ def prepare(browser, args, admin, report, revisions):
         logout(page)
     report["step"] = "isolation"
     verify_isolation(browser, accounts[1], args.commit, job["id"], first, report)
-    shared_http.write_new(args.state, {"schema": SCHEMA, "origin": PUBLIC, "commit": args.commit,
-                                      "revisions": revisions, "accounts": accounts, "job": job["id"],
-                                      "clips": observed, "captions": captions, "editorial": editorial_state})
+    state = {"schema": SCHEMA, "origin": PUBLIC, "commit": args.commit,
+             "revisions": revisions, "accounts": accounts, "job": job["id"],
+             "clips": {name: {"sha256": item["sha256"]} for name, item in observed.items()},
+             "captions": captions, "editorial": editorial_state}
+    require(len(json.dumps(state, indent=2, ensure_ascii=False).encode("utf-8")) + 1 <= shared_http.MAX_SECRET,
+            "browser_replacement_state_exceeds_private_limit")
+    shared_http.write_new(args.state, state)
 
 
 def load_state(args, revisions):
