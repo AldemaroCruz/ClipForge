@@ -264,8 +264,21 @@ def _process(job_id: str, recorder: Recorder | None = None, *,
         segs = [{"start": s.start, "end": s.end, "text": s.text.strip()}
                 for s in segments if s.text.strip()]
         if validated_media is not None:
-            job["analysis_seconds"] = round(len(audio) / 16000, 2)
-            job["speech_until_seconds"] = round(segs[-1]["end"], 2) if segs else 0.0
+            decoded_seconds = len(audio) / 16000
+            timeline_end = min(decoded_seconds, validated["duration_seconds"])
+            # Whisper can place its last segment inside model padding. Bound
+            # the actual transcript and selection inputs to the source timeline.
+            bounded = []
+            for segment in segs:
+                start, end = segment["start"], segment["end"]
+                if not math.isfinite(start) or not math.isfinite(end):
+                    continue
+                start, end = max(0.0, start), min(timeline_end, end)
+                if start < end:
+                    bounded.append({**segment, "start": start, "end": end})
+            segs = bounded
+            job["analysis_seconds"] = round(decoded_seconds, 2)
+            job["speech_until_seconds"] = round(max((s["end"] for s in segs), default=0.0), 2)
         write_json_atomic(folder / "transcript.json", segs)
         if not segs:
             raise MediaValidationError("NO_SPEECH_DETECTED", "No se detectó voz transcribible en el video. Hay una pista de audio, pero podría contener silencio, música o voz poco clara. Prueba una conversación audible de 1–3 minutos.", job["media"])

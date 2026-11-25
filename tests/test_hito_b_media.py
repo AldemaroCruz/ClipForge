@@ -233,6 +233,42 @@ class PilotMediaTests(TestCase):
                 main._beta_audio(Path(temporary) / "input.mp4")
             self.assertEqual(rejected.exception.code, "VIDEO_OUTSIDE_LIMITS")
 
+    def test_beta_transcript_and_clip_use_the_original_timeline(self):
+        from app import main
+
+        job = {"id": JOB}
+        source = {"duration_seconds": 1200, "video_streams": 1, "audio_streams": 1, "video_stream_index": 0}
+        recognized = [
+            SimpleNamespace(start=1174.0, end=1185.0, text="comienza el último fragmento"),
+            SimpleNamespace(start=1185.0, end=1203.4, text="llega al final del video"),
+            SimpleNamespace(start=1201.0, end=1204.0, text="segmento fuera del video"),
+        ]
+        model = MagicMock()
+        model.transcribe.return_value = iter(recognized), SimpleNamespace(language="es")
+        whisper = SimpleNamespace(WhisperModel=MagicMock(return_value=model))
+        with (
+            TemporaryDirectory() as temporary,
+            patch.dict("sys.modules", {"faster_whisper": whisper}),
+            patch.object(main, "ROOT", Path(temporary)),
+            patch.object(main, "resolve_model", return_value="test-model"),
+            patch.object(main, "load_job", return_value=job),
+            patch.object(main, "persist"),
+            patch.object(main, "_beta_audio", return_value=range(1200 * 16000)),
+            patch.object(main, "write_json_atomic") as write,
+            patch.object(main, "render_clip") as render,
+        ):
+            main._process(JOB, MagicMock(), validated_media=source)
+
+        self.assertEqual((job["status"], job["analysis_seconds"], job["speech_until_seconds"]),
+                         ("completed", 1200.0, 1200.0))
+        self.assertEqual(write.call_args.args[1], [
+            {"start": 1174.0, "end": 1185.0, "text": "comienza el último fragmento"},
+            {"start": 1185.0, "end": 1200.0, "text": "llega al final del video"},
+        ])
+        render.assert_called_once()
+        self.assertEqual((render.call_args.kwargs["start"], render.call_args.kwargs["end"]),
+                         (1174.0, 1200.0))
+
     def test_pilot_clip_has_bounded_encoding_options(self):
         from app.presentation import Presentation
         from app.render import render_clip

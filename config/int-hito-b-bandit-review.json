@@ -33,7 +33,7 @@
       "cwe": 377,
       "line": 39,
       "context_sha256": "0efe935ca8a29845fb3caad89d0989ee45c5286fab44f8c5106bc737c4b9aef6",
-      "source_sha256": "56326b76d5c3f6edec3483432568fecc0032c1f48c839f087e50bef9fc8c01a9",
+      "source_sha256": "045334f8386872a2308a9de33ae717360fd64c394bf5dbd0ed02580fca9e81a3",
       "reason": "The beta worker sets its exclusively created private TemporaryDirectory as CLIPFORGE_DATA_DIR before importing main. The public and private beta HTTP entrypoints do not mount app.main."
     },
     {
