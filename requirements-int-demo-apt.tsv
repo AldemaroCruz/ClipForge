@@ -12,7 +12,7 @@ libpython3.12-stdlib	3.12.3-1ubuntu0.17	amd64	45d3f530ba1f9d6e879ad46b92046fabab
 libreadline8t64	8.2-4build1	amd64	563977a16df03b611f5239cc1e9a0426e86479fcc616b5c9e200ea32063119e5	https://archive.ubuntu.com/ubuntu/pool/main/r/readline/libreadline8t64_8.2-4build1_amd64.deb
 libsasl2-2	2.1.28+dfsg1-5ubuntu3.1	amd64	eda097f98dcb3a08b9ce157d6191d140e4885c1cba47b683c94b8ca45e88f458	https://archive.ubuntu.com/ubuntu/pool/main/c/cyrus-sasl2/libsasl2-2_2.1.28+dfsg1-5ubuntu3.1_amd64.deb
 libsasl2-modules-db	2.1.28+dfsg1-5ubuntu3.1	amd64	1f13548b1774cd9c70c50b8c3267204a101334a4d2f979338896ba5a4c6f81b8	https://archive.ubuntu.com/ubuntu/pool/main/c/cyrus-sasl2/libsasl2-modules-db_2.1.28+dfsg1-5ubuntu3.1_amd64.deb
-libsqlite3-0	3.45.1-1ubuntu2.9	amd64	e04c9d3cf7d0fc4d63332bea2395280550a0b5daef35d19c3c079fc2e96a92e5	https://archive.ubuntu.com/ubuntu/pool/main/s/sqlite3/libsqlite3-0_3.45.1-1ubuntu2.9_amd64.deb
+libsqlite3-0	3.45.1-1ubuntu2.11	amd64	5e7d8882716a8751fb19475b6a30e30d39f403e4da21799a6ab3d4ab360b174b	https://archive.ubuntu.com/ubuntu/pool/main/s/sqlite3/libsqlite3-0_3.45.1-1ubuntu2.11_amd64.deb
 media-types	10.1.0	all	31bfb7eec55ab6d34a50ba995150e1498d4cb897714085d8025e330d3b529747	https://archive.ubuntu.com/ubuntu/pool/main/m/media-types/media-types_10.1.0_all.deb
 netbase	6.4	all	8cdbc9c3dca01e660759bf9d840f72e45ac72faf5d19ca1faecacaf6a60c1a87	https://archive.ubuntu.com/ubuntu/pool/main/n/netbase/netbase_6.4_all.deb
 openssl	3.0.13-0ubuntu3.16	amd64	675b84971ffd4467707008c25ef7520f90ea7c23ef27b7a76b0dccf1d7c4dc3f	https://archive.ubuntu.com/ubuntu/pool/main/o/openssl/openssl_3.0.13-0ubuntu3.16_amd64.deb
