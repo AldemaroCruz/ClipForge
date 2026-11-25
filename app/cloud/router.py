@@ -328,6 +328,7 @@ def _submit_export(job_id, item, request, *, pilot=False):
         else:
             if pilot:
                 repo.admit_beta(c, owner)
+                item["pilot"] = True
             item["request_id"] = key
             repo.insert_document(c, job_id, "export", item)
             repo.enqueue(c, job_id, "export", item["id"])
@@ -388,8 +389,20 @@ def create_export(job_id: str, filename: str, payload: ExportRequest, request: R
 def exports(job_id: str):
     job = _doc(job_id)["payload"]
     items = [d["payload"] for d in repo.list_documents(job_id, "export")]
-    if job.get("pilot") is True and _needs_dispatch(job_id, "export", items):
-        _dispatch({})
+    if job.get("pilot") is True:
+        if any(item.get("status") == "queued" and item.get("pilot") is None
+               and item.get("clip_file") == "manual.mp4" for item in items):
+            # The first manual-export endpoint persisted the variant but omitted
+            # its routing marker. Repair only its existing queued records.
+            with get_engine().begin() as c:
+                c.execute(text("""
+                    UPDATE cloud_documents SET payload=payload || jsonb_build_object('pilot',true)
+                    WHERE job_id=:j AND kind='export' AND payload->>'status'='queued'
+                      AND payload->>'clip_file'='manual.mp4' AND payload->>'title'='Fragmento manual'
+                      AND NOT payload ? 'pilot'
+                    """), {"j": job_id})
+        if _needs_dispatch(job_id, "export", items):
+            _dispatch({})
     return {"exports": items[:100], "limit": 100, "has_more": len(items) > 100}
 
 
