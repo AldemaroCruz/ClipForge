@@ -17,6 +17,7 @@ GCS = "https://storage.googleapis.com/clipforge-fixture/session"
 JOB = "a" * 32
 CLIP = "clip_01.mp4"
 EXPORT = "c" * 32
+DRAFT = "d" * 32
 CHUNK = 8 * 1024 * 1024
 MAX_SIZE = 2 * CHUNK
 CSP = "default-src 'self'; connect-src 'self' https://storage.googleapis.com; media-src 'self'"
@@ -34,7 +35,9 @@ class BrowserHitoBTest(unittest.TestCase):
     def setUp(self):
         self.state = {"admin": False, "status": None, "reservations": [], "starts": [],
                       "puts": [], "unexpected": [], "hide_range": False,
-                      "manual": None, "manual_keys": [], "manual_retries": []}
+                      "manual": None, "manual_keys": [], "manual_retries": [],
+                      "ai_configured": True, "analysis": None, "selection_posts": [], "draft": None,
+                      "range_posts": [], "draft_updates": [], "approved": {}}
         self.context = self.browser.new_context(service_workers="block")
         self.addCleanup(self.context.close)
         self.context.route("**/*", self.handle)
@@ -53,7 +56,7 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertEqual(ORIGIN, f"{parsed.scheme}://{parsed.netloc}")
         path = parsed.path
         assets = {"beta.js": "text/javascript", "auth.js": "text/javascript",
-                  "mvp.js": "text/javascript", "mvp.css": "text/css",
+                  "mvp.js": "text/javascript", "editorial.js": "text/javascript", "mvp.css": "text/css",
                   "beta.css": "text/css", "account.css": "text/css"}
         if path == "/":
             route.fulfill(status=200, content_type="text/html", headers={"Content-Security-Policy": CSP},
@@ -90,7 +93,7 @@ class BrowserHitoBTest(unittest.TestCase):
 
     def api(self, path, request):
         method = request.method
-        if method == "POST":
+        if method in {"POST", "PUT"}:
             self.assertEqual(self.csrf, request.headers.get("x-csrf-token"))
         if path == "/environment":
             return {"environment": "INT", "revision": "b" * 40}, 200
@@ -122,7 +125,9 @@ class BrowserHitoBTest(unittest.TestCase):
         if path == f"/jobs/{JOB}/workspace":
             return {"source_duration": 426.55}, 200
         if path == f"/jobs/{JOB}/editor/range" and method == "POST":
-            return request.post_data_json, 200
+            data = request.post_data_json
+            self.state["range_posts"].append(data)
+            return {**data, "cues": data.get("cues", self.cue_fixture())}, 200
         if path == f"/jobs/{JOB}/editor/exports" and method == "POST":
             self.state["manual_keys"].append(request.headers.get("idempotency-key"))
             if self.state["manual"] is None:
@@ -134,9 +139,75 @@ class BrowserHitoBTest(unittest.TestCase):
             self.state["manual"].update(status="queued", retryable=False)
             return self.state["manual"], 202
         if path == f"/jobs/{JOB}/exports":
-            return {"exports": [self.state["manual"]] if self.state["manual"] else []}, 200
+            manual = [self.state["manual"]] if self.state["manual"] else []
+            return {"exports": manual + list(self.state["approved"].values())}, 200
+        if path == "/ai/config":
+            if not self.state["ai_configured"]:
+                return {"configured": False, "reason": "IA pendiente de configurar."}, 200
+            return {"configured": True, "provider": "fixture", "model": "editorial-fixture"}, 200
+        if path == f"/jobs/{JOB}/selections/context":
+            return {"available": True, "duration": 426.55}, 200
+        if path == f"/jobs/{JOB}/selections/preview" and method == "POST":
+            spec = request.post_data_json
+            return {"spec": spec, "preview_token": "e" * 64, "eligible_range_count": 3,
+                    "provider": {"provider": "fixture", "model": "editorial-fixture", "destination": "fixture"},
+                    "payload_text": {"editorial_brief": spec["brief"], "transcript": "Una decisión útil"},
+                    "system_instructions": "Escoge identificadores del catálogo."}, 200
+        if path == f"/jobs/{JOB}/selections":
+            if method == "GET":
+                return {"analyses": [self.state["analysis"]] if self.state["analysis"] else []}, 200
+            submitted = request.post_data_json
+            self.state["selection_posts"].append(submitted)
+            if self.state["analysis"] is None:
+                self.state["analysis"] = {
+                    "id": submitted["request_id"], "mode": "llm", "status": "completed", "created_at": 1,
+                    "provider": "fixture", "model": "editorial-fixture", "summary": "Una idea práctica.",
+                    "candidates": [{"id": "1", "title": "Una decisión útil", "reason": "Explica un paso concreto.",
+                                    "start": 392, "end": 421.5, "transcript_excerpt": "Así se hace.",
+                                    "context_before": "La pregunta inicial.", "context_after": "El resultado."}],
+                }
+                return {"detail": "Respuesta interrumpida."}, 503
+            return self.state["analysis"], 202
+        if self.state["analysis"]:
+            selection = f"/jobs/{JOB}/selections/{self.state['analysis']['id']}"
+            if path == selection:
+                return self.state["analysis"], 200
+            if path == selection + "/candidates/1/draft" and method == "POST":
+                candidate = self.state["analysis"]["candidates"][0]
+                return self.store_draft(title=candidate["title"], start=candidate["start"], end=candidate["end"],
+                                        cues=self.cue_fixture()), 201
+        if path == f"/jobs/{JOB}/drafts":
+            if method == "GET":
+                return {"drafts": [self.state["draft"]] if self.state["draft"] else []}, 200
+            self.assertTrue(request.headers.get("idempotency-key", "").startswith("manual-draft-"))
+            return self.store_draft(**request.post_data_json), 201
+        if path == f"/jobs/{JOB}/drafts/{DRAFT}":
+            if method == "PUT":
+                updated = request.post_data_json
+                self.state["draft_updates"].append(updated)
+                self.assertEqual(self.state["draft"]["revision"], updated["revision"])
+                self.state["draft"].update({**updated, "revision": updated["revision"] + 1})
+            return self.state["draft"], 200
+        if path == f"/jobs/{JOB}/drafts/{DRAFT}/exports" and method == "POST":
+            revision = request.post_data_json["revision"]
+            self.assertEqual(f"approved-{DRAFT}-{revision}", request.headers.get("idempotency-key"))
+            draft = self.state["draft"]
+            item = self.state["approved"].setdefault(revision, {
+                **draft, "id": str(revision) * 32, "draft_id": DRAFT,
+                "draft_revision": revision, "status": "completed",
+            })
+            return item, 202
         self.state["unexpected"].append(path)
         return {}, 404
+
+    @staticmethod
+    def cue_fixture():
+        return [{"start": 1, "end": 3, "text": "Así se hace.\nEl siguiente paso."}]
+
+    def store_draft(self, **draft):
+        if self.state["draft"] is None:
+            self.state["draft"] = {"id": DRAFT, "revision": 1, "options": {}, **draft}
+        return self.state["draft"]
 
     def until_text(self, selector, contains):
         self.page.wait_for_function("""([selector, contains]) =>
@@ -251,6 +322,69 @@ class BrowserHitoBTest(unittest.TestCase):
         download = self.page.get_by_role("link", name="Descargar clip manual")
         download.wait_for()
         self.assertEqual(f"/jobs/{JOB}/exports/{EXPORT}/files/clip.mp4", download.get_attribute("href"))
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
+    def test_editorial_consent_replay_and_versioned_subtitles(self):
+        self.state["status"] = "completed"
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        self.page.get_by_text("Propuestas por IA y edición", exact=True).click()
+        self.page.locator("#editorial-brief").fill("Busca un consejo concreto.")
+        self.page.locator("#editorial-preview-button").click()
+        self.page.locator("#editorial-consent").wait_for()
+        self.assertTrue(self.page.locator("#editorial-run").is_disabled())
+        self.assertEqual([], self.state["selection_posts"])
+        self.page.locator("#editorial-consent").check()
+        self.page.locator("#editorial-run").click()
+        self.until_text("#editorial-status", "Respuesta interrumpida")
+        self.page.locator("#editorial-run").click()
+        self.until_text("#editorial-candidates", "Explica un paso concreto.")
+        first, replay = self.state["selection_posts"]
+        self.assertEqual(first, replay)
+        self.assertTrue(first["consent"])
+        self.assertEqual(("llm", 0, None), (first["mode"], first["window_start"], first["window_end"]))
+        self.page.get_by_role("button", name="Crear / abrir borrador").click()
+        self.page.locator("#editorial-start").fill("393")
+        self.page.locator("#editorial-cues textarea").fill("Decisión práctica.\nUna solución.")
+        self.page.locator("#editorial-burn").check()
+        self.assertEqual("52", self.page.locator("#editorial-size").input_value())
+        self.page.locator("#editorial-export").click()
+        self.page.locator("#editorial-exports").get_by_role("link", name="Descargar SRT").wait_for()
+        saved = self.state["draft"]
+        self.assertEqual(393, saved["start"])
+        self.assertEqual("Decisión práctica.\nUna solución.", saved["cues"][0]["text"])
+        self.assertEqual(392, self.state["range_posts"][-1]["previous_start"])
+
+        self.page.reload()
+        self.page.get_by_text("Propuestas por IA y edición", exact=True).click()
+        self.page.locator("#editorial-draft-form").wait_for()
+        self.assertEqual("Decisión práctica.\nUna solución.", self.page.locator("#editorial-cues textarea").input_value())
+        self.page.locator("#editorial-size").fill("96")
+        self.page.locator("#editorial-color").fill("#ffca28")
+        self.page.locator("#editorial-export").click()
+        self.page.wait_for_function("() => document.querySelectorAll('#editorial-exports article').length === 2")
+        self.assertEqual({2, 3}, set(self.state["approved"]))
+        self.assertEqual((96, "#FFCA28"), (self.state["draft"]["options"]["subtitle_font_size"],
+                                         self.state["draft"]["options"]["subtitle_color"]))
+        self.assertEqual(2, len(self.state["draft_updates"]))
+        self.assertEqual(2, len(self.state["selection_posts"]))
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
+    def test_unconfigured_ai_preserves_manual_subtitle_draft(self):
+        self.state.update(status="completed", ai_configured=False)
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        self.page.get_by_text("Elegir fragmento del original").click()
+        self.page.locator("#mvp-start").fill("392")
+        self.page.locator("#mvp-end").fill("421")
+        self.page.locator("#mvp-edit-draft").click()
+        self.until_text("#editorial-config", "IA pendiente de configurar")
+        self.assertTrue(self.page.locator("#editorial-preview-button").is_disabled())
+        self.assertEqual("392", self.page.locator("#editorial-start").input_value())
+        self.page.locator("#editorial-burn").check()
+        self.page.locator("#editorial-export").click()
+        self.page.get_by_role("link", name="Descargar VTT").wait_for()
+        self.assertEqual([], self.state["selection_posts"])
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])
 

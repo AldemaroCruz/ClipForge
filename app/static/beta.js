@@ -224,6 +224,7 @@ async function initBeta() {
 
   function renderJob() {
     window.ClipForgeMvp?.selectJob(job);
+    window.ClipForgeEditorial?.selectJob(job);
     const title = projects.find(project => project.id === selectedId)?.title;
     element("job-title").textContent = title || job?.source_filename || "Revisar clips";
     const startExisting = element("start-existing");
@@ -237,6 +238,7 @@ async function initBeta() {
       : "";
     const clips = job?.status === "completed" && Array.isArray(job.clips)
       ? job.clips.filter(clip => BETA_CLIP.test(clip.file)) : [];
+    element("heuristic-heading").hidden = !clips.length;
     element("job-status").textContent = !job ? "Consultando el trabajo…"
       : job.status === "awaiting_upload" ? "Carga pendiente. Si terminaste de transferir el video, puedes procesarlo desde aquí."
       : job.status === "completed" ? "Completado · " + clips.length + (clips.length === 1 ? " clip" : " clips")

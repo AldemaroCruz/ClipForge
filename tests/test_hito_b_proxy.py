@@ -13,6 +13,7 @@ from app import auth, int_beta, int_beta_proxy as proxy
 
 JOB_ID = "b" * 32
 CLIP_PATH = f"/jobs/{JOB_ID}/clips/clip_01.mp4"
+DRAFT_PATH = f"/jobs/{JOB_ID}/drafts/" + "c" * 32
 
 
 class PublicProxyTests(unittest.TestCase):
@@ -40,7 +41,9 @@ class PublicProxyTests(unittest.TestCase):
             ("POST", "/beta/uploads", {"Origin": proxy.PUBLIC_ORIGIN, "Sec-Fetch-Site": "cross-site"}, 403),
             ("GET", "/jobs", {}, 404),
             ("POST", "/jobs", {"Origin": proxy.PUBLIC_ORIGIN}, 404),
-            ("POST", f"/jobs/{JOB_ID}/drafts", {"Origin": proxy.PUBLIC_ORIGIN}, 404),
+            ("POST", f"/jobs/{JOB_ID}/selections/{'d' * 32}/candidates/6/draft", {"Origin": proxy.PUBLIC_ORIGIN}, 404),
+            ("PUT", DRAFT_PATH, {"Origin": "https://unapproved.invalid"}, 403),
+            ("PUT", f"/jobs/{JOB_ID}", {"Origin": proxy.PUBLIC_ORIGIN}, 404),
             ("GET", "/beta/feedback", {}, 404),
             ("GET", "/beta/admin/feedback", {}, 404),
             ("POST", "/beta/feedback", {"Origin": proxy.PUBLIC_ORIGIN}, 404),
@@ -82,6 +85,15 @@ class PublicProxyTests(unittest.TestCase):
         self.assertNotIn("X-Private-Header", result.headers)
         self.assertEqual(result.headers["cache-control"], "no-store")
         self.assertEqual(result.headers.get_list("set-cookie"), self.response.raw.headers.getlist.return_value)
+
+    def test_relays_editorial_put_with_csrf_and_no_cache(self):
+        result = self.client.put(DRAFT_PATH, json={"revision": 2},
+                                 headers={"Origin": proxy.PUBLIC_ORIGIN, "X-CSRF-Token": "fixture"})
+        self.assertEqual(result.status_code, 200)
+        args, outbound = self.upstream.request.call_args
+        self.assertEqual(args, ("PUT", proxy.API_ORIGIN + DRAFT_PATH))
+        self.assertEqual(CaseInsensitiveDict(outbound["headers"])["X-CSRF-Token"], "fixture")
+        self.assertEqual(result.headers["cache-control"], "no-store")
 
     def test_relays_single_clip_range_and_partial_response(self):
         self.response.status_code = 206
@@ -136,12 +148,15 @@ class PrivateApiBoundaryTests(unittest.TestCase):
             patch.object(auth, "_session", side_effect=fixture_session),
         ):
             self.assertEqual(self.client.post("/beta/uploads", headers=headers, json={}).status_code, 401)
+            self.assertEqual(self.client.put(DRAFT_PATH, headers=headers, json={}).status_code, 401)
             headers["Cookie"] = f"{auth.SESSION_COOKIE}={session_token}"
             self.assertEqual(self.client.post("/beta/uploads", headers=headers, json={}).status_code, 403)
+            self.assertEqual(self.client.put(DRAFT_PATH, headers=headers, json={}).status_code, 403)
             headers["X-CSRF-Token"] = csrf
             self.assertEqual(self.client.post("/beta/uploads", headers={**headers, "Origin": proxy.API_ORIGIN},
                                               json={}).status_code, 403)
             self.assertEqual(self.client.post("/beta/uploads", headers=headers, json={}).status_code, 422)
+            self.assertEqual(self.client.put(DRAFT_PATH, headers=headers, json={}).status_code, 404)
             self.assertEqual(self.client.post("/jobs", headers=headers, json={}).status_code, 404)
             self.assertEqual(self.client.get("/beta/feedback", headers=headers).status_code, 404)
             self.assertEqual(self.client.post("/beta/feedback", headers=headers, json={}).status_code, 404)

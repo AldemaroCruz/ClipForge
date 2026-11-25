@@ -22,6 +22,13 @@ def plain_text(value: str) -> str:
     return " ".join(text.split())
 
 
+def _caption_text(value: str) -> str:
+    # Keep author-chosen line breaks without allowing empty lines to start
+    # another cue in the text exports.
+    lines = (plain_text(line) for line in value.split("\n"))
+    return "\n".join(line for line in lines if line)
+
+
 def validate_cues(cues: list[dict[str, Any]], duration: float) -> list[dict[str, Any]]:
     if not isinstance(cues, list) or len(cues) > 400:
         raise SubtitleError("Se admiten como máximo 400 subtítulos por clip.")
@@ -31,7 +38,7 @@ def validate_cues(cues: list[dict[str, Any]], duration: float) -> list[dict[str,
     for index, cue in enumerate(cues, 1):
         try:
             start, end = float(cue["start"]), float(cue["end"])
-            text = plain_text(cue["text"])
+            text = _caption_text(cue["text"])
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             raise SubtitleError(f"Subtítulo {index}: formato inválido.") from exc
         if not all(math.isfinite(t) for t in (start, end)):
@@ -101,7 +108,7 @@ def to_srt(cues: list[dict[str, Any]]) -> str:
     blocks = []
     for i, cue in enumerate(cues, 1):
         # Escape possible HTML rather than allowing user text to become markup.
-        text = html.escape(cue["text"], quote=False)
+        text = html.escape(_caption_text(cue["text"]), quote=False)
         blocks.append(f"{i}\n{timestamp(cue['start'])} --> {timestamp(cue['end'])}\n{text}\n")
     return "\n".join(blocks)
 
@@ -109,7 +116,7 @@ def to_srt(cues: list[dict[str, Any]]) -> str:
 def to_vtt(cues: list[dict[str, Any]]) -> str:
     blocks = ["WEBVTT\n"]
     for cue in cues:
-        text = html.escape(cue["text"], quote=False)
+        text = html.escape(_caption_text(cue["text"]), quote=False)
         blocks.append(f"{timestamp(cue['start'], vtt=True)} --> {timestamp(cue['end'], vtt=True)}\n{text}\n")
     return "\n".join(blocks)
 
@@ -145,6 +152,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     rows = []
     for cue in cues:
         # Fullwidth literals block ASS override tags and \N / \h injection.
-        text = plain_text(cue["text"]).translate(str.maketrans({"\\": "＼", "{": "｛", "}": "｝"}))
+        text = _caption_text(cue["text"]).translate(str.maketrans({"\\": "＼", "{": "｛", "}": "｝"}))
+        text = text.replace("\n", r"\N")
         rows.append(f"Dialogue: 0,{timestamp(cue['start'], ass=True)},{timestamp(cue['end'], ass=True)},Default,,0,0,0,,{text}")
     return header + "\n".join(rows) + "\n"

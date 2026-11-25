@@ -26,7 +26,7 @@ MANIFEST = ".clipforge-source-manifest.json"
 MAX_LIST_BYTES = 8 * 1024 * 1024
 MAX_FILE_BYTES = 32 * 1024 * 1024
 ROOT_NAMES = frozenset(context.ROOT_FILES) | frozenset({
-    ".dockerignore", ".gitignore", ".env.ai.example", "AGENTS.md", "Makefile",
+    ".dockerignore", ".gitattributes", ".gitignore", ".env.ai.example", "AGENTS.md", "Makefile",
     "Dockerfile.runtime", "Dockerfile.tests", "compose.yaml", "compose.ai.yaml",
     "Dockerfile.int", "Dockerfile.int.dockerignore", "requirements-int.lock",
     "Dockerfile.int-demo", "requirements-int-demo-apt.tsv", "requirements-int-demo.lock",
@@ -98,7 +98,7 @@ def validate_paths(names: list[str]) -> list[str]:
             raise ScanError("Tracked private/generated files are forbidden, even when forced into Git.")
         if name == MANIFEST:
             raise ScanError("The snapshot manifest name is reserved.")
-        allowed = name in ROOT_NAMES or name in context.PERSONAL_SQL_FILES or (
+        allowed = name in ROOT_NAMES or name in context.PERSONAL_SQL_FILES or name == "scripts/libass-d570c2f.patch" or (
             len(path.parts) == 1 and path.suffix.lower() == ".md"
         ) or (
             len(path.parts) > 1 and path.parts[0] in DIRECTORIES

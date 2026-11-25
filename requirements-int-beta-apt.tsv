@@ -1,3 +1,15 @@
 gcc-14-base	14.2.0-4ubuntu2~24.04.1	amd64	b95c172411a7fdae70307cf33a9f5320ba5e056b556454543dd5b679d5ce1c4f	https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-14/gcc-14-base_14.2.0-4ubuntu2~24.04.1_amd64.deb
 libgomp1	14.2.0-4ubuntu2~24.04.1	amd64	e8a95ec58125b4933597f30ff56c2ae10edf90f287262e366d4b6edea3019144	https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-14/libgomp1_14.2.0-4ubuntu2~24.04.1_amd64.deb
 libx264-164	2:0.164.3108+git31e19f9-1	amd64	7a410be6797c32357a2b7f0cc68ee14ae0e3b652bb17d16cdc941e4d830c7842	https://archive.ubuntu.com/ubuntu/pool/universe/x/x264/libx264-164_0.164.3108+git31e19f9-1_amd64.deb
+fontconfig-config	2.15.0-1.1ubuntu2	amd64	9df0579cd298a1f2b7a40efd519c849745aecd193a09733cf4d1032284a62bbf	https://archive.ubuntu.com/ubuntu/pool/main/f/fontconfig/fontconfig-config_2.15.0-1.1ubuntu2_amd64.deb
+fonts-dejavu-core	2.37-8	all	40049660c194f3b8a2541fc7369efebb10e9f94bdac836a2f38fafedd10fa73a	https://archive.ubuntu.com/ubuntu/pool/main/f/fonts-dejavu/fonts-dejavu-core_2.37-8_all.deb
+fonts-dejavu-mono	2.37-8	all	8a599d6553307db7ecb795d2f0e5a301e03234afc75c7358b0ba43466454c89a	https://archive.ubuntu.com/ubuntu/pool/main/f/fonts-dejavu/fonts-dejavu-mono_2.37-8_all.deb
+libbrotli1	1.1.0-2ubuntu0.1	amd64	70b188a86d81f30d7510aab30e25d638ed5037dded6691af1533952b71ac61de	https://archive.ubuntu.com/ubuntu/pool/main/b/brotli/libbrotli1_1.1.0-2ubuntu0.1_amd64.deb
+libfontconfig1	2.15.0-1.1ubuntu2	amd64	a2bc05cfef021fdb84285036f98eda5ebec3c4b7a378f5aa2bdba5c4d3d8d586	https://archive.ubuntu.com/ubuntu/pool/main/f/fontconfig/libfontconfig1_2.15.0-1.1ubuntu2_amd64.deb
+libfreetype6	2.13.2+dfsg-1ubuntu0.2	amd64	8c6d3bac5a6197fa2f48b2d56f04f3ffecaa7082eeab91b0939f97a40adc88a6	https://archive.ubuntu.com/ubuntu/pool/main/f/freetype/libfreetype6_2.13.2+dfsg-1ubuntu0.2_amd64.deb
+libfribidi0	1.0.13-3build1	amd64	6cd50259d39ce0dfafee2632c6268538e6a02590e77161a133e9683af346dd1d	https://archive.ubuntu.com/ubuntu/pool/main/f/fribidi/libfribidi0_1.0.13-3build1_amd64.deb
+libglib2.0-0t64	2.80.0-6ubuntu3.10	amd64	ff1b650f655b36dfe202fdbae6bb02b363c7257b6dd23e4f95ab61f716190df3	https://archive.ubuntu.com/ubuntu/pool/main/g/glib2.0/libglib2.0-0t64_2.80.0-6ubuntu3.10_amd64.deb
+libgraphite2-3	1.3.14-2ubuntu0.24.04.1	amd64	2413ea0f6670d6610ee7c2f550551d69fa341f4b9c78e20eb397f0d1bbe914cb	https://archive.ubuntu.com/ubuntu/pool/main/g/graphite2/libgraphite2-3_1.3.14-2ubuntu0.24.04.1_amd64.deb
+libharfbuzz0b	8.3.0-2build2	amd64	d6f7eea2244f98aa0463a056680d4629476bf624767ede301560e24add686b5c	https://archive.ubuntu.com/ubuntu/pool/main/h/harfbuzz/libharfbuzz0b_8.3.0-2build2_amd64.deb
+libpng16-16t64	1.6.43-5ubuntu0.7	amd64	863d6abb089b2820ceba98e6b18f06eaacc55f9b05827001e7b4021a9a7b246c	https://archive.ubuntu.com/ubuntu/pool/main/libp/libpng1.6/libpng16-16t64_1.6.43-5ubuntu0.7_amd64.deb
+libunibreak5	5.1-2build1	amd64	62576c95652b6c0a02e3d0fe9e2da6d0666c375d71c43da9d884c77417956ae4	https://archive.ubuntu.com/ubuntu/pool/universe/libu/libunibreak/libunibreak5_5.1-2build1_amd64.deb

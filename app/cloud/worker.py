@@ -61,23 +61,26 @@ def _claim(connection, job_id=None):
             LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE t.status='running' AND (t.lease_until IS NULL OR t.lease_until<=clock_timestamp())
               AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind='process' OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (NOT :beta OR t.kind IN ('process','selection') OR e.payload->'pilot'=CAST('true' AS jsonb))
               AND (CAST(:job AS text) IS NULL OR t.job_id=:job)
             ORDER BY t.created_at,t.id LIMIT :limit FOR UPDATE OF t SKIP LOCKED
             """), {**profile, "limit": BETA_WORKER_CONCURRENCY if beta else 1}).mappings().all()
         for row in expired:
-            kind = "job" if row["kind"] == "process" else "export"
+            kind = "job" if row["kind"] == "process" else row["kind"]
             doc = repo.document(row["job_id"], kind, row["item_id"], c)
             item = doc["payload"]
-            item.update(status="failed", error="Procesamiento interrumpido; el original se conserva. Crea una nueva variante para reintentar.", error_code="WORKER_INTERRUPTED")
-            repo.public_beta_failure(item)
+            if kind == "selection":
+                repo.interrupt_selection(item)
+            else:
+                item.update(status="failed", error="Procesamiento interrumpido; el original se conserva. Crea una nueva variante para reintentar.", error_code="WORKER_INTERRUPTED")
+                repo.public_beta_failure(item)
             repo.update_document(c, row["job_id"], kind, item)
             c.execute(text("UPDATE cloud_tasks SET status='failed',fence=fence+1,lease_until=NULL,updated_at=clock_timestamp() WHERE id=:i"), {"i": row["id"]})
         if beta:
             active, other_profile = c.execute(text("""
                 SELECT count(*), count(*) FILTER (
                     WHERE NOT (COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)
-                      AND (t.kind='process' OR COALESCE(e.payload->'pilot'=CAST('true' AS jsonb),false))))
+                      AND (t.kind IN ('process','selection') OR COALESCE(e.payload->'pilot'=CAST('true' AS jsonb),false))))
                 FROM cloud_tasks t
                 LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
                 LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
@@ -94,7 +97,7 @@ def _claim(connection, job_id=None):
             LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
             LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE t.status='queued' AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind='process' OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (NOT :beta OR t.kind IN ('process','selection') OR e.payload->'pilot'=CAST('true' AS jsonb))
               AND (CAST(:job AS text) IS NULL OR t.job_id=:job)
             ORDER BY t.created_at,t.id LIMIT 1 FOR UPDATE OF t SKIP LOCKED
             """), profile).mappings().first()
@@ -116,7 +119,7 @@ def cleanup_failed():
             LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE t.status='failed' AND t.cleaned_at IS NULL
               AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind='process' OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (NOT :beta OR t.kind IN ('process','selection') OR e.payload->'pilot'=CAST('true' AS jsonb))
             ORDER BY t.created_at LIMIT 100
             """), {"beta": beta_enabled()}).mappings().all()
     for task in tasks:
@@ -129,12 +132,13 @@ def cleanup_failed():
                     """), {"i": task["id"]}).mappings().first()
                 if current is None or current["status"] != "failed" or current["cleaned_at"] is not None:
                     continue
-                manifests = c.execute(text("SELECT manifest FROM cloud_documents WHERE job_id=:j"), {"j": task["job_id"]}).scalars().all()
-                references = {(value["name"], value["generation"]) for manifest in manifests for value in manifest.values()}
-                for item in storage.list_staged(prefix):
-                    if (item["name"], item["generation"]) in references:
-                        raise RuntimeError("Failed task has a published manifest reference; cleanup refused")
-                    storage.delete_staged(item, prefix)
+                if task["kind"] != "selection":
+                    manifests = c.execute(text("SELECT manifest FROM cloud_documents WHERE job_id=:j"), {"j": task["job_id"]}).scalars().all()
+                    references = {(value["name"], value["generation"]) for manifest in manifests for value in manifest.values()}
+                    for item in storage.list_staged(prefix):
+                        if (item["name"], item["generation"]) in references:
+                            raise RuntimeError("Failed task has a published manifest reference; cleanup refused")
+                        storage.delete_staged(item, prefix)
                 c.execute(text("UPDATE cloud_tasks SET cleaned_at=clock_timestamp() WHERE id=:i AND status='failed'"), {"i": task["id"]})
         except Exception:
             # Keep the exact task/fence durable so the operator can reconcile.
@@ -275,17 +279,21 @@ def execute(task_id, fence):
     cfg = settings()
     with get_engine().connect() as c:
         task = c.execute(text("""
-            SELECT t.* FROM cloud_tasks t
+            SELECT t.*,p.workspace_id FROM cloud_tasks t
+            JOIN auth_projects p ON p.id=t.job_id
             LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
             LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE t.id=:i AND t.fence=:f AND t.status='running' AND t.lease_until>clock_timestamp()
               AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind='process' OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (NOT :beta OR t.kind IN ('process','selection') OR e.payload->'pilot'=CAST('true' AS jsonb))
             """), {"i": task_id, "f": fence, "beta": beta_enabled()}).mappings().first()
         if task is None:
             raise RuntimeError("Task lease unavailable")
         task = dict(task)
-        workspace = c.execute(text("SELECT workspace_id FROM auth_projects WHERE id=:i"), {"i": task["job_id"]}).scalar_one()
+        workspace = task.pop("workspace_id")
+    if task["kind"] == "selection":
+        from .editorial_selection import execute_task
+        return execute_task(task)
     # Offline weights are compulsory for automatic cloud transcription.
     if not cfg.local_test and not os.getenv("CLIPFORGE_MODEL_LOCK"):
         raise RuntimeError("Cloud worker requires an identified offline model lock")
@@ -310,7 +318,7 @@ def execute(task_id, fence):
             manifest = job["manifest"] if task["kind"] == "process" else {}
             repo.finish_task(task, item, manifest)
             return
-        if "transcript.json" in job["manifest"]:
+        if task["kind"] == "process" and "transcript.json" in job["manifest"]:
             storage.download(job["manifest"]["transcript.json"], folder / "transcript.json")
         context = {"task": task, "staged": None}
         reset = repo.CURRENT_TASK.set(context)

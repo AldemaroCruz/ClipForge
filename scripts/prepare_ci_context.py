@@ -110,6 +110,7 @@ SUPPORT_FILES = PERSONAL_SQL_FILES | frozenset({
     'infra/gcp/int-beta/.terraform.lock.hcl',
     'infra/gcp/int-beta/main.tf',
     'scripts/build_int_beta_ffmpeg.sh',
+    'scripts/libass-d570c2f.patch',
     'infra/gcp/int-base/audit.tf',
     'infra/gcp/int-base/backend-int.hcl',
     'infra/gcp/int-base/db01-noble-hostkey-template.sh',

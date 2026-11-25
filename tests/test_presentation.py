@@ -64,6 +64,13 @@ class SubtitleTests(unittest.TestCase):
         self.assertIn("&lt;script&gt;", to_srt(cues))
         self.assertIn("ñ", ass)
 
+    def test_edited_line_breaks_match_between_ass_srt_and_webvtt(self):
+        cues = validate_cues([{"start": 1, "end": 4, "text": " ¡Atención!\r\n\r\n Español & edición. "}], 5)
+        self.assertEqual(cues[0]["text"], "¡Atención!\nEspañol & edición.")
+        self.assertIn(r"¡Atención!\NEspañol & edición.", to_ass(cues))
+        self.assertIn("00:00:01,000 --> 00:00:04,000\n¡Atención!\nEspañol &amp; edición.", to_srt(cues))
+        self.assertIn("00:00:01.000 --> 00:00:04.000\n¡Atención!\nEspañol &amp; edición.", to_vtt(cues))
+
     def test_invalid_times_overlap_and_text_rejected(self):
         for cues in (
             [{"start": float("nan"), "end": 2, "text": "x"}],

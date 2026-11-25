@@ -11,7 +11,7 @@ from sqlalchemy import text
 
 from app.auth import create_user, register_project
 from app.auth_db import reset_engine
-from app.cloud import dispatch, migrate, repository, worker
+from app.cloud import dispatch, migrate, migrate_beta, repository, worker
 from app.cloud.config import BETA_WORKER_CONCURRENCY, Settings
 from auth_support import auth_environment, prepare_database
 
@@ -152,6 +152,34 @@ class PilotCapacityDatabaseTests(unittest.TestCase):
                 SELECT task_id FROM cloud_outbox WHERE dispatched_at IS NOT NULL
                 """)).scalars().all()
         self.assertEqual(set(rows), set(task_ids[:BETA_WORKER_CONCURRENCY]))
+
+    def test_expired_selection_preserves_the_completed_source_and_needs_no_media_cleanup(self):
+        migrate_beta.upgrade_beta(self.engine)
+        process_id = self.enqueue()
+        job_id = self.table[process_id]
+        process = self.claim()
+        original = repository.document(job_id)
+        completed = {**original["payload"], "status": "completed", "clips": [{"file": "clip_01.mp4"}]}
+        repository.finish_task(process, completed, original["manifest"])
+        analysis_id = uuid.uuid4().hex
+        with self.engine.begin() as connection:
+            repository.insert_document(connection, job_id, "selection", {"id": analysis_id, "status": "queued"})
+            selection_id = repository.enqueue(connection, job_id, "selection", analysis_id)
+        selection = self.claim()
+        self.assertEqual((selection["id"], selection["kind"]), (selection_id, "selection"))
+        with self.engine.begin() as connection:
+            connection.execute(text("UPDATE cloud_tasks SET lease_until=clock_timestamp() WHERE id=:i"), {"i": selection_id})
+
+        self.assertIsNone(self.claim())
+        interrupted = repository.document(job_id, "selection", analysis_id)["payload"]
+        self.assertEqual((interrupted["status"], interrupted["error_code"]), ("failed", "AI_TASK_INTERRUPTED"))
+        self.assertEqual(repository.document(job_id)["payload"], completed)
+        self.assertEqual(repository.document(job_id)["manifest"], original["manifest"])
+        with self.engine.begin() as connection, self.assertRaisesRegex(RuntimeError, "fencing token"):
+            repository.worker_guard(connection, selection)
+        with patch.object(worker.storage, "list_staged") as storage:
+            worker.cleanup_failed()
+        storage.assert_not_called()
 
     def test_ambiguous_cloud_failure_has_cooldown_before_retry(self):
         task_id = self.enqueue()

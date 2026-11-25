@@ -29,7 +29,7 @@ def reconcile():
                 LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
                 WHERE (t.status='running' AND t.lease_until>clock_timestamp())
                   OR (t.status='queued' AND d.payload->'pilot'=CAST('true' AS jsonb)
-                      AND (t.kind='process' OR e.payload->'pilot'=CAST('true' AS jsonb))
+                      AND (t.kind IN ('process','selection') OR e.payload->'pilot'=CAST('true' AS jsonb))
                       AND o.dispatched_at>clock_timestamp()-
                         CASE WHEN o.last_error IS NULL THEN interval '5 minutes' ELSE interval '15 seconds' END)
                 """)).scalar_one()
@@ -41,7 +41,7 @@ def reconcile():
             LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
             LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind='process' OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (NOT :beta OR t.kind IN ('process','selection') OR e.payload->'pilot'=CAST('true' AS jsonb))
               AND ((t.status='queued' AND
                   (o.dispatched_at IS NULL OR o.dispatched_at<=clock_timestamp()-
                    CASE WHEN :beta AND o.last_error IS NOT NULL THEN interval '15 seconds' ELSE interval '5 minutes' END))

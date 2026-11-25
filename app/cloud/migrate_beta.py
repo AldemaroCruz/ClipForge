@@ -7,6 +7,7 @@ from ..auth_db import get_engine
 from .migrate import upgrade as upgrade_base
 
 BETA_REVISION = "cloud_beta01_0001"
+EDITORIAL_REVISION = "cloud_editorial01_0001"
 BETA_DDL = (
     """CREATE TABLE cloud_feedback (
         id VARCHAR(32) PRIMARY KEY,
@@ -25,6 +26,32 @@ BETA_DDL = (
     "CREATE INDEX cloud_feedback_recent_idx ON cloud_feedback(created_at DESC,id DESC)",
     "CREATE INDEX cloud_feedback_user_idx ON cloud_feedback(user_id,created_at DESC,id DESC)",
 )
+EDITORIAL_DDL = (
+    "ALTER TABLE cloud_documents DROP CONSTRAINT cloud_documents_kind_check",
+    """ALTER TABLE cloud_documents ADD CONSTRAINT cloud_documents_kind_check
+       CHECK(kind IN ('job','export','draft','project','selection'))""",
+    "ALTER TABLE cloud_tasks DROP CONSTRAINT cloud_tasks_kind_check",
+    """ALTER TABLE cloud_tasks ADD CONSTRAINT cloud_tasks_kind_check
+       CHECK(kind IN ('process','export','selection'))""",
+    """CREATE INDEX cloud_selections_day_idx ON cloud_documents ((payload->>'day_utc'))
+       WHERE kind='selection'""",
+)
+
+
+def upgrade_editorial(connection):
+    # Separate ledger keeps the previous beta revision healthy on rollback.
+    connection.execute(text("""CREATE TABLE IF NOT EXISTS cloud_editorial_schema_migrations (
+        revision VARCHAR(32) PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp())"""))
+    revisions = connection.execute(text("SELECT revision FROM cloud_editorial_schema_migrations ORDER BY revision")).scalars().all()
+    if revisions == [EDITORIAL_REVISION]:
+        return "current"
+    if revisions:
+        raise ValueError("Unknown cloud editorial schema revision")
+    for statement in EDITORIAL_DDL:
+        connection.execute(text(statement))
+    connection.execute(text("INSERT INTO cloud_editorial_schema_migrations(revision) VALUES (:r)"),
+                       {"r": EDITORIAL_REVISION})
+    return "applied"
 
 
 def upgrade_beta(engine=None):
@@ -36,19 +63,25 @@ def upgrade_beta(engine=None):
         connection.execute(text("""CREATE TABLE IF NOT EXISTS cloud_beta_schema_migrations (
             revision VARCHAR(32) PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp())"""))
         revisions = connection.execute(text("SELECT revision FROM cloud_beta_schema_migrations ORDER BY revision")).scalars().all()
-        if revisions == [BETA_REVISION]:
-            return {"status": "current", "revision": BETA_REVISION}
-        if revisions:
+        if revisions and revisions != [BETA_REVISION]:
             raise ValueError("Unknown cloud beta schema revision")
-        for statement in BETA_DDL:
-            connection.execute(text(statement))
-        connection.execute(text("INSERT INTO cloud_beta_schema_migrations(revision) VALUES (:r)"), {"r": BETA_REVISION})
-    return {"status": "applied", "revision": BETA_REVISION}
+        if not revisions:
+            for statement in BETA_DDL:
+                connection.execute(text(statement))
+            connection.execute(text("INSERT INTO cloud_beta_schema_migrations(revision) VALUES (:r)"), {"r": BETA_REVISION})
+        editorial = upgrade_editorial(connection)
+    return {"status": "applied" if not revisions else "current", "revision": BETA_REVISION,
+            "editorial_status": editorial, "editorial_revision": EDITORIAL_REVISION}
 
 
 def beta_schema_ready(connection):
     revisions = connection.execute(text("SELECT revision FROM cloud_beta_schema_migrations ORDER BY revision")).scalars().all()
     return revisions == [BETA_REVISION]
+
+
+def editorial_schema_ready(connection):
+    revisions = connection.execute(text("SELECT revision FROM cloud_editorial_schema_migrations ORDER BY revision")).scalars().all()
+    return revisions == [EDITORIAL_REVISION]
 
 
 def main():

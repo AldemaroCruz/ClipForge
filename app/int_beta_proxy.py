@@ -22,7 +22,7 @@ METADATA_IDENTITY = (
 )
 REQUEST_SIZE = 32 * 1024
 ASSETS = frozenset({
-    "account.css", "account.js", "auth.js", "recover.js", "beta.css", "beta.js", "mvp.css", "mvp.js",
+    "account.css", "account.js", "auth.js", "recover.js", "beta.css", "beta.js", "mvp.css", "mvp.js", "editorial.js",
 })
 STATIC = Path(__file__).with_name("static")
 JOB = r"[a-f0-9]{32}"
@@ -35,6 +35,8 @@ ROUTES = {
         r"/auth/(?:csrf|me|users|admin/audit)",
         rf"/projects|/jobs/{JOB}(?:/clips/{CLIP}|/source|/workspace|/exports|/exports/{JOB}/files/{EXPORT_FILE})?",
         r"/beta/limits",
+        r"/ai/config",
+        rf"/jobs/{JOB}/(?:selections(?:/context|/{JOB})?|drafts(?:/{JOB})?)",
     ),
     "POST": (
         r"/auth/(?:login|logout|password|recover|users)",
@@ -42,7 +44,9 @@ ROUTES = {
         rf"/beta/(?:uploads|uploads/{JOB}/start|jobs/{JOB}/retry)",
         rf"/jobs/{JOB}/editor/(?:range|exports)",
         rf"/jobs/{JOB}/exports/{JOB}/retry",
+        rf"/jobs/{JOB}/(?:selections(?:/preview|/{JOB}/candidates/[1-5]/draft)?|drafts(?:/{JOB}/exports)?)",
     ),
+    "PUT": (rf"/jobs/{JOB}/drafts/{JOB}",),
 }
 INBOUND = {
     "accept", "content-type", "cookie", "idempotency-key", "origin",
@@ -176,7 +180,7 @@ def asset(request: Request, name: str):
     return FileResponse(STATIC / name)
 
 
-@app.api_route("/{path:path}", methods=["GET", "HEAD", "POST"])
+@app.api_route("/{path:path}", methods=["GET", "HEAD", "POST", "PUT"])
 async def forward(request: Request, path: str):
     validate_request(request)
     path = "/" + path

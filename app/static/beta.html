@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="/static/mvp.css">
   <script src="/static/auth.js" defer></script>
   <script src="/static/mvp.js" defer></script>
+  <script src="/static/editorial.js" defer></script>
   <script src="/static/beta.js" defer></script>
 </head>
 <body class="beta">
@@ -53,7 +54,81 @@
           <button id="start-existing" type="button" class="secondary" hidden>Procesar video guardado</button>
           <button id="retry-job" type="button" class="secondary" hidden>Reintentar procesamiento</button>
         </div>
+        <h3 id="heuristic-heading" hidden>Clips automáticos por heurística</h3>
         <div id="clip-list" class="beta-clips"></div>
+        <section id="editorial" aria-labelledby="editorial-heading" hidden>
+          <details id="editorial-details">
+            <summary id="editorial-heading">Propuestas por IA y edición</summary>
+            <p id="editorial-config" class="status" role="status"></p>
+            <form id="editorial-selection">
+              <label for="editorial-brief">Objetivo editorial</label>
+              <textarea id="editorial-brief" maxlength="800" rows="3" required placeholder="Por ejemplo, elige consejos con un problema concreto y una solución."></textarea>
+              <div class="actions">
+                <button type="submit" id="editorial-preview-button" class="secondary" disabled>Revisar texto y destino</button>
+                <button type="button" id="editorial-refresh" class="secondary">Actualizar análisis</button>
+              </div>
+            </form>
+            <section id="editorial-consent-panel" class="editorial-review" aria-labelledby="editorial-preview-heading" hidden>
+              <h3 id="editorial-preview-heading">Autorizar este análisis</h3>
+              <p id="editorial-destination"></p>
+              <p>La solicitud incluye la transcripción, el objetivo editorial y los rangos calculados. El video y el audio permanecen en ClipForge.</p>
+              <details><summary>Ver texto y rangos</summary><pre id="editorial-payload"></pre></details>
+              <details><summary>Ver instrucciones de selección</summary><pre id="editorial-instructions"></pre></details>
+              <label class="editorial-check"><input type="checkbox" id="editorial-consent">Revisé el texto y el destino y autorizo este análisis.</label>
+              <button type="button" id="editorial-run" disabled>Solicitar propuestas</button>
+            </section>
+            <p id="editorial-status" class="status beta-message" role="status"></p>
+            <div id="editorial-history" hidden>
+              <label for="editorial-runs">Análisis guardados</label>
+              <select id="editorial-runs"></select>
+            </div>
+            <section id="editorial-results" aria-label="Resultado del análisis" hidden>
+              <h3>Propuestas por IA</h3>
+              <p id="editorial-summary" class="status"></p>
+              <div id="editorial-candidates" class="beta-clips"></div>
+            </section>
+            <h3>Revisar intervalos</h3>
+            <video id="editorial-source" controls playsinline preload="none" aria-label="Video original para revisión"></video>
+            <h3>Borradores</h3>
+            <p id="editorial-draft-empty" class="muted">Elige una propuesta para crear un borrador.</p>
+            <label id="editorial-draft-label" for="editorial-drafts" hidden>Borrador guardado</label>
+            <select id="editorial-drafts" hidden></select>
+            <form id="editorial-draft-form" hidden>
+              <fieldset id="editorial-draft-fields">
+                <legend>Editar borrador</legend>
+                <label for="editorial-title">Título del clip</label>
+                <input type="text" id="editorial-title" maxlength="120" required>
+                <div class="mvp-range">
+                  <div><label for="editorial-start">Inicio en segundos del original</label><input type="number" id="editorial-start" min="0" step="0.001" required></div>
+                  <div><label for="editorial-end">Fin en segundos del original</label><input type="number" id="editorial-end" min="1" step="0.001" required></div>
+                </div>
+                <div class="actions">
+                  <button type="button" id="editorial-range-preview" class="secondary">Reproducir recorte</button>
+                  <button type="button" id="editorial-apply-range" class="secondary">Aplicar recorte</button>
+                </div>
+                <h4>Subtítulos</h4>
+                <label class="editorial-check"><input type="checkbox" id="editorial-burn">Incrustar subtítulos en el MP4</label>
+                <div class="mvp-range">
+                  <div><label for="editorial-size">Tamaño del texto</label><input type="number" id="editorial-size" min="24" max="120" step="1" value="52" required></div>
+                  <div><label for="editorial-color">Color del texto</label><input type="color" id="editorial-color" value="#ffffff"></div>
+                </div>
+                <p id="editorial-sample" class="editorial-sample" hidden><span></span></p>
+                <div id="editorial-cues"></div>
+                <button type="button" id="editorial-add-cue" class="secondary">Añadir subtítulo</button>
+                <p id="editorial-revision" class="muted"></p>
+                <div class="actions">
+                  <button type="submit" id="editorial-save" class="secondary">Guardar borrador</button>
+                  <button type="button" id="editorial-export">Aprobar y exportar</button>
+                </div>
+              </fieldset>
+            </form>
+            <p id="editorial-draft-status" class="status beta-message" role="status"></p>
+            <section id="editorial-output" aria-label="Exportaciones editoriales" hidden>
+              <h3>Exportaciones aprobadas</h3>
+              <div id="editorial-exports" class="beta-clips"></div>
+            </section>
+          </details>
+        </section>
         <section id="mvp-editor" aria-labelledby="mvp-heading" hidden>
           <details id="mvp-editor-details">
             <summary id="mvp-heading">Elegir fragmento del original</summary>
@@ -71,9 +146,10 @@
                   <button type="button" id="mvp-mark-end" class="secondary">Marcar fin aquí</button>
                 </div>
               </div>
-              <p class="muted">Elige un tramo de 1 a 60 segundos. Los subtítulos disponibles se descargan por separado.</p>
+              <p class="muted">Elige un tramo de 1 a 60 segundos. Puedes editarlo antes de exportar.</p>
               <div class="actions">
                 <button type="button" id="mvp-preview" class="secondary">Previsualizar fragmento</button>
+                <button type="button" id="mvp-edit-draft" class="secondary">Editar y subtitular fragmento</button>
                 <button type="submit" id="mvp-export">Generar clip manual</button>
               </div>
             </form>
@@ -88,9 +164,9 @@
       <ol>
         <li>Entra con la cuenta que te entregó el administrador y selecciona un MP4 con voz audible.</li>
         <li>Elige «Subir y procesar». Puedes salir cuando el trabajo figure como pendiente o procesando y retomarlo en «Mis trabajos».</li>
-        <li>Reproduce los clips y descárgalos en MP4. La selección automática usa la transcripción. También puedes elegir un fragmento del original.</li>
+        <li>Reproduce los clips automáticos y descárgalos en MP4. También puedes elegir un fragmento del original.</li>
+        <li>Abre «Propuestas por IA y edición». Define un objetivo, revisa el texto por enviar y autoriza el análisis. Elige una propuesta para ajustar el recorte y los subtítulos antes de aprobar la exportación.</li>
       </ol>
-      <p class="muted">La beta por invitación no incluye edición avanzada ni publicación en redes.</p>
     </section>
   </main>
 </body>

@@ -1,13 +1,13 @@
-#mvp-editor {
+#mvp-editor, #editorial {
   margin-top: 20px;
   border-top: 1px solid var(--line);
   padding-top: 16px;
 }
-#mvp-editor summary {
+#mvp-editor summary, #editorial summary {
   cursor: pointer;
   font-weight: 700;
 }
-#mvp-source {
+#mvp-source, #editorial-source {
   display: block;
   width: 100%;
   max-height: 360px;
@@ -25,4 +25,75 @@
 }
 #mvp-status {
   margin-block: 12px;
+}
+#editorial h3 {
+  margin-block: 18px 8px;
+}
+#editorial textarea {
+  display: block;
+  width: 100%;
+  padding: 9px 12px;
+  color: inherit;
+  background: #0f192b;
+  border: 1px solid #49607f;
+  border-radius: 8px;
+  font: inherit;
+  resize: vertical;
+}
+#editorial textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.editorial-review, #editorial-draft-fields {
+  min-width: 0;
+  margin: 16px 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.editorial-review pre {
+  max-height: 16rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+#editorial .editorial-check {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.editorial-check input {
+  width: auto;
+}
+#editorial input[type="color"] {
+  min-height: 46px;
+}
+.editorial-cue {
+  padding: 0 0 12px;
+  border-bottom: 1px solid var(--line);
+}
+.editorial-cue:last-child {
+  margin-bottom: 12px;
+}
+.editorial-sample {
+  padding: 12px;
+  background: #09101e;
+  border-radius: 8px;
+  text-align: center;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.editorial-sample span {
+  font-family: "DejaVu Sans", sans-serif;
+  font-weight: bold;
+  text-shadow: 1px 1px 2px #000;
+}
+#editorial-candidates article {
+  overflow-wrap: anywhere;
+}
+#editorial-candidates blockquote {
+  margin: 10px 0;
+  padding-inline-start: 10px;
+  border-inline-start: 3px solid var(--line);
+  white-space: pre-wrap;
 }

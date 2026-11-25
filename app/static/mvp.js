@@ -14,11 +14,12 @@
   const markStart = element("mvp-mark-start");
   const markEnd = element("mvp-mark-end");
   const preview = element("mvp-preview");
+  const editDraft = element("mvp-edit-draft");
   const submit = element("mvp-export");
   const status = element("mvp-status");
   const results = element("mvp-results");
   const auth = window.ClipForgeAuth;
-  const controls = [startInput, endInput, markStart, markEnd, preview, submit];
+  const controls = [startInput, endInput, markStart, markEnd, preview, editDraft, submit];
   const idPattern = /^[a-f0-9]{32}$/;
   const activeStates = new Set(["queued", "validating", "rendering"]);
   let jobId = null;
@@ -48,6 +49,7 @@
   }
 
   function selectJob(job) {
+    editDraft.hidden = job?.status !== "completed" || !window.ClipForgeEditorial;
     const eligible = job?.pilot === true && idPattern.test(job.id)
       && ["completed", "failed"].includes(job.status)
       && Number.isFinite(job.media?.duration_seconds) && job.media.duration_seconds >= 1;
@@ -213,6 +215,20 @@
   markStart.addEventListener("click", () => { startInput.value = source.currentTime.toFixed(3); });
   markEnd.addEventListener("click", () => { endInput.value = source.currentTime.toFixed(3); });
   preview.addEventListener("click", () => changeRange(false));
+  editDraft.addEventListener("click", async () => {
+    const id = jobId;
+    const view = currentView;
+    const range = selection();
+    if (!id || !range) return;
+    disableControls(true);
+    try {
+      await window.ClipForgeEditorial.createManualDraft(id, range);
+    } catch (error) {
+      if (visible(id, view)) status.textContent = error.message;
+    } finally {
+      if (visible(id, view)) disableControls(false);
+    }
+  });
   form.addEventListener("submit", event => {
     event.preventDefault();
     changeRange(true);

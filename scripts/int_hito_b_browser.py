@@ -18,8 +18,10 @@ import tempfile
 from time import monotonic
 from urllib.parse import urlsplit
 
+from app.check_presentation import caption_color_stats
 from app.cloud.config import BETA_MAX_BYTES, BETA_MAX_DIMENSION, BETA_MAX_SECONDS, BETA_WORKER_CONCURRENCY
 from app.media import probe_media
+from app.subtitles import to_srt, to_vtt, validate_cues
 from scripts import int_hito_a_acceptance as shared_http
 from scripts.int_hito_a_browser import (
     BROWSER_ENV_ALLOWLIST, BrowserAcceptanceError, require, resolve_browser,
@@ -38,6 +40,8 @@ CHUNK_BYTES = 8 * 1024 * 1024
 MAX_CLIP_BYTES = 200 * 1024 * 1024
 TIMEOUT = 30_000
 SCHEMA = "clipforge-int-hito-b-browser-1"
+MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}")
+EDITORIAL_BRIEF = "Elige un momento claro sobre cómo se conservaron las semillas del huerto comunitario."
 
 
 def cloud_revisions(frontend, api):
@@ -359,6 +363,260 @@ def check_manual_export(page, job_id, scratch, report):
     check(report, "original_preview_manual_range_and_idempotent_export")
 
 
+def click_response(page, control, path, method, status):
+    with page.expect_response(lambda response: response.url.startswith(PUBLIC + path)
+                              and response.request.method == method) as event:
+        control.click()
+    response = event.value
+    require(response.status == status, "editorial_http_" + str(response.status))
+    return response
+
+
+def open_editorial(page):
+    panel = page.locator("#editorial-details")
+    if panel.get_attribute("open") is None:
+        panel.locator("summary").click()
+
+
+def start_selection(page, job, model, *, brief=EDITORIAL_BRIEF):
+    config = browser_get(page, "/ai/config")
+    require(config["status"] == 200 and config["body"].get("provider") == "openai"
+            and config["body"].get("model") == model and config["body"].get("configured") is True,
+            "expected_real_editorial_provider")
+    open_editorial(page)
+    page.locator("#editorial-brief").fill(brief)
+    path = f"/jobs/{job}/selections"
+    click_response(page, page.locator("#editorial-preview-button"), path + "/preview", "POST", 200)
+    page.locator("#editorial-consent").check()
+    began = monotonic()
+    response = click_response(page, page.locator("#editorial-run"), path, "POST", 202)
+    selection = response.json()
+    require(ID.fullmatch(selection.get("id", "")), "editorial_run_identity")
+    return selection["id"], response.request.post_data_json, began
+
+
+def finish_selection(page, job, receipt, model, duration):
+    identity, body, began = receipt
+    path = f"/jobs/{job}/selections/{identity}"
+    while True:
+        response = browser_get(page, path)
+        require(response["status"] == 200, "editorial_selection_read")
+        selection = response["body"]
+        state = selection.get("status")
+        if state == "completed":
+            break
+        if state == "failed":
+            error = selection.get("error_code", "")
+            raise BrowserAcceptanceError(error if re.fullmatch(r"AI_[A-Z_]{1,40}", error)
+                                         else "editorial_selection_failed")
+        require(state in {"queued", "running", "processing"} and monotonic() - began < 540,
+                "editorial_real_selection_did_not_complete")
+        page.wait_for_timeout(1_000)
+    candidates = selection.get("candidates", [])
+    windows = selection.get("analysis_windows", [])
+    models = selection.get("provider_models_received", [])
+    require(selection.get("provider") == "openai" and selection.get("model") == model
+            and selection.get("provider_response_received") is True
+            and 1 <= selection.get("provider_responses", 0) <= selection.get("provider_calls", 0)
+            and models and all(MODEL.fullmatch(value) for value in models)
+            and 1 <= len(candidates) <= 5 and windows, "real_provider_proposal_receipt")
+    require(abs(windows[0]["start"]) <= .1 and windows[-1]["end"] >= duration - .1
+            and selection.get("last_transcript_end", 0) >= duration - 45,
+            "editorial_selection_did_not_cover_full_video")
+    unique_ids = {item["range_id"] for item in candidates}
+    ordered = sorted(candidates, key=lambda item: item["start"])
+    theme = re.compile(r"semill|maíz|huert|cosech|vecin|escuel|cultiv", re.IGNORECASE)
+    require(len(unique_ids) == len(candidates)
+            and all(item.get("origin") == "llm" and item.get("title") and item.get("reason")
+                    and item.get("start", -1) >= 0 and item.get("end", duration + 1) <= duration
+                    and 19.999 <= item["end"] - item["start"] <= 60.001 for item in candidates)
+            and all(left["end"] <= right["start"] for left, right in zip(ordered, ordered[1:])),
+            "editorial_candidate_integrity")
+    require(any(theme.search(item["title"] + " " + item["reason"])
+                and theme.search(item.get("transcript_excerpt", "")) for item in candidates),
+            "editorial_synthetic_topic_missing")
+    replay = browser_post(page, f"/jobs/{job}/selections", body)
+    require(replay["status"] in {200, 202} and replay["id"] == identity
+            and browser_get(page, path)["body"]["provider_calls"] == selection["provider_calls"],
+            "editorial_replay_called_provider")
+    return {"id": identity, "provider": "openai", "model": model, "models_received": models, "proposals": len(candidates),
+            "provider_calls": selection["provider_calls"], "provider_responses": selection["provider_responses"],
+            "analysis_windows": windows, "last_transcript_end": selection["last_transcript_end"],
+            "provider_seconds": selection.get("provider_elapsed_seconds"),
+            "worker_seconds": selection.get("elapsed_seconds"), "wall_seconds": round(monotonic() - began, 3)}
+
+
+def open_late_draft(page, job, start, end, *, generated):
+    if generated:
+        candidates = page.locator("#editorial-candidates")
+        candidates.get_by_role("button", name="Reproducir intervalo").first.click()
+        source = page.locator("#editorial-source")
+        page.wait_for_function("""() => {
+            const video = document.querySelector('#editorial-source');
+            return video.videoWidth > 0 && !video.paused && !video.seeking && !video.error;
+        }""", timeout=60_000)
+        source.evaluate("el => el.pause()")
+        create = candidates.get_by_role("button", name="Crear / abrir borrador").first
+        observed = click_response(page, create, f"/jobs/{job}/selections/", "POST", 201).json()
+        page.locator("#editorial-save").wait_for()
+        if (observed["start"], observed["end"]) != (start, end):
+            page.locator("#editorial-start").fill(str(start))
+            page.locator("#editorial-end").fill(str(end))
+            click_response(page, page.locator("#editorial-apply-range"), f"/jobs/{job}/editor/range", "POST", 200)
+    else:
+        details = page.locator("#mvp-editor-details")
+        if details.get_attribute("open") is None:
+            details.locator("summary").click()
+        page.locator("#mvp-start").fill(str(start))
+        page.locator("#mvp-end").fill(str(end))
+        click_response(page, page.locator("#mvp-edit-draft"), f"/jobs/{job}/drafts", "POST", 201)
+    page.locator("#editorial-save").wait_for()
+
+
+def save_style(page, job, size, color, text):
+    page.locator("#editorial-burn").check()
+    page.locator("#editorial-size").fill(str(size))
+    page.locator("#editorial-color").fill(color.lower())
+    rows = page.locator("#editorial-cues .editorial-cue")
+    rows.first.wait_for()
+    require(rows.count() > 0, "editorial_persisted_transcript_cues_missing")
+    for index in reversed(range(1, rows.count())):
+        row = rows.nth(index)
+        if float(row.locator('[data-field="start"]').input_value()) < 1.6:
+            row.get_by_role("button", name="Quitar subtítulo").click()
+    rows.first.locator('[data-field="start"]').fill("0.15")
+    rows.first.locator('[data-field="end"]').fill("1.6")
+    rows.first.locator('[data-field="text"]').fill(text)
+    item = click_response(page, page.locator("#editorial-save"), f"/jobs/{job}/drafts/", "PUT", 200).json()
+    require(ID.fullmatch(item.get("id", "")) and item["options"]["burn_subtitles"]
+            and item["options"]["subtitle_font_size"] == size and item["options"]["subtitle_color"] == color
+            and text in [part["text"] for part in item["cues"]], "editorial_draft_style_persisted")
+    return item
+
+
+def start_editorial_export(page, job, draft):
+    path = f"/jobs/{job}/drafts/{draft['id']}/exports"
+    activated = monotonic()
+    response = click_response(page, page.locator("#editorial-export"), path, "POST", 202)
+    item = response.json()
+    require(ID.fullmatch(item.get("id", "")) and item["draft_id"] == draft["id"], "editorial_export_identity")
+    return item["id"], activated, response.request.headers["idempotency-key"]
+
+
+def digest_of(path):
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def fetch_editorial_export(page, job, draft, receipt, scratch, *, check_pixels=True, ready_seconds=None):
+    export_id, activated, key = receipt
+    row = page.locator(f'#editorial-exports article[data-export-id="{export_id}"]')
+    mp4 = row.get_by_role("link", name="Descargar MP4 editado")
+    mp4.wait_for(timeout=480_000)
+    if ready_seconds is None:
+        ready_seconds = round(monotonic() - activated, 3)
+    player = row.locator("video")
+    player.click(position={"x": 8, "y": 8})
+    player.evaluate("el => { el.muted = false; return el.play(); }")
+    page.wait_for_function("""id => {
+        const player = document.querySelector('#editorial-exports [data-export-id="' + id + '"] video');
+        return player?.videoWidth > 0 && player.currentTime > .25 && !player.error && !player.muted &&
+          (player.webkitAudioDecodedByteCount === undefined || player.webkitAudioDecodedByteCount > 0);
+    }""", arg=export_id)
+    player.evaluate("el => el.pause()")
+    with tempfile.TemporaryDirectory(prefix="beta-editorial-", dir=scratch) as directory:
+        root = Path(directory)
+        files = {}
+        for ext, link in (("mp4", mp4), ("srt", row.get_by_role("link", name="Descargar SRT")),
+                          ("vtt", row.get_by_role("link", name="Descargar VTT"))):
+            with page.expect_download(timeout=60_000) as download:
+                link.click()
+            target = root / f"clip.{ext}"
+            download.value.save_as(target)
+            download.value.delete()
+            require(0 < target.stat().st_size <= MAX_CLIP_BYTES, "editorial_export_size")
+            files[ext] = digest_of(target)
+        duration = draft["end"] - draft["start"]
+        media = probe_media(root / "clip.mp4", pilot=True)
+        cues = validate_cues(draft["cues"], duration)
+        require(media["video_codec"] == "h264" and media["audio_codec"] == "aac"
+                and abs(media["duration_seconds"] - duration) < .2 and cues,
+                "editorial_download_media")
+        require((root / "clip.srt").read_text(encoding="utf-8") == to_srt(cues)
+                and (root / "clip.vtt").read_text(encoding="utf-8") == to_vtt(cues),
+                "editorial_sidecar_contents_or_timing")
+        pixels = caption_color_stats(root / "clip.mp4", draft["options"]["subtitle_color"]) if check_pixels else {}
+        require(not check_pixels or pixels["matching_pixels"] >= 75, "editorial_pixels_not_burned")
+    if key:
+        replay = browser_post(page, f"/jobs/{job}/drafts/{draft['id']}/exports", {"revision": draft["revision"]}, key)
+        require(replay["status"] == 202 and replay["id"] == export_id, "editorial_export_duplicated")
+    return {"files": files, "media_seconds": media["duration_seconds"], "cues": len(cues),
+            "first_caption_local": cues[0]["start"], "last_caption_local": cues[-1]["end"],
+            "source_start": draft["start"], "source_end": draft["end"],
+            "size": draft["options"]["subtitle_font_size"], "burned_pixels": pixels, "wall_seconds": ready_seconds}
+
+
+def prepare_editorial(page, job, args, report):
+    editorial = {}
+    selection = None
+    if args.editorial_model:
+        report["step"] = "real_provider_selection"
+        started = start_selection(page, job, args.editorial_model)
+        selection = finish_selection(page, job, started, args.editorial_model, 120)
+        editorial["selection"] = {key: value for key, value in selection.items() if key != "id"}
+    else:
+        config = browser_get(page, "/ai/config")
+        require(config["status"] == 200 and config["body"]["configured"] is False
+                and config["body"]["provider"] == "disabled" and config["body"].get("reason"),
+                "editorial_disabled_state")
+        editorial["selection"] = {"provider": "disabled", "real_provider_called": False,
+                                  "status": "provider_not_configured"}
+    report["editorial"] = editorial
+    report["step"] = "editorial_draft_and_burned_subtitles"
+    open_late_draft(page, job, 86, 109, generated=selection is not None)
+    exports = []
+    variants = (
+        ("Edición y acción.\nCorazón y mañana.", 32, "#FF0000"),
+        ("Edición y canción.\nCorazón y mañana.", 88, "#0000FF"),
+    )
+    for text, size, color in variants:
+        draft = save_style(page, job, size, color, text)
+        require((draft["start"], draft["end"]) == (86, 109), "editorial_late_range_changed")
+        receipt = start_editorial_export(page, job, draft)
+        inspected = fetch_editorial_export(page, job, draft, receipt, args.state.parent)
+        require(abs(inspected["first_caption_local"] - .15) < .001
+                and inspected["last_caption_local"] <= inspected["media_seconds"] + .1,
+                "editorial_relative_caption_timing")
+        exports.append({"id": receipt[0], "draft": draft, "receipt": inspected})
+    first, second = exports
+    require(first["id"] != second["id"] and first["draft"]["id"] == second["draft"]["id"]
+            and first["draft"]["revision"] < second["draft"]["revision"]
+            and all(first["receipt"]["files"][ext] != second["receipt"]["files"][ext] for ext in ("mp4", "srt", "vtt"))
+            and second["receipt"]["burned_pixels"]["height"] > first["receipt"]["burned_pixels"]["height"],
+            "editorial_revision_or_style_not_reflected")
+    editorial["exports"] = [item["receipt"] for item in exports]
+    check(report, "editorial_late_range_color_size_and_edited_sidecars")
+    return {"selection_id": selection["id"] if selection else None, "exports": exports}
+
+
+def verify_editorial(page, job, state, scratch, report):
+    open_editorial(page)
+    for item in state["exports"]:
+        require(ID.fullmatch(item["id"]), "editorial_replacement_state")
+        observed = fetch_editorial_export(page, job, item["draft"], (item["id"], monotonic(), None),
+                                          scratch, check_pixels=False)
+        require(observed["files"] == item["receipt"]["files"], "editorial_files_changed_after_replacement")
+    draft = state["exports"][-1]["draft"]
+    saved = browser_get(page, f"/jobs/{job}/drafts/{draft['id']}")
+    require(saved["status"] == 200 and all(saved["body"][key] == draft[key]
+                for key in ("revision", "start", "end", "options", "cues")), "editorial_draft_lost_after_replacement")
+    if state["selection_id"]:
+        saved_run = browser_get(page, f"/jobs/{job}/selections/{state['selection_id']}")
+        require(saved_run["status"] == 200 and saved_run["body"]["status"] == "completed"
+                and saved_run["body"]["candidates"], "editorial_proposals_lost_after_replacement")
+    check(report, "editorial_draft_and_identical_downloads_after_replacement")
+
+
 def verify_isolation(browser, account, commit, job_id, clip, report):
     with browser_page(browser) as page:
         login(page, account, commit)
@@ -366,7 +624,8 @@ def verify_isolation(browser, account, commit, job_id, clip, report):
         require(own_projects["status"] == 200 and not own_projects["body"]["projects"],
                 "other_user_projects_visible")
         for path in ("/jobs/" + job_id, f"/jobs/{job_id}/source", f"/jobs/{job_id}/clips/{clip}",
-                     f"/jobs/{job_id}/clips/{clip}?inline=true", f"/jobs/{job_id}/exports"):
+                     f"/jobs/{job_id}/clips/{clip}?inline=true", f"/jobs/{job_id}/exports",
+                     f"/jobs/{job_id}/drafts", f"/jobs/{job_id}/selections", f"/jobs/{job_id}/selections/context"):
             require(browser_get(page, path)["status"] in {403, 404}, "other_user_content_visible")
         logout(page)
     check(report, "second_user_job_original_clip_and_exports_denied")
@@ -402,12 +661,13 @@ def prepare(browser, args, admin, report, revisions):
         first = next(iter(observed))
         report["step"] = "manual_export"
         check_manual_export(page, job["id"], args.state.parent, report)
+        editorial_state = prepare_editorial(page, job["id"], args, report)
         logout(page)
     report["step"] = "isolation"
     verify_isolation(browser, accounts[1], args.commit, job["id"], first, report)
     shared_http.write_new(args.state, {"schema": SCHEMA, "origin": PUBLIC, "commit": args.commit,
                                       "revisions": revisions, "accounts": accounts, "job": job["id"],
-                                      "clips": observed})
+                                      "clips": observed, "editorial": editorial_state})
 
 
 def load_state(args, revisions):
@@ -438,6 +698,8 @@ def verify(browser, args, admin, report, revisions):
         require(observed == state["clips"], "clip_bytes_changed_after_replacement")
         report["clips"] = observed
         check_feedback_removed(page, report)
+        report["step"] = "editorial_persistence"
+        verify_editorial(page, state["job"], state["editorial"], args.state.parent, report)
         logout(page)
     check(report, "saved_job_and_identical_clip_bytes_after_replacement")
     report["step"] = "isolation"
@@ -459,6 +721,7 @@ def main():
     parser.add_argument("--frontend-revision", required=True)
     parser.add_argument("--api-revision", required=True)
     parser.add_argument("--video", type=Path)
+    parser.add_argument("--editorial-model", default="")
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
@@ -466,6 +729,7 @@ def main():
     stage = "browser_prerequisites"
     try:
         require(COMMIT.fullmatch(args.commit), "commit_shape")
+        require(not args.editorial_model or MODEL.fullmatch(args.editorial_model), "editorial_model_shape")
         revisions = cloud_revisions(args.frontend_revision, args.api_revision)
         report.update(commit=args.commit, revisions=revisions)
         shared_http.private_file(args.state, must_exist=args.mode == "verify")

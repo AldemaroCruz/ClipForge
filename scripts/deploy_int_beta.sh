@@ -20,6 +20,17 @@ TF_VAR_web_image="$(jq -er '.images.web.image' "$reports/candidate.json")"
 TF_VAR_worker_image="$(jq -er '.images.worker.image' "$reports/candidate.json")"
 export TF_VAR_web_image TF_VAR_worker_image
 
+editorial_model="${INT_EDITORIAL_OPENAI_MODEL:-}"
+editorial_credential_version="${INT_EDITORIAL_OPENAI_KEY_VERSION:-}"
+TF_VAR_editorial_provider=null
+if [[ -n "$editorial_model" || -n "$editorial_credential_version" ]]; then
+    [[ "$editorial_model" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$ ]]
+    [[ "$editorial_credential_version" =~ ^[1-9][0-9]{0,9}$ ]]
+    TF_VAR_editorial_provider="$(jq -nc --arg model "$editorial_model" --arg version "$editorial_credential_version" \
+        '{model:$model,credential_version:$version}')"
+fi
+export TF_VAR_editorial_provider
+
 tf() { terraform -chdir=infra/gcp/int-beta "$@"; }
 run() { gcloud run "$@" --project "$project" --region "$region" --quiet; }
 
@@ -82,7 +93,7 @@ capture_rollout() {
 }
 
 capture_previous() {
-    local version front previous_api worker
+    local version front previous_api worker_spec worker worker_editorial
     if ! version="$(curl --silent --fail --max-time 10 "$public/environment" |
         jq -er 'select(.environment == "INT") | .revision')"; then
         return 0
@@ -92,23 +103,55 @@ capture_previous() {
         jq -er '.status.traffic[] | select(.percent == 100) | .revisionName')"
     previous_api="$(run services describe "$api" --format=json |
         jq -er '.status.traffic[] | select(.percent == 100) | .revisionName')"
-    worker="$(run jobs describe clipforge-int-worker --format='value(spec.template.spec.template.spec.containers[0].image)')"
+    worker_spec="$(run jobs describe clipforge-int-worker --format='json(spec.template.spec.template.spec.containers)')"
+    worker="$(jq -er '.spec.template.spec.template.spec.containers[0].image' <<< "$worker_spec")"
+    worker_editorial="$(jq -ec '
+        [.spec.template.spec.template.spec.containers[0].env[]?] |
+        def val($name): map(select(.name == $name)) | .[0].value;
+        {
+            provider: (val("CLIPFORGE_AI_PROVIDER") // "disabled"),
+            model: (val("CLIPFORGE_AI_MODEL") // ""),
+            timeout: (val("CLIPFORGE_AI_TIMEOUT_SECONDS") // ""),
+            key_version: (map(select(.name == "OPENAI_API_KEY")) | .[0].valueFrom.secretKeyRef.key // "")
+        } |
+        select(.provider == "disabled" or (.provider == "openai" and
+            (.model | test("^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$")) and
+            (.key_version | test("^[1-9][0-9]{0,9}$")) and (.timeout | test("^[0-9]{2,3}$"))))
+        ' <<< "$worker_spec")"
     [[ "$front" =~ ^clipforge-int-beta-[0-9][0-9a-z-]+$ &&
        "$previous_api" =~ ^clipforge-int-beta-api-[0-9][0-9a-z-]+$ &&
        "$worker" =~ ^us-central1-docker\.pkg\.dev/clipforgebeta2/clipforge-int/beta-worker@sha256:[a-f0-9]{64}$ ]]
     jq -n --arg commit "$version" --arg frontend "$front" --arg api "$previous_api" --arg worker "$worker" \
-        '{commit:$commit,frontend_revision:$frontend,api_revision:$api,worker_image:$worker}' \
+        --argjson editorial "$worker_editorial" \
+        '{commit:$commit,frontend_revision:$frontend,api_revision:$api,worker_image:$worker,editorial:$editorial}' \
         > "$reports/previous-live.json"
 }
 
 restore_previous() {
-    local previous="$reports/previous-live.json" version front previous_api worker
+    local previous="$reports/previous-live.json" version front previous_api worker provider model key_version timeout
+    local -a editorial_options
     version="$(jq -er '.commit' "$previous")" || return
     front="$(jq -er '.frontend_revision' "$previous")" || return
     previous_api="$(jq -er '.api_revision' "$previous")" || return
     worker="$(jq -er '.worker_image' "$previous")" || return
+    provider="$(jq -er '.editorial.provider' "$previous")" || return
+    if [[ "$provider" == openai ]]; then
+        model="$(jq -er '.editorial.model' "$previous")" || return
+        key_version="$(jq -er '.editorial.key_version' "$previous")" || return
+        timeout="$(jq -er '.editorial.timeout' "$previous")" || return
+        editorial_options=(
+            --update-env-vars "CLIPFORGE_REVISION=$version,CLIPFORGE_AI_PROVIDER=openai,CLIPFORGE_AI_MODEL=$model,CLIPFORGE_AI_CONFIG_REVISION=$key_version,CLIPFORGE_AI_TIMEOUT_SECONDS=$timeout"
+            --update-secrets "OPENAI_API_KEY=clipforge-int-openai-key:$key_version"
+        )
+    else
+        editorial_options=(
+            --update-env-vars "CLIPFORGE_REVISION=$version,CLIPFORGE_AI_PROVIDER=disabled"
+            --remove-env-vars CLIPFORGE_AI_MODEL,CLIPFORGE_AI_CONFIG_REVISION,CLIPFORGE_AI_TIMEOUT_SECONDS
+            --remove-secrets OPENAI_API_KEY
+        )
+    fi
     run services update "$frontend" --invoker-iam-check || return
-    run jobs update clipforge-int-worker --image "$worker" --update-env-vars "CLIPFORGE_REVISION=$version" || return
+    run jobs update clipforge-int-worker --image "$worker" "${editorial_options[@]}" || return
     run services update-traffic "$api" --to-revisions "$previous_api=100" || return
     run services update-traffic "$frontend" --to-revisions "$front=100" || return
     run services update "$frontend" --no-invoker-iam-check || return
@@ -119,11 +162,11 @@ restore_previous() {
 
 create_fixture() {
     local speech
-    speech='Este es un ejemplo real para comprobar la beta de ClipForge. Primero voy a subir mi video. Después voy a revisar varios clips. El audio se debe entender con claridad. Me interesa compartir una historia corta, con cortes que conservan la idea principal. Cuando termine puedo descargar los resultados y enviar un comentario sobre el clip.'
+    speech='En Guatemala los vecinos recuperaron un huerto comunitario. Empezaron guardando semillas de maíz de varios colores. Luego compartieron turnos para regar y aprender de la cosecha. Un año después, el grupo enseñó a otras escuelas a conservar semillas y a cultivar en espacios pequeños. La lección es clara: cuidar la tierra funciona mejor cuando todos comparten lo que aprenden.'
     espeak-ng -v es -s 148 -w "$DELIVERY_DIR/voice.wav" "$speech $speech"
     ffmpeg -hide_banner -loglevel error -nostdin \
-        -f lavfi -i 'testsrc2=size=1280x720:rate=24' -i "$DELIVERY_DIR/voice.wav" -af apad \
-        -t 36 -c:v libx264 -preset veryfast -pix_fmt yuv420p -threads 2 \
+        -f lavfi -i 'testsrc2=size=1280x720:rate=24' -stream_loop -1 -i "$DELIVERY_DIR/voice.wav" \
+        -t 120 -c:v libx264 -preset veryfast -pix_fmt yuv420p -threads 2 \
         -b:v 3000k -minrate 3000k -maxrate 3000k -bufsize 6000k -x264-params nal-hrd=cbr \
         -c:a aac -b:a 96k -movflags +faststart "$DELIVERY_DIR/fixture.mp4"
     [[ "$(stat -c %s "$DELIVERY_DIR/fixture.mp4")" -gt 8388608 ]]
@@ -147,7 +190,7 @@ capacity_acceptance() {
         -u GOOGLE_APPLICATION_CREDENTIALS -u CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE \
         python -m scripts.int_hito_b_capacity_browser --commit "$GITHUB_SHA" \
         --frontend-revision "$FRONTEND_REVISION" --api-revision "$API_REVISION" \
-        --fixture-dir "$DELIVERY_DIR/capacity" --report "$reports/browser-capacity.json"
+        --editorial-model "$editorial_model" --fixture-dir "$DELIVERY_DIR/capacity" --report "$reports/browser-capacity.json"
 }
 
 browser_acceptance() {
@@ -157,7 +200,8 @@ browser_acceptance() {
         -u GOOGLE_APPLICATION_CREDENTIALS -u CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE \
         python -m scripts.int_hito_b_browser "$phase" --commit "$GITHUB_SHA" \
         --frontend-revision "$FRONTEND_REVISION" --api-revision "$API_REVISION" \
-        --state "$DELIVERY_DIR/browser-private.json" --report "$reports/browser-$phase.json" "$@"
+        --editorial-model "$editorial_model" --state "$DELIVERY_DIR/browser-private.json" \
+        --report "$reports/browser-$phase.json" "$@"
 }
 
 rollback_delivery() {

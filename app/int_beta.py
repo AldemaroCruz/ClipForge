@@ -11,7 +11,7 @@ from .auth import AuthenticationBoundary, require_access, router as auth_router,
 from .auth_db import AuthConfigurationError, database_ready, get_engine
 from .cloud.config import beta_enabled, settings as cloud_settings
 from .cloud.migrate import REVISION
-from .cloud.migrate_beta import beta_schema_ready
+from .cloud.migrate_beta import beta_schema_ready, editorial_schema_ready
 from .cloud.pilot import router as pilot_router
 from .cloud.router import router as media_router
 from .environment import identity
@@ -59,15 +59,21 @@ app.include_router(auth_router, dependencies=[Depends(require_access)])
 media_gets = {
     "/projects", "/jobs/{job_id}", "/jobs/{job_id}/clips/{filename}", "/jobs/{job_id}/source",
     "/jobs/{job_id}/workspace", "/jobs/{job_id}/exports", "/jobs/{job_id}/exports/{export_id}/files/{filename}",
+    "/ai/config", "/jobs/{job_id}/selections/context", "/jobs/{job_id}/selections",
+    "/jobs/{job_id}/selections/{run_id}", "/jobs/{job_id}/drafts", "/jobs/{job_id}/drafts/{draft_id}",
 }
 media_posts = {
     "/jobs/{job_id}/editor/range", "/jobs/{job_id}/editor/exports",
     "/jobs/{job_id}/exports/{export_id}/retry",
+    "/jobs/{job_id}/selections/preview", "/jobs/{job_id}/selections",
+    "/jobs/{job_id}/selections/{run_id}/candidates/{candidate_id}/draft",
+    "/jobs/{job_id}/drafts", "/jobs/{job_id}/drafts/{draft_id}/exports",
 }
 media_routes = APIRouter(routes=[
     route for route in media_router.routes
     if ((route.methods == {"GET"} and route.path in media_gets)
-        or (route.methods == {"POST"} and route.path in media_posts))
+        or (route.methods == {"POST"} and route.path in media_posts)
+        or (route.methods == {"PUT"} and route.path == "/jobs/{job_id}/drafts/{draft_id}"))
 ])
 app.include_router(media_routes, dependencies=[Depends(require_access)])
 app.include_router(pilot_router, dependencies=[Depends(require_access)])
@@ -105,7 +111,8 @@ def health():
             revisions = connection.execute(text(
                 "SELECT revision FROM cloud_schema_migrations ORDER BY revision"
             )).scalars().all()
-            if revisions == [REVISION] and beta_schema_ready(connection) and database_ready():
+            if (revisions == [REVISION] and beta_schema_ready(connection)
+                    and editorial_schema_ready(connection) and database_ready()):
                 return {"status": "ok", "profile": "int-beta"}
     except (SQLAlchemyError, AuthConfigurationError):
         raise HTTPException(503, "El almacenamiento persistente todavía no está disponible.") from None

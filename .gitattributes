@@ -1,0 +1,2 @@
+# Preserve the exact bytes of the upstream mail-format patch, including diff context.
+scripts/libass-d570c2f.patch -text whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab

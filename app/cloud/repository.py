@@ -5,6 +5,7 @@ from contextvars import ContextVar
 import hashlib
 import json
 import re
+import time
 import uuid
 from sqlalchemy import Text, bindparam, cast, column, func, table, text, update
 from sqlalchemy.dialects.postgresql import JSONB
@@ -25,13 +26,15 @@ def packed(value):
     return json.dumps(value, allow_nan=False, separators=(",", ":"))
 
 
-def document(job_id, kind="job", item_id=None, connection=None):
+def document(job_id, kind="job", item_id=None, connection=None, *, required=True):
     item_id = item_id or job_id
     def read(c):
         row = c.execute(text("SELECT payload,manifest,revision FROM cloud_documents WHERE job_id=:j AND kind=:k AND id=:i"),
                         {"j": job_id, "k": kind, "i": item_id}).mappings().first()
         if row is None:
-            raise HTTPException(404, "Proyecto o documento no encontrado")
+            if required:
+                raise HTTPException(404, "Proyecto o documento no encontrado")
+            return None
         return copy.deepcopy(dict(row))
     if connection is not None:
         return read(connection)
@@ -106,9 +109,9 @@ def admit_beta(c, owner, current_job=""):
     active, own = c.execute(text("""
         SELECT count(*), count(*) FILTER (WHERE p.owner_id=:o)
         FROM cloud_documents d JOIN auth_projects p ON p.id=d.job_id
-        WHERE d.kind IN ('job','export') AND d.payload->'pilot'=CAST('true' AS jsonb)
+        WHERE d.kind IN ('job','export','selection') AND d.payload->'pilot'=CAST('true' AS jsonb)
           AND d.job_id<>:j AND (
-            d.payload->>'status' IN ('queued','validating','transcribing','rendering')
+            d.payload->>'status' IN ('queued','validating','transcribing','rendering','running')
             OR (d.payload->>'status'='awaiting_upload' AND
                 CASE WHEN jsonb_typeof(d.payload->'upload_expires_at')='number'
                     THEN (d.payload->>'upload_expires_at')::double precision > extract(epoch from clock_timestamp())
@@ -118,6 +121,21 @@ def admit_beta(c, owner, current_job=""):
         raise HTTPException(409, "Ya tienes una carga o un procesamiento pendiente. Continúa desde Tus trabajos.")
     if active >= BETA_MAX_ACTIVE:
         raise HTTPException(429, "La cola del piloto está llena. Intenta nuevamente cuando termine un trabajo.")
+
+
+def admit_selection(c, job_id, day, planned_calls, daily_limit, max_runs):
+    """Reserve all provider calls under the existing admission transaction lock."""
+    runs = c.execute(text("""
+        SELECT count(*) FROM cloud_documents WHERE job_id=:j AND kind='selection'
+        """), {"j": job_id}).scalar_one()
+    if runs >= max_runs:
+        raise HTTPException(409, "Este trabajo alcanzó el máximo de análisis guardados.")
+    reserved = c.execute(text("""
+        SELECT COALESCE(sum(CAST(payload->>'provider_calls_planned' AS integer)),0)
+        FROM cloud_documents WHERE kind='selection' AND payload->>'day_utc'=:day
+        """), {"day": day}).scalar_one()
+    if reserved + planned_calls > daily_limit:
+        raise HTTPException(429, "Se alcanzó el presupuesto diario de solicitudes por IA. Podés intentarlo otro día.")
 
 
 def check_active_workspace(c, principal):
@@ -269,8 +287,9 @@ def worker_progress(job_id, kind, payload):
 
 
 def finish_task(task, payload, manifest):
-    kind = "job" if task["kind"] == "process" else "export"
-    public_beta_failure(payload)
+    kind = "job" if task["kind"] == "process" else task["kind"]
+    if kind != "selection":
+        public_beta_failure(payload)
     with get_engine().begin() as c:
         worker_guard(c, task)
         update_document(c, task["job_id"], kind, payload, manifest=manifest)
@@ -281,10 +300,18 @@ def finish_task(task, payload, manifest):
 def mark_crashed(task):
     with get_engine().begin() as c:
         worker_guard(c, task)
-        kind = "job" if task["kind"] == "process" else "export"
+        kind = "job" if task["kind"] == "process" else task["kind"]
         doc = document(task["job_id"], kind, task["item_id"], c)
         item = doc["payload"]
-        item.update(status="failed", error="Procesamiento interrumpido. El original se conserva; revisa el estado antes de reintentar.", error_code="WORKER_INTERRUPTED")
-        public_beta_failure(item)
+        if kind == "selection":
+            interrupt_selection(item)
+        else:
+            item.update(status="failed", error="Procesamiento interrumpido. El original se conserva; revisa el estado antes de reintentar.", error_code="WORKER_INTERRUPTED")
+            public_beta_failure(item)
         update_document(c, task["job_id"], kind, item)
         c.execute(text("UPDATE cloud_tasks SET status='failed',lease_until=NULL,updated_at=clock_timestamp() WHERE id=:i AND fence=:f"), {"i": task["id"], "f": task["fence"]})
+
+
+def interrupt_selection(item):
+    item.update(status="failed", error_code="AI_TASK_INTERRUPTED", completed_at=time.time(),
+                error="El análisis se interrumpió. Para intentarlo de nuevo, revisa y autoriza otra solicitud.")

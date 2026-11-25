@@ -302,6 +302,60 @@ def check_isolation(cases, report):
     browser_test.check(report, "three_way_owner_isolation")
 
 
+def editorial_capacity(cases, args, report):
+    editorial = {}
+    report["editorial"] = editorial
+    if args.editorial_model:
+        report["step"] = "three_editorial_requests_submitted"
+        pending = [browser_test.start_selection(case.page, case.job_id, args.editorial_model) for case in cases]
+        report["step"] = "three_real_editorial_selections"
+        selections = [browser_test.finish_selection(case.page, case.job_id, receipt, args.editorial_model, 1200)
+                      for case, receipt in zip(cases, pending, strict=True)]
+    else:
+        selections = [None] * len(cases)
+    queued = []
+    report["step"] = "three_editorial_exports_submitted"
+    for case in cases:
+        browser_test.open_late_draft(case.page, case.job_id, 1166, 1195, generated=bool(args.editorial_model))
+        draft = browser_test.save_style(case.page, case.job_id, 52, "#FF0000",
+                                        "Edición y acción.\nCorazón y mañana.")
+        queued.append((draft, browser_test.start_editorial_export(case.page, case.job_id, draft)))
+    report["step"] = "three_editorial_exports_processing"
+    ready = {}
+    while len(ready) < len(cases):
+        for case, (_, (export_id, activated, _)) in zip(cases, queued, strict=True):
+            if case.label in ready:
+                continue
+            variants = facts(case.page, f"/jobs/{case.job_id}/exports")["exports"]
+            variant = next((item for item in variants if item["id"] == export_id), None)
+            require(variant is not None and variant["status"] in {"queued", "rendering", "completed"},
+                    "parallel_editorial_export_failed")
+            if variant["status"] == "completed":
+                ready[case.label] = elapsed(activated)
+            else:
+                require(monotonic() - activated < 480, "parallel_editorial_export_timeout")
+        if len(ready) < len(cases):
+            cases[0].page.wait_for_timeout(POLL_MS)
+    report["step"] = "three_editorial_exports_downloaded"
+    for case, selection, (draft, receipt) in zip(cases, selections, queued, strict=True):
+        output = browser_test.fetch_editorial_export(case.page, case.job_id, draft, receipt, args.report.parent,
+                                                     ready_seconds=ready[case.label])
+        editorial[case.label] = {"export": output}
+        denied = [f"/drafts/{draft['id']}", f"/exports/{receipt[0]}/files/clip.mp4"]
+        if selection:
+            editorial[case.label]["selection"] = {key: value for key, value in selection.items() if key != "id"}
+            denied.append(f"/selections/{selection['id']}")
+        for other in cases:
+            if case is not other:
+                path = f"/jobs/{case.job_id}"
+                for suffix in denied:
+                    require(browser_test.browser_get(other.page, path + suffix)["status"] in {403, 404},
+                            "other_creator_editorial_result_visible")
+    editorial["status"] = "passed" if args.editorial_model else "subtitles_passed_provider_not_configured"
+    editorial["real_provider_called"] = bool(args.editorial_model)
+    browser_test.check(report, "three_twenty_minute_jobs_and_subtitled_exports")
+
+
 def run_batch(cases, args, report, overlap=None):
     report["step"] = "upload"
     skew = wait_for_uploads(cases, report)
@@ -373,6 +427,7 @@ def acceptance(browser, args, admin, report):
             run_batch(parallel, args, report, (browser, accounts, warm[0]))
             report["step"] = "creator_isolation"
             check_isolation(parallel, report)
+            editorial_capacity(parallel, args, report)
             for page in pages:
                 browser_test.logout(page)
     finally:
@@ -392,6 +447,7 @@ def arguments(argv=None):
     parser.add_argument("--api-revision", required=True)
     parser.add_argument("--fixture-dir", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--editorial-model", default="")
     parser.add_argument("--case-timeout", type=int, default=1_800, help="seconds for each worker batch")
     parser.add_argument("--response-budget", type=int, default=30, help="seconds per portal operation under load")
     return parser.parse_args(argv)
@@ -402,6 +458,7 @@ def main(argv=None):
     report = {"schema": SCHEMA, "url": PUBLIC, "status": "failed", "cases": {}, "checks": [], "step": "preflight"}
     try:
         require(browser_test.COMMIT.fullmatch(args.commit), "commit_shape")
+        require(not args.editorial_model or browser_test.MODEL.fullmatch(args.editorial_model), "editorial_model_shape")
         require(300 <= args.case_timeout <= 7_200 and 5 <= args.response_budget <= 120, "time_budget_shape")
         shared_http.private_file(args.report, must_exist=False)
         report["commit"] = args.commit

@@ -11,7 +11,7 @@
       "cwe": 78,
       "line": 12,
       "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
-      "source_sha256": "dfe7f5d53aea91b4921ae46c4b04fe305c90c89537af5a2fb440407072d57a55",
+      "source_sha256": "f9b28f7dd0225e20336bc0922c36d87d79618c0f007972a2eed78849ea8f6443",
       "reason": "Imports subprocess for the reviewed worker child, bounded waits and process-group termination."
     },
     {
@@ -20,9 +20,9 @@
       "severity": "LOW",
       "confidence": "HIGH",
       "cwe": 78,
-      "line": 225,
+      "line": 229,
       "context_sha256": "8415e97bd461f03909d1aacf75962f85fa0562255b9f8ac40d2e096d52e95aae",
-      "source_sha256": "dfe7f5d53aea91b4921ae46c4b04fe305c90c89537af5a2fb440407072d57a55",
+      "source_sha256": "f9b28f7dd0225e20336bc0922c36d87d79618c0f007972a2eed78849ea8f6443",
       "reason": "A fixed Python interpreter and worker module run without a shell. The UUID and fence come from the claimed PostgreSQL task and the child validates both before execution."
     },
     {

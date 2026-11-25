@@ -49,6 +49,7 @@ jobs:
           command -v google-chrome
           node --check app/static/beta.js
           node --check app/static/mvp.js
+          node --check app/static/editorial.js
           node --check app/static/auth.js
           node --check app/static/account.js
           node --check app/static/recover.js
@@ -171,7 +172,7 @@ jobs:
           mkdir "$runtime/scripts" "$runtime/config" "$runtime/debs" "$runtime/wheels-web" "$runtime/wheels-worker" "$runtime/native"
           cp "$CI_CONTEXT/config/whisper-int.json" "$runtime/config/"
           cp "$CI_CONTEXT"/{Dockerfile.int-beta,requirements-int-demo-apt.tsv,requirements-int-beta-apt.tsv} "$runtime/"
-          cp "$CI_CONTEXT/scripts/build_int_beta_ffmpeg.sh" "$runtime/scripts/"
+          cp "$CI_CONTEXT"/scripts/{build_int_beta_ffmpeg.sh,libass-d570c2f.patch} "$runtime/scripts/"
           cp "$CI_CONTEXT/requirements-int-demo.lock" "$runtime/web.lock"
           grep -E '^(requests|certifi|charset-normalizer|urllib3|python-multipart)==' "$CI_CONTEXT/requirements-int.lock" >> "$runtime/web.lock"
           grep -v '^psycopg-binary==' "$CI_CONTEXT/requirements-int.lock" > "$runtime/worker.lock"
@@ -193,6 +194,13 @@ jobs:
           done
           curl --fail --silent --show-error --location --proto '=https' --retry 2 \
             --output "$runtime/native/ffmpeg-release-key.asc" https://ffmpeg.org/ffmpeg-devel.asc
+          libass_release=https://github.com/libass/libass/releases/download/0.17.5
+          for filename in libass-0.17.5.tar.xz libass-0.17.5.tar.xz.asc; do
+            curl --fail --silent --show-error --location --proto '=https' --retry 2 \
+              --output "$runtime/native/$filename" "$libass_release/$filename"
+          done
+          curl --fail --silent --show-error --location --proto '=https' --retry 2 \
+            --output "$runtime/native/libass-release-key.asc" https://github.com/TheOneric.gpg
           python -m scripts.prepare_int_runtime fetch --source "$CI_CONTEXT" --weights "$runtime/weights"
 
       - name: Build once and scan the exact two runtime images
@@ -254,6 +262,8 @@ jobs:
       CANDIDATE_RECEIPT: ${{ needs.api.outputs.receipt }}
       CLOUDSDK_CORE_DISABLE_PROMPTS: '1'
       CLOUDSDK_CORE_DISABLE_USAGE_REPORTING: '1'
+      INT_EDITORIAL_OPENAI_MODEL: ${{ vars.INT_EDITORIAL_OPENAI_MODEL }}
+      INT_EDITORIAL_OPENAI_KEY_VERSION: ${{ vars.INT_EDITORIAL_OPENAI_KEY_VERSION }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -278,7 +288,8 @@ jobs:
           mkdir "$root/reports" "$root/images"
           printf 'DELIVERY_DIR=%s\nTF_DATA_DIR=%s/terraform\nCLOUDSDK_CONFIG=%s/gcloud\n' "$root" "$root" "$root" >> "$GITHUB_ENV"
           docker pull "$SKOPEO_IMAGE"
-          python -m pip install --no-deps --only-binary=:all: --require-hashes -r requirements-ci-tools.lock
+          python -m pip install --no-deps --only-binary=:all: --require-hashes \
+            -r requirements-ci-tools.lock -r requirements-int-demo.lock
           command -v google-chrome
           if ! command -v ffmpeg >/dev/null || ! command -v espeak-ng >/dev/null; then
             sudo apt-get update

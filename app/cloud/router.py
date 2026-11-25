@@ -15,10 +15,12 @@ from pydantic import ValidationError
 from sqlalchemy import text
 from starlette.concurrency import run_in_threadpool
 
+from ..ai_selection import SelectionCreate, SelectionSpec
 from ..auth_db import get_engine
 from ..editorial import EditorialContent, DraftUpdate, ProjectName, RangeChange, RevisionRequest, retime_cues, validate_range
 from ..presentation import Presentation, ExportRequest
-from ..subtitles import SubtitleError, to_srt, to_vtt, validate_cues
+from ..subtitles import SubtitleError, cues_from_segments, to_srt, to_vtt, validate_cues
+from . import editorial_selection as selection
 from . import repository as repo
 from . import storage
 from .dispatch import reconcile
@@ -130,7 +132,7 @@ def get_job(job_id: str, response: Response):
 def _needs_dispatch(job_id, kind, items):
     if any(item["status"] == "queued" for item in items):
         return True
-    if not any(item["status"] in {"validating", "transcribing", "rendering"} for item in items):
+    if not any(item["status"] in {"validating", "transcribing", "rendering", "running"} for item in items):
         return False
     with get_engine().connect() as connection:
         return connection.execute(text("""
@@ -260,6 +262,94 @@ def change_range(job_id: str, request: RangeChange):
             "timing_note": "Los subtítulos usan tiempos por segmento; revisa los bordes."}
 
 
+@router.get("/jobs/{job_id}/selections/context")
+def selection_context(job_id: str, response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    return selection.context(_doc(job_id))
+
+
+@router.post("/jobs/{job_id}/selections/preview")
+def selection_preview(job_id: str, payload: SelectionSpec, response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    return selection.preview(_doc(job_id), payload)
+
+
+@router.post("/jobs/{job_id}/selections", status_code=202)
+def create_selection(job_id: str, payload: SelectionCreate, request: Request):
+    item = selection.create(job_id, payload, request.state.principal)
+    return _dispatch(item) if item["status"] == "queued" else item
+
+
+@router.get("/jobs/{job_id}/selections")
+def selections(job_id: str, response: Response, offset: int = Query(0, ge=0), limit: int = Query(10, ge=1, le=50)):
+    response.headers["Cache-Control"] = "no-store"
+    _doc(job_id)
+    items = [entry["payload"] for entry in repo.list_documents(job_id, "selection")]
+    items.sort(key=lambda item: (item["created_at"], item["id"]), reverse=True)
+    if _needs_dispatch(job_id, "selection", items):
+        _dispatch({})
+    return {"analyses": items[offset:offset+limit], "total": len(items), "has_more": len(items) > offset+limit,
+            "unreadable": 0}
+
+
+@router.get("/jobs/{job_id}/selections/{run_id}")
+def get_selection(job_id: str, run_id: str, response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    item = _doc(job_id, "selection", run_id)["payload"]
+    if _needs_dispatch(job_id, "selection", [item]):
+        return _dispatch(item)
+    return item
+
+
+@router.post("/jobs/{job_id}/selections/{run_id}/candidates/{candidate_id}/draft", status_code=201)
+def candidate_to_draft(job_id: str, run_id: str, candidate_id: int, request: Request):
+    item = _doc(job_id, "selection", run_id)["payload"]
+    if item["status"] != "completed":
+        raise HTTPException(409, "El análisis aún no está completado.")
+    candidate = next((entry for entry in item["candidates"] if entry["id"] == str(candidate_id)), None)
+    if candidate is None:
+        raise HTTPException(404, "Propuesta no encontrada")
+    draft_id = uuid.uuid5(uuid.NAMESPACE_URL, f"clipforge:{job_id}:{run_id}:{candidate_id}").hex
+    principal = request.state.principal
+    with get_engine().begin() as connection:
+        job = repo.beta_document(connection, principal, job_id)
+        previous = repo.document(job_id, "draft", draft_id, connection, required=False)
+        if previous is not None:
+            return previous["payload"]
+    identity = selection.source_identity(job)
+    if identity != item["source_fingerprint"]:
+        raise HTTPException(409, "El original o la transcripción cambió. Generá una nueva selección.")
+    segments = selection.transcript_segments(job, identity)
+    indexed = {segment["id"]: segment for segment in segments}
+    try:
+        start = indexed[candidate["start_segment"]]["start"]
+        end = indexed[candidate["end_segment"]]["end"]
+        if start != candidate["start"] or end != candidate["end"] or not 20 <= round(end - start, 3) <= 60:
+            raise ValueError("Candidate limits")
+        draft_content = EditorialContent(
+            title=candidate["title"], start=start, end=end,
+            cues=cues_from_segments(segments, start, end),
+            options=Presentation.model_validate(job["payload"].get("options", {})),
+        )
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(409, "La propuesta guardada no tiene límites o subtítulos válidos.") from None
+    now = time.time()
+    draft = {**draft_content.model_dump(), "id": draft_id, "job_id": job_id, "revision": 1,
+             "created_at": now, "updated_at": now, "version": VERSION,
+             "selection_origin": {"analysis_id": run_id, "candidate_id": str(candidate_id), "mode": "llm",
+                                  "range_id": candidate["range_id"], "transcript_sha256": identity["transcript_sha256"],
+                                  "provider": item["provider"], "model": item["model"]}}
+    with get_engine().begin() as connection:
+        current = repo.beta_document(connection, principal, job_id)
+        previous = repo.document(job_id, "draft", draft_id, connection, required=False)
+        if previous is not None:
+            return previous["payload"]
+        if selection.source_identity(current) != identity:
+            raise HTTPException(409, "Cambió la transcripción. Generá una nueva selección.")
+        repo.insert_document(connection, job_id, "draft", draft)
+    return draft
+
+
 def _content(job_id, request):
     _, duration = _workspace(job_id)
     if request.clip_file:
@@ -317,10 +407,11 @@ def update_draft(job_id: str, draft_id: str, request: DraftUpdate):
     return item
 
 
-def _submit_export(job_id, item, request, *, pilot=False):
+def _submit_export(job_id, item, request, *, pilot=False, request_key=None):
     owner = request.state.principal.id
     fingerprint = hashlib.sha256(repo.packed({k: v for k, v in item.items() if k not in {"id", "created_at"}}).encode()).hexdigest()
-    with repo.request_transaction(owner, request.headers.get("Idempotency-Key"), fingerprint) as (c, previous, key):
+    idempotency_key = request_key or request.headers.get("Idempotency-Key")
+    with repo.request_transaction(owner, idempotency_key, fingerprint) as (c, previous, key):
         if pilot:
             repo.check_active_workspace(c, request.state.principal)
         if previous:
@@ -396,7 +487,9 @@ def export_draft(job_id: str, draft_id: str, payload: RevisionRequest, request: 
             "title": snapshot["title"], "clip_file": snapshot["clip_file"] or f"manual_{draft_id[:8]}.mp4",
             "source_clip_file": snapshot["clip_file"], "status": "queued", "created_at": time.time(), "version": VERSION,
             "start": snapshot["start"], "end": snapshot["end"], "options": snapshot["options"], "cues": snapshot["cues"]}
-    return _submit_export(job_id, item, request)
+    pilot = _doc(job_id)["payload"].get("pilot") is True
+    key = f"draft-{draft_id}-{payload.revision}" if pilot else None
+    return _submit_export(job_id, item, request, pilot=pilot, request_key=key)
 
 
 @router.post("/jobs/{job_id}/clips/{filename}/exports", status_code=202)
@@ -499,8 +592,9 @@ def capabilities():
 
 
 @router.get("/ai/config")
-def ai_config():
-    return {"enabled": False, "configured": False, "reason": "Selección LLM desactivada en INT; usa selección manual o heurística."}
+def ai_config(response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    return selection.config_status()
 
 
 def unavailable():

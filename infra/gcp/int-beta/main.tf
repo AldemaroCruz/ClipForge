@@ -53,6 +53,22 @@ variable "acceptance_nonce" {
   }
 }
 
+variable "editorial_provider" {
+  description = "Optional OpenAI configuration for the INT editorial worker. These are references, not secret values."
+  type = object({
+    model              = string
+    credential_version = string
+  })
+  default = null
+  validation {
+    condition = var.editorial_provider == null ? true : (
+      can(regex("^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$", var.editorial_provider.model)) &&
+      can(regex("^[1-9][0-9]{0,9}$", var.editorial_provider.credential_version))
+    )
+    error_message = "Provide an explicit model and a numeric Secret Manager version."
+  }
+}
+
 locals {
   project           = "clipforgebeta2"
   region            = "us-central1"
@@ -70,6 +86,14 @@ locals {
     application = "clipforge-int-pg-app-password"
     migrator    = "clipforge-int-pg-migrator-password"
   }
+  editorial_credential = "clipforge-int-openai-key"
+  editorial = merge({
+    CLIPFORGE_AI_PROVIDER = var.editorial_provider == null ? "disabled" : "openai"
+    }, var.editorial_provider == null ? {} : {
+    CLIPFORGE_AI_MODEL           = var.editorial_provider.model
+    CLIPFORGE_AI_CONFIG_REVISION = var.editorial_provider.credential_version
+    CLIPFORGE_AI_TIMEOUT_SECONDS = "40"
+  })
   database = {
     CLIPFORGE_ENVIRONMENT                 = "INT"
     CLIPFORGE_REVISION                    = var.source_revision
@@ -91,8 +115,6 @@ locals {
     CLIPFORGE_CLOUD_PROJECT   = local.project
     CLIPFORGE_CLOUD_REGION    = local.region
     CLIPFORGE_CLOUD_JOB       = local.worker_job
-    CLIPFORGE_AI_PROVIDER     = "disabled"
-    CLIPFORGE_LLM_ENABLED     = "0"
     CLIPFORGE_INT_BETA        = "1"
   }
 }
@@ -134,7 +156,7 @@ resource "google_cloud_run_v2_service" "api" {
         cpu_idle = true
       }
       dynamic "env" {
-        for_each = merge(local.database, local.cloud, {
+        for_each = merge(local.database, local.cloud, local.editorial, {
           CLIPFORGE_DATABASE_USER    = "clipforge_app"
           CLIPFORGE_ACCEPTANCE_NONCE = var.acceptance_nonce
         })
@@ -218,7 +240,7 @@ resource "google_cloud_run_v2_job" "task" {
     worker = {
       name  = local.worker_job, identity = local.worker_identity, credential = local.credentials.application
       image = var.worker_image, args = ["-m", "app.cloud.worker"], cpu = "2", memory = "4Gi", timeout = "1200s"
-      user  = "clipforge_app", extra = local.cloud
+      user  = "clipforge_app", extra = merge(local.cloud, local.editorial)
     }
     migrate = {
       name  = local.migrate_job, identity = local.migrator_identity, credential = local.credentials.migrator
@@ -253,6 +275,18 @@ resource "google_cloud_run_v2_job" "task" {
           content {
             name  = env.key
             value = env.value
+          }
+        }
+        dynamic "env" {
+          for_each = each.key == "worker" && var.editorial_provider != null ? [var.editorial_provider.credential_version] : []
+          content {
+            name = "OPENAI_API_KEY"
+            value_source {
+              secret_key_ref {
+                secret  = local.editorial_credential
+                version = env.value
+              }
+            }
           }
         }
         volume_mounts {
