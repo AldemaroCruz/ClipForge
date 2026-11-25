@@ -313,14 +313,17 @@ def editorial_capacity(cases, args, report):
                       for case, receipt in zip(cases, pending, strict=True)]
     else:
         selections = [None] * len(cases)
-    queued = []
+    drafts = []
     for case in cases:
         report["case"] = case.label
         report["step"] = "three_editorial_open_late_draft"
         browser_test.open_late_draft(case.page, case.job_id, 1166, 1195, generated=bool(args.editorial_model))
         report["step"] = "three_editorial_save_subtitle_style"
-        draft = browser_test.save_style(case.page, case.job_id, 52, "#FF0000",
-                                        "Edición y acción.\nCorazón y mañana.")
+        drafts.append(browser_test.save_style(case.page, case.job_id, 52, "#FF0000",
+                                             "Edición y acción.\nCorazón y mañana."))
+    queued = []
+    for case, draft in zip(cases, drafts, strict=True):
+        report["case"] = case.label
         report["step"] = "three_editorial_approve_export"
         queued.append((draft, browser_test.start_editorial_export(case.page, case.job_id, draft)))
     del report["case"]

@@ -393,10 +393,19 @@ class BrowserHitoBTest(unittest.TestCase):
         self.page.add_init_script("""(() => {
             const original = window.fetch.bind(window);
             let draftCreated = false;
+            let listingHeld = false;
+            window.editorialRequests = [];
             window.fetch = async (url, options) => {
-                const hold = draftCreated && String(url).endsWith("/drafts?limit=100");
+                const path = String(url).replace(/^\\/jobs\\/[a-f0-9]{32}/, "");
+                const method = options?.method || "GET";
+                if (["/editor/range", "/drafts", "/drafts?limit=100", "/exports", "/ai/config",
+                     "/selections?limit=50", "/selections/context"].includes(path)) {
+                    window.editorialRequests.push(method + " " + path);
+                }
+                const hold = draftCreated && !listingHeld && path === "/drafts?limit=100";
+                if (hold) listingHeld = true;
                 const response = await original(url, options);
-                if (String(url).endsWith("/drafts") && options?.method === "POST" && response.ok) {
+                if (path === "/drafts" && method === "POST" && response.ok) {
                     draftCreated = true;
                 }
                 if (hold) {
@@ -409,6 +418,7 @@ class BrowserHitoBTest(unittest.TestCase):
         self.page.get_by_text("Elegir fragmento del original").click()
         self.page.locator("#mvp-start").fill("1166")
         self.page.locator("#mvp-end").fill("1195")
+        self.page.evaluate("() => { window.editorialRequests.length = 0; }")
         self.page.locator("#mvp-edit-draft").click()
         self.page.wait_for_function("() => typeof window.releaseDraftList === 'function'")
         self.page.locator("#editorial-draft-form").wait_for()
@@ -416,8 +426,13 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertTrue(save.is_disabled())
         self.assertTrue(self.page.locator("#editorial-export").is_disabled())
         self.assertEqual([], self.state["draft_updates"])
+        draft_requests = ["POST /editor/range", "POST /drafts", "GET /drafts?limit=100"]
+        self.assertEqual(draft_requests, self.page.evaluate("() => window.editorialRequests"))
 
         self.page.evaluate("() => window.releaseDraftList()")
+        self.page.wait_for_function("() => window.editorialRequests.includes('GET /selections?limit=50')")
+        self.assertEqual(draft_requests + ["GET /exports", "GET /ai/config", "GET /selections?limit=50"],
+                         self.page.evaluate("() => window.editorialRequests"))
         self.page.locator("#editorial-burn").check()
         self.page.locator("#editorial-color").fill("#ff0000")
         with self.page.expect_response(lambda item: item.url == f"{ORIGIN}/jobs/{JOB}/drafts/{DRAFT}"

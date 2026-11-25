@@ -277,6 +277,10 @@ def upload_video(page, path, report, transfer):
     return job
 
 
+def close_preview(player):
+    player.evaluate("el => { el.pause(); el.removeAttribute('src'); el.load(); }")
+
+
 def results(page, job, scratch):
     files = [clip["file"] for clip in job["clips"]]
     require(1 <= len(files) <= 10 and len(set(files)) == len(files) and all(CLIP.fullmatch(file) for file in files),
@@ -294,7 +298,7 @@ def results(page, job, scratch):
               return video?.videoWidth > 0 && video.currentTime > .25 && !video.error && !video.muted &&
                 (video.webkitAudioDecodedByteCount === undefined || video.webkitAudioDecodedByteCount > 0);
             }""", arg=label)
-            player.evaluate("el => el.pause()")
+            close_preview(player)
             with page.expect_download(timeout=120_000) as event:
                 page.get_by_role("link", name="Descargar " + label + " en MP4").click()
             download = event.value
@@ -334,7 +338,18 @@ def check_manual_export(page, job_id, scratch, report):
     panel.click()
     original = page.locator("#mvp-source")
     original.wait_for()
-    page.wait_for_function("() => document.querySelector('#mvp-source').videoWidth > 0")
+    page.wait_for_function("""path => document.querySelector('#mvp-source')?.getAttribute('src') === path""",
+                           arg=f"/jobs/{job_id}/source")
+    with page.expect_response(lambda response: response.url == PUBLIC + f"/jobs/{job_id}/source"
+                              and response.request.method == "GET", timeout=60_000) as preview:
+        original.click(position={"x": 8, "y": 8})
+        original.evaluate("el => el.play()")
+    require(preview.value.status in {200, 206}, "manual_source_preview_response")
+    page.wait_for_function("""() => {
+        const source = document.querySelector('#mvp-source');
+        return source?.videoWidth > 0 && source.currentTime > .25 && !source.error;
+    }""")
+    close_preview(original)
     page.locator("#mvp-start").fill("5")
     page.locator("#mvp-end").fill("25")
     path = f"/jobs/{job_id}/editor/exports"
@@ -373,7 +388,10 @@ def click_response(page, control, path, method, status, *, failing_prerequisite=
     with page.expect_response(match) as event:
         control.click()
     response = event.value
-    require(response.status == status, "editorial_http_" + str(response.status))
+    if response.status != status:
+        stage = "prerequisite" if failing_prerequisite and response.url == PUBLIC + failing_prerequisite else "request"
+        kind = "json" if "application/json" in response.headers.get("content-type", "") else "nonjson"
+        raise BrowserAcceptanceError(f"editorial_{stage}_http_{response.status}_{kind}")
     return response
 
 
@@ -460,7 +478,7 @@ def open_late_draft(page, job, start, end, *, generated):
             const video = document.querySelector('#editorial-source');
             return video.videoWidth > 0 && !video.paused && !video.seeking && !video.error;
         }""", timeout=60_000)
-        source.evaluate("el => el.pause()")
+        close_preview(source)
         create = candidates.get_by_role("button", name="Crear / abrir borrador").first
         observed = click_response(page, create, f"/jobs/{job}/selections/", "POST", 201).json()
         page.locator("#editorial-save").wait_for()
@@ -529,7 +547,7 @@ def fetch_editorial_export(page, job, draft, receipt, scratch, *, check_pixels=T
         return player?.videoWidth > 0 && player.currentTime > .25 && !player.error && !player.muted &&
           (player.webkitAudioDecodedByteCount === undefined || player.webkitAudioDecodedByteCount > 0);
     }""", arg=export_id)
-    player.evaluate("el => el.pause()")
+    close_preview(player)
     with tempfile.TemporaryDirectory(prefix="beta-editorial-", dir=scratch) as directory:
         root = Path(directory)
         files = {}

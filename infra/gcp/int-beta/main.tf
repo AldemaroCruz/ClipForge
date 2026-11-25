@@ -135,7 +135,7 @@ resource "google_cloud_run_v2_service" "api" {
     service_account                  = local.api_identity
     timeout                          = "180s"
     execution_environment            = "EXECUTION_ENVIRONMENT_GEN2"
-    max_instance_request_concurrency = 8
+    max_instance_request_concurrency = 16
     scaling {
       min_instance_count = 0
       max_instance_count = 1
@@ -213,7 +213,7 @@ resource "google_cloud_run_v2_service" "frontend" {
     service_account                  = local.frontend_identity
     timeout                          = "180s"
     execution_environment            = "EXECUTION_ENVIRONMENT_GEN2"
-    max_instance_request_concurrency = 8
+    max_instance_request_concurrency = 16
     scaling {
       min_instance_count = 0
       max_instance_count = 1

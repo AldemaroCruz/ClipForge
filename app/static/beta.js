@@ -258,7 +258,7 @@ async function initBeta() {
       const player = document.createElement("video");
       player.controls = true;
       player.playsInline = true;
-      player.preload = "metadata";
+      player.preload = "none";
       player.src = path + "?inline=true";
       player.setAttribute("aria-label", label);
       const actions = document.createElement("div");

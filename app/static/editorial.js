@@ -87,26 +87,29 @@
   }
 
   function selectionControls(state) {
-    el("preview-button").disabled = state.selectionBusy || state.analysisActive
-      || state.config?.configured !== true || state.context?.available !== true;
+    const available = state.config?.configured === true && state.context?.available === true;
+    el("preview-button").disabled = !available || state.selectionBusy || state.analysisActive;
     el("brief").disabled = Boolean(state.selectionBusy);
-    el("run").disabled = !state.preview || !el("consent").checked || state.selectionBusy || state.analysisActive;
+    el("run").disabled = !available || !state.preview || !el("consent").checked || state.selectionBusy || state.analysisActive;
   }
 
   async function loadAvailability(state) {
+    state.config = null;
+    state.context = null;
+    selectionControls(state);
     try {
-      const [config, context] = await Promise.all([
-        auth.json("/ai/config", {signal: state.controller.signal}), request(state, "/selections/context"),
-      ]);
+      const config = await auth.json("/ai/config", {signal: state.controller.signal});
+      if (!visible(state)) return;
+      const context = config.configured === true ? await request(state, "/selections/context") : null;
       if (!visible(state)) return;
       state.config = config;
       state.context = context;
       const available = config.configured === true
         ? [config.provider, config.model].filter(Boolean).join(" · ")
         : (config.reason || "La selección por IA no está disponible en este momento.");
-      el("config").textContent = context.available
-        ? available
-        : [available, context.note || "Este trabajo no tiene una transcripción utilizable."].join(" ");
+      el("config").textContent = context && !context.available
+        ? [available, context.note || "Este trabajo no tiene una transcripción utilizable."].join(" ")
+        : available;
       selectionControls(state);
     } catch (error) {
       if (visible(state)) el("config").textContent = "No se pudo consultar la selección por IA. " + error.message;
@@ -286,7 +289,10 @@
     if (state.draft && !formMatches(state.draft)
       && !window.confirm("¿Descartar los cambios sin guardar del borrador?")) return;
     setDraftBusy(state, true);
+    const openedForDraft = !details.open;
+    if (openedForDraft) state.manualTogglePending = true;
     details.open = true;
+    let listedDrafts = false;
     try {
       const options = await request(state, "/editor/range", auth.payload(range));
       if (!visible(state)) return;
@@ -299,7 +305,9 @@
       const item = await request(state, "/drafts", body);
       if (!visible(state)) return;
       mountDraft(state, item);
+      listedDrafts = true;
       await loadDrafts(state);
+      if (!visible(state)) return;
       el("draft-form").scrollIntoView({block: "nearest"});
       status(state, "Borrador listo para editar.", "draft-status");
     } catch (error) {
@@ -307,6 +315,7 @@
       throw error;
     } finally {
       setDraftBusy(state, false);
+      if (openedForDraft && visible(state)) void loadPanel(state, !listedDrafts);
     }
   }
 
@@ -551,10 +560,18 @@
     }
   }
 
+  async function loadPanel(state, restoreDrafts) {
+    if (restoreDrafts && visible(state)) await loadDrafts(state, true);
+    if (visible(state)) await loadExports(state);
+    if (visible(state)) await loadAvailability(state);
+    if (visible(state)) await loadRuns(state);
+  }
+
   details.addEventListener("toggle", () => {
     const state = view;
     if (!state) return;
     if (!details.open) {
+      state.manualTogglePending = false;
       clearTimers(state);
       stopPreview();
       resetConsent();
@@ -562,19 +579,21 @@
     }
     source.src = "/jobs/" + state.id + "/source";
     selectionControls(state);
-    void loadAvailability(state);
-    void loadRuns(state);
-    void loadDrafts(state, true);
-    void loadExports(state);
+    if (state.manualTogglePending) {
+      state.manualTogglePending = false;
+      return;
+    }
+    void loadPanel(state, true);
   });
   el("selection").addEventListener("submit", prepareSelection);
   el("brief").addEventListener("input", resetConsent);
   el("consent").addEventListener("change", () => selectionControls(view));
   el("run").addEventListener("click", beginSelection);
-  el("refresh").addEventListener("click", () => {
-    if (!view) return;
-    void loadAvailability(view);
-    void loadRuns(view);
+  el("refresh").addEventListener("click", async () => {
+    const state = view;
+    if (!visible(state)) return;
+    await loadAvailability(state);
+    if (visible(state)) await loadRuns(state);
   });
   el("runs").addEventListener("change", event => {
     if (!view || !idPattern.test(event.target.value)) return;
