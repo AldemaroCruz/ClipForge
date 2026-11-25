@@ -1,9 +1,10 @@
 """Pilot manual clips reuse the existing Range and fenced export contracts."""
 
 from contextlib import nullcontext
+from datetime import datetime, timezone
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from fastapi import HTTPException, Response
 
@@ -12,6 +13,7 @@ from app.editorial import RangeChange
 
 
 JOB = "b" * 32
+EXPORT = "c" * 32
 SOURCE = {"name": "fixture-original", "generation": "7", "content_type": "video/mp4"}
 
 
@@ -83,3 +85,69 @@ class ManualMvpTest(unittest.TestCase):
             self.assertEqual("dispatched", router.get_job(JOB, Response())["dispatch_status"])
             self.assertEqual("completed", router.get_job(JOB, Response())["status"])
         dispatch.assert_called_once_with()
+
+    def test_failed_variant_retry_reuses_task_and_appends_attempt_history(self):
+        task_id = "d" * 32
+        connection = Mock()
+        connection.execute.return_value.mappings.return_value.first.return_value = {
+            "id": task_id, "status": "failed", "cleaned_at": object(),
+            "fence": 7, "updated_at": datetime(2026, 11, 25, tzinfo=timezone.utc), "attempts": 2,
+        }
+        history = {"error_code": "SOURCE_UNAVAILABLE", "fence": 6}
+        item = {"id": EXPORT, "status": "failed", "start": 395, "end": 420,
+                "request_id": "manual-fixture", "error_code": "WORKER_INTERRUPTED", "attempt_history": [history]}
+        variant = {"payload": item, "manifest": {}}
+        with (
+            patch.object(router.repo, "update_document") as update,
+            patch.object(router.repo, "admit_beta") as admit,
+            patch.object(router.repo, "enqueue") as enqueue,
+        ):
+            router.repo.retry_manual_export(connection, JOB, variant, "e" * 32)
+        admit.assert_called_once_with(connection, "e" * 32)
+        update.assert_called_once_with(connection, JOB, "export", item)
+        enqueue.assert_not_called()
+        self.assertEqual(connection.execute.call_args_list[0].args[1], {"j": JOB, "kind": "export", "item": EXPORT})
+        self.assertEqual([call.args[1] for call in connection.execute.call_args_list[1:]], [{"i": task_id}] * 2)
+        self.assertEqual((item["id"], item["status"], item["start"], item["end"], item["request_id"]),
+                         (EXPORT, "queued", 395, 420, "manual-fixture"))
+        self.assertEqual((item["retry_count"], item["retryable"], item["pilot"]), (1, False, True))
+        self.assertEqual(item["attempt_history"], [history, {
+            "error_code": "WORKER_INTERRUPTED", "fence": 7,
+            "finished_at": "2026-11-25T00:00:00+00:00", "dispatches": 2,
+        }])
+
+    def test_failed_variant_with_output_is_never_requeued(self):
+        connection = Mock()
+        variant = {"payload": {"id": EXPORT, "status": "failed"}, "manifest": {"clip.mp4": SOURCE}}
+        with self.assertRaises(HTTPException) as refused:
+            router.repo.retry_manual_export(connection, JOB, variant, "e" * 32)
+        self.assertEqual(409, refused.exception.status_code)
+        connection.execute.assert_not_called()
+
+    def test_explicit_retry_of_same_export_is_idempotent_after_queue(self):
+        connection = object()
+        self.request.state.principal = SimpleNamespace(id="e" * 32)
+        engine = Mock()
+        engine.begin.side_effect = lambda: nullcontext(connection)
+        item = {"id": EXPORT, "status": "failed", "pilot": True,
+                "title": "Fragmento manual", "clip_file": "manual.mp4"}
+        variant = {"payload": item, "manifest": {}}
+
+        def requeue(*_):
+            item.update(status="queued", retry_count=1)
+
+        with (
+            patch.object(router, "get_engine", return_value=engine),
+            patch.object(router.repo, "beta_document", return_value=document()) as owned,
+            patch.object(router.repo, "document", return_value=variant) as read,
+            patch.object(router.repo, "retry_manual_export", side_effect=requeue) as retry,
+            patch.object(router, "_dispatch", side_effect=lambda value: dict(value)) as dispatch,
+        ):
+            first = router.retry_manual_export(JOB, EXPORT, self.request)
+            second = router.retry_manual_export(JOB, EXPORT, self.request)
+        self.assertEqual(first, second)
+        self.assertEqual((first["id"], first["status"]), (EXPORT, "queued"))
+        self.assertEqual(owned.call_args.args, (connection, self.request.state.principal, JOB))
+        self.assertEqual(read.call_args.args, (JOB, "export", EXPORT, connection))
+        retry.assert_called_once_with(connection, JOB, variant, self.request.state.principal.id)
+        self.assertEqual(dispatch.call_count, 2)

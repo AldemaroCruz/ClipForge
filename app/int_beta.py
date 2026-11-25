@@ -60,7 +60,10 @@ media_gets = {
     "/projects", "/jobs/{job_id}", "/jobs/{job_id}/clips/{filename}", "/jobs/{job_id}/source",
     "/jobs/{job_id}/workspace", "/jobs/{job_id}/exports", "/jobs/{job_id}/exports/{export_id}/files/{filename}",
 }
-media_posts = {"/jobs/{job_id}/editor/range", "/jobs/{job_id}/editor/exports"}
+media_posts = {
+    "/jobs/{job_id}/editor/range", "/jobs/{job_id}/editor/exports",
+    "/jobs/{job_id}/exports/{export_id}/retry",
+}
 media_routes = APIRouter(routes=[
     route for route in media_router.routes
     if ((route.methods == {"GET"} and route.path in media_gets)

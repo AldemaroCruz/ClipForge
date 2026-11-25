@@ -121,6 +121,8 @@ def get_job(job_id: str, response: Response):
     response.headers["Cache-Control"] = "no-store"
     item = _doc(job_id)["payload"]
     if item.get("pilot") is True and _needs_dispatch(job_id, "process", [item]):
+        if item["status"] != "queued":
+            item = {**item, "lease_expired": True}
         return _dispatch(item)
     return item
 
@@ -134,7 +136,7 @@ def _needs_dispatch(job_id, kind, items):
         return connection.execute(text("""
             SELECT EXISTS(SELECT 1 FROM cloud_tasks
                           WHERE job_id=:job AND kind=:kind AND status='running'
-                            AND lease_until<=clock_timestamp())
+                            AND (lease_until IS NULL OR lease_until<=clock_timestamp()))
             """), {"job": job_id, "kind": kind}).scalar_one()
 
 
@@ -355,6 +357,32 @@ def export_manual_range(job_id: str, payload: RangeChange, request: Request):
     return _submit_export(job_id, item, request, pilot=True)
 
 
+def _is_pilot_manual_export(item):
+    return (item.get("clip_file") == "manual.mp4" and item.get("title") == "Fragmento manual"
+            and (item.get("pilot") is True or item.get("pilot") is None))
+
+
+@router.post("/jobs/{job_id}/exports/{export_id}/retry", status_code=202)
+def retry_manual_export(job_id: str, export_id: str, request: Request):
+    if not re.fullmatch(r"[a-f0-9]{32}", export_id):
+        raise HTTPException(404, "Variante no encontrada")
+    principal = request.state.principal
+    with get_engine().begin() as connection:
+        # Serialize owner mutations with existing upload and processing retries.
+        job = repo.beta_document(connection, principal, job_id)
+        document = repo.document(job_id, "export", export_id, connection)
+        item = document["payload"]
+        if item.get("id") != export_id or not _is_pilot_manual_export(item):
+            raise HTTPException(404, "Variante no encontrada")
+        if item["status"] == "failed":
+            if "input.mp4" not in job["manifest"]:
+                raise HTTPException(409, "Original no disponible")
+            repo.retry_manual_export(connection, job_id, document, principal.id)
+        elif not item.get("retry_count"):
+            raise HTTPException(409, "El reintento sólo está disponible para clips manuales fallidos.")
+    return _dispatch(item) if item["status"] == "queued" else item
+
+
 @router.post("/jobs/{job_id}/drafts/{draft_id}/exports", status_code=202)
 def export_draft(job_id: str, draft_id: str, payload: RevisionRequest, request: Request):
     doc = _doc(job_id, "draft", draft_id)
@@ -388,8 +416,13 @@ def create_export(job_id: str, filename: str, payload: ExportRequest, request: R
 @router.get("/jobs/{job_id}/exports")
 def exports(job_id: str):
     job = _doc(job_id)["payload"]
-    items = [d["payload"] for d in repo.list_documents(job_id, "export")]
+    variants = repo.list_documents(job_id, "export")
+    items = [variant["payload"] for variant in variants]
     if job.get("pilot") is True:
+        for variant in variants:
+            item = variant["payload"]
+            if _is_pilot_manual_export(item) and item["status"] == "failed":
+                item["retryable"] = not variant["manifest"] and repo.manual_export_retryable(item)
         if any(item.get("status") == "queued" and item.get("pilot") is None
                and item.get("clip_file") == "manual.mp4" for item in items):
             # The first manual-export endpoint persisted the variant but omitted

@@ -148,4 +148,6 @@ class PrivateApiBoundaryTests(unittest.TestCase):
             self.assertEqual(self.client.get("/beta/admin/feedback", headers=headers).status_code, 404)
             self.assertEqual(self.client.post(f"/jobs/{JOB_ID}/editor/range", headers=headers,
                                               json={}).status_code, 404)
+            self.assertEqual(self.client.post(f"/jobs/{JOB_ID}/exports/{'a' * 32}/retry", headers=headers,
+                                              json={}).status_code, 404)
             self.assertEqual(self.client.get(f"/jobs/{JOB_ID}/source", headers=headers).status_code, 404)

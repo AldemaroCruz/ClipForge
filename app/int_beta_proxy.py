@@ -41,6 +41,7 @@ ROUTES = {
         rf"/auth/(?:users/{JOB}/deactivate|admin/users/{JOB}/recovery)",
         rf"/beta/(?:uploads|uploads/{JOB}/start|jobs/{JOB}/retry)",
         rf"/jobs/{JOB}/editor/(?:range|exports)",
+        rf"/jobs/{JOB}/exports/{JOB}/retry",
     ),
 }
 INBOUND = {

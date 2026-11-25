@@ -81,7 +81,7 @@
   }
 
   function renderExports(id, exports) {
-    const signature = JSON.stringify(exports.map(item => [item.id, item.status, item.start, item.end]));
+    const signature = JSON.stringify(exports.map(item => [item.id, item.status, item.start, item.end, item.retryable]));
     if (signature === exportSignature) return;
     exportSignature = signature;
     results.replaceChildren(...exports.map(item => {
@@ -104,6 +104,12 @@
         const label = item.status === "failed" ? "No se pudo generar este clip."
           : item.status === "queued" ? "Clip en cola." : "Generando clip…";
         article.append(text("p", label, "status"));
+        if (item.status === "failed" && item.retryable === true) {
+          const retry = text("button", "Reintentar clip manual", "secondary");
+          retry.type = "button";
+          retry.addEventListener("click", () => retryExport(id, item.id, retry));
+          article.append(retry);
+        }
       }
       return article;
     }));
@@ -122,6 +128,24 @@
       }
     } catch (error) {
       if (visible(id, view)) status.textContent = error.message;
+    }
+  }
+
+  async function retryExport(id, exportId, button) {
+    const view = currentView;
+    if (button.disabled || !visible(id, view)) return;
+    button.disabled = true;
+    status.textContent = "";
+    try {
+      const item = await auth.json(url(id, "/exports/" + exportId + "/retry"), auth.payload({}));
+      if (!visible(id, view)) return;
+      if (item.id !== exportId) throw new Error("No se pudo verificar el reintento.");
+      status.textContent = "Se solicitó el reintento de este clip manual.";
+      await refreshExports(id, view);
+    } catch (error) {
+      if (visible(id, view)) status.textContent = error.message;
+    } finally {
+      if (visible(id, view)) button.disabled = false;
     }
   }
 

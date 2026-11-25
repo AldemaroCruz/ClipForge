@@ -19,7 +19,8 @@ sesión.
 4. En **Elegir fragmento del original** puedes revisar el video privado,
    elegir un intervalo de hasta 60 segundos y exportar un clip manual.
    El recorte conserva el audio y permite descargar los subtítulos
-   disponibles como archivos separados.
+   disponibles como archivos separados. Para un fallo recuperable, usa
+   **Reintentar clip manual** sobre el mismo fragmento.
 
 El piloto admite un trabajo activo por creador y cuatro trabajos activos en
 total, incluidas las cargas vigentes. Hasta tres trabajos pueden procesarse a la vez. Las

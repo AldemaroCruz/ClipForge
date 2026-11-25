@@ -34,7 +34,7 @@ class BrowserHitoBTest(unittest.TestCase):
     def setUp(self):
         self.state = {"admin": False, "status": None, "reservations": [], "starts": [],
                       "puts": [], "unexpected": [], "hide_range": False,
-                      "manual": None, "manual_keys": []}
+                      "manual": None, "manual_keys": [], "manual_retries": []}
         self.context = self.browser.new_context(service_workers="block")
         self.addCleanup(self.context.close)
         self.context.route("**/*", self.handle)
@@ -128,6 +128,10 @@ class BrowserHitoBTest(unittest.TestCase):
             if self.state["manual"] is None:
                 self.state["manual"] = {"id": EXPORT, "clip_file": "manual.mp4", "status": "queued",
                                         **request.post_data_json}
+            return self.state["manual"], 202
+        if path == f"/jobs/{JOB}/exports/{EXPORT}/retry" and method == "POST":
+            self.state["manual_retries"].append(path)
+            self.state["manual"].update(status="queued", retryable=False)
             return self.state["manual"], 202
         if path == f"/jobs/{JOB}/exports":
             return {"exports": [self.state["manual"]] if self.state["manual"] else []}, 200
@@ -229,6 +233,24 @@ class BrowserHitoBTest(unittest.TestCase):
         self.page.reload()
         self.page.get_by_text("Elegir fragmento del original").click()
         download.wait_for()
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
+    def test_failed_manual_variant_is_retried_by_identity_after_reload(self):
+        self.state["status"] = "completed"
+        self.state["manual"] = {"id": EXPORT, "clip_file": "manual.mp4", "status": "failed",
+                                "retryable": True, "start": 392, "end": 421.5}
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        self.page.reload()
+        self.page.get_by_text("Elegir fragmento del original").click()
+        self.page.get_by_role("button", name="Reintentar clip manual").click()
+        self.until_text("#mvp-results", "Clip en cola")
+        self.assertEqual([f"/jobs/{JOB}/exports/{EXPORT}/retry"], self.state["manual_retries"])
+        self.assertEqual([], self.state["manual_keys"])
+        self.state["manual"]["status"] = "completed"
+        download = self.page.get_by_role("link", name="Descargar clip manual")
+        download.wait_for()
+        self.assertEqual(f"/jobs/{JOB}/exports/{EXPORT}/files/clip.mp4", download.get_attribute("href"))
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])
 

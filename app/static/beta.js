@@ -113,7 +113,8 @@ function betaText(tag, content, className) {
   return node;
 }
 
-function betaStatus(status) {
+function betaStatus(status, leaseExpired = false) {
+  if (leaseExpired === true) return "Verificando el intento de procesamiento…";
   return Object.hasOwn(BETA_STATUS, status) ? BETA_STATUS[status] : "Estado pendiente de confirmar";
 }
 
@@ -195,7 +196,7 @@ async function initBeta() {
         event.preventDefault();
         void openJob(project.id);
       });
-      item.append(link, betaText("p", betaStatus(project.status), "muted"));
+      item.append(link, betaText("p", betaStatus(project.status, project.lease_expired), "muted"));
       list.append(item);
     }
   }
@@ -239,7 +240,9 @@ async function initBeta() {
     element("job-status").textContent = !job ? "Consultando el trabajo…"
       : job.status === "awaiting_upload" ? "Carga pendiente. Si terminaste de transferir el video, puedes procesarlo desde aquí."
       : job.status === "completed" ? "Completado · " + clips.length + (clips.length === 1 ? " clip" : " clips")
-      : betaStatus(job.status);
+      : job.status === "queued" && job.dispatch_status === "pending"
+        ? "Pendiente. No se pudo activar el procesamiento. Se volverá a intentar."
+      : betaStatus(job.status, job.lease_expired);
     const key = selectedId + ":" + Boolean(job) + ":" + clips.map(clip => clip.file).join(",");
     if (key === renderKey) return;
     renderKey = key;
@@ -291,8 +294,9 @@ async function initBeta() {
         if (version !== selectionVersion) return;
         if (value.id !== id) throw new Error("No se pudo verificar el trabajo.");
         const project = projects.find(item => item.id === id);
-        if (project && project.status !== value.status) {
+        if (project && (project.status !== value.status || project.lease_expired !== value.lease_expired)) {
           project.status = value.status;
+          project.lease_expired = value.lease_expired;
           renderProjects();
         }
         job = value;

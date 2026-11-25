@@ -146,28 +146,28 @@ def beta_document(c, principal, job_id):
     return doc
 
 
-def retry_beta(c, job_id, item, *, expected_error=None):
-    """Reuse the unique task on the original generation and issue a new fence."""
+def _failed_task(c, job_id, kind, item_id):
     task = c.execute(text("""
         SELECT t.id,t.status,t.cleaned_at,t.fence,t.updated_at,o.attempts
         FROM cloud_tasks t LEFT JOIN cloud_outbox o ON o.task_id=t.id
-        WHERE t.job_id=:j AND t.kind='process' AND t.item_id=:j FOR UPDATE OF t
-        """), {"j": job_id}).mappings().first()
-    if task is None or task["status"] != "failed" or task["cleaned_at"] is None:
-        raise HTTPException(409, "La tarea anterior aún se está conciliando. Intenta de nuevo en unos segundos.")
-    code = item.get("error_code")
-    eligible = code == expected_error if expected_error is not None else code in BETA_RETRYABLE
-    if not eligible or item.get("retry_count", 0) >= BETA_RETRIES:
-        raise HTTPException(409, "Este trabajo no se puede reintentar. Puedes subir otro video.")
+        WHERE t.job_id=:j AND t.kind=:kind AND t.item_id=:item FOR UPDATE OF t
+        """), {"j": job_id, "kind": kind, "item": item_id}).mappings().first()
+    if task is None or task["status"] != "failed":
+        raise HTTPException(409, "La tarea anterior aún se está conciliando.")
+    if task["cleaned_at"] is None:
+        raise HTTPException(409, "La limpieza del intento anterior sigue pendiente. El video original se conserva.")
+    return task
+
+
+def _requeue_failed_task(c, job_id, kind, item, task):
     item.setdefault("attempt_history", []).append({
-        "error_code": public_beta_error_code(code), "fence": task["fence"],
+        "error_code": public_beta_error_code(item.get("error_code")), "fence": task["fence"],
         "finished_at": task["updated_at"].isoformat(), "dispatches": task["attempts"],
     })
-    item.update(status="queued", retryable=False, clips=[], retry_count=item.get("retry_count", 0) + 1)
-    for key in ("error", "error_code", "media", "language", "dispatch_status",
-                "analysis_seconds", "speech_until_seconds"):
+    item.update(status="queued", retryable=False, retry_count=item.get("retry_count", 0) + 1)
+    for key in ("error", "error_code", "dispatch_status"):
         item.pop(key, None)
-    update_document(c, job_id, "job", item)
+    update_document(c, job_id, kind, item)
     c.execute(text("""
         UPDATE cloud_tasks SET status='queued',lease_until=NULL,cleaned_at=NULL,
             updated_at=clock_timestamp() WHERE id=:i AND status='failed'
@@ -176,6 +176,34 @@ def retry_beta(c, job_id, item, *, expected_error=None):
         UPDATE cloud_outbox SET dispatched_at=NULL,attempts=0,last_error=NULL,operation_name=NULL
         WHERE task_id=:i
         """), {"i": task["id"]})
+
+
+def retry_beta(c, job_id, item, *, expected_error=None):
+    """Reuse the unique task on the original generation and issue a new fence."""
+    task = _failed_task(c, job_id, "process", job_id)
+    code = item.get("error_code")
+    eligible = code == expected_error if expected_error is not None else code in BETA_RETRYABLE
+    if not eligible or item.get("retry_count", 0) >= BETA_RETRIES:
+        raise HTTPException(409, "Este trabajo no se puede reintentar. Puedes subir otro video.")
+    item["clips"] = []
+    for key in ("media", "language", "analysis_seconds", "speech_until_seconds"):
+        item.pop(key, None)
+    _requeue_failed_task(c, job_id, "job", item, task)
+
+
+def manual_export_retryable(item):
+    return (item["status"] == "failed" and item.get("retry_count", 0) < BETA_RETRIES
+            and public_beta_error_code(item.get("error_code")) in BETA_RETRYABLE)
+
+
+def retry_manual_export(c, job_id, document, owner):
+    item = document["payload"]
+    if document["manifest"] or not manual_export_retryable(item):
+        raise HTTPException(409, "Este clip manual ya no admite un reintento.")
+    admit_beta(c, owner)
+    task = _failed_task(c, job_id, "export", item["id"])
+    item["pilot"] = True
+    _requeue_failed_task(c, job_id, "export", item, task)
 
 
 _BETA_ERRORS = {
