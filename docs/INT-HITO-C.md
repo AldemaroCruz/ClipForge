@@ -23,6 +23,11 @@ defecto de 10 llamadas reservadas por día UTC. El alcance de pruebas de C01–C
 usa proyectos y cuentas sintéticas. La ruta de cargas grandes conserva
 la sesión reanudable directa a GCS. [Contrato de Cloud Run](https://docs.cloud.google.com/run/docs/container-contract) · [Subidas reanudables de GCS](https://docs.cloud.google.com/storage/docs/performing-resumable-uploads)
 
+El primer build de C02 recibió HTTP 404 al descargar el pin retirado de
+`libexpat1` para Noble. Se verificaron la versión sustituta
+`2.6.1-2ubuntu0.7` y el SHA-256 del índice firmado de Ubuntu.
+[Primer build](https://github.com/AldemaroCruz/ClipForge/actions/runs/45873369459) · [Paquete Ubuntu Noble](https://packages.ubuntu.com/noble-updates/libexpat1)
+
 ## Aceptación
 
 Las mediciones de esta entrega se registran por incremento en el

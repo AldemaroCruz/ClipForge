@@ -1,5 +1,5 @@
 ca-certificates	20260816ubuntu0.24.04.2	all	f9fbacd417b515450b831032cc39d18059e9874e67525679a43c16071dabf9a0	https://archive.ubuntu.com/ubuntu/pool/main/c/ca-certificates/ca-certificates_20260816ubuntu0.24.04.2_all.deb
-libexpat1	2.6.1-2ubuntu0.6	amd64	494b8e672f722130c6bca6a7bc4cc31a43ca891a31d60d868bfdd699a3c20b13	https://archive.ubuntu.com/ubuntu/pool/main/e/expat/libexpat1_2.6.1-2ubuntu0.6_amd64.deb
+libexpat1	2.6.1-2ubuntu0.7	amd64	780696796d079bd43f559938eb85e57ce2c220f837f363973a250fdebaaac1e0	https://archive.ubuntu.com/ubuntu/pool/main/e/expat/libexpat1_2.6.1-2ubuntu0.7_amd64.deb
 libgssapi-krb5-2	1.20.1-6ubuntu2.10	amd64	0d4a0187bcdbbe3e6a10bfa574100087d12052d0d0ef28614fd6210021c587b2	https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libgssapi-krb5-2_1.20.1-6ubuntu2.10_amd64.deb
 libk5crypto3	1.20.1-6ubuntu2.10	amd64	273f7cc95a68d927d7f71c3e78b7717a16a8d86e646a206bae7bf797150ae9db	https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libk5crypto3_1.20.1-6ubuntu2.10_amd64.deb
 libkeyutils1	1.6.3-3build1	amd64	0679f198b0128179e46cdf956fb2022c23c758664c00bc8efa0382d509683a8a	https://archive.ubuntu.com/ubuntu/pool/main/k/keyutils/libkeyutils1_1.6.3-3build1_amd64.deb
