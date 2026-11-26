@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 from urllib.parse import parse_qs, quote, urlsplit
 import requests
-from .config import settings
+from .config import BETA_MAX_BYTES, settings
 
 _TRANSPORT_ERRORS = (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError)
 
@@ -128,6 +128,8 @@ def _resumable_location(location, name):
 
 def start_resumable(name, size, origin):
     """Mint a create-only capability for exactly one server-selected object."""
+    if type(size) is not int or not 0 < size <= BETA_MAX_BYTES:
+        raise InvalidUpload("Original upload size exceeds the pilot bounds")
     cfg = settings()
     endpoint = urlsplit(cfg.endpoint)
     path = "/upload/storage/v1/b/" + quote(cfg.bucket, safe="") + "/o"
@@ -305,7 +307,9 @@ def _download_once(item, path):
             path.unlink(missing_ok=True)
 
 
-def download(item, path):
+def download(item, path, *, max_bytes=None):
+    if max_bytes is not None and (type(item.get("bytes")) is not int or not 0 < item["bytes"] <= max_bytes):
+        raise InvalidUpload("Original manifest size exceeds the pilot bounds")
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:

@@ -2,7 +2,7 @@
 
 The caller generates four synthetic MP4s, including speech near each end.
 Keep fixtures and downloads in protected scratch. The report records measured
-durations and media receipts without accounts, job IDs, URLs, or media text.
+durations and synthetic job IDs for the large-file worker measurements.
 """
 from __future__ import annotations
 
@@ -101,6 +101,56 @@ def fixtures(directory, limits):
                 f"fixture_{minutes}m_outside_limits")
         result[minutes] = Fixture(path, size, duration)
     return result
+
+
+def large_fixture(path, limits):
+    require(path.is_absolute() and path.is_file() and not path.is_symlink(), "large_fixture_missing")
+    meta = probe_media(path, pilot=True)
+    size = path.stat().st_size
+    maximum = limits["max_bytes"]
+    require(maximum == 2 * 1024 ** 3 and maximum * 97 // 100 <= size <= maximum
+            and meta["video_codec"] == "h264" and meta["audio_codec"] == "aac"
+            and 1199.75 <= meta["duration_seconds"] <= limits["max_duration_seconds"]
+            and max(meta["width"], meta["height"]) <= limits["max_dimension"], "large_fixture_outside_limits")
+    return Fixture(path, size, meta["duration_seconds"])
+
+
+@contextmanager
+def interrupt_large_upload(case, report):
+    pattern = browser_test.STORAGE + "/**"
+    second_start = f"bytes {browser_test.CHUNK_BYTES}-"
+    status_range = f"bytes */{case.fixture.size}"
+    session_uri = None
+    same_session = True
+    interrupted = checked = resumed = False
+
+    def inject(route):
+        nonlocal session_uri, same_session, interrupted, checked, resumed
+        request = route.request
+        if request.method == "PUT":
+            session_uri = session_uri or request.url
+            same_session = same_session and request.url == session_uri
+            content_range = request.headers.get("content-range", "")
+            if content_range.startswith(second_start):
+                if not interrupted:
+                    interrupted = True
+                    route.abort("connectionreset")
+                    return
+                resumed = checked
+            elif interrupted and content_range == status_range:
+                checked = True
+        route.fallback()
+
+    case.page.route(pattern, inject)
+    try:
+        yield
+    finally:
+        case.page.unroute(pattern, inject)
+    require(same_session and interrupted and checked and resumed, "large_upload_not_resumed_on_same_session")
+    report["large_upload_resume"] = {
+        "same_session": True, "aborted_chunk": 2, "resumed_offset_bytes": browser_test.CHUNK_BYTES,
+    }
+    browser_test.check(report, "large_upload_resumed_after_connection_reset")
 
 
 def upload_hooks(case):
@@ -541,6 +591,8 @@ def run_batch(cases, args, report, overlap=None):
                                        "bytes": case.fixture.size, "upload_http_statuses": case.transfer.copy(),
                                        "upload_seconds": round(case.held_at - case.upload_start, 3),
                                        "state_observations": case.events}
+        if case.fixture.path == args.large_fixture:
+            report["cases"][case.label]["synthetic_job_id"] = case.job_id
     report["step"] = "parallel" if overlap else "processing"
     if overlap:
         observe_overlap(cases, *overlap, args, report)
@@ -609,9 +661,24 @@ def acceptance(browser, args, admin, report, reused_provider=None):
                     for minutes, page, transfer in zip(MINUTES[:3], pages, transfers, strict=True)]
             run_batch(warm, args, report)
             run_batch([Case("20m", ready[20], pages[0], transfers[0])], args, report)
-            parallel = [Case(name, ready[20], page, transfer)
+            large = large_fixture(args.large_fixture, limits) if args.large_fixture else None
+            parallel = [Case(name, large or ready[20], page, transfer)
                         for name, page, transfer in zip(PARALLEL_CASES, pages, transfers, strict=True)]
-            run_batch(parallel, args, report, (browser, accounts, warm[0]))
+            with ExitStack() as uploads:
+                if large:
+                    uploads.enter_context(interrupt_large_upload(parallel[0], report))
+                run_batch(parallel, args, report, (browser, accounts, warm[0]))
+            if large:
+                transfers_verified = {}
+                for case, account in zip(parallel, accounts, strict=True):
+                    browser_test.logout(case.page)
+                    browser_test.login(case.page, account, args.commit)
+                    persisted = browser_test.open_saved_job(case.page, case.job_id)
+                    require(persisted["clips"] == case.last_job["clips"], "large_file_results_lost_after_relogin")
+                    transfers_verified[case.label] = case.job_id
+                report["large_inputs"] = {"bytes_each": large.size, "duration_seconds": large.duration,
+                                          "synthetic_jobs": transfers_verified}
+                browser_test.check(report, "three_near_limit_videos_persisted_after_relogin")
             report["step"] = "creator_isolation"
             check_isolation(parallel, report)
             if args.precise_fixture:
@@ -625,6 +692,13 @@ def acceptance(browser, args, admin, report, reused_provider=None):
                 check_precise_cuts(case.page, args, report, job=case.job_id)
                 browser_test.open_saved_job(case.page, parallel[0].job_id)
             editorial_capacity(parallel, args, report, reused_provider)
+            if large:
+                for case in parallel:
+                    url = f"/jobs/{case.job_id}"
+                    require(browser_test.browser_post(case.page, url + "/deletion", {})["status"] == 202
+                            and browser_test.browser_get(case.page, url)["status"] == 404,
+                            "large_synthetic_project_cleanup")
+                browser_test.check(report, "large_synthetic_projects_removed_from_accounts")
             for page in pages:
                 browser_test.logout(page)
     finally:
@@ -644,6 +718,7 @@ def arguments(argv=None):
     parser.add_argument("--api-revision", required=True)
     parser.add_argument("--fixture-dir", type=Path, required=True)
     parser.add_argument("--precise-fixture", type=Path)
+    parser.add_argument("--large-fixture", type=Path)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--editorial-model", default="")
     parser.add_argument("--reuse-provider-report", type=Path,

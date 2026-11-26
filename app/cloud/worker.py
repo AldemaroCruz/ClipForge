@@ -18,10 +18,13 @@ from sqlalchemy import text
 from ..auth_db import get_engine
 from ..media import MediaValidationError, inspect_beta_media
 from . import enabled
-from .config import BETA_WORKER_CONCURRENCY, beta_enabled, settings
+from .config import BETA_MAX_BYTES, BETA_WORKER_CONCURRENCY, beta_enabled, settings
 from . import project_deletion
 from . import repository as repo
 from . import storage
+from .worker_measurements import (
+    SAMPLE_INTERVAL_SECONDS, SCRATCH_ENV, SCRATCH_PREFIX, WorkerMeasurements, record_stage, scratch_context,
+)
 
 
 def _terminate(child):
@@ -275,12 +278,21 @@ def drain(max_tasks=None, recovery=None):
                         }), flush=True)
                     command = [sys.executable, "-m", "app.cloud.worker", "--execute", task["id"], "--fence", str(task["fence"])]
                     # Fixed interpreter/module; only database-generated UUID/fence arguments.
-                    child = subprocess.Popen(command, start_new_session=os.name == "posix")
+                    scratch = tempfile.TemporaryDirectory(prefix=SCRATCH_PREFIX)
+                    env = {**os.environ, SCRATCH_ENV: str(Path(scratch.name).resolve())}
+                    measurements = (WorkerMeasurements(scratch.name, task, execution)
+                                    if beta and execution and task["kind"] in {"process", "export"} else None)
+                    status = "interrupted"
                     try:
+                        child = subprocess.Popen(command, start_new_session=os.name == "posix", env=env)
+                        if measurements:
+                            measurements.sample(child.pid)
                         while child.poll() is None:
                             try:
-                                child.wait(timeout=2)
+                                child.wait(timeout=SAMPLE_INTERVAL_SECONDS)
                             except subprocess.TimeoutExpired:
+                                if measurements:
+                                    measurements.sample(child.pid)
                                 result = lock.execute(text("UPDATE cloud_tasks SET lease_until=clock_timestamp()+interval '60 seconds',updated_at=clock_timestamp() WHERE id=:i AND fence=:f AND status='running' AND lease_until>clock_timestamp()"), {"i": task["id"], "f": task["fence"]})
                                 if result.rowcount != 1:
                                     status = _child_status(lock, task)
@@ -298,12 +310,18 @@ def drain(max_tasks=None, recovery=None):
                                 "task_id": task["id"], "fence": task["fence"], "status": status,
                             }), flush=True)
                     except BaseException:
-                        _terminate(child)
+                        if child is not None:
+                            _terminate(child)
                         if beta:
                             project_deletion.ack_stopped(task)
                         raise
                     finally:
                         child = None
+                        try:
+                            if measurements:
+                                print(json.dumps(measurements.receipt(status)), flush=True)
+                        finally:
+                            scratch.cleanup()
                     completed += 1
                     cleanup_failed()
             finally:
@@ -353,7 +371,7 @@ def execute(task_id, fence):
         raise RuntimeError("Cloud worker requires an identified offline model lock")
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
-    with tempfile.TemporaryDirectory(prefix="clipforge-worker-") as cache:
+    with scratch_context() as cache:
         os.environ["CLIPFORGE_DATA_DIR"] = cache
         from .. import main
         main.ROOT = Path(cache)
@@ -361,17 +379,25 @@ def execute(task_id, fence):
         folder.mkdir()
         job = repo.document(task["job_id"])
         pilot = job["payload"].get("pilot") is True
+        measure = pilot and bool(os.getenv("CLOUD_RUN_EXECUTION"))
+        timings = {}
+        began = time.monotonic()
         try:
-            storage.download(job["manifest"]["input.mp4"], folder / "input.mp4")
-        except storage.StorageError:
+            storage.download(job["manifest"]["input.mp4"], folder / "input.mp4",
+                             max_bytes=BETA_MAX_BYTES if pilot else None)
+        except storage.StorageError as exc:
             if not pilot:
                 raise
             item = (job["payload"] if task["kind"] == "process" else
                     repo.document(task["job_id"], "export", task["item_id"])["payload"])
-            item.update(status="failed", error_code="SOURCE_UNAVAILABLE")
+            code = "UPLOAD_MISMATCH" if isinstance(exc, storage.InvalidUpload) else "SOURCE_UNAVAILABLE"
+            item.update(status="failed", error_code=code)
             manifest = job["manifest"] if task["kind"] == "process" else {}
             repo.finish_task(task, item, manifest)
             return
+        finally:
+            if measure:
+                record_stage(cache, timings, "download", began)
         if task["kind"] == "process" and "transcript.json" in job["manifest"]:
             storage.download(job["manifest"]["transcript.json"], folder / "transcript.json")
         context = {"task": task, "staged": None}
@@ -382,6 +408,7 @@ def execute(task_id, fence):
                     item = job["payload"]
                     item["status"] = "validating"
                     repo.worker_progress(task["job_id"], "job", item)
+                    began = time.monotonic()
                     try:
                         media = inspect_beta_media(folder / "input.mp4")
                     except MediaValidationError as exc:
@@ -390,6 +417,9 @@ def execute(task_id, fence):
                         item.update(status="failed", error_code=exc.code)
                         repo.finish_task(task, item, job["manifest"])
                         return
+                    finally:
+                        if measure:
+                            record_stage(cache, timings, "probe", began)
                     main._process(task["job_id"], validated_media=media)
                 else:
                     main._process(task["job_id"])
@@ -403,6 +433,7 @@ def execute(task_id, fence):
                 raise RuntimeError("Worker produced no durable state")
             doc = repo.document(task["job_id"], kind, task["item_id"])
             manifest = doc["manifest"]
+            began = time.monotonic()
             if payload["status"] == "completed":
                 if kind == "job":
                     names = ["transcript.json"] if (directory / "transcript.json").is_file() else []
@@ -420,6 +451,8 @@ def execute(task_id, fence):
                     with publication, path.open("rb") as source:
                         manifest[name] = storage.upload(object_name, source, mime)
             repo.finish_task(task, payload, manifest)
+            if measure and payload["status"] == "completed":
+                record_stage(cache, timings, "publish", began)
         finally:
             repo.CURRENT_TASK.reset(reset)
 

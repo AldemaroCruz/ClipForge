@@ -34,6 +34,33 @@ Las mediciones de esta entrega se registran por incremento en el
 [backlog](BACKLOG.md). Los resultados de límites y capacidad se atribuyen a
 las revisiones donde se observó el recorrido completo.
 
+### C01 · Entrada de hasta 2 GiB
+
+La candidata mantiene la carga reanudable en partes de 8 MiB. Antes de
+encolar se compara el tamaño declarado con el tamaño y generación del
+objeto en GCS. El worker vuelve a validar el límite antes de descargar el
+original. El supervisor retira su directorio temporal incluso cuando
+debe terminar el proceso hijo.
+
+El medio sintético local medido tiene 2.116.430.544 bytes, 1.200 segundos,
+28.800 fotogramas H.264 de 1280×720 y audio AAC con voz sintética. Sus
+bytes provienen de la codificación de fotogramas y audio. La prueba
+remota usa tres cargas independientes de ese fixture, interrumpe el
+segundo fragmento de una, repite la confirmación y vuelve a comprobar la
+persistencia desde cada nueva sesión. El recibo vincula sólo los trabajos
+sintéticos con los eventos `worker_resources`. Esos eventos distinguen
+el máximo muestreado de scratch y memoria por tarea, RSS del hijo y el
+pico del cgroup de la ejecución completa.
+
+En un contenedor aislado con 4 GiB, 2 CPU, sin swap y sin red, FFmpeg 9.1
+y Whisper Tiny con pesos verificados procesaron ese video y generaron
+cinco clips con audio, subtítulos incrustados y SRT/WebVTT. El recorrido
+local tardó 132,407 s. La copia local y verificación MD5 tomaron
+10,695 s, la transcripción 40,268 s y el render 80,910 s. El pico del
+cgroup fue 3.704.832.000 bytes y el máximo muestreado de temporales fue
+2.167.486.700 bytes. Son mediciones de un video local. La transferencia
+desde GCS y el trabajo simultáneo de tres cuentas quedan para INT.
+
 ### C02 · Corrección rápida
 
 En **Mis trabajos**, abre un clip automático, pulsa **Corregir texto** y

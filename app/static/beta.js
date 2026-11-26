@@ -51,10 +51,10 @@ async function betaUploadFile(url, file, onProgress) {
   const maximumRequests = Math.ceil(file.size / BETA_CHUNK_BYTES) + 8;
   let offset = 0;
   let checkStatus = false;
-  let wholeFile = false;
   let failures = 0;
+  let stalled = 0;
   for (let attempt = 0; attempt < maximumRequests; attempt += 1) {
-    const end = wholeFile ? file.size : Math.min(offset + BETA_CHUNK_BYTES, file.size);
+    const end = Math.min(offset + BETA_CHUNK_BYTES, file.size);
     const headers = { "Content-Range": checkStatus
       ? "bytes */" + file.size
       : "bytes " + offset + "-" + (end - 1) + "/" + file.size };
@@ -98,18 +98,22 @@ async function betaUploadFile(url, file, onProgress) {
       throw new Error("La carga se rechazó o venció. Vuelve a pulsar «Subir y procesar» para continuar.");
     }
     const next = betaCommittedOffset(response.headers.get("Range"), file.size);
-    if (next < offset || (!checkStatus && next <= offset)) {
-      // Some cross-origin responses omit Range. Resend the complete bounded
-      // object on this same resumable session instead of assuming any bytes.
-      if (wholeFile) throw new Error("El almacenamiento no pudo confirmar el avance de la carga.");
-      offset = 0;
-      wholeFile = true;
-      onProgress(0);
-    } else {
-      if (!checkStatus && next > end) throw new Error("El almacenamiento devolvió un avance de carga inesperado.");
-      offset = next;
-      onProgress(offset);
+    if (!checkStatus && next <= offset) {
+      checkStatus = true;
+      continue;
     }
+    if (next < offset || (!checkStatus && next > end)) {
+      throw new Error("El almacenamiento devolvió un avance de carga inesperado.");
+    }
+    if (next === offset) {
+      stalled += 1;
+      if (stalled > 2) throw new Error("El almacenamiento no pudo confirmar el avance de la carga.");
+    } else {
+      failures = 0;
+      stalled = 0;
+    }
+    offset = next;
+    onProgress(offset);
     checkStatus = false;
   }
   throw new Error("La carga quedó incompleta. Vuelve a pulsar «Subir y procesar».");
@@ -128,7 +132,9 @@ function betaStatus(status, leaseExpired = false) {
 }
 
 function betaFileSize(bytes) {
-  return (bytes / 1024 / 1024).toLocaleString("es", { maximumFractionDigits: 1 }) + " MiB";
+  const gib = 1024 ** 3;
+  const unit = bytes >= gib ? gib : 1024 ** 2;
+  return (bytes / unit).toLocaleString("es", { maximumFractionDigits: 2 }) + (unit === gib ? " GiB" : " MiB");
 }
 
 function betaLimitsAreValid(limits) {

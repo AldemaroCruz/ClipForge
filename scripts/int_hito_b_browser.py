@@ -208,7 +208,8 @@ def upload_video(page, path, report, transfer):
         "selection_mode", "worker_concurrency", "active_jobs_per_user", "formats", "max_bytes",
         "min_duration_seconds", "max_duration_seconds", "max_dimension",
     )}
-    require(f"{BETA_MAX_BYTES // (1024 * 1024)} MiB" in page.locator("#upload-limits").inner_text(),
+    limit_label = "2 GiB" if BETA_MAX_BYTES == 2 * 1024 ** 3 else f"{BETA_MAX_BYTES // (1024 * 1024)} MiB"
+    require(limit_label in page.locator("#upload-limits").inner_text(),
             "pilot_limits_hidden")
     page.locator("#upload-video").evaluate("""(input, bytes) => {
       const data = new DataTransfer();

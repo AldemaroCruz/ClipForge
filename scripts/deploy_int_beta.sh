@@ -182,6 +182,12 @@ create_capacity_fixtures() {
             -b:v 1300k -minrate 1300k -maxrate 1300k -bufsize 2600k -x264-params nal-hrd=cbr \
             -c:a aac -b:a 96k -movflags +faststart "$DELIVERY_DIR/capacity/${minutes}m.mp4"
     done
+    ffmpeg -hide_banner -loglevel error -nostdin -f lavfi \
+        -i 'testsrc2=size=1280x720:rate=24,noise=alls=24:allf=t+u:all_seed=613' \
+        -stream_loop -1 -i "$DELIVERY_DIR/voice.wav" -t 1200 \
+        -c:v libx264 -preset ultrafast -pix_fmt yuv420p -threads 4 \
+        -b:v 14000k -maxrate 16000k -bufsize 28000k -x264-params 'nal-hrd=none' \
+        -c:a aac -b:a 96k -movflags +faststart "$DELIVERY_DIR/capacity/large.mp4"
     python - "$DELIVERY_DIR/capacity/precise.mp4" "$DELIVERY_DIR/voice.wav" <<'PY'
 from pathlib import Path
 import sys
@@ -204,6 +210,7 @@ capacity_acceptance() {
         --frontend-revision "$FRONTEND_REVISION" --api-revision "$API_REVISION" \
         --editorial-model "$editorial_model" --fixture-dir "$DELIVERY_DIR/capacity" \
         --precise-fixture "$DELIVERY_DIR/capacity/precise.mp4" \
+        --large-fixture "$DELIVERY_DIR/capacity/large.mp4" \
         --report "$reports/browser-capacity.json" "${evidence_args[@]}"
 }
 

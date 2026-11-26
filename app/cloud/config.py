@@ -6,7 +6,7 @@ import re
 from urllib.parse import urlsplit
 
 
-BETA_MAX_BYTES = 300 * 1024 * 1024
+BETA_MAX_BYTES = 2 * 1024 ** 3
 BETA_MIN_SECONDS = 20
 BETA_MAX_SECONDS = 20 * 60
 BETA_AUDIO_PADDING_SECONDS = 0.15

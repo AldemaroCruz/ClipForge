@@ -22,6 +22,7 @@ from .router import _dispatch
 
 
 router = APIRouter(prefix="/beta")
+UPLOAD_SIZE_ERROR = f"El video supera el máximo de {BETA_MAX_BYTES // 1024 ** 3} GiB del piloto."
 
 
 class Upload(BaseModel):
@@ -111,7 +112,7 @@ def create_upload(payload: Upload, request: Request):
             or re.search(r"[\x00-\x1f\x7f]", filename)):
         raise HTTPException(422, "Selecciona un archivo MP4 con un nombre válido.")
     if payload.bytes > BETA_MAX_BYTES:
-        raise HTTPException(413, f"El video supera el máximo de {BETA_MAX_BYTES // (1024 * 1024)} MiB del piloto.")
+        raise HTTPException(413, UPLOAD_SIZE_ERROR)
     key = request.headers.get("Idempotency-Key")
     if not key:
         raise HTTPException(428, "Se requiere Idempotency-Key para crear una carga.")
@@ -134,6 +135,7 @@ def create_upload(payload: Upload, request: Request):
 def start_job(job_id: str, request: Request):
     principal = request.state.principal
     mismatch = False
+    too_large = False
     with get_engine().begin() as connection:
         document = repo.beta_document(connection, principal, job_id)
         item = document["payload"]
@@ -143,7 +145,8 @@ def start_job(job_id: str, request: Request):
                 original = storage.beta_original_metadata(name)
                 if original is None:
                     raise HTTPException(409, "La carga del video todavía no ha terminado.")
-                mismatch = original["bytes"] != item["source_bytes"] or original["bytes"] > BETA_MAX_BYTES
+                too_large = original["bytes"] > BETA_MAX_BYTES
+                mismatch = too_large or original["bytes"] != item["source_bytes"]
             except storage.InvalidUpload:
                 mismatch = True
             except storage.StorageError:
@@ -161,6 +164,8 @@ def start_job(job_id: str, request: Request):
                 repo.update_document(connection, job_id, "job", item, manifest={"input.mp4": original})
                 repo.enqueue(connection, job_id, "process", job_id)
     if mismatch:
+        if too_large:
+            raise HTTPException(413, UPLOAD_SIZE_ERROR)
         raise HTTPException(422, item["error"])
     return _dispatch(item) if item["status"] == "queued" else item
 

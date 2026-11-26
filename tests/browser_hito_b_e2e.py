@@ -88,7 +88,9 @@ class BrowserHitoBTest(unittest.TestCase):
                                   bool({"cookie", "x-csrf-token", "authorization", "referer"}.intersection(fields))))
         index = len(self.state["puts"])
         if self.state["hide_range"]:
-            route.fulfill(status={1: 308, 2: 200}.get(index, 500), headers=headers)
+            if index == 2:
+                headers["Range"] = "bytes=0-" + str(CHUNK - 1)
+            route.fulfill(status={1: 308, 2: 308, 3: 200}.get(index, 500), headers=headers)
             return
         if index in {1, 3}:
             headers["Range"] = "bytes=0-" + str(CHUNK - 1)
@@ -318,7 +320,8 @@ class BrowserHitoBTest(unittest.TestCase):
         self.page.locator("#upload-submit").click()
         self.until_text("#upload-status", "Video guardado")
         self.assertEqual([("PUT", f"bytes 0-{CHUNK - 1}/{size}", False),
-                          ("PUT", f"bytes 0-{size - 1}/{size}", False)], self.state["puts"])
+                          ("PUT", f"bytes */{size}", False),
+                          ("PUT", f"bytes {CHUNK}-{size - 1}/{size}", False)], self.state["puts"])
         self.assertEqual(1, len(self.state["reservations"]))
         self.assertFalse(self.state["reservations"][0][1]["burn_subtitles"])
         self.assertEqual(1, len(self.state["starts"]))

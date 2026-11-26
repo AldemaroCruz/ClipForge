@@ -39,15 +39,27 @@ class UploadStorageTests(TestCase):
         location = ENDPOINT + UPLOAD_PATH + "?uploadType=resumable&upload_id=synthetic-capability"
         response = MagicMock(headers={"Location": location})
         with patch.object(storage, "request", return_value=response) as request, patch.object(storage, "close") as close:
-            self.assertEqual(storage.start_resumable(ORIGINAL, 1000, ORIGIN), location)
+            self.assertEqual(storage.start_resumable(ORIGINAL, 2_147_483_648, ORIGIN), location)
         self.assertEqual(request.call_args.args, ("POST", ENDPOINT + UPLOAD_PATH))
         self.assertEqual(request.call_args.kwargs["params"], {
             "uploadType": "resumable", "name": ORIGINAL, "ifGenerationMatch": "0",
         })
         self.assertEqual(request.call_args.kwargs["headers"], {
-            "Origin": ORIGIN, "X-Upload-Content-Type": "video/mp4", "X-Upload-Content-Length": "1000",
+            "Origin": ORIGIN, "X-Upload-Content-Type": "video/mp4", "X-Upload-Content-Length": "2147483648",
         })
         close.assert_called_once_with(response)
+
+    def test_oversized_worker_original_is_rejected_before_opening_storage(self):
+        with TemporaryDirectory() as temporary, patch.object(storage, "_download_once") as download:
+            target = Path(temporary) / "worker" / "input.mp4"
+            for size in (2_147_483_649, 0, True):
+                with self.subTest(size=size), self.assertRaises(storage.InvalidUpload):
+                    storage.download({"bytes": size}, target, max_bytes=BETA_MAX_BYTES)
+            self.assertFalse(target.parent.exists())
+            download.assert_not_called()
+            accepted = {"bytes": 2_147_483_648}
+            storage.download(accepted, target, max_bytes=BETA_MAX_BYTES)
+            download.assert_called_once_with(accepted, target)
 
     def test_upload_destination_cannot_escape_origin_or_allocated_object(self):
         for location in (
@@ -96,12 +108,14 @@ class AdmissionTests(TestCase):
         with patch.object(pilot, "_reserve") as reserve, self.assertRaises(HTTPException) as rejected:
             pilot.create_upload(pilot.Upload(filename="video.mp4", bytes=BETA_MAX_BYTES + 1), self.request)
         self.assertEqual(rejected.exception.status_code, 413)
+        self.assertEqual(pilot.limits()["max_bytes"], 2_147_483_648)
         reserve.assert_not_called()
 
     def test_start_is_idempotent_and_pins_the_original(self):
-        item = {"id": JOB, "pilot": True, "status": "awaiting_upload", "source_bytes": 7, "upload_expires_at": 2_000_000_000}
+        item = {"id": JOB, "pilot": True, "status": "awaiting_upload", "source_bytes": 2_147_483_648,
+                "upload_expires_at": 2_000_000_000}
         doc = {"payload": item, "manifest": {}}
-        original = {"name": ORIGINAL, "bytes": 7, "generation": "123"}
+        original = {"name": ORIGINAL, "bytes": 2_147_483_648, "generation": "123"}
         with (
             patch.object(pilot, "get_engine"),
             patch.object(pilot.time, "time", return_value=1_000_000_000),
@@ -129,22 +143,26 @@ class AdmissionTests(TestCase):
         self.assertEqual(connection.execute.call_args.args[1], {"i": JOB, "o": OWNER, "w": WORKSPACE})
         document.assert_not_called()
 
-    def test_mismatched_stored_size_fails_without_dispatching(self):
-        item = {"id": JOB, "pilot": True, "status": "awaiting_upload", "source_bytes": 7, "upload_expires_at": 2_000_000_000}
-        with (
-            patch.object(pilot, "get_engine"),
-            patch.object(pilot.time, "time", return_value=1_000_000_000),
-            patch.object(repository, "beta_document", return_value={"payload": item}),
-            patch.object(repository, "update_document"),
-            patch.object(repository, "enqueue") as enqueue,
-            patch.object(storage, "beta_original_metadata", return_value={"bytes": 8}),
-            patch.object(pilot, "_dispatch") as dispatch,
-            self.assertRaises(HTTPException) as rejected,
-        ):
-            pilot.start_job(JOB, self.request)
-        self.assertEqual((rejected.exception.status_code, item["status"], item["error_code"]), (422, "failed", "UPLOAD_MISMATCH"))
-        enqueue.assert_not_called()
-        dispatch.assert_not_called()
+    def test_mismatched_or_oversized_stored_object_fails_without_dispatching(self):
+        for stored_bytes, status in ((8, 422), (2_147_483_649, 413)):
+            item = {"id": JOB, "pilot": True, "status": "awaiting_upload", "source_bytes": 7,
+                    "upload_expires_at": 2_000_000_000}
+            with (
+                self.subTest(stored_bytes=stored_bytes),
+                patch.object(pilot, "get_engine"),
+                patch.object(pilot.time, "time", return_value=1_000_000_000),
+                patch.object(repository, "beta_document", return_value={"payload": item}),
+                patch.object(repository, "update_document"),
+                patch.object(repository, "enqueue") as enqueue,
+                patch.object(storage, "beta_original_metadata", return_value={"bytes": stored_bytes}),
+                patch.object(pilot, "_dispatch") as dispatch,
+            ):
+                with self.assertRaises(HTTPException) as rejected:
+                    pilot.start_job(JOB, self.request)
+                self.assertEqual((rejected.exception.status_code, item["status"], item["error_code"]),
+                                 (status, "failed", "UPLOAD_MISMATCH"))
+                enqueue.assert_not_called()
+                dispatch.assert_not_called()
 
     def test_retry_unpublishes_failed_state_and_reuses_only_the_existing_task(self):
         task_id = "d" * 32

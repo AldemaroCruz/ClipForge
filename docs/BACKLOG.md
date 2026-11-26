@@ -54,7 +54,7 @@ Prioridad P0: bloqueante para su hito. P1: mejora necesaria/próxima. P2: optimi
 | ID | Entrega | Estado | Aceptación |
 |---|---|---|---|
 | C00 | Reutilización de la base de INT | Comprobado | Rama, revisiones, cuotas y componentes documentados en [Hito C](INT-HITO-C.md). |
-| C01 | Entrada de hasta 2 GiB | En curso | Tres creadores simultáneos con videos válidos cercanos al máximo, reanudación, límite real y mediciones del worker. |
+| C01 | Entrada de hasta 2 GiB | Implementado, aceptación remota pendiente | Tres creadores simultáneos con videos válidos cercanos al máximo, reanudación, límite real y mediciones del worker. |
 | C02 | Corrección rápida de subtítulos | Implementado, aceptación remota pendiente | Corrección de una palabra por clip, variantes persistentes y MP4/SRT/WebVTT comprobados. |
 | C03 | Ajuste preciso de recortes | Implementado, aceptación remota pendiente | Dos recortes tardíos con comparación del MP4, referencias temporales y sincronía. |
 
