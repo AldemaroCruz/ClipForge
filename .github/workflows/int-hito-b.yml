@@ -274,7 +274,7 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.sha }}
-          fetch-depth: 2
+          fetch-depth: 8
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
@@ -318,11 +318,16 @@ jobs:
           set -euo pipefail
           provider_source=9f644e4c73318d9115d88168905cf07c72711c3c
           deletion_source=18924d0cafddaaa30c986e52bb4cfc3776c06059
+          replay_source=9139a28835b6bf5a978c0b09bb16f8070dfcbe9b
           parent="$(git rev-parse HEAD^)"
           case "$parent" in
-            "$provider_source") mode=provider ;;
-            "$deletion_source")
+            "$provider_source") mode=provider; scope_base="$provider_source" ;;
+            "$deletion_source"|"$replay_source")
               mode=deletion
+              scope_base="$deletion_source"
+              if [[ "$parent" == "$replay_source" ]]; then
+                test "$(git rev-parse "$replay_source^")" = "$deletion_source"
+              fi
               git diff --exit-code "$provider_source" "$deletion_source" -- \
                 app/ai_provider.py app/ai_selection.py app/cloud/editorial_selection.py \
                 app/static/editorial.js Dockerfile.int-beta requirements-int.lock \
@@ -330,7 +335,7 @@ jobs:
               ;;
             *) exit 1 ;;
           esac
-          git diff --name-only "$parent" HEAD | while IFS= read -r path; do
+          git diff --name-only "$scope_base" HEAD | while IFS= read -r path; do
             case "$mode:$path" in
               provider:.github/workflows/int-hito-b.yml|provider:scripts/deploy_int_beta.sh|provider:scripts/int_hito_b_browser.py|provider:scripts/int_hito_b_capacity_browser.py) ;;
               deletion:.github/workflows/int-hito-b.yml|deletion:scripts/deploy_int_beta.sh|deletion:scripts/int_hito_b_browser.py|deletion:scripts/int_hito_b_deletion_browser.py|deletion:scripts/int_hito_b_delete_evidence.py) ;;
