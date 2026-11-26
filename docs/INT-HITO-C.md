@@ -40,17 +40,27 @@ de esa candidata verifica los tres incrementos.
 
 | Corrida | Decisión y artefactos |
 |---|---|
-| [45875033327](https://github.com/AldemaroCruz/ClipForge/actions/runs/45875033327) | Candidata anterior, a retirar mientras su `deploy` espera aprobación. Sus resultados y las imágenes quedan asociados a su propio SHA. Validación [15145122337](https://github.com/AldemaroCruz/ClipForge/actions/runs/45875033327/artifacts/15145122337) y OCI [15144214329](https://github.com/AldemaroCruz/ClipForge/actions/runs/45875033327/artifacts/15144214329). |
-| [45876391413](https://github.com/AldemaroCruz/ClipForge/actions/runs/45876391413) | Candidata seleccionada. El `deploy` consume exclusivamente `hito-b-candidate-45876391413-1` y el recibo emitidos por su propio job `api`. El historial guarda además `hito-b-validation-45876391413-1` y, al ejecutar el despliegue, `hito-b-int-45876391413-1`. |
+| [45875033327](https://github.com/AldemaroCruz/ClipForge/actions/runs/45875033327) | Cancelada durante la espera de aprobación de `deploy`. Sus resultados e imágenes siguen vigentes como evidencia de su propio SHA. Validación [15145122337](https://github.com/AldemaroCruz/ClipForge/actions/runs/45875033327/artifacts/15145122337) y OCI [15144214329](https://github.com/AldemaroCruz/ClipForge/actions/runs/45875033327/artifacts/15144214329). |
+| [45876391413](https://github.com/AldemaroCruz/ClipForge/actions/runs/45876391413) | Candidata seleccionada. `frontend` y `api` pasaron. `deploy` espera aprobación y consume los OCI [15146133485](https://github.com/AldemaroCruz/ClipForge/actions/runs/45876391413/artifacts/15146133485) y el recibo de su propio job `api`. El historial conserva [validación 15145558753](https://github.com/AldemaroCruz/ClipForge/actions/runs/45876391413/artifacts/15145558753) y generará `hito-b-int-45876391413-1` al ejecutar el despliegue. |
 
-En el momento de la selección la corrida nueva esperaba turno en el grupo
-`clipforge-int-hito-a-delivery`. Después de que pasen `frontend` y `api`,
-el job `deploy` espera en el environment protegido `int` sin ocupar un
-runner. El revisor configurado es `AldemaroCruz`. Con al menos cuatro
-reservas libres, la acción es revisar y aprobar **sólo** `int` en
-**Review deployments → Approve and deploy** de la corrida seleccionada.
-GitHub conserva esa espera y las evidencias. El environment carece de
-temporizador y el workflow se inicia con `workflow_dispatch`.
+El recibo de validación liga el SHA a la imagen web
+`sha256:b8b8f544142ab0ed73099b1056667e76d6b4b5253833cdffdb420cb8bad07ef5`
+y a la imagen del worker
+`sha256:edffb991cf91f0a0ce79107070dd14170d1f0758dab249bb8d3516283e4bed4f`.
+Son los digest candidatos. Los OCI vencen el 3 de diciembre de 2026
+a las 18:59 UTC.
+
+GitHub mantiene la corrida en el grupo `clipforge-int-hito-a-delivery`
+y la espera en el environment protegido `int` sin ocupar un runner.
+El proceso anterior para dos corridas se detuvo después de publicar
+la selección. El cliente local de esta sesión quedó preparado para
+una sola revisión por la API normal de GitHub con la identidad
+`AldemaroCruz`. Comprueba SHA, artefactos y cupo antes de aprobar.
+Si la sesión se interrumpe, la misma revisión queda disponible en
+Actions. Con al menos cuatro reservas libres y el cliente local
+detenido, la acción es **Review deployments → int → Approve and deploy**
+en la corrida seleccionada. El environment carece de temporizador
+y el workflow se inicia con `workflow_dispatch`.
 
 ### Aceptación de selección con IA
 
