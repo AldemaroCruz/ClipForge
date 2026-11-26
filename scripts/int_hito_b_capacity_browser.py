@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import stat
 import tempfile
 from time import monotonic
 from typing import Any
@@ -36,6 +37,10 @@ PUBLIC = browser_test.PUBLIC
 START_PATH = re.compile(re.escape(PUBLIC) + r"/beta/uploads/([a-f0-9]{32})/start$")
 UPLOAD_TIMEOUT = 720
 POLL_MS = 1_000
+REUSED_PROVIDER_COMMIT = "9f644e4c73318d9115d88168905cf07c72711c3c"
+REUSED_PROVIDER_SHA256 = "663d16e3667df49394a3cf78379f74346b80eceea1db597f61bd0c4edfc2f04e"
+REUSED_PROVIDER_MAX_BYTES = 128 * 1024
+PARALLEL_CASES = tuple(f"20m_parallel_{index}" for index in range(1, 4))
 
 
 @dataclass(frozen=True)
@@ -381,6 +386,53 @@ def provider_overlap(selections):
     return {"status": "observed" if seconds else "not_observed", "three_way_seconds": seconds}
 
 
+def load_provider_evidence(path, model):
+    """Admit the exact report that recorded the three calls before an unrelated 429."""
+    require(browser_test.MODEL.fullmatch(model), "reused_provider_requires_model")
+    require(path.is_absolute() and not path.is_symlink(), "reused_provider_report_path")
+    with path.open("rb") as source:
+        info = os.fstat(source.fileno())
+        require(stat.S_ISREG(info.st_mode) and 0 < info.st_size <= REUSED_PROVIDER_MAX_BYTES,
+                "reused_provider_report_size")
+        if os.name == "posix":
+            require(info.st_uid == os.getuid() and info.st_mode & 0o077 == 0, "reused_provider_report_permissions")
+        raw = source.read(REUSED_PROVIDER_MAX_BYTES + 1)
+    require(0 < len(raw) <= REUSED_PROVIDER_MAX_BYTES, "reused_provider_report_size")
+    digest = hashlib.sha256(raw).hexdigest()
+    require(digest == REUSED_PROVIDER_SHA256, "reused_provider_report_digest")
+    report = json.loads(raw)
+    require(report["schema"] == SCHEMA and report["url"] == PUBLIC
+            and report["commit"] == REUSED_PROVIDER_COMMIT and report["creators_logged_in"] == 3
+            and report["status"] == "failed" and report["step"] == "three_editorial_save_subtitle_style"
+            and report["failure"] == "editorial_request_http_429_nonjson", "reused_provider_report_scope")
+    editorial = report["editorial"]
+    require(set(editorial["planned_provider_calls"]) == set(PARALLEL_CASES),
+            "reused_provider_cases")
+    receipts = {}
+    for case in PARALLEL_CASES:
+        workload = report["cases"][case]
+        item = editorial[case]["selection"]
+        windows = item["analysis_windows"]
+        require(workload["status"] == "passed" and workload["input_seconds"] == 1200
+                and workload["analysis_seconds"] == 1200
+                and workload["automatic_captions_verified"] is True and item["provider"] == "openai"
+                and item["model"] == model and item["models_received"] == [model]
+                and item["provider_calls"] == item["provider_responses"] == editorial["planned_provider_calls"][case] == 1
+                and len(windows) == 1 and windows[0]["start"] == 0 and windows[0]["end"] == 1200
+                and 1 <= item["proposals"] <= 5 and item["last_transcript_end"] >= 1155,
+                "reused_provider_case_receipt")
+        receipts[case] = {
+            "provider": item["provider"], "model": item["model"], "proposals": item["proposals"],
+            "provider_calls": item["provider_calls"], "provider_responses": item["provider_responses"],
+            "provider_call_intervals": browser_test.provider_call_intervals(item),
+        }
+    overlap = provider_overlap(receipts.values())
+    require(overlap["status"] == "observed" and overlap == editorial["provider_overlap"],
+            "reused_provider_overlap")
+    return {"mode": "reused", "source_commit": REUSED_PROVIDER_COMMIT, "sha256": digest,
+            "provider_overlap": overlap, "cases": receipts}
+
+
 EMPTY_SELECTION_BRIEF = (
     "Elige un solo range_id del catálogo con una frase clara sobre el huerto, el maíz, "
     "el riego o el trabajo de los vecinos. Basta que el fragmento mencione una de esas acciones "
@@ -388,10 +440,19 @@ EMPTY_SELECTION_BRIEF = (
 )
 
 
-def editorial_capacity(cases, args, report):
+def editorial_capacity(cases, args, report, reused_provider=None):
     editorial = {}
     report["editorial"] = editorial
-    if args.editorial_model:
+    fresh_provider = bool(args.editorial_model) and reused_provider is None
+    if reused_provider is not None:
+        report["step"] = "three_live_editorial_provider_configs"
+        for case in cases:
+            config = facts(case.page, "/ai/config")
+            require(config.get("provider") == "openai" and config.get("configured") is True
+                    and config.get("model") == args.editorial_model, "reused_provider_live_configuration")
+        editorial.update(provider_evidence=reused_provider, live_provider_config_verified=len(cases),
+                         live_inference_phase="protected_browser_prepare")
+    if fresh_provider:
         pending = start_parallel_selections(cases, args.editorial_model, report)
         report["step"] = "three_real_editorial_selections"
         selections = []
@@ -464,8 +525,11 @@ def editorial_capacity(cases, args, report):
                 for suffix in denied:
                     require(browser_test.browser_get(other.page, path + suffix)["status"] in {403, 404},
                             "other_creator_editorial_result_visible")
-    editorial["status"] = "passed" if args.editorial_model else "subtitles_passed_provider_not_configured"
-    editorial["real_provider_called"] = bool(args.editorial_model)
+    if reused_provider is not None:
+        editorial["status"] = "passed_with_reused_provider_evidence"
+    else:
+        editorial["status"] = "passed" if fresh_provider else "subtitles_passed_provider_not_configured"
+    editorial["real_provider_called"] = bool(fresh_provider)
     browser_test.check(report, "three_twenty_minute_jobs_and_subtitled_exports")
 
 
@@ -507,7 +571,7 @@ def deactivate(browser, args, admin, accounts, report):
     report["synthetic_accounts_deactivated"] = True
 
 
-def acceptance(browser, args, admin, report):
+def acceptance(browser, args, admin, report, reused_provider=None):
     accounts = [{"username": "qa_beta_" + secrets.token_hex(10), "password": secrets.token_urlsafe(36)}
                 for _ in range(3)]
     attempted = []
@@ -545,12 +609,12 @@ def acceptance(browser, args, admin, report):
                     for minutes, page, transfer in zip(MINUTES[:3], pages, transfers, strict=True)]
             run_batch(warm, args, report)
             run_batch([Case("20m", ready[20], pages[0], transfers[0])], args, report)
-            parallel = [Case(f"20m_parallel_{index}", ready[20], page, transfer)
-                        for index, (page, transfer) in enumerate(zip(pages, transfers, strict=True), 1)]
+            parallel = [Case(name, ready[20], page, transfer)
+                        for name, page, transfer in zip(PARALLEL_CASES, pages, transfers, strict=True)]
             run_batch(parallel, args, report, (browser, accounts, warm[0]))
             report["step"] = "creator_isolation"
             check_isolation(parallel, report)
-            editorial_capacity(parallel, args, report)
+            editorial_capacity(parallel, args, report, reused_provider)
             for page in pages:
                 browser_test.logout(page)
     finally:
@@ -571,6 +635,8 @@ def arguments(argv=None):
     parser.add_argument("--fixture-dir", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--editorial-model", default="")
+    parser.add_argument("--reuse-provider-report", type=Path,
+                        help="reuse the exact reviewed INT three-account provider report")
     parser.add_argument("--case-timeout", type=int, default=1_800, help="seconds for each worker batch")
     parser.add_argument("--response-budget", type=int, default=30, help="seconds per portal operation under load")
     return parser.parse_args(argv)
@@ -584,6 +650,8 @@ def main(argv=None):
         require(not args.editorial_model or browser_test.MODEL.fullmatch(args.editorial_model), "editorial_model_shape")
         require(300 <= args.case_timeout <= 7_200 and 5 <= args.response_budget <= 120, "time_budget_shape")
         shared_http.private_file(args.report, must_exist=False)
+        reused_provider = (load_provider_evidence(args.reuse_provider_report, args.editorial_model)
+                           if args.reuse_provider_report else None)
         report["commit"] = args.commit
         report["revisions"] = browser_test.cloud_revisions(args.frontend_revision, args.api_revision)
         admin = shared_http.validate_admin(json.loads(os.environ.pop("INT_BOOTSTRAP_ADMIN_JSON", "")))
@@ -602,7 +670,7 @@ def main(argv=None):
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(executable_path=str(executable), env=child_env, headless=True)
             try:
-                acceptance(browser, args, admin, report)
+                acceptance(browser, args, admin, report, reused_provider)
             finally:
                 browser.close()
         report["status"] = "passed"

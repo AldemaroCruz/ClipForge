@@ -185,12 +185,18 @@ create_capacity_fixtures() {
 }
 
 capacity_acceptance() {
+    local -a evidence_args=()
+    if [[ -n "${INT_EDITORIAL_CAPACITY_REPORT:-}" ]]; then
+        [[ "$INT_EDITORIAL_CAPACITY_REPORT" == "$reports/prior-provider-capacity.json" ]]
+        evidence_args=(--reuse-provider-report "$INT_EDITORIAL_CAPACITY_REPORT")
+    fi
     create_capacity_fixtures
     env -u CLOUDSDK_AUTH_ACCESS_TOKEN -u GOOGLE_OAUTH_ACCESS_TOKEN \
         -u GOOGLE_APPLICATION_CREDENTIALS -u CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE \
         python -m scripts.int_hito_b_capacity_browser --commit "$GITHUB_SHA" \
         --frontend-revision "$FRONTEND_REVISION" --api-revision "$API_REVISION" \
-        --editorial-model "$editorial_model" --fixture-dir "$DELIVERY_DIR/capacity" --report "$reports/browser-capacity.json"
+        --editorial-model "$editorial_model" --fixture-dir "$DELIVERY_DIR/capacity" \
+        --report "$reports/browser-capacity.json" "${evidence_args[@]}"
 }
 
 browser_acceptance() {
