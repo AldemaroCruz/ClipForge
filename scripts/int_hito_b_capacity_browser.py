@@ -381,6 +381,13 @@ def provider_overlap(selections):
     return {"status": "observed" if seconds else "not_observed", "three_way_seconds": seconds}
 
 
+EMPTY_SELECTION_BRIEF = (
+    "Elige un solo range_id del catálogo con una frase clara sobre el huerto, el maíz, "
+    "el riego o el trabajo de los vecinos. Basta que el fragmento mencione una de esas acciones "
+    "de la historia del huerto comunitario. Explica en qué momento se escucha."
+)
+
+
 def editorial_capacity(cases, args, report):
     editorial = {}
     report["editorial"] = editorial
@@ -390,18 +397,34 @@ def editorial_capacity(cases, args, report):
         selections = []
         for case, receipt in zip(cases, pending, strict=True):
             report["case"] = case.label
-            selection = browser_test.finish_selection(case.page, case.job_id, receipt, args.editorial_model, 1200)
+            selection = browser_test.finish_selection(
+                case.page, case.job_id, receipt, args.editorial_model, 1200, allow_empty=True,
+            )
             selections.append(selection)
             editorial[case.label] = {"selection": {key: value for key, value in selection.items() if key != "id"}}
-        del report["case"]
         editorial["provider_overlap"] = provider_overlap(selections)
+        for index, (case, initial) in enumerate(zip(cases, selections, strict=True)):
+            if initial["proposals"]:
+                continue
+            report["case"] = case.label
+            report["step"] = "retry_empty_editorial_selection_with_consent"
+            receipt = browser_test.start_selection(case.page, case.job_id, args.editorial_model,
+                                                   brief=EMPTY_SELECTION_BRIEF)
+            require(receipt[0] != initial["id"], "editorial_retry_reused_empty_selection")
+            retry = browser_test.finish_selection(case.page, case.job_id, receipt, args.editorial_model, 1200)
+            row = editorial[case.label]
+            row["concurrent_selection"] = row["selection"]
+            row["selection"] = {key: value for key, value in retry.items() if key != "id"}
+            selections[index] = retry
+        del report["case"]
     else:
         selections = [None] * len(cases)
     drafts = []
-    for case in cases:
+    for case, selection in zip(cases, selections, strict=True):
         report["case"] = case.label
         report["step"] = "three_editorial_open_late_draft"
-        browser_test.open_late_draft(case.page, case.job_id, 1166, 1195, generated=bool(args.editorial_model))
+        browser_test.open_late_draft(case.page, case.job_id, 1166, 1195, generated=selection is not None,
+                                     analysis_id=selection["id"] if selection is not None else None)
         report["step"] = "three_editorial_save_subtitle_style"
         drafts.append(browser_test.save_style(case.page, case.job_id, 52, "#FF0000",
                                              "Edición y acción.\nCorazón y mañana."))

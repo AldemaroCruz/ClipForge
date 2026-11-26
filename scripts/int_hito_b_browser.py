@@ -645,7 +645,7 @@ def provider_call_intervals(selection):
     return observed
 
 
-def finish_selection(page, job, receipt, model, duration):
+def finish_selection(page, job, receipt, model, duration, *, allow_empty=False):
     identity, body, began = receipt
     path = f"/jobs/{job}/selections/{identity}"
     while True:
@@ -662,7 +662,7 @@ def finish_selection(page, job, receipt, model, duration):
         require(state in {"queued", "running", "processing"} and monotonic() - began < 540,
                 "editorial_real_selection_did_not_complete")
         page.wait_for_timeout(1_000)
-    candidates = selection.get("candidates", [])
+    candidates = selection.get("candidates")
     windows = selection.get("analysis_windows", [])
     models = selection.get("provider_models_received", [])
     require(selection.get("provider") == "openai" and selection.get("model") == model
@@ -672,7 +672,8 @@ def finish_selection(page, job, receipt, model, duration):
     require(isinstance(models, list) and models
             and all(isinstance(value, str) and MODEL.fullmatch(value) for value in models),
             "real_provider_model_receipt")
-    require(1 <= len(candidates) <= 5 and windows, "real_provider_proposal_receipt")
+    require(isinstance(candidates, list) and len(candidates) <= 5 and windows
+            and (allow_empty or candidates), "real_provider_proposal_receipt")
     require(abs(windows[0]["start"]) <= .1 and windows[-1]["end"] >= duration - .1
             and selection.get("last_transcript_end", 0) >= duration - 45,
             "editorial_selection_did_not_cover_full_video")
@@ -685,9 +686,10 @@ def finish_selection(page, job, receipt, model, duration):
                     and 19.999 <= item["end"] - item["start"] <= 60.001 for item in candidates)
             and all(left["end"] <= right["start"] for left, right in zip(ordered, ordered[1:])),
             "editorial_candidate_integrity")
-    require(any(theme.search(item["title"] + " " + item["reason"])
-                and theme.search(item.get("transcript_excerpt", "")) for item in candidates),
-            "editorial_synthetic_topic_missing")
+    if candidates:
+        require(any(theme.search(item["title"] + " " + item["reason"])
+                    and theme.search(item.get("transcript_excerpt", "")) for item in candidates),
+                "editorial_synthetic_topic_missing")
     replay = browser_post(page, f"/jobs/{job}/selections", body)
     require(replay["status"] in {200, 202} and replay["id"] == identity
             and browser_get(page, path)["body"]["provider_calls"] == selection["provider_calls"],
@@ -700,8 +702,10 @@ def finish_selection(page, job, receipt, model, duration):
             "worker_seconds": selection.get("elapsed_seconds"), "wall_seconds": round(monotonic() - began, 3)}
 
 
-def open_late_draft(page, job, start, end, *, generated, expected_style=None):
+def open_late_draft(page, job, start, end, *, generated, expected_style=None, analysis_id=None):
     if generated:
+        if analysis_id is not None:
+            page.wait_for_function("id => document.querySelector('#editorial-runs').value === id", arg=analysis_id)
         candidates = page.locator("#editorial-candidates")
         candidates.get_by_role("button", name="Reproducir intervalo").first.click()
         source = page.locator("#editorial-source")
@@ -711,7 +715,13 @@ def open_late_draft(page, job, start, end, *, generated, expected_style=None):
         }""", timeout=60_000)
         close_preview(source)
         create = candidates.get_by_role("button", name="Crear / abrir borrador").first
-        observed = click_response(page, create, f"/jobs/{job}/selections/", "POST", 201).json()
+        selection_path = f"/jobs/{job}/selections/"
+        if analysis_id is not None:
+            selection_path += f"{analysis_id}/candidates/"
+        observed = click_response(page, create, selection_path, "POST", 201).json()
+        if analysis_id is not None:
+            require(observed.get("selection_origin", {}).get("analysis_id") == analysis_id,
+                    "editorial_draft_used_a_different_selection")
         if expected_style is not None:
             require(all(observed["options"].get(key) == value for key, value in expected_style.items()),
                     "editorial_candidate_did_not_inherit_project_caption_style")
