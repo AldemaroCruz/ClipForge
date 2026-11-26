@@ -144,9 +144,12 @@ class BrowserHitoBTest(unittest.TestCase):
                 caption = self.state["caption"]
                 clip.update(start=caption["start"], end=caption["end"],
                             captions={key: caption[key] for key in ("status", "output", "revision")})
+            clips = [clip] if state == "completed" else []
+            if self.state.get("sibling_clip"):
+                clips.append(self.state["sibling_clip"])
             return {"id": JOB, "status": state, "pilot": True,
                     "media": {"duration_seconds": self.state.get("duration", 426.55)},
-                    "clips": [clip] if state == "completed" else [],
+                    "clips": clips,
                     "caption_style": self.state["project_caption"]}, 200
         if path == f"/jobs/{JOB}/clips/{CLIP}/captions" and self.state["caption"]:
             caption = self.state["caption"]
@@ -377,6 +380,65 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertEqual("88", self.page.locator("#clip-caption-size").input_value())
         self.assertEqual("Texto del recorte.", editor.locator("textarea").input_value())
         self.assertEqual([], self.state["selection_posts"])
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
+    def test_quick_caption_correction_preserves_intervals_style_and_the_other_clip(self):
+        style = {"burn_subtitles": True, "subtitle_font_size": 76, "subtitle_color": "#EDAD42",
+                 "subtitle_position": "top", "subtitle_outline": 6}
+        cues = [{"start": 1.2, "end": 3.25, "text": "Edición de ClifForge."},
+                {"start": 8.25, "end": 10.5, "text": "El siguiente paso."}]
+        base = f"/jobs/{JOB}/clips/{CLIP}"
+        sibling = f"/jobs/{JOB}/clips/clip_02.mp4"
+        variant = f"/jobs/{JOB}/exports/{CAPTION}/files/clip"
+        self.state.update(status="completed", caption={
+            "start": 392.0, "end": 421.5, "duration": 29.5, "cues": cues, "style": style.copy(),
+            "revision": 1, "status": "completed",
+            "output": {"id": "9" * 64, "mp4": base, "srt": base + "/subtitles/srt",
+                       "vtt": base + "/subtitles/vtt", "burn_subtitles": True},
+        }, sibling_clip={"file": "clip_02.mp4", "start": 400, "end": 422, "captions": {
+            "revision": 1, "status": "completed",
+            "output": {"id": "8" * 64, "mp4": sibling, "srt": sibling + "/subtitles/srt",
+                       "vtt": sibling + "/subtitles/vtt", "burn_subtitles": True},
+        }})
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        card = self.page.locator(f'#clip-list [data-clip-file="{CLIP}"]')
+        other = self.page.locator('#clip-list [data-clip-file="clip_02.mp4"]')
+        action = card.get_by_role("button", name="Corregir texto", exact=True)
+        action.click()
+        editor = self.page.locator('#clip-caption-editor[data-mode="quick"]')
+        first = editor.get_by_role("textbox", name="Subtítulo 1 · 1.200–3.250 s")
+        first.wait_for()
+        self.assertTrue(first.evaluate("node => node === document.activeElement"))
+        self.assertTrue(editor.locator("#clip-caption-advanced").is_hidden())
+        self.assertEqual(0, editor.locator("#clip-caption-cues input").count())
+        downloads = editor.locator("#clip-caption-downloads")
+        self.assertEqual(base, downloads.get_by_role("link", name="Descargar MP4").get_attribute("href"))
+        first.fill("Edición de ClipForge.")
+        self.assertTrue(downloads.is_hidden())
+        editor.get_by_role("button", name="Guardar y exportar").click()
+        self.until_text("#clip-caption-status", "Corrección guardada")
+        self.assertTrue(downloads.is_hidden())
+
+        expected = [{**cues[0], "text": "Edición de ClipForge."}, cues[1]]
+        self.assertEqual([{"style": style, "revision": 1, "cues": expected}], self.state["caption_updates"])
+        self.assertEqual(([], [], []), (self.state["reservations"], self.state["starts"], self.state["selection_posts"]))
+        self.state["caption"].update(status="completed", output={
+            "id": CAPTION, "mp4": variant + ".mp4", "srt": variant + ".srt",
+            "vtt": variant + ".vtt", "burn_subtitles": True,
+        })
+        self.until_text("#clip-caption-status", "Versión lista para descargar")
+        for name, suffix in (("MP4", "mp4"), ("SRT", "srt"), ("WebVTT", "vtt")):
+            self.assertEqual(variant + "." + suffix,
+                             downloads.get_by_role("link", name="Descargar " + name).get_attribute("href"))
+        self.assertEqual(sibling + "/subtitles/srt",
+                         other.get_by_role("link", name="Descargar SRT").get_attribute("href"))
+
+        self.page.reload()
+        action.click()
+        self.assertEqual(expected[0]["text"], first.input_value())
+        self.assertEqual(expected[1]["text"], editor.get_by_role("textbox", name="Subtítulo 2 · 8.250–10.500 s").input_value())
+        self.assertEqual(variant + ".mp4", downloads.get_by_role("link", name="Descargar MP4").get_attribute("href"))
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])
 

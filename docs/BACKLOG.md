@@ -49,6 +49,15 @@ Prioridad P0: bloqueante para su hito. P1: mejora necesaria/próxima. P2: optimi
 | CF-030 | 1.0 | P0 | Preparación operativa de lanzamiento | CF-019, CF-020, CF-021, CF-025 | Propuesto | Carga/SLO/restauración/incidentes/rollback probados; soporte y costos conocidos; bloqueantes de seguridad resueltos. |
 | CF-031 | Fuera del camino crítico | P3 | Publicación social y reencuadre automático | CF-023 | Propuesto | Investigar APIs/permisos y calidad por tipo de video; iniciar solo con demanda validada y sin desplazar fiabilidad. |
 
+## Hito C en INT
+
+| ID | Entrega | Estado | Aceptación |
+|---|---|---|---|
+| C00 | Reutilización de la base de INT | Comprobado | Rama, revisiones, cuotas y componentes documentados en [Hito C](INT-HITO-C.md). |
+| C01 | Entrada de hasta 2 GiB | En curso | Tres creadores simultáneos con videos válidos cercanos al máximo, reanudación, límite real y mediciones del worker. |
+| C02 | Corrección rápida de subtítulos | Implementado, aceptación remota pendiente | Corrección de una palabra por clip, variantes persistentes y MP4/SRT/WebVTT comprobados. |
+| C03 | Ajuste preciso de recortes | En curso | Dos recortes tardíos con comparación del MP4, referencias temporales y sincronía. |
+
 ## Primer incremento recomendado
 
 **CF-001 a CF-005**, manteniendo una tarea principal en curso. CF-006 puede trabajarse como diseño y presupuesto, sin crear recursos. Después de validar CF-001/002/003/004, promover el hito v0.4.2 y comenzar el piloto privado.

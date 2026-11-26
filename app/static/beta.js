@@ -175,6 +175,16 @@ function betaCaptionMessage(captions, output) {
   return betaSafeMessage(captions?.notice, fallback);
 }
 
+function betaCaptionSidecars(container, output, file) {
+  for (const [format, name] of [["srt", "SRT"], ["vtt", "WebVTT"]]) {
+    if (!output?.[format]) continue;
+    const link = betaText("a", "Descargar " + name);
+    link.href = output[format];
+    link.download = file.replace(/mp4$/, format);
+    container.append(link);
+  }
+}
+
 async function betaJson(auth, path, options) {
   const response = await auth.fetch(path, options);
   let payload;
@@ -343,13 +353,11 @@ async function initBeta() {
         original.download = clip.file;
         actions.append(original);
       }
-      for (const [format, name] of [["srt", "SRT"], ["vtt", "WebVTT"]]) {
-        if (!output?.[format]) continue;
-        const link = betaText("a", "Descargar " + name);
-        link.href = output[format];
-        link.download = clip.file.replace(/mp4$/, format);
-        actions.append(link);
-      }
+      betaCaptionSidecars(actions, output, clip.file);
+      const correct = betaText("button", "Corregir texto", "secondary");
+      correct.type = "button";
+      correct.addEventListener("click", () => openCaptions(clip.file, {quick: true, time: player.currentTime}));
+      actions.append(correct);
       const edit = betaText("button", "Editar subtítulos", "secondary");
       edit.type = "button";
       edit.addEventListener("click", () => openCaptions(clip.file));
@@ -398,6 +406,8 @@ async function initBeta() {
     caption("form").hidden = true;
     caption("fields").disabled = false;
     caption("cues").replaceChildren();
+    caption("downloads").replaceChildren();
+    caption("downloads").hidden = true;
     const player = caption("preview");
     player.pause();
     player.removeAttribute("src");
@@ -412,26 +422,56 @@ async function initBeta() {
   }
 
   function updateCaptionSample() {
-    if (!captionView?.data) return;
+    if (!captionView?.data || captionView.quick) return;
     captionFields.showCaptionSample(caption("sample"), caption("cues"), captionStyle(captionView));
+  }
+
+  function quickCueRow(cue, index) {
+    const row = betaText("label", "Subtítulo " + (index + 1) + " · "
+      + cue.start.toFixed(3) + "–" + cue.end.toFixed(3) + " s", "editorial-cue");
+    const input = document.createElement("textarea");
+    input.required = true;
+    input.maxLength = 500;
+    input.rows = 2;
+    input.value = cue.text;
+    row.append(input);
+    return row;
   }
 
   function syncCaptionRender(state) {
     const view = captionView;
     if (!view || view.id !== selectedId) return;
     const current = state || job?.clips?.find(clip => clip.file === view.file)?.captions;
+    if (view.data && (!Number.isSafeInteger(current?.revision) || current.revision < view.data.revision)) return;
+    const downloads = caption("downloads");
+    if (view.quick && current?.revision > view.data?.revision) {
+      downloads.hidden = true;
+      caption("status").textContent = "Hay otra revisión guardada. Vuelve a abrir el clip para continuar.";
+      return;
+    }
     const output = betaCaptionOutput(view.id, view.file, current);
     const base = "/jobs/" + view.id + "/clips/" + view.file;
     const mediaPath = (output?.mp4 || base) + "?inline=true";
     const player = caption("preview");
-    const key = JSON.stringify([current?.status, current?.notice, current?.revision, mediaPath]);
+    const exportReady = view.quick && output && current?.revision === view.data?.revision;
+    downloads.hidden = !exportReady || view.dirty;
+    const key = JSON.stringify([current?.status, current?.notice, current?.revision, mediaPath,
+      Boolean(exportReady), output?.srt, output?.vtt]);
     if (key === view.renderKey) return;
     view.renderKey = key;
     if (player.getAttribute("src") !== mediaPath) player.src = mediaPath;
     player.hidden = false;
-    const message = betaCaptionMessage(current, output);
+    const message = exportReady && output.burn_subtitles ? "Versión lista para descargar." : betaCaptionMessage(current, output);
     caption("status").textContent = message;
     player.setAttribute("aria-label", output ? "Vista previa del MP4 disponible" : "Vista previa del clip inicial");
+    downloads.replaceChildren();
+    if (exportReady) {
+      const mp4 = betaText("a", "Descargar MP4");
+      mp4.href = output.mp4;
+      mp4.download = view.file;
+      downloads.append(mp4);
+      betaCaptionSidecars(downloads, output, view.file);
+    }
   }
 
   function mountCaptions(view, data, {preserveCues = false} = {}) {
@@ -441,36 +481,52 @@ async function initBeta() {
       throw new Error("No se pudo verificar la versión del clip.");
     }
     view.data = data;
-    caption("range").textContent = data.start.toFixed(3) + "–" + data.end.toFixed(3)
-      + " s del original. Los tiempos de los subtítulos empiezan en cero para este recorte.";
+    view.dirty = false;
+    caption("range").textContent = view.quick ? "Tiempos dentro del clip."
+      : data.start.toFixed(3) + "–" + data.end.toFixed(3)
+        + " s del original. Los tiempos de los subtítulos empiezan en cero para este recorte.";
     caption("burn").checked = data.style.burn_subtitles === true;
     caption("size").value = data.style.subtitle_font_size ?? 52;
     caption("color").value = data.style.subtitle_color ?? "#ffffff";
     caption("position").value = data.style.subtitle_position ?? "bottom";
     caption("edge").value = data.style.subtitle_outline ?? 3;
     if (!preserveCues) {
-      caption("cues").replaceChildren(...data.cues.map(cue =>
-        captionFields.cueRow(cue, data.duration, updateCaptionSample)));
+      caption("cues").replaceChildren(...(view.quick ? data.cues.map(quickCueRow) : data.cues.map(cue =>
+        captionFields.cueRow(cue, data.duration, updateCaptionSample))));
     }
+    const empty = view.quick && !data.cues.length;
+    caption("empty").hidden = !empty;
+    caption("save").disabled = empty;
     caption("form").hidden = false;
     syncCaptionRender(data);
     updateCaptionSample();
   }
 
-  async function openCaptions(file) {
+  async function openCaptions(file, {quick = false, time = 0} = {}) {
     if (job?.status !== "completed" || !BETA_CLIP.test(file) || !captionFields) return;
     if (captionView?.busy) return;
     closeCaptions();
-    const view = {id: selectedId, file, busy: true};
+    const view = {id: selectedId, file, quick, busy: true};
     captionView = view;
-    caption("editor").hidden = false;
-    caption("heading").textContent = "Editar subtítulos · Clip " + Number(file.slice(5, 7));
+    const editor = caption("editor");
+    editor.dataset.mode = quick ? "quick" : "full";
+    editor.hidden = false;
+    caption("heading").textContent = (quick ? "Corregir texto" : "Editar subtítulos") + " · Clip " + Number(file.slice(5, 7));
+    caption("legend").textContent = quick ? "Subtítulos" : "Estilo y sincronización";
+    caption("advanced").hidden = quick;
+    caption("add").hidden = quick;
+    caption("apply-all").hidden = quick;
+    caption("save").textContent = quick ? "Guardar y exportar" : "Guardar y generar clip";
     caption("range").textContent = "";
     caption("status").textContent = "Cargando subtítulos del recorte.";
-    caption("editor").scrollIntoView({block: "nearest"});
+    editor.scrollIntoView({block: "nearest"});
     try {
       const data = await json(captionPath(view.id, file));
       mountCaptions(view, data);
+      if (captionView === view && quick) {
+        const active = data.cues.findIndex(cue => cue.start <= time && time < cue.end);
+        caption("cues").querySelectorAll("textarea")[Math.max(0, active)]?.focus();
+      }
     } catch (error) {
       if (captionView === view) caption("status").textContent = error.message;
     } finally {
@@ -481,10 +537,11 @@ async function initBeta() {
   async function saveCaptions(applyAll = false) {
     const view = captionView;
     if (!view?.data || view.busy || job?.status !== "completed") return;
+    if (view.quick && (applyAll || !view.data.cues.length)) return;
     const valid = applyAll ? ["size", "edge"].every(name => caption(name).reportValidity())
       : caption("form").reportValidity();
     if (!valid) return;
-    const style = captionStyle(view);
+    const style = view.quick ? view.data.style : captionStyle(view);
     const projectRevision = job.caption_style?.revision;
     if (applyAll) {
       if (!Number.isSafeInteger(projectRevision)) {
@@ -495,7 +552,11 @@ async function initBeta() {
         + "individuales de todos sus clips. Se conservarán sus textos y tiempos guardados. ¿Continuar?");
       if (!confirmed) return;
     }
-    const cues = captionFields.readCues(caption("cues"));
+    const cues = view.quick
+      ? [...caption("cues").querySelectorAll("textarea")].map((input, index) => ({
+        ...view.data.cues[index], text: input.value,
+      }))
+      : captionFields.readCues(caption("cues"));
     view.busy = true;
     caption("fields").disabled = true;
     caption("status").textContent = applyAll ? "Aplicando estilo al proyecto." : "Guardando los subtítulos.";
@@ -509,7 +570,8 @@ async function initBeta() {
       const data = applyAll ? await json(captionPath(view.id, view.file)) : result;
       mountCaptions(view, data, {preserveCues: applyAll});
       if (captionView === view) {
-        const action = applyAll ? "Estilo del proyecto guardado." : "Subtítulos guardados.";
+        const action = applyAll ? "Estilo del proyecto guardado."
+          : view.quick ? "Corrección guardada." : "Subtítulos guardados.";
         const state = betaCaptionMessage(data, betaCaptionOutput(view.id, view.file, data));
         caption("status").textContent = state ? action + " " + state : action;
         await openJob(view.id);
@@ -792,7 +854,14 @@ async function initBeta() {
     event.preventDefault();
     void saveCaptions();
   });
-  caption("form").addEventListener("input", updateCaptionSample);
+  caption("form").addEventListener("input", () => {
+    if (captionView?.quick) {
+      captionView.dirty = true;
+      caption("downloads").hidden = true;
+    } else {
+      updateCaptionSample();
+    }
+  });
   caption("apply-all").addEventListener("click", () => saveCaptions(true));
   caption("add").addEventListener("click", () => {
     if (!captionView?.data) return;

@@ -301,7 +301,7 @@ def save_download(page, link, target, *, timeout=120_000):
         download.delete()
 
 
-def caption_receipt(page, card, target, item, output, *, verify_pixels=True):
+def caption_receipt(page, card, target, item, output, *, verify_pixels=True, cue_index=None):
     duration = round(item["end"] - item["start"], 3)
     cues = validate_cues(item["cues"], duration)
     require(cues and output.get("burn_subtitles") is True and
@@ -321,7 +321,8 @@ def caption_receipt(page, card, target, item, output, *, verify_pixels=True):
                 "size": item["options"]["subtitle_font_size"], "color": color, "position": position,
                 "sidecars": digests}
     if verify_pixels:
-        cue = max(cues, key=lambda value: value["end"] - value["start"])
+        cue = (max(cues, key=lambda value: value["end"] - value["start"])
+               if cue_index is None else cues[cue_index])
         seconds = (cue["start"] + cue["end"]) / 2
         pixels = caption_color_stats(target, color, seconds=seconds, position=position)
         require(pixels["matching_pixels"] >= 75, "automatic_or_custom_caption_pixels_missing")
@@ -412,7 +413,7 @@ def caption_output(page, job_id, file, previous, *, timeout=540):
         page.wait_for_timeout(2000)
 
 
-def read_caption_variant(page, job_id, file, state, scratch, *, check_pixels=True):
+def read_caption_variant(page, job_id, file, state, scratch, *, check_pixels=True, cue_index=None):
     card = page.locator(f'#clip-list [data-clip-file="{file}"]')
     output = state["output"]
     page.wait_for_function("""([file, url]) =>
@@ -426,9 +427,70 @@ def read_caption_variant(page, job_id, file, state, scratch, *, check_pixels=Tru
         duration = probe_media(media, pilot=True)["duration_seconds"]
         require(abs(duration - state["duration"]) < .2, "custom_clip_duration_changed")
         receipt = caption_receipt(page, card, media, {**state, "options": state["style"]},
-                                  output, verify_pixels=check_pixels)
+                                  output, verify_pixels=check_pixels, cue_index=cue_index)
         receipt["sha256"] = digest_of(media)
     return receipt
+
+
+def check_quick_caption_correction(page, job_id, file, edited, index, before, scratch, report):
+    report["step"] = "quick_caption_correction"
+    card = page.locator(f'#clip-list [data-clip-file="{file}"]')
+    base = f"/jobs/{job_id}"
+    path = f"{base}/clips/{file}/captions"
+    selections = browser_get(page, base + "/selections")
+    workspace = browser_get(page, base + "/workspace")
+    original = browser_get(page, base)["body"]
+    expected = [dict(cue) for cue in edited["cues"]]
+    old_text = expected[index]["text"]
+    new_text = old_text.replace("recorte", "fragmento")
+    require(old_text != new_text and selections["status"] == workspace["status"] == 200,
+            "quick_caption_baseline")
+    expected[index]["text"] = new_text
+    requests = []
+
+    def capture(request):
+        if request.method in {"POST", "PUT"} and origin(request.url) == PUBLIC:
+            requests.append((request.method, urlsplit(request.url).path))
+
+    page.on("request", capture)
+    try:
+        card.get_by_role("button", name="Corregir texto", exact=True).click()
+        editor = page.locator('#clip-caption-editor[data-mode="quick"]')
+        editor.locator('[data-field="text"]').nth(index).fill(new_text)
+        save = editor.get_by_role("button", name="Guardar y exportar", exact=True)
+        response = click_response(page, save, path, "PUT", 200)
+        require(response.request.post_data_json.get("revision") == edited["revision"],
+                "quick_caption_revision")
+        corrected = caption_output(page, job_id, file, edited["output"]["id"])
+        require(corrected["cues"] == expected and corrected["style"] == edited["style"],
+                "quick_caption_text_or_style")
+        downloads = editor.locator("#clip-caption-downloads")
+        downloads.wait_for(state="visible")
+        require(set(downloads.get_by_role("link").evaluate_all("(links) => links.map(a => a.getAttribute('href'))"))
+                == {corrected["output"][key] for key in ("mp4", "srt", "vtt")}, "quick_caption_editor_downloads")
+        rendered = read_caption_variant(page, job_id, file, corrected, scratch, cue_index=index)
+        require(rendered["sha256"] != before["sha256"]
+                and rendered["sidecars"] != before["sidecars"]
+                and rendered["burned_pixels"] != before["burned_pixels"], "quick_caption_export_unchanged")
+        after = browser_get(page, base)["body"]
+        for field in ("media", "analysis_seconds", "speech_until_seconds", "selection_mode"):
+            require(original[field] == after[field], "quick_caption_changed_source_analysis")
+        require([clip for clip in original["clips"] if clip["file"] != file]
+                == [clip for clip in after["clips"] if clip["file"] != file], "quick_caption_changed_other_clips")
+        require(browser_get(page, base + "/selections") == selections
+                and browser_get(page, base + "/workspace") == workspace
+                and requests == [("PUT", path)], "quick_caption_restarted_pipeline")
+    finally:
+        page.remove_listener("request", capture)
+    report["quick_caption_correction"] = {
+        "file": file, "before": old_text, "corrected": new_text, "subtitles": rendered["sidecars"],
+        "mp4": rendered["sha256"], "encoded_caption_pixels": rendered["burned_pixels"],
+        "other_clips_unchanged": len(original["clips"]) - 1, "source_analysis_unchanged": True,
+    }
+    check(report, "quick_caption_word_correction_mp4_srt_vtt_without_reprocessing")
+    card.get_by_role("button", name="Editar subtítulos", exact=True).click()
+    page.locator('#clip-caption-editor[data-mode="full"] #clip-caption-size').wait_for()
+    return corrected, rendered
 
 
 def prepare_clip_styles(page, job, original, scratch, report):
@@ -463,7 +525,7 @@ def prepare_clip_styles(page, job, original, scratch, report):
     interim = browser_get(page, "/jobs/" + job_id)["body"]
     require(all(clip["captions"]["output"]["id"] == initial[clip["file"]] for clip in interim["clips"]
                 if clip["file"] != file), "individual_caption_change_affected_other_clips")
-    single = read_caption_variant(page, job_id, file, edited, scratch)
+    single = read_caption_variant(page, job_id, file, edited, scratch, cue_index=index)
     require((single["color"], single["position"], single["size"]) == ("#FF0000", "top", 76),
             "individual_caption_style_changed")
     page.wait_for_function("""url => document.querySelector('#clip-caption-preview')
@@ -473,6 +535,7 @@ def prepare_clip_styles(page, job, original, scratch, report):
         save_download(page, card.get_by_role("link", name="MP4 inicial", exact=True), target)
         require(digest_of(target) == original[file]["sha256"], "caption_edit_changed_initial_mp4")
     check(report, "existing_clip_caption_edit_without_upload_or_retranscription")
+    edited, single = check_quick_caption_correction(page, job_id, file, edited, index, single, scratch, report)
 
     report["step"] = "project_caption_style"
     page.locator("#clip-caption-size").fill("88")
@@ -501,7 +564,7 @@ def prepare_clip_styles(page, job, original, scratch, report):
             and latest["sidecars"] == single["sidecars"], "project_style_not_reflected_in_mp4")
     report["caption_customization"] = {"individual": single, "project": latest, "updated_clips": len(after)}
     check(report, "project_caption_style_applied_to_all_with_individual_timing_preserved")
-    return {"file": file, "project": project,
+    return {"file": file, "project": project, "quick_text": report["quick_caption_correction"]["corrected"],
             "clips": {name: caption_state_digest(item) for name, item in after.items()}, "receipt": latest}
 
 
@@ -517,6 +580,9 @@ def verify_clip_styles(page, job, saved, original, scratch, report):
     for name, item in states.items():
         require(caption_state_digest(item) == saved["clips"][name], "clip_caption_state_lost_after_replacement")
     file = saved["file"]
+    require(any(cue["text"] == saved["quick_text"] for cue in states[file]["cues"]),
+            "quick_caption_text_lost_after_relogin")
+    check(report, "quick_caption_correction_persisted_after_relogin")
     observed = read_caption_variant(page, job_id, file, states[file], scratch, check_pixels=False)
     expected = {key: value for key, value in saved["receipt"].items() if key != "burned_pixels"}
     require(observed == expected, "clip_caption_files_changed_after_replacement")

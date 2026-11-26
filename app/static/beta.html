@@ -68,15 +68,18 @@
           <video id="clip-caption-preview" controls playsinline preload="none" aria-label="Vista previa del clip guardado" hidden></video>
           <form id="clip-caption-form" hidden>
             <fieldset id="clip-caption-fields" class="beta-caption-fields">
-              <legend>Estilo y sincronización</legend>
-              <label class="beta-check"><input type="checkbox" id="clip-caption-burn">Incrustar subtítulos en el MP4</label>
-              <div class="mvp-range">
-                <div><label for="clip-caption-size">Tamaño del texto</label><input type="number" id="clip-caption-size" min="24" max="120" step="1" value="52" required></div>
-                <div><label for="clip-caption-color">Color del texto</label><input type="color" id="clip-caption-color" value="#ffffff"></div>
-                <div><label for="clip-caption-position">Posición</label><select id="clip-caption-position"><option value="bottom">Abajo</option><option value="center">Centro</option><option value="top">Arriba</option></select></div>
-                <div><label for="clip-caption-edge">Grosor del contorno</label><input type="number" id="clip-caption-edge" min="0" max="12" step="1" value="3" required></div>
+              <legend id="clip-caption-legend">Estilo y sincronización</legend>
+              <div id="clip-caption-advanced">
+                <label class="beta-check"><input type="checkbox" id="clip-caption-burn">Incrustar subtítulos en el MP4</label>
+                <div class="mvp-range">
+                  <div><label for="clip-caption-size">Tamaño del texto</label><input type="number" id="clip-caption-size" min="24" max="120" step="1" value="52" required></div>
+                  <div><label for="clip-caption-color">Color del texto</label><input type="color" id="clip-caption-color" value="#ffffff"></div>
+                  <div><label for="clip-caption-position">Posición</label><select id="clip-caption-position"><option value="bottom">Abajo</option><option value="center">Centro</option><option value="top">Arriba</option></select></div>
+                  <div><label for="clip-caption-edge">Grosor del contorno</label><input type="number" id="clip-caption-edge" min="0" max="12" step="1" value="3" required></div>
+                </div>
+                <p id="clip-caption-sample" class="editorial-sample" hidden><span></span></p>
               </div>
-              <p id="clip-caption-sample" class="editorial-sample" hidden><span></span></p>
+              <p id="clip-caption-empty" class="muted" hidden>Este clip no tiene subtítulos. Puedes añadirlos con «Editar subtítulos».</p>
               <div id="clip-caption-cues"></div>
               <button id="clip-caption-add" type="button" class="secondary">Añadir subtítulo</button>
               <div class="actions">
@@ -85,6 +88,7 @@
               </div>
             </fieldset>
           </form>
+          <div id="clip-caption-downloads" class="actions" role="group" aria-label="Descargas de subtítulos y video" hidden></div>
         </section>
         <section id="editorial" aria-labelledby="editorial-heading" hidden>
           <details id="editorial-details">
@@ -196,7 +200,7 @@
       <ol>
         <li>Entra con la cuenta que te entregó el administrador y selecciona un MP4 con voz audible.</li>
         <li>Elige «Subir y procesar». Puedes salir cuando el trabajo figure como pendiente o procesando y retomarlo en «Mis trabajos».</li>
-        <li>Reproduce los clips automáticos y descarga el MP4, SRT o WebVTT cuando estén disponibles. Usa «Editar subtítulos» para personalizar un clip.</li>
+        <li>Usa «Corregir texto» para corregir subtítulos y volver a exportar un clip automático. En «Editar subtítulos» puedes ajustar tiempos y estilo.</li>
         <li>Abre «Propuestas por IA y edición». Define un objetivo, revisa el texto por enviar y autoriza el análisis. Elige una propuesta para ajustar el recorte y los subtítulos antes de aprobar la exportación.</li>
       </ol>
     </section>
