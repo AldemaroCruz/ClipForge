@@ -38,6 +38,21 @@ los controles de tiempos y estilo. La prueba local de Chromium usó
 datos sintéticos y verificó persistencia de la corrección al recargar y
 la disponibilidad de MP4, SRT y WebVTT para la nueva revisión.
 
+### C03 · Bordes del recorte
+
+En **Propuestas por IA y edición**, **Revisar inicio** y **Revisar final**
+reproducen ventanas alrededor de los bordes. Usa **Marcar inicio en este
+fotograma** o **Marcar final después de este fotograma** para ajustar los
+límites. **Aplicar rango** y **Aprobar y exportar** guardan y generan la
+variante correspondiente.
+
+La prueba local con medios sintéticos VFR de cadencia base 24000/1001
+exportó los intervalos 180,123–184,600 s y 202,017–207,978 s. Comparó
+fotogramas, PTS, un marcador de audio y los subtítulos descargables. Con
+FFmpeg 9.1 observó un error de PTS de 0 ms en los dos recorridos, con un
+intervalo máximo entre fotogramas de 83,417 ms. La aceptación remota usa
+además voz sintética para conservar el recorrido real de transcripción.
+
 ### Reversión
 
 Para revertir una entrega de INT se restaura el tráfico de la última

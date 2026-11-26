@@ -82,11 +82,12 @@ def _filter_path(path: Path) -> str:
 
 
 def build_filter(options: Presentation, *, video_index: int = 0,
-                 ass_path: Path | None = None) -> str:
+                 ass_path: Path | None = None, source_clock: bool = False) -> str:
     if isinstance(video_index, bool) or not isinstance(video_index, int) or video_index < 0:
         raise ValueError("Índice de pista de video inválido")
     # Normalize sample aspect ratio before crop/pad. FFmpeg autorotation remains on.
-    prefix = f"[0:{video_index}]setpts=PTS-STARTPTS,scale=trunc(iw*sar/2)*2:ih,setsar=1"
+    clock = "" if source_clock else "setpts=PTS-STARTPTS,"
+    prefix = f"[0:{video_index}]{clock}scale=trunc(iw*sar/2)*2:ih,setsar=1"
     contain = "scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2"
     cover = "scale=1080:1920:force_original_aspect_ratio=increase:force_divisible_by=2,crop=1080:1920"
     if options.framing == "contain":
@@ -114,9 +115,16 @@ def render_clip(source: Path, output: Path, *, start: float, end: float,
         raise ValueError("La duración de exportación debe ser mayor que 0 y no superar 60 segundos.")
     duration = round(end - start, 3)
     encoding_limits = []
+    video_clock = []
+    audio_clock = "asetpts=PTS-STARTPTS"
     if pilot:
         duration = min(duration, 60.0)
         encoding_limits = ["-maxrate", "2200k", "-bufsize", "4400k", "-b:a", "128k"]
+        # Accurate input seeking places both streams on the same clock,
+        # relative to the requested cut. Keep late frames on that clock and
+        # fill leading audio silence just as the pilot's transcription does.
+        video_clock = ["-fps_mode:v", "passthrough", "-enc_time_base:v", "filter"]
+        audio_clock = "aresample=async=1:first_pts=0"
     cues = validate_cues(cues, duration)
     if options.burn_subtitles and not cues:
         raise ValueError("No hay subtítulos para incrustar. Agrega texto o desactiva esa opción.")
@@ -135,8 +143,8 @@ def render_clip(source: Path, output: Path, *, start: float, end: float,
         runner(
             "-filter_complex_threads", max(1, threads),
             "-ss", f"{start:.3f}", "-protocol_whitelist", "file,pipe", "-i", source.resolve(), "-t", f"{duration:.3f}",
-            "-filter_complex", build_filter(options, video_index=video_index, ass_path=ass),
-            "-map", "[outv]", "-map", "0:a:0", "-af", "asetpts=PTS-STARTPTS",
+            "-filter_complex", build_filter(options, video_index=video_index, ass_path=ass, source_clock=pilot),
+            "-map", "[outv]", "-map", "0:a:0", "-af", audio_clock, *video_clock,
             "-c:v", "libx264", "-threads", max(1, threads), "-preset", "veryfast",
             "-crf", "26", "-pix_fmt", "yuv420p", "-c:a", "aac", *encoding_limits,
             "-movflags", "+faststart", target,

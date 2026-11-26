@@ -132,7 +132,7 @@
       "cwe": 78,
       "line": 5,
       "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
-      "source_sha256": "eb033ae75ab5b0cd8abb2e4a7895f47aed5a84cef85b21a90030a0ef955d96d4",
+      "source_sha256": "e16a88c6cfaf7c335a76070f5776cd9c9d707841636a5b7ef2b125666b4c14ec",
       "reason": "Imports subprocess for the reviewed FFmpeg launcher, dedicated process group and timing controls."
     },
     {
@@ -143,7 +143,7 @@
       "cwe": 78,
       "line": 28,
       "context_sha256": "2d722ea9c62e87235c11409e9cf13325d2927f73fc65667eb6e704870fff86a7",
-      "source_sha256": "eb033ae75ab5b0cd8abb2e4a7895f47aed5a84cef85b21a90030a0ef955d96d4",
+      "source_sha256": "e16a88c6cfaf7c335a76070f5776cd9c9d707841636a5b7ef2b125666b4c14ec",
       "reason": "A fixed Python launcher receives the verified FFmpeg executable as argv. Clip times and stream indexes are validated or computed, presentation options are enumerated, and input, outputs and subtitle files are generated in private worker scratch. The beta FFmpeg build disables network protocols."
     },
     {

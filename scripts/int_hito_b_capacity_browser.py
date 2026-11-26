@@ -614,6 +614,16 @@ def acceptance(browser, args, admin, report, reused_provider=None):
             run_batch(parallel, args, report, (browser, accounts, warm[0]))
             report["step"] = "creator_isolation"
             check_isolation(parallel, report)
+            if args.precise_fixture:
+                from scripts.int_hito_c_cuts_browser import acceptance as check_precise_cuts
+
+                source = args.precise_fixture
+                meta = probe_media(source, pilot=True)
+                fixture = Fixture(source, source.stat().st_size, meta["duration_seconds"])
+                case = Case("native_timing", fixture, pages[0], transfers[0])
+                run_batch([case], args, report)
+                check_precise_cuts(case.page, args, report, job=case.job_id)
+                browser_test.open_saved_job(case.page, parallel[0].job_id)
             editorial_capacity(parallel, args, report, reused_provider)
             for page in pages:
                 browser_test.logout(page)
@@ -633,6 +643,7 @@ def arguments(argv=None):
     parser.add_argument("--frontend-revision", required=True)
     parser.add_argument("--api-revision", required=True)
     parser.add_argument("--fixture-dir", type=Path, required=True)
+    parser.add_argument("--precise-fixture", type=Path)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--editorial-model", default="")
     parser.add_argument("--reuse-provider-report", type=Path,

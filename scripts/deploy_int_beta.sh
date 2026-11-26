@@ -182,6 +182,13 @@ create_capacity_fixtures() {
             -b:v 1300k -minrate 1300k -maxrate 1300k -bufsize 2600k -x264-params nal-hrd=cbr \
             -c:a aac -b:a 96k -movflags +faststart "$DELIVERY_DIR/capacity/${minutes}m.mp4"
     done
+    python - "$DELIVERY_DIR/capacity/precise.mp4" "$DELIVERY_DIR/voice.wav" <<'PY'
+from pathlib import Path
+import sys
+from tests.test_hito_c_cuts import make_fixture
+
+make_fixture(Path(sys.argv[1]), voice=Path(sys.argv[2]))
+PY
 }
 
 capacity_acceptance() {
@@ -196,6 +203,7 @@ capacity_acceptance() {
         python -m scripts.int_hito_b_capacity_browser --commit "$GITHUB_SHA" \
         --frontend-revision "$FRONTEND_REVISION" --api-revision "$API_REVISION" \
         --editorial-model "$editorial_model" --fixture-dir "$DELIVERY_DIR/capacity" \
+        --precise-fixture "$DELIVERY_DIR/capacity/precise.mp4" \
         --report "$reports/browser-capacity.json" "${evidence_args[@]}"
 }
 

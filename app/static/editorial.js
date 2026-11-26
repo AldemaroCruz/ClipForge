@@ -8,11 +8,13 @@
   const details = el("details");
   const auth = window.ClipForgeAuth;
   const source = el("source");
+  const observesFrames = typeof source.requestVideoFrameCallback === "function";
   const idPattern = /^[a-f0-9]{32}$/;
   const candidatePattern = /^[1-9][0-9]*$/;
   const active = status => ["queued", "running", "validating", "rendering"].includes(status);
   let view = null;
   let previewEnd = null;
+  let frameCallback = null;
 
   function node(tag, value, className) {
     const result = document.createElement(tag);
@@ -50,6 +52,31 @@
     source.pause();
   }
 
+  function updateFrameControls() {
+    const available = Boolean(view?.draft && Number.isFinite(view.frameTime) && !source.seeking);
+    el("mark-start").disabled = !available;
+    el("mark-end").disabled = !available;
+  }
+
+  function resetFrameObservation() {
+    if (frameCallback !== null) source.cancelVideoFrameCallback(frameCallback);
+    frameCallback = null;
+    if (view) view.frameTime = null;
+    updateFrameControls();
+  }
+
+  function observeSourceFrames(state) {
+    if (!observesFrames || frameCallback !== null || !visible(state)) return;
+    frameCallback = source.requestVideoFrameCallback((_now, frame) => {
+      frameCallback = null;
+      if (!visible(state)) return;
+      state.frameTime = frame.mediaTime;
+      updateFrameControls();
+      if (!source.seeking && previewEnd !== null && frame.mediaTime >= previewEnd) stopPreview();
+      observeSourceFrames(state);
+    });
+  }
+
   function selectJob(job) {
     const eligible = job?.pilot === true && job.status === "completed" && idPattern.test(job.id)
       && Number.isFinite(job.media?.duration_seconds) && job.media.duration_seconds >= 1;
@@ -60,6 +87,7 @@
       view.controller.abort();
     }
     stopPreview();
+    resetFrameObservation();
     source.removeAttribute("src");
     source.load();
     details.open = false;
@@ -454,10 +482,38 @@
     setCues(item.cues, item.start, item.end);
     el("revision").textContent = "Revisión guardada " + item.revision;
     updateSample();
+    updateFrameControls();
   }
 
   function rangeFields() {
     return {start: el("start").valueAsNumber, end: el("end").valueAsNumber};
+  }
+
+  function reviewEdge(edge) {
+    const state = view;
+    if (!state?.draft || !visible(state) || state.draftBusy) return;
+    const time = rangeFields()[edge];
+    if (!Number.isFinite(time) || time < 0 || time > state.duration + 0.001) {
+      el(edge).reportValidity();
+      return;
+    }
+    const start = Math.max(0, time - 1.5);
+    const end = Math.min(state.duration, time + 1.5);
+    status(state, (edge === "start" ? "Revisando el inicio" : "Revisando el final")
+      + " en " + time.toFixed(3) + " s del original.", "draft-status");
+    void playRange(state, start, end).catch(error => status(state, error.message, "draft-status"));
+  }
+
+  function markEdge(edge) {
+    const state = view;
+    if (!state?.draft || !visible(state) || state.draftBusy || el("mark-" + edge).disabled) return;
+    stopPreview();
+    // The range API stores milliseconds. Round down so a cut from this frame
+    // includes it, and an exclusive end at this frame leaves it out.
+    const time = Math.floor(Math.max(0, state.frameTime) * 1000 + 1e-7) / 1000;
+    el(edge).value = time.toFixed(3);
+    status(state, (edge === "start" ? "Inicio" : "Fin") + " ajustado a " + time.toFixed(3)
+      + " s del original.", "draft-status");
   }
 
   function draftPayload(item, range) {
@@ -610,10 +666,12 @@
       state.manualTogglePending = false;
       clearTimers(state);
       stopPreview();
+      resetFrameObservation();
       resetConsent();
       return;
     }
     source.src = "/jobs/" + state.id + "/source";
+    observeSourceFrames(state);
     selectionControls(state);
     if (state.manualTogglePending) {
       state.manualTogglePending = false;
@@ -643,6 +701,10 @@
   el("draft-form").addEventListener("input", updateSample);
   el("apply-range").addEventListener("click", () => draftAction("range"));
   el("range-preview").addEventListener("click", () => draftAction("preview"));
+  for (const edge of ["start", "end"]) {
+    el("preview-" + edge).addEventListener("click", () => reviewEdge(edge));
+    el("mark-" + edge).addEventListener("click", () => markEdge(edge));
+  }
   el("export").addEventListener("click", () => draftAction("export"));
   el("add-cue").addEventListener("click", () => {
     const range = view.range;
@@ -651,8 +713,13 @@
       status(view, "Ajusta el fin del último subtítulo para añadir otro.", "draft-status");
     }
   });
+  source.addEventListener("seeking", () => {
+    if (view) view.frameTime = null;
+    updateFrameControls();
+  });
+  source.addEventListener("seeked", updateFrameControls);
   source.addEventListener("timeupdate", () => {
-    if (previewEnd !== null && source.currentTime >= previewEnd) stopPreview();
+    if (!source.seeking && previewEnd !== null && source.currentTime >= previewEnd) stopPreview();
   });
 
   window.ClipForgeEditorial = {selectJob, createManualDraft};
