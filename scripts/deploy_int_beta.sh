@@ -243,14 +243,24 @@ case "${1:-}" in
         ;;
     acceptance)
         trap rollback_delivery EXIT
-        create_fixture
-        apply_beta true "run-$GITHUB_RUN_ID-b$GITHUB_RUN_ATTEMPT" public
-        capture_rollout before
-        browser_acceptance prepare --video "$DELIVERY_DIR/fixture.mp4"
-        apply_beta true "run-$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT" replacement
-        capture_rollout after
-        browser_acceptance verify
-        capacity_acceptance
+        if [[ -n "${INT_DELETION_REPLAY_REPORT:-}" ]]; then
+            [[ "$INT_DELETION_REPLAY_REPORT" == "$reports/deletion-replay.json" && ! -L "$INT_DELETION_REPLAY_REPORT" ]]
+            jq -e '.schema == "clipforge-int-hito-b-delete-evidence-1" and .status == "passed"
+                and .commit == "18924d0cafddaaa30c986e52bb4cfc3776c06059"' \
+                "$INT_DELETION_REPLAY_REPORT" > /dev/null
+            apply_beta true "run-$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT" replacement
+            capture_rollout after
+            browser_acceptance deletion-recheck
+        else
+            create_fixture
+            apply_beta true "run-$GITHUB_RUN_ID-b$GITHUB_RUN_ATTEMPT" public
+            capture_rollout before
+            browser_acceptance prepare --video "$DELIVERY_DIR/fixture.mp4"
+            apply_beta true "run-$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT" replacement
+            capture_rollout after
+            browser_acceptance verify
+            capacity_acceptance
+        fi
         trap - EXIT
         ;;
     *)

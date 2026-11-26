@@ -1,6 +1,7 @@
 """Verify owner-scoped project deletion through the protected INT portal."""
 from pathlib import Path
 import re
+import secrets
 from time import monotonic
 
 from scripts import int_hito_b_browser as portal
@@ -167,3 +168,128 @@ def acceptance(browser, args, state, report):
         portal.logout(foreign)
         portal.logout(second_session)
     portal.check(report, "deletion_completed_queued_active_and_idempotent")
+
+
+def reserve_project(page):
+    fixture = {"filename": "synthetic-deletion-recheck.mp4", "bytes": 1024}
+    key = secrets.token_hex(16)
+    receipt = portal.browser_post(page, "/beta/uploads", fixture, key)
+    job = receipt.get("id")
+    portal.require(receipt["status"] == 201 and receipt["upload"] and isinstance(job, str)
+                   and portal.ID.fullmatch(job), "deletion_recheck_reservation")
+    return job, fixture, key
+
+
+def recheck_reservations(browser, args, accounts, report):
+    output = report["project_deletion"] = {"scope": "synthetic_reservation"}
+    with portal.browser_page(browser) as owner, portal.browser_page(browser) as other:
+        portal.login(owner, accounts[0], args.commit)
+        portal.login(other, accounts[1], args.commit)
+        for page in (owner, other):
+            me = portal.browser_get(page, "/auth/me")
+            portal.require(me["status"] == 200 and me["body"]["user"]["is_admin"] is False,
+                           "deletion_recheck_requires_normal_account")
+        report["step"] = "deletion_recheck_reservations"
+        pending = []
+        try:
+            job, fixture, key = reserve_project(owner)
+            pending.append((owner, job))
+            control, _, _ = reserve_project(other)
+            pending.append((other, control))
+            portal.require(control != job, "deletion_recheck_projects_not_distinct")
+            path = deletion_path(job)
+            portal.require(portal.browser_post(other, path, {})["status"] == 404
+                           and portal.browser_get(other, f"/jobs/{job}")["status"] == 404
+                           and portal.browser_post(owner, path, {}, csrf=False)["status"] == 403,
+                           "deletion_recheck_ownership_or_csrf")
+            portal.check(report, "project_deletion_owner_and_csrf")
+
+            search = f"/projects?q={job}&limit=1"
+            result = portal.browser_get(owner, search + "&offset=0")
+            following = portal.browser_get(owner, search + "&offset=1")
+            portal.require(result["status"] == 200 and result["body"]["total"] == 1
+                           and [p["id"] for p in result["body"]["projects"]] == [job]
+                           and result["body"]["has_more"] is False
+                           and following["status"] == 200 and following["body"]["total"] == 1
+                           and following["body"]["projects"] == [], "deletion_recheck_initial_search")
+            owner.goto(portal.PUBLIC + f"/?job={job}", wait_until="domcontentloaded")
+            owner.locator(f'#project-list a[href="/?job={job}"][aria-current=true]').wait_for()
+            original = portal.browser_get(owner, f"/jobs/{job}")
+            portal.require(original["status"] == 200 and original["body"]["status"] == "awaiting_upload",
+                           "deletion_recheck_project_not_reserved")
+            report["step"] = "deletion_recheck_confirm"
+            elapsed = confirm_deletion(owner, job)
+            output["reservation"] = {**finish_deletion(owner, job), "click_to_removal_seconds": elapsed}
+            replay = portal.browser_post(owner, "/beta/uploads", fixture, key)
+            portal.require(replay["status"] == 404 and not replay["upload"], "deleted_upload_replayed")
+            pending.remove((owner, job))
+            control_status = portal.browser_get(other, f"/jobs/{control}")
+            portal.require(control_status["status"] == 200 and control_status["body"]["status"] == "awaiting_upload"
+                           and portal.browser_get(other, path)["status"] == 404,
+                           "deletion_recheck_unrelated_project_or_receipt")
+            portal.check(report, "deletion_did_not_affect_existing_other_project")
+            portal.check(report, "deletion_confirmed_and_idempotent_on_synthetic_reservation")
+
+            report["step"] = "deletion_recheck_sign_in_again"
+            portal.logout(owner)
+            portal.login(owner, accounts[0], args.commit)
+            owner.goto(portal.PUBLIC + f"/?job={job}", wait_until="domcontentloaded")
+            owner.wait_for_function("""id => !new URLSearchParams(location.search).has('job')
+                && !document.querySelector(`#project-list a[href='/?job=${id}']`)""", arg=job)
+            check_removed(owner, job)
+            following = portal.browser_get(owner, search + "&offset=1")
+            portal.require(following["status"] == 200 and following["body"]["total"] == 0
+                           and following["body"]["projects"] == [] and following["body"]["has_more"] is False,
+                           "deleted_project_counted_on_later_page")
+            config_result = portal.browser_get(owner, "/ai/config")
+            config = config_result["body"] or {}
+            portal.require(config_result["status"] == 200 and config.get("provider") == "openai"
+                           and config.get("model") == args.editorial_model and config.get("configured") is True
+                           and config.get("enabled") is True
+                           and config.get("destination") == "https://api.openai.com/v1/responses",
+                           "deletion_recheck_openai_config_changed")
+            report["editorial"] = {"provider": "openai", "model": args.editorial_model, "configured": True,
+                                   "real_provider_called": False}
+            portal.check(report, "deletion_visible_after_relogin_and_absent_from_search_pages")
+            portal.check(report, "configured_openai_model_preserved_without_inference")
+        finally:
+            report["synthetic_projects_removed"] = True
+            for page, job in pending:
+                try:
+                    request_deletion(page, job)
+                except Exception:
+                    report["synthetic_projects_removed"] = False
+        portal.require(report["synthetic_projects_removed"], "deletion_recheck_project_cleanup")
+        portal.logout(owner)
+        portal.logout(other)
+
+
+def recheck(browser, args, admin, report):
+    accounts = [{"username": "qa_beta_" + secrets.token_hex(10), "password": secrets.token_urlsafe(36)}
+                for _ in range(2)]
+    attempted = []
+    try:
+        report["step"] = "deletion_recheck_accounts"
+        with portal.browser_page(browser) as page:
+            portal.login(page, admin, args.commit)
+            page.goto(portal.PUBLIC + "/account", wait_until="domcontentloaded")
+            for account in accounts:
+                attempted.append(account)
+                portal.create_account(page, account)
+            portal.logout(page)
+        recheck_reservations(browser, args, accounts, report)
+    finally:
+        if attempted:
+            try:
+                with portal.browser_page(browser) as page:
+                    portal.login(page, admin, args.commit)
+                    result = portal.browser_get(page, "/auth/users")
+                    portal.require(result["status"] == 200, "deletion_recheck_accounts_lookup")
+                    active = {u["username"] for u in result["body"]["users"] if u["is_active"]}
+                    portal.deactivate_accounts(page, [account for account in attempted if account["username"] in active])
+                    portal.logout(page)
+                report["synthetic_accounts_deactivated"] = True
+            except Exception:
+                report["synthetic_accounts_deactivated"] = False
+    portal.require(report.get("synthetic_accounts_deactivated") is True, "deletion_recheck_account_cleanup")
+    portal.check(report, "synthetic_accounts_deactivated")

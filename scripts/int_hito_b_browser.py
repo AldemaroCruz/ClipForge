@@ -1,6 +1,7 @@
 """Browser acceptance for the public ClipForge INT beta.
 
 Run prepare before replacing the Cloud Run revisions and verify afterwards.
+Run deletion-recheck on a synthetic reservation without uploading or using AI.
 Keep the state file, fixture and temporary downloads in private scratch.
 The JSON reports contain check results and measured timings without credentials.
 """
@@ -1029,7 +1030,7 @@ def verify(browser, args, admin, report, revisions):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["prepare", "verify"])
+    parser.add_argument("mode", choices=["prepare", "verify", "deletion-recheck"])
     parser.add_argument("--commit", required=True)
     parser.add_argument("--frontend-revision", required=True)
     parser.add_argument("--api-revision", required=True)
@@ -1043,6 +1044,7 @@ def main():
     try:
         require(COMMIT.fullmatch(args.commit), "commit_shape")
         require(not args.editorial_model or MODEL.fullmatch(args.editorial_model), "editorial_model_shape")
+        require(args.mode != "deletion-recheck" or args.editorial_model, "deletion_recheck_requires_editorial_model")
         revisions = cloud_revisions(args.frontend_revision, args.api_revision)
         report.update(commit=args.commit, revisions=revisions)
         shared_http.private_file(args.state, must_exist=args.mode == "verify")
@@ -1050,7 +1052,7 @@ def main():
         shared_http.private_file(args.report, must_exist=False)
         require((args.mode == "prepare" and args.video is not None and args.video.is_absolute()
                  and args.video.is_file() and args.video.suffix.lower() == ".mp4") or
-                (args.mode == "verify" and args.video is None), "fixture_argument")
+                (args.mode in {"verify", "deletion-recheck"} and args.video is None), "fixture_argument")
         admin = shared_http.validate_admin(json.loads(os.environ.pop("INT_BOOTSTRAP_ADMIN_JSON", "")))
         from playwright.sync_api import sync_playwright
 
@@ -1071,8 +1073,12 @@ def main():
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(executable_path=str(executable), env=child_env, headless=True)
             try:
-                action = prepare if args.mode == "prepare" else verify
-                action(browser, args, admin, report, revisions)
+                if args.mode == "deletion-recheck":
+                    from scripts.int_hito_b_deletion_browser import recheck
+                    recheck(browser, args, admin, report)
+                else:
+                    action = prepare if args.mode == "prepare" else verify
+                    action(browser, args, admin, report, revisions)
             finally:
                 browser.close()
         report["status"] = "passed"

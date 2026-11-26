@@ -9,7 +9,7 @@ on:
         required: true
         type: string
       reuse_int_provider_evidence:
-        description: Reuse the verified three-account OpenAI receipts for this acceptance-only change
+        description: Reuse pinned INT acceptance evidence for a verified source revision
         required: false
         type: boolean
         default: false
@@ -310,6 +310,35 @@ jobs:
       - name: Verify commit, archive SHA-256 and OCI manifest before OIDC
         run: python -m scripts.int_hito_b_delivery verify "$DELIVERY_DIR/images" "$DELIVERY_DIR/reports"
 
+      - name: Check the exact source scope of the reused evidence
+        id: reuse_scope
+        if: inputs.reuse_int_provider_evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          provider_source=9f644e4c73318d9115d88168905cf07c72711c3c
+          deletion_source=18924d0cafddaaa30c986e52bb4cfc3776c06059
+          parent="$(git rev-parse HEAD^)"
+          case "$parent" in
+            "$provider_source") mode=provider ;;
+            "$deletion_source")
+              mode=deletion
+              git diff --exit-code "$provider_source" "$deletion_source" -- \
+                app/ai_provider.py app/ai_selection.py app/cloud/editorial_selection.py \
+                app/static/editorial.js Dockerfile.int-beta requirements-int.lock \
+                requirements-int-demo.lock requirements-int-beta-apt.tsv
+              ;;
+            *) exit 1 ;;
+          esac
+          git diff --name-only "$parent" HEAD | while IFS= read -r path; do
+            case "$mode:$path" in
+              provider:.github/workflows/int-hito-b.yml|provider:scripts/deploy_int_beta.sh|provider:scripts/int_hito_b_browser.py|provider:scripts/int_hito_b_capacity_browser.py) ;;
+              deletion:.github/workflows/int-hito-b.yml|deletion:scripts/deploy_int_beta.sh|deletion:scripts/int_hito_b_browser.py|deletion:scripts/int_hito_b_deletion_browser.py|deletion:scripts/int_hito_b_delete_evidence.py) ;;
+              *) exit 1 ;;
+            esac
+          done
+          printf 'mode=%s\n' "$mode" >> "$GITHUB_OUTPUT"
+
       - name: Download the pinned three-account provider evidence
         if: inputs.reuse_int_provider_evidence
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -319,25 +348,50 @@ jobs:
           artifact-ids: 15080003495
           path: ${{ env.DELIVERY_DIR }}/prior-provider
           merge-multiple: true
-      - name: Verify evidence identity and unchanged application sources
+      - name: Verify and retain the provider report
         if: inputs.reuse_int_provider_evidence
         shell: bash
         run: |
           set -euo pipefail
-          source_commit=9f644e4c73318d9115d88168905cf07c72711c3c
-          test "$(git rev-parse HEAD^)" = "$source_commit"
-          git diff --name-only "$source_commit" HEAD | while IFS= read -r path; do
-            case "$path" in
-              .github/workflows/int-hito-b.yml|scripts/deploy_int_beta.sh|scripts/int_hito_b_browser.py|scripts/int_hito_b_capacity_browser.py) ;;
-              *) exit 1 ;;
-            esac
-          done
           report="$DELIVERY_DIR/prior-provider/browser-capacity.json"
           test -f "$report" && test ! -L "$report"
           printf '%s  %s\n' '663d16e3667df49394a3cf78379f74346b80eceea1db597f61bd0c4edfc2f04e' "$report" | sha256sum --check
           verified="$DELIVERY_DIR/reports/prior-provider-capacity.json"
           install -m 600 "$report" "$verified"
           printf 'INT_EDITORIAL_CAPACITY_REPORT=%s\n' "$verified" >> "$GITHUB_ENV"
+
+      - name: Download the pinned deletion acceptance
+        if: steps.reuse_scope.outputs.mode == 'deletion'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          github-token: ${{ github.token }}
+          run-id: 45826832751
+          artifact-ids: 15124621636
+          path: ${{ env.DELIVERY_DIR }}/prior-deletion
+          merge-multiple: true
+
+      - name: Download the pinned complete capacity acceptance
+        if: steps.reuse_scope.outputs.mode == 'deletion'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          github-token: ${{ github.token }}
+          run-id: 45739556524
+          artifact-ids: 15082324504
+          path: ${{ env.DELIVERY_DIR }}/accepted-capacity
+          merge-multiple: true
+
+      - name: Verify the completed checks and the unchanged provider evidence
+        if: steps.reuse_scope.outputs.mode == 'deletion'
+        shell: bash
+        run: |
+          set -euo pipefail
+          receipt="$DELIVERY_DIR/reports/deletion-replay.json"
+          python -m scripts.int_hito_b_delete_evidence \
+            --deletion-dir "$DELIVERY_DIR/prior-deletion" \
+            --provider-report "$INT_EDITORIAL_CAPACITY_REPORT" \
+            --accepted-capacity "$DELIVERY_DIR/accepted-capacity/browser-capacity.json" \
+            --model "$INT_EDITORIAL_OPENAI_MODEL" --receipt "$receipt"
+          printf 'INT_DELETION_REPLAY_REPORT=%s\n' "$receipt" >> "$GITHUB_ENV"
 
       - name: Authenticate publication identity
         id: publishing
