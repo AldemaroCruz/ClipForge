@@ -125,7 +125,12 @@ def admit_beta(c, owner, current_job="", *, caption_job=""):
             OR (d.payload->>'status'='awaiting_upload' AND
                 CASE WHEN jsonb_typeof(d.payload->'upload_expires_at')='number'
                     THEN (d.payload->>'upload_expires_at')::double precision > extract(epoch from clock_timestamp())
-                    ELSE false END)))
+                    ELSE false END))
+          UNION ALL
+          SELECT p.owner_id,t.id AS slot
+          FROM cloud_tasks t JOIN auth_projects p ON p.id=t.job_id
+          WHERE p.deletion_started_at IS NOT NULL AND t.kind<>'delete'
+            AND t.status='cancelled' AND t.lease_until>clock_timestamp())
         SELECT count(DISTINCT slot),count(DISTINCT slot) FILTER (WHERE owner_id=:o) FROM candidates
         """), {"o": owner, "j": current_job, "caption": caption_job}).one()
     if own:

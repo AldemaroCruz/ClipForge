@@ -12,8 +12,6 @@ const BETA_STATUS = {
   rendering: "Procesando · generando los clips",
   completed: "Completado",
   failed: "Fallido",
-  deleting: "Eliminando proyecto",
-  deleted: "Proyecto eliminado",
 };
 const BETA_CAPTION_STATUS = {
   unmodified: "Puedes generar subtítulos desde el original guardado.",
@@ -22,6 +20,8 @@ const BETA_CAPTION_STATUS = {
   failed: "Falló la generación de subtítulos.",
   no_speech: "No hay voz detectable en este recorte.",
 };
+const BETA_PROJECT_DELETED = "Proyecto eliminado de tu cuenta";
+const BETA_PROJECT_UNAVAILABLE = "Trabajo no disponible.";
 
 function betaUploadLocation(value) {
   let url;
@@ -175,23 +175,13 @@ function betaCaptionMessage(captions, output) {
   return betaSafeMessage(captions?.notice, fallback);
 }
 
-function betaDeletionMessage(deletion) {
-  if (deletion?.status === "deleted") return "Proyecto eliminado.";
-  if (Number.isFinite(deletion?.retry_at) && deletion.retry_at * 1000 > Date.now()) {
-    const when = new Date(deletion.retry_at * 1000).toLocaleString("es");
-    return "Eliminación pendiente. La limpieza puede continuar a partir de " + when + ".";
-  }
-  return deletion?.status === "delete_error" ? "La limpieza quedó incompleta. Puedes reintentar la eliminación."
-    : "Eliminando proyecto. Los resultados ya no están disponibles.";
-}
-
 async function betaJson(auth, path, options) {
   const response = await auth.fetch(path, options);
   let payload;
   try {
     payload = await response.json();
   } catch (_) {
-    throw new Error("No se pudo leer la respuesta. Inténtalo de nuevo en un momento.");
+    if (response.ok) throw new Error("No se pudo leer la respuesta. Inténtalo de nuevo en un momento.");
   }
   if (!response.ok) {
     const message = betaSafeMessage(payload?.detail, "No se pudo completar la solicitud. Inténtalo de nuevo en un momento.");
@@ -224,15 +214,18 @@ async function initBeta() {
   let pendingUpload;
   let job;
   let selectedId;
-  let selectionVersion = 0;
+  let jobRequest;
   let pollTimer;
   let projects = [];
-  let loadingProjects = false;
+  let projectsRequest;
+  let projectsOffset = 0;
   let renderKey;
   let captionView;
   let deleteTarget;
   let deleteBusy = false;
-  const deletedProjects = new Set();
+  const unavailableProjects = new Set();
+  const projectEvents = typeof BroadcastChannel === "function" && BETA_JOB_ID.test(user.id)
+    ? new BroadcastChannel("clipforge-beta-projects:" + user.id) : null;
 
   function renderProjects() {
     const list = element("project-list");
@@ -248,32 +241,37 @@ async function initBeta() {
         event.preventDefault();
         void openJob(project.id);
       });
-      const state = project.status === "deleting" ? betaDeletionMessage(project.deletion)
-        : betaStatus(project.status, project.lease_expired);
-      item.append(link, betaText("p", state, "muted"));
+      item.append(link, betaText("p", betaStatus(project.status, project.lease_expired), "muted"));
       list.append(item);
     }
   }
 
   async function loadProjects(append = false) {
-    if (loadingProjects) return;
-    loadingProjects = true;
+    if (append && projectsRequest) return;
+    projectsRequest?.abort();
+    const request = new AbortController();
+    projectsRequest = request;
     const status = element("projects-status");
     const more = element("more-projects");
     more.disabled = true;
     try {
-      const offset = append ? projects.length : 0;
-      const data = await json("/projects?limit=" + BETA_PAGE_SIZE + "&offset=" + offset);
-      const incoming = data.projects.filter(project => !deletedProjects.has(project.id));
+      const offset = append ? projectsOffset : 0;
+      const data = await json("/projects?limit=" + BETA_PAGE_SIZE + "&offset=" + offset, {signal: request.signal});
+      if (request.signal.aborted) return;
+      const loaded = new Set(append ? projects.map(project => project.id) : []);
+      const incoming = data.projects.filter(project => !unavailableProjects.has(project.id) && !loaded.has(project.id));
       projects = append ? [...projects, ...incoming] : incoming;
+      projectsOffset = offset + data.projects.length;
       renderProjects();
       more.hidden = data.has_more !== true;
       status.textContent = projects.length ? "" : "Todavía no tienes trabajos. Sube un video para empezar.";
     } catch (error) {
-      status.textContent = error.message;
+      if (!request.signal.aborted) status.textContent = error.message;
     } finally {
-      loadingProjects = false;
-      more.disabled = false;
+      if (projectsRequest === request) {
+        projectsRequest = undefined;
+        more.disabled = false;
+      }
     }
   }
 
@@ -287,14 +285,10 @@ async function initBeta() {
     startExisting.textContent = job?.status === "queued" ? "Intentar activar el trabajo" : "Procesar video guardado";
     const retryJob = element("retry-job");
     retryJob.hidden = job?.status !== "failed" || job.retryable !== true;
-    const deleting = job?.status === "deleting";
     const removeJob = element("delete-project");
-    const retryDelete = element("retry-project-deletion");
-    removeJob.hidden = !job || deleting || job.status === "deleted";
-    retryDelete.hidden = !deleting || job.deletion?.retryable !== true;
-    retryDelete.disabled = deleteBusy || (job?.deletion?.retry_at ?? 0) * 1000 > Date.now();
-    element("job-actions").hidden = startExisting.hidden && retryJob.hidden && removeJob.hidden && retryDelete.hidden;
-    if (deleting || captionView?.id !== selectedId) closeCaptions();
+    removeJob.hidden = !job;
+    element("job-actions").hidden = startExisting.hidden && retryJob.hidden && removeJob.hidden;
+    if (captionView?.id !== selectedId) closeCaptions();
     element("job-error").textContent = job?.status === "failed"
       ? betaSafeMessage(job.pilot === true ? job.error : null, "El procesamiento falló.")
       : "";
@@ -304,7 +298,6 @@ async function initBeta() {
     element("job-status").textContent = !job ? "Consultando el trabajo…"
       : job.status === "awaiting_upload" ? "Carga pendiente. Si terminaste de transferir el video, puedes procesarlo desde aquí."
       : job.status === "completed" ? "Completado · " + clips.length + (clips.length === 1 ? " clip" : " clips")
-      : deleting ? betaDeletionMessage(job.deletion)
       : job.status === "queued" && job.dispatch_status === "pending"
         ? "Pendiente. No se pudo activar el procesamiento. Se volverá a intentar."
       : betaStatus(job.status, job.lease_expired);
@@ -381,7 +374,13 @@ async function initBeta() {
       nextCards.push(card);
     }
     for (const card of [...cards.children]) {
-      if (!nextCards.includes(card)) card.remove();
+      if (!nextCards.includes(card)) {
+        const player = card.querySelector("video");
+        player.pause();
+        player.removeAttribute("src");
+        player.load();
+        card.remove();
+      }
     }
     nextCards.forEach((card, index) => {
       if (cards.children[index] !== card) cards.insertBefore(card, cards.children[index] ?? null);
@@ -540,108 +539,122 @@ async function initBeta() {
     }
   }
 
-  function completeDeletion(id) {
-    deletedProjects.add(id);
-    projects = projects.filter(project => project.id !== id);
-    if (selectedId === id) {
-      clearTimeout(pollTimer);
-      selectionVersion += 1;
-      selectedId = undefined;
-      job = undefined;
-      history.replaceState(null, "", "/" + location.hash);
-      renderJob();
-      element("job-status").textContent = "Proyecto eliminado.";
-    }
-    renderProjects();
-    void loadProjects();
+  function updateJobQuery(id) {
+    const url = new URL(location.href);
+    if (id) url.searchParams.set("job", id);
+    else url.searchParams.delete("job");
+    history.replaceState(history.state, "", url);
   }
 
-  async function deleteProject(id, confirmed = false) {
-    if (deleteBusy || selectedId !== id || !BETA_JOB_ID.test(id)) return;
-    if (confirmed ? deleteTarget !== id : job?.deletion?.retryable !== true) return;
+  function forgetProject(id, message) {
+    const changed = !unavailableProjects.has(id);
+    unavailableProjects.add(id);
+    projects = projects.filter(project => project.id !== id);
+    if (pendingUpload?.id === id) {
+      pendingUpload = undefined;
+      uploadForm.reset();
+      uploadStatus.textContent = "";
+      if (!uploadBusy) uploadBurnSubtitles.disabled = false;
+    }
+    try {
+      for (const key of ["clipforge-last-job", auth.storageKey?.()]) {
+        if (key && localStorage.getItem(key) === id) localStorage.removeItem(key);
+      }
+    } catch (_) {
+      // Browser storage may be unavailable.
+    }
+    if (deleteDialog.open && deleteTarget === id) deleteDialog.close();
+    const linked = new URLSearchParams(location.search).get("job") === id;
+    if (linked) updateJobQuery();
+    if (selectedId === id) {
+      clearTimeout(pollTimer);
+      jobRequest?.abort();
+      selectedId = undefined;
+      job = undefined;
+      renderJob();
+    }
+    if (!selectedId && (linked || message === BETA_PROJECT_DELETED)) {
+      element("job-status").textContent = message;
+    }
+    if (changed) {
+      element("more-projects").hidden = true;
+      renderProjects();
+      void loadProjects();
+    }
+  }
+
+  async function deleteProject(id) {
+    if (deleteBusy || selectedId !== id || deleteTarget !== id || !BETA_JOB_ID.test(id)) return;
     deleteBusy = true;
     const confirm = element("project-delete-confirm");
     const cancel = element("project-delete-cancel");
-    const status = element(confirmed ? "project-delete-error" : "job-error");
+    const status = element("project-delete-error");
     confirm.disabled = true;
     cancel.disabled = true;
-    element("retry-project-deletion").disabled = true;
     status.textContent = "";
     try {
       const result = await json("/jobs/" + id + "/deletion", auth.payload({}));
-      if (result.id !== id || !["deleting", "delete_error", "deleted"].includes(result.status)) {
-        throw new Error("No se pudo verificar el estado de eliminación del proyecto.");
+      if (result?.id !== id || result.status !== "deleted") {
+        throw new Error("No se pudo confirmar la eliminación del proyecto.");
       }
-      if (deleteDialog.open) deleteDialog.close();
-      if (result.status === "deleted") {
-        completeDeletion(id);
-        return;
-      }
-      if (selectedId === id) {
-        job = {...job, id, status: "deleting", deletion: result};
-        renderJob();
-        await openJob(id);
-      }
-      await loadProjects();
+      forgetProject(id, BETA_PROJECT_DELETED);
+      projectEvents?.postMessage({type: "deleted", id});
     } catch (error) {
-      if (selectedId === id) status.textContent = error.message;
+      if (error.status === 404) forgetProject(id, BETA_PROJECT_UNAVAILABLE);
+      else if (selectedId === id) status.textContent = error.message;
     } finally {
       deleteBusy = false;
       confirm.disabled = false;
       cancel.disabled = false;
-      element("retry-project-deletion").disabled = (job?.deletion?.retry_at ?? 0) * 1000 > Date.now();
     }
   }
 
   async function openJob(id) {
-    if (!BETA_JOB_ID.test(id) || deletedProjects.has(id)) return;
+    if (!BETA_JOB_ID.test(id) || unavailableProjects.has(id)) return;
     clearTimeout(pollTimer);
+    jobRequest?.abort();
+    const request = new AbortController();
+    jobRequest = request;
     const originalSelection = selectedId;
     selectedId = id;
-    const version = ++selectionVersion;
     if (id !== originalSelection) {
       job = undefined;
-      history.replaceState(null, "", "/?job=" + id + location.hash);
+      updateJobQuery(id);
       renderProjects();
       renderJob();
     }
     let hasJob = Boolean(job);
     async function refresh() {
       try {
-        const value = await json("/jobs/" + id);
-        if (version !== selectionVersion) return;
+        const value = await json("/jobs/" + id, {signal: request.signal});
+        if (request.signal.aborted) return;
         if (value.id !== id) throw new Error("No se pudo verificar el trabajo.");
         if (value.status === "deleted") {
-          completeDeletion(id);
+          forgetProject(id, BETA_PROJECT_DELETED);
           return;
         }
         const project = projects.find(item => item.id === id);
-        if (project && (project.status !== value.status || project.lease_expired !== value.lease_expired
-          || project.deletion?.status !== value.deletion?.status || project.deletion?.retry_at !== value.deletion?.retry_at)) {
-          Object.assign(project, {status: value.status, lease_expired: value.lease_expired, deletion: value.deletion});
+        if (project && (project.status !== value.status || project.lease_expired !== value.lease_expired)) {
+          Object.assign(project, {status: value.status, lease_expired: value.lease_expired});
           renderProjects();
         }
         job = value;
         hasJob = true;
         renderJob();
         const captionsPending = job.clips?.some(clip => ["queued", "rendering"].includes(clip.captions?.status));
-        if (["queued", "validating", "transcribing", "rendering", "deleting"].includes(job.status) || captionsPending) {
-          pollTimer = setTimeout(refresh, job.status === "deleting" ? 5000 : 3000);
+        if (["queued", "validating", "transcribing", "rendering"].includes(job.status) || captionsPending) {
+          pollTimer = setTimeout(refresh, 3000);
         }
       } catch (error) {
-        if (version !== selectionVersion) return;
-        if (error.status === 404 && (job?.status === "deleting" || !hasJob)) {
-          const deletion = await json("/jobs/" + id + "/deletion").catch(() => null);
-          if (version !== selectionVersion) return;
-          if (deletion?.id === id && deletion.status === "deleted") {
-            completeDeletion(id);
-            return;
-          }
+        if (request.signal.aborted) return;
+        if (error.status === 404) {
+          forgetProject(id, BETA_PROJECT_UNAVAILABLE);
+          return;
         }
-        if (error.status === 403 || error.status === 404 || !hasJob) {
+        if (error.status === 403 || !hasJob) {
           job = undefined;
           renderJob();
-          element("job-status").textContent = "Trabajo no disponible.";
+          element("job-status").textContent = BETA_PROJECT_UNAVAILABLE;
         }
         element("job-error").textContent = error.message;
         if (hasJob && (!error.status || error.status >= 500)) pollTimer = setTimeout(refresh, 7000);
@@ -692,21 +705,24 @@ async function initBeta() {
     uploadSubmit.disabled = true;
     uploadProgress.hidden = true;
     uploadStatus.textContent = "";
+    let attempt;
     try {
       const file = uploadInput.files[0];
       betaValidateFile(file, limits);
       if (pendingUpload?.file !== file) {
         pendingUpload = {file, key: crypto.randomUUID(), burnSubtitles: uploadBurnSubtitles.checked};
       }
+      attempt = pendingUpload;
       const request = auth.payload({filename: file.name, bytes: file.size,
-        burn_subtitles: pendingUpload.burnSubtitles});
-      request.headers["Idempotency-Key"] = pendingUpload.key;
+        burn_subtitles: attempt.burnSubtitles});
+      request.headers["Idempotency-Key"] = attempt.key;
       uploadStatus.textContent = "Solicitando una carga privada…";
       const reservation = await json("/beta/uploads", request);
-      if (!BETA_JOB_ID.test(reservation.id) || (pendingUpload.id && pendingUpload.id !== reservation.id)) {
+      if (!BETA_JOB_ID.test(reservation.id) || (attempt.id && attempt.id !== reservation.id)) {
         throw new Error("No se pudo verificar la reserva del trabajo.");
       }
-      pendingUpload.id = reservation.id;
+      attempt.id = reservation.id;
+      if (unavailableProjects.has(attempt.id)) return;
       if (reservation.upload_url !== null) {
         uploadStatus.textContent = "Cargando el video. Mantén esta pestaña abierta hasta que termine.";
         uploadProgress.value = 0;
@@ -714,17 +730,19 @@ async function initBeta() {
         uploadProgress.hidden = false;
         await betaUploadFile(reservation.upload_url, file, bytes => { uploadProgress.value = bytes; });
       }
+      if (unavailableProjects.has(attempt.id)) return;
       uploadProgress.hidden = true;
       uploadStatus.textContent = "Confirmando el video y solicitando el procesamiento…";
       const result = await json("/beta/uploads/" + reservation.id + "/start", auth.payload({}));
       if (result.id !== reservation.id) throw new Error("No se pudo confirmar el trabajo.");
+      if (unavailableProjects.has(attempt.id)) return;
       uploadStatus.textContent = "Video guardado. Consulta el estado y los resultados en «Mis trabajos».";
       pendingUpload = undefined;
       uploadForm.reset();
       await loadProjects();
       await openJob(result.id);
     } catch (error) {
-      uploadStatus.textContent = error.message;
+      if (!unavailableProjects.has(attempt?.id)) uploadStatus.textContent = error.message;
     } finally {
       uploadBusy = false;
       uploadInput.disabled = false;
@@ -742,19 +760,34 @@ async function initBeta() {
   element("start-existing").addEventListener("click", event => startOrRetry(event.currentTarget, id => "/beta/uploads/" + id + "/start"));
   element("retry-job").addEventListener("click", event => startOrRetry(event.currentTarget, id => "/beta/jobs/" + id + "/retry"));
   element("delete-project").addEventListener("click", () => {
-    if (!job || job.status === "deleting" || deleteBusy) return;
+    if (!job || deleteBusy) return;
     deleteTarget = selectedId;
     element("project-delete-title").textContent = element("job-title").textContent;
     element("project-delete-error").textContent = "";
     deleteDialog.showModal();
   });
   element("project-delete-cancel").addEventListener("click", () => deleteDialog.close());
-  element("project-delete-confirm").addEventListener("click", () => deleteProject(deleteTarget, true));
-  element("retry-project-deletion").addEventListener("click", () => deleteProject(selectedId));
+  element("project-delete-confirm").addEventListener("click", () => deleteProject(deleteTarget));
   deleteDialog.addEventListener("cancel", event => {
     if (deleteBusy) event.preventDefault();
   });
   deleteDialog.addEventListener("close", () => { deleteTarget = undefined; });
+  projectEvents?.addEventListener("message", event => {
+    const {type, id} = event.data ?? {};
+    if (type === "deleted" && typeof id === "string" && BETA_JOB_ID.test(id)) {
+      forgetProject(id, BETA_PROJECT_DELETED);
+    }
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return;
+    if (selectedId) void openJob(selectedId);
+    if (!projectEvents) void loadProjects();
+  });
+  window.addEventListener("pageshow", event => {
+    if (!event.persisted) return;
+    if (selectedId) void openJob(selectedId);
+    void loadProjects();
+  });
   caption("form").addEventListener("submit", event => {
     event.preventDefault();
     void saveCaptions();

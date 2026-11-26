@@ -84,9 +84,11 @@ def _claim(connection, job_id=None):
         if beta:
             active, other_profile = c.execute(text("""
                 SELECT count(*), count(*) FILTER (
-                    WHERE NOT (COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)
+                    WHERE NOT (t.status='cancelled' AND p.deletion_started_at IS NOT NULL)
+                      AND NOT (COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)
                       AND (t.kind IN ('process','selection','delete') OR COALESCE(e.payload->'pilot'=CAST('true' AS jsonb),false))))
                 FROM cloud_tasks t
+                JOIN auth_projects p ON p.id=t.job_id
                 LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
                 LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
                 WHERE t.status IN ('running','cancelled') AND t.lease_until>clock_timestamp()
@@ -112,7 +114,8 @@ def _claim(connection, job_id=None):
                 WHERE peer_project.owner_id=p.owner_id AND peer.status IN ('running','cancelled')
                   AND peer.lease_until>clock_timestamp()
               ))
-            ORDER BY t.created_at,t.id LIMIT 1 FOR UPDATE OF t SKIP LOCKED
+            ORDER BY CASE WHEN :beta AND t.kind='delete' THEN 0 ELSE 1 END,t.created_at,t.id
+            LIMIT 1 FOR UPDATE OF t SKIP LOCKED
             """), {**profile, "deferred": deferred}).mappings().first()
         if row is None:
             return None
@@ -131,6 +134,7 @@ def cleanup_failed():
             LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
             LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE t.status='failed' AND t.cleaned_at IS NULL
+              AND (NOT :beta OR to_jsonb(p)->>'deletion_started_at' IS NULL)
               AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
               AND (NOT :beta OR t.kind IN ('process','selection') OR e.payload->'pilot'=CAST('true' AS jsonb))
             ORDER BY t.created_at LIMIT 100

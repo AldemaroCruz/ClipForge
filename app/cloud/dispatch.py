@@ -9,7 +9,7 @@ from .project_deletion import deferred_tasks
 from .storage import request, close
 
 
-def reconcile():
+def reconcile(*, cleanup_only=False):
     cfg = settings()
     if cfg.dispatch_mode == "local_manual":
         return {"status": "local_manual", "dispatched": 0}
@@ -56,6 +56,7 @@ def reconcile():
             LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
               AND (NOT :beta OR t.kind IN ('process','selection','delete') OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (NOT :cleanup_only OR t.kind='delete')
               AND ((t.status='queued' AND
                   NOT (t.id=ANY(CAST(:deferred AS varchar[]))) AND
                   (NOT :beta OR NOT COALESCE(e.payload->'clip_captions'=CAST('true' AS jsonb),false)
@@ -76,7 +77,7 @@ def reconcile():
                    CASE WHEN :beta AND o.last_error IS NOT NULL THEN interval '15 seconds' ELSE interval '5 minutes' END)))
             ORDER BY CASE WHEN :beta AND t.status='running' THEN 0 ELSE 1 END, t.created_at,t.id
             LIMIT :limit
-            """), {"beta": beta, "limit": limit, "deferred": deferred}).scalars().all()
+            """), {"beta": beta, "limit": limit, "deferred": deferred, "cleanup_only": cleanup_only}).scalars().all()
         if not pending:
             return {"status": "current", "dispatched": 0}
         url = ("https://run.googleapis.com/v2/projects/" + quote(cfg.project, safe="") + "/locations/" + quote(cfg.region, safe="") + "/jobs/" + quote(cfg.job, safe="") + ":run")

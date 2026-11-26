@@ -1,6 +1,8 @@
 """Scoped deletion on disposable PostgreSQL and contracted Cloud Storage calls."""
 
 from base64 import b64encode
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from hashlib import md5, sha256
 from io import BytesIO
 import os
@@ -20,6 +22,7 @@ from app.auth import create_user, register_project
 from app.auth_db import reset_engine
 from app.cloud import migrate_beta, pilot, project_deletion, repository, storage, worker
 from app.cloud.config import Settings
+from app.cloud.migrate_project_deletions import PURGE_REVISION, REVISION, upgrade_project_deletions
 from auth_support import auth_environment, prepare_database
 
 
@@ -59,6 +62,11 @@ class ProjectDeletionDatabaseTests(unittest.TestCase):
     def claim(self, job):
         return worker._claim(None, job)
 
+    def ledger(self, job):
+        with self.engine.connect() as connection:
+            return connection.execute(text("SELECT * FROM cloud_project_deletions WHERE job_id=:j"),
+                                      {"j": job}).mappings().one()
+
     def test_owner_fences_queued_and_active_work_and_releases_only_exact_child(self):
         job = self.fixture(self.owner, "transcribing")
         process = self.task(job)
@@ -72,31 +80,48 @@ class ProjectDeletionDatabaseTests(unittest.TestCase):
                 action(self.other, job)
             self.assertEqual(denied.exception.status_code, 404)
 
-        deletion = project_deletion.begin(self.owner, job)
-        self.assertEqual((deletion["status"], deletion["cancelled_active"], deletion["cancelled_queued"]),
-                         ("deleting", 1, 1))
+        deletion, created = project_deletion.begin(self.owner, job, include_created=True)
+        self.assertTrue(created)
+        self.assertEqual(deletion, {"id": job, "status": "deleted"})
+        ledger = self.ledger(job)
+        self.assertEqual((ledger["state"], ledger["cancelled_active"], ledger["cancelled_queued"]), ("deleting", 1, 1))
+        self.assertEqual(project_deletion.begin(self.owner, job, include_created=True), (deletion, False))
         self.assertEqual(project_deletion.begin(self.owner, job), deletion)
-        self.assertEqual(repository.document(job)["payload"]["status"], "deleting")
-        self.assertIsNone(self.claim(job))
+        marker = repository.document(job)
+        self.assertEqual(marker["payload"]["status"], "deleted")
+        self.assertIsInstance(marker["payload"]["created_at"], (int, float))
+        self.assertNotIn("source_bytes", marker["payload"])
+        self.assertEqual(marker["manifest"], {})
         self.assertEqual(self.claim(other_job)["id"], other_task)
         with self.engine.begin() as connection:
-            self.assertEqual(connection.execute(text("SELECT status FROM cloud_tasks WHERE id=:i"),
-                                               {"i": selection}).scalar_one(), "cancelled")
+            self.assertEqual(connection.execute(text("SELECT status,lease_until FROM cloud_tasks WHERE id=:i"),
+                                                {"i": selection}).one(), ("cancelled", None))
             with self.assertRaises(RuntimeError):
                 repository.worker_guard(connection, active)
             with self.assertRaises(HTTPException) as denied:
                 repository.beta_document(connection, self.owner, job)
             self.assertEqual(denied.exception.status_code, 404)
+        with self.assertRaises(HTTPException) as busy, self.engine.begin() as connection:
+            repository.admit_beta(connection, self.owner.id)
+        self.assertEqual(busy.exception.status_code, 409)
         with self.assertRaises(RuntimeError), project_deletion.publication(active):
             self.fail("A cancelled media child could start a storage upload")
         self.assertFalse(project_deletion.ack_stopped({**active, "fence": active["fence"]+1}))
-        self.assertIsNone(self.claim(job))
-        self.assertTrue(project_deletion.ack_stopped(active))
         cleanup = self.claim(job)
         self.assertEqual(cleanup["kind"], "delete")
-        with patch.object(storage, "list_project_live", return_value=[]):
+        with (patch.object(storage, "list_project_generations", return_value=[]),
+              patch.object(storage, "list_project_soft_deleted", return_value=[])):
             project_deletion.execute(cleanup)
+            with self.engine.connect() as connection:
+                self.assertIsNone(connection.execute(text("SELECT id FROM cloud_tasks WHERE id=:i"), {"i": selection}).scalar())
+            self.assertTrue(self.ledger(job)["wait_for_publishers"])
+            self.assertIsNone(self.claim(job))
+            self.assertTrue(project_deletion.ack_stopped(active))
+            with self.engine.begin() as connection:
+                repository.admit_beta(connection, self.owner.id)
+            project_deletion.execute(self.claim(job))
         self.assertEqual(project_deletion.status(self.owner, job)["status"], "deleted")
+        self.assertEqual(self.ledger(job)["state"], "deleted")
         with self.engine.connect() as connection:
             self.assertEqual(connection.execute(text("SELECT status FROM cloud_tasks WHERE id=:i"),
                                                {"i": other_task}).scalar_one(), "running")
@@ -107,8 +132,9 @@ class ProjectDeletionDatabaseTests(unittest.TestCase):
         name = storage.beta_original(self.owner.workspace_id, job)
         prefix = name.removesuffix("original/input.mp4")
         clip_name = prefix + f"tasks/{uuid4().hex}/1/clip.mp4"
+        subtitle_name = clip_name.removesuffix(".mp4") + ".srt"
         other_name = storage.beta_original(self.other.workspace_id, surviving)
-        live = {name: "12", clip_name: "34", other_name: "56"}
+        live = {name: "12", clip_name: "34", subtitle_name: "35", other_name: "56"}
         key = "upload-before-removal"
         upload = {"kind": "beta_upload", "filename": "synthetic.mp4", "bytes": 100}
         fingerprint = sha256(repository.packed(upload).encode()).hexdigest()
@@ -136,13 +162,16 @@ class ProjectDeletionDatabaseTests(unittest.TestCase):
             del live[candidate]
 
         project_deletion.begin(self.owner, job)
-        with patch.object(storage, "list_project_live", side_effect=inventory), patch.object(
-                storage, "delete_project_live", side_effect=remove):
+        with (patch.object(storage, "list_project_generations", side_effect=inventory),
+              patch.object(storage, "list_project_soft_deleted", return_value=[]),
+              patch.object(storage, "delete_project_generation", side_effect=remove)):
             project_deletion.execute(self.claim(job))
             receipt = project_deletion.status(self.owner, job)
-            self.assertEqual((receipt["status"], receipt["attempts"], receipt["retryable"]),
-                             ("delete_error", 1, True))
+            self.assertEqual(receipt, {"id": job, "status": "deleted"})
+            internal = self.ledger(job)
+            self.assertEqual((internal["state"], internal["attempts"]), ("delete_error", 1))
             self.assertNotIn(name, live)
+            self.assertNotIn(subtitle_name, live)
             self.assertIn(clip_name, live)
             self.assertIsNone(self.claim(job))
             # The database clock is real. Advance only this fixture's retry eligibility.
@@ -152,9 +181,11 @@ class ProjectDeletionDatabaseTests(unittest.TestCase):
             project_deletion.execute(self.claim(job))
 
         receipt = project_deletion.status(self.owner, job)
-        self.assertEqual((receipt["status"], receipt["attempts"]), ("deleted", 1))
+        self.assertEqual(receipt, {"id": job, "status": "deleted"})
+        internal = self.ledger(job)
+        self.assertEqual((internal["state"], internal["attempts"]), ("deleted", 1))
         self.assertEqual(project_deletion.begin(self.owner, job), receipt)
-        self.assertEqual(attempts, [name, clip_name, clip_name])
+        self.assertEqual(attempts, [name, clip_name, subtitle_name, clip_name])
         self.assertEqual(live, {other_name: "56"})
         self.assertIsNone(repository.document(job, required=False))
         self.assertEqual(repository.list_documents(job, "draft"), [])
@@ -168,12 +199,150 @@ class ProjectDeletionDatabaseTests(unittest.TestCase):
             pilot._reserve(self.owner, key, upload["filename"], upload["bytes"])
         self.assertEqual(rejected.exception.status_code, 404)
 
-    def test_legacy_upload_waits_out_untracked_capability_and_rejects_confirmation(self):
+    def test_publication_does_not_delay_receipt_and_final_sweep_removes_late_writes(self):
+        job = self.fixture(self.owner, "rendering")
+        self.task(job)
+        active = self.claim(job)
+        name = storage.beta_original(self.owner.workspace_id, job)
+        prefix = name.removesuffix("original/input.mp4")
+        live = {"1": {"name": name, "generation": "1"}}
+
+        def remove(item, scope):
+            self.assertEqual(scope, prefix)
+            del live[item["generation"]]
+
+        with (patch.object(storage, "list_project_generations", side_effect=lambda _: list(live.values())),
+              patch.object(storage, "list_project_soft_deleted", return_value=[]),
+              patch.object(storage, "delete_project_generation", side_effect=remove),
+              ThreadPoolExecutor(max_workers=1) as clients):
+            with project_deletion.publication(active):
+                receipt = clients.submit(project_deletion.begin, self.owner, job).result(timeout=5)
+                self.assertEqual(receipt, {"id": job, "status": "deleted"})
+                project_deletion.execute(self.claim(job))
+                self.assertEqual(live, {})
+                self.assertTrue(self.ledger(job)["wait_for_publishers"])
+                # Simulate an upload already admitted before the tombstone.
+                live["2"] = {"name": prefix + f"tasks/{active['id']}/{active['fence']}/clip.mp4", "generation": "2"}
+            self.assertTrue(project_deletion.ack_stopped(active))
+            project_deletion.execute(self.claim(job))
+        self.assertEqual(live, {})
+        self.assertEqual(self.ledger(job)["state"], "deleted")
+
+    def test_expired_cleanup_lease_is_requeued_with_new_fence(self):
+        job = self.fixture(self.owner)
+        project_deletion.begin(self.owner, job)
+        crashed = self.claim(job)
+        with self.engine.begin() as connection:
+            connection.execute(text("UPDATE cloud_tasks SET lease_until=clock_timestamp()-interval '1 second' WHERE id=:i"),
+                               {"i": crashed["id"]})
+        self.assertIsNone(self.claim(job))
+        internal = self.ledger(job)
+        self.assertEqual((internal["state"], internal["attempts"]), ("delete_error", 1))
+        with self.engine.begin() as connection:
+            connection.execute(text("UPDATE cloud_project_deletions SET retry_at=clock_timestamp() WHERE job_id=:j"),
+                               {"j": job})
+        retry = self.claim(job)
+        self.assertEqual(retry["id"], crashed["id"])
+        self.assertGreater(retry["fence"], crashed["fence"])
+        with (patch.object(storage, "list_project_generations", return_value=[]) as inventory,
+              patch.object(storage, "list_project_soft_deleted", return_value=[])):
+            with self.assertRaises(RuntimeError):
+                project_deletion.execute(crashed)
+            inventory.assert_not_called()
+            project_deletion.execute(retry)
+        self.assertEqual(self.ledger(job)["state"], "deleted")
+
+    def test_all_eligible_generations_are_removed_and_policy_dates_remain_exact(self):
+        job = self.fixture(self.owner)
+        name = storage.beta_original(self.owner.workspace_id, job)
+        prefix = name.removesuffix("original/input.mp4")
+        retained_until = datetime.now(timezone.utc) + timedelta(minutes=2)
+        soft_until = retained_until + timedelta(days=7)
+        live = {
+            "1": {"name": name, "generation": "1"},
+            "2": {"name": name, "generation": "2", "retentionExpirationTime": retained_until.isoformat()},
+            "3": {"name": prefix + f"tasks/{uuid4().hex}/1/clip.mp4", "generation": "3"},
+        }
+        soft = []
+        removed = []
+
+        def erase(item, scope):
+            self.assertEqual(scope, prefix)
+            removed.append(item["generation"])
+            del live[item["generation"]]
+            soft.append({**item, "hardDeleteTime": soft_until.isoformat()})
+
+        project_deletion.begin(self.owner, job)
+        with (patch.object(storage, "list_project_generations", side_effect=lambda _: list(live.values())),
+              patch.object(storage, "list_project_soft_deleted", side_effect=lambda _: soft),
+              patch.object(storage, "delete_project_generation", side_effect=erase)):
+            project_deletion.execute(self.claim(job))
+        self.assertEqual(removed, ["1", "3"])
+        row = self.ledger(job)
+        self.assertEqual(row["retry_at"], retained_until)
+        self.assertEqual(row["attempts"], 0)
+        self.assertEqual(row["state"], "deleting")
+        self.assertEqual({(item["generation"], item["reason"], item["until"]) for item in row["storage_blockers"]},
+                         {("2", "retention", retained_until.isoformat()), ("1", "soft_delete", soft_until.isoformat()),
+                          ("3", "soft_delete", soft_until.isoformat())})
+        self.assertIsNone(self.claim(job))
+
+    def test_migration_rearms_only_pending_legacy_receipts_and_keeps_old_health_ledger(self):
+        started = datetime.now(timezone.utc) - timedelta(days=2)
+        deadline = started - timedelta(minutes=1)
+        pending = self.fixture(self.owner, "deleting", upload_tracking=False, upload_expires_at=deadline.timestamp())
+        complete = self.fixture(self.other, "completed")
+        pending_task = self.task(pending, "delete")
+        completed_task = self.task(complete, "delete")
+        with self.engine.begin() as connection:
+            connection.execute(text("UPDATE auth_projects SET deletion_started_at=:d WHERE id IN (:p,:c)"),
+                               {"d": started, "p": pending, "c": complete})
+            connection.execute(text("""
+                INSERT INTO cloud_project_deletions(job_id,state,retry_at,cancelled_queued,cancelled_active,completed_at)
+                VALUES (:p,'deleting',clock_timestamp()+interval '7 days',0,0,NULL),
+                       (:c,'deleted',clock_timestamp(),0,0,clock_timestamp())
+                """), {"p": pending, "c": complete})
+            connection.execute(text("UPDATE cloud_tasks SET status='succeeded' WHERE id=:i"), {"i": completed_task})
+            connection.execute(text("UPDATE cloud_outbox SET dispatched_at=clock_timestamp() WHERE task_id=:i"),
+                               {"i": pending_task})
+            self.assertEqual(upgrade_project_deletions(connection), "current")
+            old_ledger = connection.execute(text("SELECT revision FROM cloud_deletion_schema_migrations")).scalars().all()
+            purge_ledger = connection.execute(text("SELECT revision FROM cloud_deletion_purge_schema_migrations")).scalars().all()
+            self.assertEqual((old_ledger, purge_ledger), ([REVISION], [PURGE_REVISION]))
+            completed = connection.execute(text("SELECT state,purge_policy_ready FROM cloud_project_deletions WHERE job_id=:j"),
+                                           {"j": complete}).one()
+            self.assertEqual(completed, ("deleted", False))
+        scheduled = self.ledger(pending)
+        expected_deadline = deadline + timedelta(seconds=project_deletion.UPLOAD_CAPABILITY_SECONDS)
+        self.assertAlmostEqual(scheduled["legacy_upload_until"].timestamp(), expected_deadline.timestamp(), places=3)
+        with self.engine.begin() as connection:
+            upgrade_project_deletions(connection)
+        self.assertEqual(self.ledger(pending)["retry_at"], scheduled["retry_at"])
+        with (patch.object(storage, "list_project_generations", return_value=[]),
+              patch.object(storage, "list_project_soft_deleted", return_value=[])):
+            cleanup = self.claim(pending)
+            self.assertEqual(cleanup["id"], pending_task)
+            project_deletion.execute(cleanup)
+        marker = repository.document(pending)["payload"]
+        self.assertEqual(set(marker), {"id", "status", "created_at", "pilot", "clips", "upload_tracking"})
+        self.assertEqual(marker["status"], "deleted")
+        self.assertEqual(self.ledger(pending)["retry_at"], scheduled["legacy_upload_until"])
+
+    def test_legacy_upload_sweeps_now_then_watches_its_original_expiry(self):
         deadline = time.time()+30
         job = self.fixture(self.owner, "awaiting_upload", upload_tracking=False, upload_expires_at=deadline)
         deletion = project_deletion.begin(self.owner, job)
-        self.assertAlmostEqual(deletion["retry_at"], deadline+project_deletion.UPLOAD_CAPABILITY_SECONDS, places=4)
+        self.assertEqual(deletion, {"id": job, "status": "deleted"})
+        deadline = self.ledger(job)["legacy_upload_until"]
+        self.assertAlmostEqual(deadline.timestamp(), time.time()+project_deletion.UPLOAD_CAPABILITY_SECONDS, delta=5)
+        with (patch.object(storage, "list_project_generations", return_value=[]) as inventory,
+              patch.object(storage, "list_project_soft_deleted", return_value=[])):
+            project_deletion.execute(self.claim(job))
+        self.assertEqual(inventory.call_count, 2)
+        self.assertEqual(self.ledger(job)["retry_at"], deadline)
         self.assertIsNone(self.claim(job))
+        self.assertEqual(project_deletion.begin(self.owner, job), deletion)
+        self.assertEqual(self.ledger(job)["legacy_upload_until"], deadline)
         with patch.object(storage, "start_resumable") as mint, self.assertRaises(HTTPException):
             pilot._open_upload(self.owner, job)
         mint.assert_not_called()
@@ -196,7 +365,8 @@ class ProjectDeletionDatabaseTests(unittest.TestCase):
         project_deletion.begin(self.owner, job)
         with (patch.object(storage, "cancel_resumable") as cancel,
               patch.object(storage, "beta_original_metadata", return_value=None),
-              patch.object(storage, "list_project_live", return_value=[])):
+              patch.object(storage, "list_project_generations", return_value=[]),
+              patch.object(storage, "list_project_soft_deleted", return_value=[])):
             project_deletion.execute(self.claim(job))
         cancel.assert_called_once_with(location, name)
         self.assertEqual(project_deletion.status(self.owner, job)["status"], "deleted")
@@ -214,8 +384,9 @@ class ProjectDeletionDatabaseTests(unittest.TestCase):
         project_deletion.begin(self.owner, job)
         with (patch.object(storage, "cancel_resumable") as cancel,
               patch.object(storage, "beta_original_metadata", return_value=item),
-              patch.object(storage, "list_project_live", side_effect=[[item], []]),
-              patch.object(storage, "delete_project_live") as remove):
+              patch.object(storage, "list_project_generations", side_effect=[[item], []]),
+              patch.object(storage, "list_project_soft_deleted", return_value=[]),
+              patch.object(storage, "delete_project_generation") as remove):
             project_deletion.execute(self.claim(job))
         cancel.assert_not_called()
         remove.assert_called_once_with(item, name.removesuffix("original/input.mp4"))
@@ -231,6 +402,40 @@ class ProjectStorageContractTests(unittest.TestCase):
         ))
         settings.start()
         self.addCleanup(settings.stop)
+
+    def test_inventory_separates_versions_and_soft_deleted_and_pins_deletion(self):
+        item = {"name": self.name, "generation": "345"}
+        listed = Mock(status_code=200)
+        listed.json.return_value = {"items": [item]}
+        with patch.object(storage, "request", return_value=listed) as request, patch.object(storage, "close"):
+            self.assertEqual(storage.list_project_generations(self.prefix), [item])
+            version_query = request.call_args.kwargs["params"]
+            self.assertEqual(version_query["versions"], "true")
+            self.assertIn("retentionExpirationTime", version_query["fields"])
+            self.assertNotIn("softDeleted", version_query)
+            self.assertEqual(storage.list_project_soft_deleted(self.prefix), [item])
+            recovery_query = request.call_args.kwargs["params"]
+            self.assertEqual(recovery_query["softDeleted"], "true")
+            self.assertIn("hardDeleteTime", recovery_query["fields"])
+            self.assertNotIn("versions", recovery_query)
+            storage.delete_project_generation(item, self.prefix)
+            self.assertEqual(request.call_args.kwargs["params"], {"generation": "345", "ifGenerationMatch": "345"})
+            with self.assertRaises(storage.StorageError):
+                storage.delete_project_generation({**item, "name": self.name.replace("b"*32, "c"*32)}, self.prefix)
+            self.assertEqual(request.call_count, 3)
+
+    def test_forbidden_delete_is_a_policy_restriction_only_for_exact_gcs_reasons(self):
+        denied = Mock(status_code=403)
+        item = {"name": self.name, "generation": "345"}
+        with patch.object(storage, "request", return_value=denied), patch.object(storage, "close"):
+            for reason in ("objectUnderActiveHold", "retentionPolicyNotMet"):
+                denied.json.return_value = {"error": {"errors": [{"reason": reason}]}}
+                with self.assertRaises(storage.DeletionRestricted):
+                    storage.delete_project_generation(item, self.prefix)
+            denied.json.return_value = {"error": {"errors": [{"reason": "insufficientPermissions"}]}}
+            with self.assertRaises(storage.StorageError) as failure:
+                storage.delete_project_generation(item, self.prefix)
+            self.assertNotIsInstance(failure.exception, storage.DeletionRestricted)
 
     def test_live_delete_uses_generation_compare_without_purging_noncurrent_version(self):
         item = {"name": self.name, "generation": "345"}

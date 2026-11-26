@@ -1,6 +1,7 @@
 """Private GCS JSON API using only runtime metadata credentials or test emulator."""
 import base64
 import binascii
+from datetime import datetime
 import hashlib
 from pathlib import Path
 import re
@@ -28,6 +29,10 @@ class ObjectMissing(StorageError):
 
 
 class InvalidUpload(StorageError):
+    pass
+
+
+class DeletionRestricted(StorageError):
     pass
 
 
@@ -349,6 +354,8 @@ def _project_prefix(prefix):
 
 
 def _project_object(item, prefix):
+    if not isinstance(item, dict):
+        raise StorageError("Unexpected project object inventory")
     name, generation = item.get("name", ""), item.get("generation", "")
     if (not isinstance(name, str) or not name.startswith(prefix)
             or not re.fullmatch(r"(?:original/(?:input|[a-f0-9]{32})[.]mp4|"
@@ -359,23 +366,84 @@ def _project_object(item, prefix):
     return name, generation
 
 
-def list_project_live(prefix):
-    """Enumerate only current objects, after project publishers were fenced."""
+def _gcs_error_reason(response):
+    try:
+        errors = response.json()["error"]["errors"]
+        reasons = {entry["reason"] for entry in errors}
+    except (KeyError, TypeError, ValueError):
+        return None
+    return next(iter(reasons)) if len(reasons) == 1 else None
+
+
+def _object_time(value):
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value) > 40:
+        raise StorageError("Invalid storage policy time")
+    try:
+        stamp = datetime.fromisoformat(value)
+    except ValueError:
+        raise StorageError("Invalid storage policy time") from None
+    if stamp.tzinfo is None:
+        raise StorageError("Invalid storage policy time")
+    return stamp
+
+
+def project_generation_blocker(item, now):
+    """Use explicit object policy metadata, never an assumed bucket age."""
+    for field in ("temporaryHold", "eventBasedHold"):
+        if type(item.get(field, False)) is not bool:
+            raise StorageError("Invalid storage hold metadata")
+        if item.get(field) is True:
+            return "object_hold", None
+    retention = item.get("retention", {})
+    if not isinstance(retention, dict):
+        raise StorageError("Invalid object retention metadata")
+    dates = (_object_time(item.get("retentionExpirationTime")),
+             _object_time(retention.get("retainUntilTime")))
+    until = max((stamp for stamp in dates if stamp is not None), default=None)
+    if until is not None and until > now:
+        return "retention", until
+    return None
+
+
+def _list_project_objects(prefix, *, view):
     _project_prefix(prefix)
     cfg = settings()
     listing = cfg.endpoint + "/storage/v1/b/" + quote(cfg.bucket, safe="") + "/o"
-    params = {"prefix": prefix, "fields": "items(name,generation),nextPageToken"}
+    fields = "name,generation"
+    params = {"prefix": prefix}
+    if view == "versions":
+        params["versions"] = "true"
+        fields += ",retentionExpirationTime,retention,temporaryHold,eventBasedHold"
+    elif view == "soft_deleted":
+        params["softDeleted"] = "true"
+        fields += ",hardDeleteTime"
+    params["fields"] = f"items({fields}),nextPageToken"
     result = []
     pages = set()
+    objects = set()
     while True:
-        response = request("GET", listing, params=params, timeout=(4, 15))
+        extra = (400,) if view == "soft_deleted" else ()
+        response = request("GET", listing, params=params, timeout=(4, 15), extra_statuses=extra)
         try:
+            if response.status_code == 400:
+                if _gcs_error_reason(response) == "softDeletePolicyNotSet":
+                    return []
+                raise StorageError("Soft-deleted project inventory unavailable")
             data = response.json()
+            if not isinstance(data, dict) or not isinstance(data.get("items", []), list):
+                raise ValueError("Invalid inventory shape")
+        except ValueError:
+            raise StorageError("Invalid project object inventory") from None
         finally:
             close(response)
         for item in data.get("items", []):
             name, generation = _project_object(item, prefix)
-            result.append({"name": name, "generation": generation})
+            if (name, generation) in objects:
+                raise StorageError("Duplicate project generation in inventory")
+            objects.add((name, generation))
+            result.append(item)
         page = data.get("nextPageToken")
         if not page:
             return result
@@ -383,6 +451,48 @@ def list_project_live(prefix):
             raise StorageError("Invalid project inventory pagination")
         pages.add(page)
         params["pageToken"] = page
+
+
+def list_project_live(prefix):
+    """Legacy live-only listing for failed staging cleanup."""
+    return _list_project_objects(prefix, view="live")
+
+
+def list_project_generations(prefix):
+    """Inventory all live and noncurrent readable generations for one project."""
+    return _list_project_objects(prefix, view="versions")
+
+
+def list_project_soft_deleted(prefix):
+    """Inventory retained soft-deleted generations without restoring them."""
+    return _list_project_objects(prefix, view="soft_deleted")
+
+
+def project_soft_delete_time(item):
+    until = _object_time(item.get("hardDeleteTime"))
+    if until is None:
+        raise StorageError("Missing soft-deletion policy time")
+    return until
+
+
+def delete_project_generation(item, prefix):
+    """Delete the exact live or noncurrent version, subject to GCS policy."""
+    _project_prefix(prefix)
+    name, generation = _project_object(item, prefix)
+    try:
+        response = request("DELETE", object_url(name), timeout=(4, 15), extra_statuses=(403,),
+                           params={"generation": generation, "ifGenerationMatch": generation})
+    except ObjectMissing:
+        return
+    try:
+        if response.status_code == 403:
+            if _gcs_error_reason(response) in {"objectUnderActiveHold", "retentionPolicyNotMet"}:
+                # The next inventory must establish whether this restriction
+                # remains and record the timestamp supplied by GCS.
+                raise DeletionRestricted("Storage policy prevents deleting this generation")
+            raise StorageError("Project generation deletion denied (HTTP 403)")
+    finally:
+        close(response)
 
 
 def delete_project_live(item, prefix):

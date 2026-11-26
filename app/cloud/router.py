@@ -9,7 +9,7 @@ import tempfile
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 from sqlalchemy import text
@@ -128,13 +128,6 @@ async def create_job(request: Request, file: UploadFile = File(...)):
 @router.get("/jobs/{job_id}")
 def get_job(job_id: str, response: Response):
     response.headers["Cache-Control"] = "no-store"
-    if beta_enabled():
-        deletion = project_deletion.public_status(job_id)
-        if deletion is not None:
-            if deletion["status"] == "deleted":
-                raise HTTPException(404, "Proyecto no encontrado")
-            item = {"id": job_id, "status": deletion["status"], "clips": [], "deletion": deletion}
-            return _dispatch(item)
     doc = _doc(job_id)
     item = doc["payload"]
     if item.get("pilot") is True and _needs_dispatch(job_id, "process", [item]):
@@ -151,14 +144,22 @@ def get_job(job_id: str, response: Response):
 
 @router.get("/jobs/{project_id}/deletion", dependencies=[Depends(_int_product_route)])
 def deletion_status(project_id: str, request: Request):
-    item = project_deletion.status(request.state.principal, project_id)
-    return _dispatch(item) if item["status"] != "deleted" else item
+    return project_deletion.status(request.state.principal, project_id)
 
 
 @router.post("/jobs/{project_id}/deletion", status_code=202, dependencies=[Depends(_int_product_route)])
-def delete_project(project_id: str, request: Request):
-    item = project_deletion.begin(request.state.principal, project_id)
-    return _dispatch(item) if item["status"] != "deleted" else item
+def delete_project(project_id: str, request: Request, background: BackgroundTasks):
+    item, created = project_deletion.begin(request.state.principal, project_id, include_created=True)
+    if created:
+        background.add_task(reconcile_project_cleanups)
+    return item
+
+
+def reconcile_project_cleanups():
+    try:
+        return reconcile(cleanup_only=True)
+    except Exception:
+        return {"status": "pending", "dispatched": 0}
 
 
 def _needs_dispatch(job_id, kind, items):
@@ -616,12 +617,6 @@ def export_file(job_id: str, export_id: str, filename: str, request: Request, in
 def _summary(c, doc):
     item = doc["payload"]
     metadata = c.execute(text("SELECT payload FROM cloud_documents WHERE job_id=:j AND kind='project' AND id=:j"), {"j": item["id"]}).scalar() or {}
-    if beta_enabled():
-        deletion = project_deletion.public_status(item["id"], c)
-        if deletion is not None:
-            return {"id": item["id"], "title": metadata.get("title") or item.get("source_filename") or f"Proyecto {item['id'][:8]}",
-                    "status": deletion["status"], "created_at": item["created_at"], "clips_count": 0,
-                    "source_available": False, "deletion": deletion}
     counts = dict(c.execute(text("SELECT kind,count(*) FROM cloud_documents WHERE job_id=:j GROUP BY kind"), {"j": item["id"]}).all())
     return {"id": item["id"], "title": metadata.get("title") or item.get("source_filename") or f"Proyecto {item['id'][:8]}",
             "source_filename": item.get("source_filename"), "status": item["status"], "created_at": item["created_at"],
@@ -635,11 +630,14 @@ def _summary(c, doc):
 def projects(request: Request, q: str = Query("", max_length=150), offset: int = Query(0, ge=0), limit: int = Query(12, ge=1, le=50)):
     principal = request.state.principal
     with get_engine().connect() as c:
-        rows = c.execute(text("SELECT d.payload,d.manifest FROM cloud_documents d JOIN auth_projects p ON p.id=d.job_id WHERE d.kind='job' AND p.owner_id=:o AND p.workspace_id=:w ORDER BY d.updated_at DESC,d.id DESC"), {"o": principal.id, "w": principal.workspace_id}).mappings()
+        # The shared legacy route can run on a schema without the beta column.
+        rows = c.execute(text("""
+            SELECT d.payload,d.manifest FROM cloud_documents d JOIN auth_projects p ON p.id=d.job_id
+            WHERE d.kind='job' AND p.owner_id=:o AND p.workspace_id=:w
+              AND (NOT :beta OR to_jsonb(p)->>'deletion_started_at' IS NULL)
+            ORDER BY d.updated_at DESC,d.id DESC
+        """), {"o": principal.id, "w": principal.workspace_id, "beta": beta_enabled()}).mappings()
         items = [_summary(c, row) for row in rows]
-    items = [item for item in items if item["status"] != "deleted"]
-    if any(item["status"] in {"deleting", "delete_error"} for item in items):
-        _dispatch({})
     if q.strip():
         items = [item for item in items if q.strip().casefold() in f"{item['title']} {item['id']} {item.get('source_filename') or ''}".casefold()]
     return {"projects": items[offset:offset+limit], "total": len(items), "offset": offset, "limit": limit, "has_more": offset+limit < len(items), "unreadable": 0}

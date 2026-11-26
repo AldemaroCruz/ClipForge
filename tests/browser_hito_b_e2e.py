@@ -15,6 +15,7 @@ STATIC = Path(__file__).resolve().parent.parent / "app" / "static"
 ORIGIN = "http://127.0.0.1:48129"
 GCS = "https://storage.googleapis.com/clipforge-fixture/session"
 JOB = "a" * 32
+OTHER_JOB = "b" * 32
 CLIP = "clip_01.mp4"
 EXPORT = "c" * 32
 DRAFT = "d" * 32
@@ -69,7 +70,7 @@ class BrowserHitoBTest(unittest.TestCase):
             route.fulfill(status=200, content_type=assets[asset], body=(STATIC / asset).read_bytes())
             return
         if path in {f"/jobs/{JOB}/clips/{CLIP}", f"/jobs/{JOB}/source"}:
-            route.fulfill(status=503, content_type="video/mp4")
+            route.fulfill(status=404 if self.state["status"] == "deleted" else 503, content_type="video/mp4")
             return
         data, status = self.api(path, request)
         route.fulfill(status=status, content_type="application/json", body=json.dumps(data))
@@ -100,7 +101,7 @@ class BrowserHitoBTest(unittest.TestCase):
         if path == "/environment":
             return {"environment": "INT", "revision": "b" * 40}, 200
         if path == "/auth/me":
-            return {"user": {"username": "fixture", "is_admin": self.state["admin"],
+            return {"user": {"id": "2" * 32, "username": "fixture", "is_admin": self.state["admin"],
                              "permissions": ["users:manage"] if self.state["admin"] else []},
                     "csrf_token": self.csrf}, 200
         if path == "/beta/limits":
@@ -117,14 +118,27 @@ class BrowserHitoBTest(unittest.TestCase):
             return {"id": JOB, "status": "queued", "dispatch_status": "pending"}, 202
         if path == "/projects":
             state = self.state["status"]
-            return {"projects": [{"id": JOB, "status": state, "title": "Video de prueba",
-                                  "deletion": self.state.get("deletion")}]
-                    if state not in {None, "deleted"} else [],
-                    "has_more": False}, 200
+            projects = []
+            if state not in {None, "deleted"}:
+                projects.append({"id": JOB, "status": state, "title": "Video de prueba"})
+            if self.state.get("other_project"):
+                projects.append({"id": OTHER_JOB, "status": "completed", "title": "Otro video"})
+            return {"projects": projects, "has_more": False}, 200
+        if path == f"/jobs/{OTHER_JOB}" and self.state.get("other_project"):
+            return {"id": OTHER_JOB, "status": "completed", "pilot": True, "clips": []}, 200
+        if path == f"/jobs/{JOB}/deletion":
+            if method == "POST":
+                self.state["deletions"].append(path)
+                if self.state.get("deletion_failed"):
+                    return {"detail": "No se pudo eliminar el proyecto."}, 503
+                self.state["status"] = "deleted"
+            if self.state["status"] == "deleted":
+                return {"id": JOB, "status": "deleted"}, 202 if method == "POST" else 200
+            return {}, 404
+        if self.state["status"] == "deleted" and (path == f"/jobs/{JOB}" or path.startswith(f"/jobs/{JOB}/")):
+            return {}, 404
         if path == "/jobs/" + JOB:
             state = self.state["status"]
-            if state == "deleted":
-                return {}, 404
             clip = {"file": CLIP, "start": 0, "end": 22}
             if self.state["caption"]:
                 caption = self.state["caption"]
@@ -133,7 +147,7 @@ class BrowserHitoBTest(unittest.TestCase):
             return {"id": JOB, "status": state, "pilot": True,
                     "media": {"duration_seconds": self.state.get("duration", 426.55)},
                     "clips": [clip] if state == "completed" else [],
-                    "caption_style": self.state["project_caption"], "deletion": self.state.get("deletion")}, 200
+                    "caption_style": self.state["project_caption"]}, 200
         if path == f"/jobs/{JOB}/clips/{CLIP}/captions" and self.state["caption"]:
             caption = self.state["caption"]
             if method == "PUT":
@@ -153,16 +167,6 @@ class BrowserHitoBTest(unittest.TestCase):
             self.state["project_caption"] = state
             self.state["caption"].update(style=state["style"], revision=self.state["caption"]["revision"] + 1)
             return state, 200
-        if path == f"/jobs/{JOB}/deletion":
-            if method == "POST":
-                self.state["deletions"].append(path)
-                if self.state["status"] == "completed":
-                    self.state.update(status="deleting", deletion={"id": JOB, "status": "delete_error",
-                                                                  "retryable": True})
-                else:
-                    self.state.update(status="deleted", deletion={"id": JOB, "status": "deleted",
-                                                                 "retryable": False})
-            return self.state.get("deletion", {}), 202 if method == "POST" else 200
         if path == f"/jobs/{JOB}/workspace":
             return {"source_duration": self.state.get("duration", 426.55)}, 200
         if path == f"/jobs/{JOB}/editor/range" and method == "POST":
@@ -376,9 +380,12 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])
 
-    def test_project_deletion_requires_confirmation_and_can_retry_after_reload(self):
-        self.state["status"] = "completed"
+    def test_project_deletion_withdraws_only_confirmed_project_and_survives_reload(self):
+        self.state.update(status="completed", other_project=True)
         self.page.goto(ORIGIN + "/?job=" + JOB)
+        other_tab = self.context.new_page()
+        other_tab.goto(ORIGIN + "/?job=" + JOB)
+        other_tab.locator("#delete-project").wait_for()
         delete = self.page.locator("#delete-project")
         delete.click()
         dialog = self.page.locator("#project-delete-dialog")
@@ -387,15 +394,35 @@ class BrowserHitoBTest(unittest.TestCase):
         self.until_text("#project-delete-scope", "la transcripción")
         self.page.locator("#project-delete-cancel").click()
         self.assertEqual([], self.state["deletions"])
+
+        self.state["deletion_failed"] = True
         delete.click()
         self.page.locator("#project-delete-confirm").click()
-        self.until_text("#job-status", "Puedes reintentar")
+        self.until_text("#project-delete-error", "No se pudo eliminar el proyecto.")
+        self.assertTrue(dialog.is_visible())
+        self.assertEqual(2, self.page.locator("#project-list a").count())
+        self.assertEqual(1, self.page.locator("#clip-list article").count())
+
+        self.state["deletion_failed"] = False
+        self.page.locator("#project-delete-confirm").click()
+        self.page.get_by_text("Proyecto eliminado de tu cuenta", exact=True).wait_for()
+        self.assertEqual("Proyecto eliminado de tu cuenta", self.page.locator("#job-status").inner_text())
+        self.assertTrue(dialog.is_hidden())
         self.assertTrue(self.page.locator("#editorial").is_hidden())
         self.assertEqual(0, self.page.locator("#clip-list article").count())
+        self.assertEqual(["/?job=" + OTHER_JOB], self.page.locator("#project-list a").evaluate_all(
+            "links => links.map(link => link.getAttribute('href'))"))
+        self.assertFalse(urlsplit(self.page.url).query)
+        other_tab.get_by_text("Proyecto eliminado de tu cuenta", exact=True).wait_for(timeout=12_000)
+        self.assertTrue(other_tab.locator("#editorial").is_hidden())
+        self.assertEqual(0, other_tab.locator("#clip-list article").count())
+        self.assertTrue(other_tab.get_by_role("link", name="Otro video").is_visible())
+
         self.page.reload()
-        self.page.locator("#retry-project-deletion").click()
-        self.until_text("#job-status", "Proyecto eliminado.")
-        self.assertEqual(0, self.page.locator("#project-list a").count())
+        self.page.get_by_role("link", name="Otro video").wait_for()
+        self.assertEqual(1, self.page.locator("#project-list a").count())
+        for job, status in ((JOB, 404), (OTHER_JOB, 200)):
+            self.assertEqual(status, self.page.evaluate("async path => (await fetch(path)).status", f"/jobs/{job}"))
         self.assertEqual([f"/jobs/{JOB}/deletion"] * 2, self.state["deletions"])
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])

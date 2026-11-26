@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
+from starlette.concurrency import run_in_threadpool
 
 from .auth import AuthenticationBoundary, require_access, router as auth_router, settings
 from .auth_db import AuthConfigurationError, database_ready, get_engine
@@ -14,9 +15,11 @@ from .cloud.migrate import REVISION
 from .cloud.migrate_beta import beta_schema_ready, editorial_schema_ready
 from .cloud.migrate_project_deletions import project_deletion_schema_ready
 from .cloud.pilot import router as pilot_router
-from .cloud.router import router as media_router
+from .cloud.router import reconcile_project_cleanups, router as media_router
 from .environment import identity
 from .int_beta_proxy import PROXY_ORIGIN_HEADER, PUBLIC_HOST, PUBLIC_ORIGIN, STATIC
+
+CLEANUP_PATH = "/internal/project-cleanup"
 
 
 class TrustedPublicOrigin:
@@ -31,6 +34,13 @@ class TrustedPublicOrigin:
         # It supplies this exact header independently of the browser request.
         marker = PROXY_ORIGIN_HEADER.encode("ascii")
         supplied = [value for name, value in scope["headers"] if name == marker]
+        # Cloud Scheduler calls the IAM-protected service directly. The
+        # public proxy does not route this path and always supplies its marker.
+        if scope["method"] == "POST" and scope["path"] == CLEANUP_PATH and not supplied:
+            result = await run_in_threadpool(reconcile_project_cleanups)
+            await JSONResponse(result, status_code=503 if result["status"] == "pending" else 200)(
+                scope, receive, send)
+            return
         if supplied != [PUBLIC_ORIGIN.encode("ascii")]:
             await JSONResponse({"detail": "Origen del proxy incorrecto."}, status_code=403)(
                 scope, receive, send)

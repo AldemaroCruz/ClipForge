@@ -55,7 +55,6 @@
           <button id="start-existing" type="button" class="secondary" hidden>Procesar video guardado</button>
           <button id="retry-job" type="button" class="secondary" hidden>Reintentar procesamiento</button>
           <button id="delete-project" type="button" class="secondary beta-danger" hidden>Eliminar proyecto</button>
-          <button id="retry-project-deletion" type="button" class="secondary" hidden>Reintentar eliminación</button>
         </div>
         <h3 id="heuristic-heading" hidden>Clips automáticos por heurística</h3>
         <div id="clip-list" class="beta-clips"></div>
@@ -205,7 +204,7 @@
   <dialog id="project-delete-dialog" class="panel beta-dialog" aria-labelledby="project-delete-heading" aria-describedby="project-delete-scope">
     <h2 id="project-delete-heading">Eliminar proyecto</h2>
     <p id="project-delete-title"></p>
-    <p id="project-delete-scope">Se retirarán el original, la transcripción, las propuestas, los borradores, los clips y las exportaciones de este proyecto. Se cancelarán los procesamientos pendientes y activos que le correspondan.</p>
+    <p id="project-delete-scope">El proyecto, su video original, la transcripción, las propuestas, los borradores, los clips y las exportaciones dejarán de estar disponibles en tu cuenta. Se cancelarán sus procesamientos pendientes y activos.</p>
     <p id="project-delete-error" class="status beta-message" role="alert"></p>
     <div class="actions">
       <button id="project-delete-cancel" type="button" class="secondary" autofocus>Cancelar</button>

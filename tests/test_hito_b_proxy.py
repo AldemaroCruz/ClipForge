@@ -129,6 +129,26 @@ class PrivateApiBoundaryTests(unittest.TestCase):
             with self.subTest(headers=headers):
                 self.assertEqual(self.client.get("/environment", headers=headers).status_code, 403)
 
+    def test_cleanup_trigger_is_private_and_reports_retryable_failures(self):
+        path = int_beta.CLEANUP_PATH
+        self.assertFalse(proxy.allowed("POST", path))
+        self.assertFalse(proxy.allowed("GET", path))
+        with patch.object(int_beta, "reconcile_project_cleanups") as cleanup:
+            self.assertEqual(self.client.get(path).status_code, 403)
+            headers = {proxy.PROXY_ORIGIN_HEADER: proxy.PUBLIC_ORIGIN, "Origin": proxy.PUBLIC_ORIGIN}
+            config = auth.Settings(proxy.PUBLIC_ORIGIN, secure=True, ttl_seconds=3600)
+            with (
+                patch.object(auth, "settings", return_value=config),
+                patch.object(auth, "_http_storage", return_value=nullcontext(Mock())),
+                patch.object(auth, "_session", return_value=None),
+            ):
+                self.assertEqual(self.client.post(path, headers=headers).status_code, 401)
+            cleanup.assert_not_called()
+            cleanup.return_value = {"status": "current", "dispatched": 0}
+            self.assertEqual(self.client.post(path).status_code, 200)
+            cleanup.return_value = {"status": "pending", "dispatched": 0}
+            self.assertEqual(self.client.post(path).status_code, 503)
+
     def test_rewrites_trusted_origin_and_enforces_session_csrf_and_beta_routes(self):
         session_token = secrets.token_urlsafe(32)
         csrf = secrets.token_urlsafe(32)

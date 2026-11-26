@@ -6,6 +6,7 @@ from time import monotonic
 from scripts import int_hito_b_browser as portal
 
 START_PATH = re.compile(re.escape(portal.PUBLIC) + r"/beta/uploads/[a-f0-9]{32}/start")
+REMOVED_MESSAGE = "Proyecto eliminado de tu cuenta"
 
 
 def deletion_path(job):
@@ -32,50 +33,68 @@ def queue_video(page, fixture):
     return job, upload.request.post_data_json, upload.request.headers.get("idempotency-key")
 
 
-def start_deletion(page, job, *, confirm_in_portal=False):
-    path = deletion_path(job)
-    if confirm_in_portal:
-        page.locator("#delete-project").click()
-        confirmation = page.locator("#project-delete-dialog")
-        scope = confirmation.locator("#project-delete-scope").inner_text().lower()
-        title = confirmation.locator("#project-delete-title").inner_text()
-        portal.require(confirmation.is_visible() and title.strip()
-                       and all(phrase in scope for phrase in ("original", "transcripción", "propuestas", "borradores",
-                                                             "clips", "exportaciones", "pendientes", "activos")),
-                       "deletion_confirmation_scope")
-        return portal.click_response(page, confirmation.locator("#project-delete-confirm"), path, "POST", 202).json()
-    return page.evaluate("""async path => {
+def request_deletion(page, job):
+    result = page.evaluate("""async path => {
       const auth = window.ClipForgeAuth;
       const response = await auth.fetch(path, auth.payload({}));
-      return response.status === 202 ? await response.json() : {};
-    }""", path)
+      return {status: response.status, body: response.status === 202 ? await response.json() : null};
+    }""", deletion_path(job))
+    portal.require(result == {"status": 202, "body": {"id": job, "status": "deleted"}},
+                   "deletion_post_did_not_confirm_immediate_removal")
 
 
-def finish_deletion(page, job, first):
-    path = deletion_path(job)
-    portal.require(first.get("id") == job and first.get("status") in {"deleting", "deleted"},
-                   "deletion_was_not_accepted")
-    repeated = portal.browser_post(page, path, {})
-    portal.require(repeated["status"] == 202 and repeated["id"] == job, "deletion_repeat_not_idempotent")
-    portal.require(portal.browser_post(page, f"/beta/uploads/{job}/start", {})["status"] == 404,
-                   "deletion_accepted_late_upload_start")
-    deadline = monotonic() + 420
-    while True:
-        response = portal.browser_get(page, path)
-        status = response["body"] or {}
-        portal.require(response["status"] == 200 and status.get("id") == job, "deletion_status_lost")
-        if status.get("status") == "deleted":
-            break
-        portal.require(status.get("status") in {"deleting", "delete_error"} and monotonic() < deadline,
-                       "deletion_cleanup_did_not_finish")
-        page.wait_for_timeout(1_000)
-    for suffix in ("", "/source", "/workspace", "/selections", "/drafts", "/exports"):
+def confirm_deletion(page, job):
+    page.locator("#delete-project").click()
+    confirmation = page.locator("#project-delete-dialog")
+    scope = confirmation.locator("#project-delete-scope").inner_text().lower()
+    title = confirmation.locator("#project-delete-title").inner_text()
+    portal.require(confirmation.is_visible() and title.strip()
+                   and all(phrase in scope for phrase in ("original", "transcripción", "propuestas", "borradores",
+                                                         "clips", "exportaciones", "pendientes", "activos")),
+                   "deletion_confirmation_scope")
+    confirm = confirmation.locator("#project-delete-confirm")
+    confirm.evaluate("""(button, [id, message]) => button.addEventListener('click', () => {
+        performance.mark('project-deletion-confirmed');
+        const observer = new MutationObserver(() => {
+            if (document.querySelector('#project-delete-dialog').open
+                || document.querySelector(`#project-list a[href='/?job=${id}']`)
+                || new URLSearchParams(location.search).has('job')
+                || document.querySelector('#job-status').textContent !== message) return;
+            performance.measure('project-deletion-removed', 'project-deletion-confirmed');
+            observer.disconnect();
+        });
+        observer.observe(document.querySelector('#beta-workspace'), {childList: true, subtree: true});
+    }, {capture: true, once: true})""", [job, REMOVED_MESSAGE])
+    response = portal.click_response(page, confirm, deletion_path(job), "POST", 202)
+    portal.require(response.json() == {"id": job, "status": "deleted"}, "deletion_confirmation_receipt")
+    elapsed = page.wait_for_function("""() =>
+        performance.getEntriesByName('project-deletion-removed', 'measure')[0]?.duration
+    """).json_value()
+    portal.require(page.locator("#editorial").is_hidden() and page.locator("#clip-list article").count() == 0,
+                   "deleted_project_results_remained_in_portal")
+    return round(elapsed / 1000, 3)
+
+
+def check_removed(page, job, *, artifacts=()):
+    receipt = portal.browser_get(page, deletion_path(job))
+    portal.require(receipt == {"status": 200, "body": {"id": job, "status": "deleted"}}, "deletion_status_lost")
+    for suffix in ("", "/source", "/workspace", "/selections", "/drafts", "/exports", *artifacts):
         portal.require(portal.browser_get(page, f"/jobs/{job}{suffix}")["status"] == 404,
                        "deleted_project_results_remained_available")
     projects = portal.browser_get(page, "/projects")["body"]["projects"]
     portal.require(all(item["id"] != job for item in projects), "deleted_project_reappeared")
-    return {key: value for key, value in status.items() if key in {"status", "cancelled_queued",
-                                                                   "cancelled_active", "attempts"}}
+    matching = portal.browser_get(page, f"/projects?q={job}&limit=1")
+    portal.require(matching["status"] == 200 and matching["body"]["projects"] == []
+                   and matching["body"]["total"] == 0 and matching["body"]["has_more"] is False,
+                   "deleted_project_counted_in_search")
+
+
+def finish_deletion(page, job):
+    check_removed(page, job)
+    request_deletion(page, job)
+    portal.require(portal.browser_post(page, f"/beta/uploads/{job}/start", {})["status"] == 404,
+                   "deletion_accepted_late_upload_start")
+    return {"id": job, "status": "deleted"}
 
 
 def wait_active(page, job):
@@ -99,9 +118,12 @@ def acceptance(browser, args, state, report):
     completed = state["job"]
     deletion_path(completed)
     output = report["project_deletion"] = {}
-    with portal.browser_page(browser, storage=True) as page, portal.browser_page(browser) as foreign:
+    with (portal.browser_page(browser, storage=True) as page, portal.browser_page(browser) as foreign,
+          portal.browser_page(browser) as second_session):
         portal.login(page, creator, args.commit)
         portal.login(foreign, outsider, args.commit)
+        portal.login(second_session, creator, args.commit)
+        portal.open_saved_job(second_session, completed)
         path = deletion_path(completed)
         portal.require(portal.browser_post(foreign, path, {})["status"] == 404
                        and portal.browser_get(foreign, path)["status"] == 404,
@@ -111,33 +133,37 @@ def acceptance(browser, args, state, report):
         portal.check(report, "project_deletion_owner_and_csrf")
         report["step"] = "project_deletion_queued"
         queued, payload, key = queue_video(page, fixture)
-        pending = start_deletion(page, queued)
-        portal.require(pending.get("cancelled_queued", 0) == 1 and pending.get("cancelled_active", 0) == 0,
-                       "queued_cancellation_not_observed")
-        output["queued"] = {"id": queued, **finish_deletion(page, queued, pending)}
+        request_deletion(page, queued)
+        output["queued"] = finish_deletion(page, queued)
         replay = portal.browser_post(page, "/beta/uploads", payload, key)
         portal.require(replay["status"] == 404 and not replay["upload"], "deleted_upload_replayed")
         portal.open_saved_job(page, completed)
         report["step"] = "project_deletion_active"
         active, _, _ = queue_video(page, fixture)
         active_state = wait_active(page, active)
-        pending = start_deletion(page, active)
-        portal.require(pending.get("cancelled_active", 0) == 1, "active_cancellation_not_observed")
+        request_deletion(page, active)
         output["active"] = {"id": active, "phase_at_deletion": active_state,
-                            **finish_deletion(page, active, pending)}
+                            **finish_deletion(page, active)}
         portal.open_saved_job(page, completed)
         clip = next(iter(state["clips"]))
         portal.require(portal.browser_get(page, f"/jobs/{completed}/clips/{clip}")["status"] == 200,
                        "unrelated_completed_job_damaged")
         portal.check(report, "deletion_did_not_affect_existing_other_project")
         report["step"] = "project_deletion_completed"
-        pending = start_deletion(page, completed, confirm_in_portal=True)
-        output["completed"] = {"id": completed, **finish_deletion(page, completed, pending)}
+        elapsed = confirm_deletion(page, completed)
+        output["completed"] = {**finish_deletion(page, completed), "click_to_removal_seconds": elapsed}
+        export = state["editorial"]["exports"][0]["id"]
+        draft = state["editorial"]["exports"][0]["draft"]["id"]
+        portal.require(portal.ID.fullmatch(export) and portal.ID.fullmatch(draft), "deletion_artifact_identity")
+        check_removed(second_session, completed, artifacts=(f"/clips/{clip}", f"/clips/{clip}/captions",
+                                                            f"/drafts/{draft}", f"/exports/{export}/files/clip.mp4"))
+        portal.require(portal.browser_get(foreign, path)["status"] == 404
+                       and portal.browser_post(foreign, path, {})["status"] == 404,
+                       "foreign_account_can_access_deletion_receipt")
         page.reload(wait_until="domcontentloaded")
-        path = deletion_path(completed)
-        portal.require(portal.browser_get(page, path)["body"]["status"] == "deleted"
-                       and portal.browser_get(page, f"/jobs/{completed}")["status"] == 404,
-                       "deleted_project_reappeared_after_reload")
+        check_removed(page, completed)
+        portal.check(report, "deletion_visible_across_owner_sessions_and_reload")
         portal.logout(page)
         portal.logout(foreign)
+        portal.logout(second_session)
     portal.check(report, "deletion_completed_queued_active_and_idempotent")

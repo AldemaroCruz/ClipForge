@@ -60,18 +60,26 @@ solicitada, aunque una versión anterior termine después.
 ## Eliminación de proyectos
 
 Abre el proyecto en **Mis trabajos**, pulsa **Eliminar proyecto** y verifica
-el título y alcance en la confirmación. La orden impide operaciones nuevas,
-cancela las tareas del proyecto y retira su contenido activo. El estado y el
-reintento de la limpieza aparecen en el proyecto hasta que termine el borrado.
-Una reserva antigua sin seguimiento de la sesión reanudable puede quedar
-pendiente hasta que venza esa capacidad, dentro de los siete días posteriores
-al vencimiento de su reserva. El proyecto queda inaccesible durante esa espera.
+el título y alcance en la confirmación. Al quedar registrada la orden, el
+proyecto desaparece de **Mis trabajos**, se cierra su detalle y aparece
+**Proyecto eliminado de tu cuenta**. La eliminación también se refleja al
+volver a iniciar sesión. El enlace anterior deja de dar acceso al proyecto
+y a sus archivos.
 
-Cloud Storage retira la generación activa mediante una precondición de
-generación. El bucket conserva versionado, retención mínima de siete días y
-borrado recuperable por siete días. Su regla de ciclo de vida requiere al
-menos 30 días como no vigente y tres versiones más recientes. Las copias
-no vigentes pueden permanecer bajo esas políticas. [Versionado y retención de Google Cloud](https://docs.cloud.google.com/storage/docs/bucket-lock)
+La cancelación y la limpieza de las generaciones accesibles se inician al
+registrar la orden. PostgreSQL conserva el seguimiento de las generaciones
+retenidas y la fecha informada por GCS. El bucket de INT aplica retención
+mínima de siete días desde la creación de cada objeto y, al eliminar una
+generación, permite recuperarla durante siete días más. Las esperas dependen
+de cada objeto y quedan fuera de la interfaz. [Retención](https://docs.cloud.google.com/storage/docs/bucket-lock) · [Borrado recuperable](https://docs.cloud.google.com/storage/docs/soft-delete)
+
+El reconciliador se despierta tras confirmar la eliminación. El job
+`clipforge-int-project-cleanups` de Cloud Scheduler también llama cada minuto
+a `POST /internal/project-cleanup` en `clipforge-int-beta-api`, autenticado por
+OIDC con la cuenta invocadora del frontend. El reconciliador despierta el
+worker existente sólo si hay una limpieza lista. Esto cubre reintentos y
+recuperación después de interrupciones aunque el creador cierre el navegador.
+[Invocación programada de Cloud Run](https://docs.cloud.google.com/run/docs/triggering/using-scheduler)
 
 ## Administración
 
