@@ -20,7 +20,7 @@ import re
 import secrets
 import stat
 import tempfile
-from time import monotonic
+from time import monotonic, sleep
 from typing import Any
 
 from app.media import probe_media
@@ -96,6 +96,18 @@ def utc():
 
 def elapsed(start):
     return round(monotonic() - start, 3)
+
+
+def public_health(transport):
+    url = PUBLIC + "/health"
+    response = transport.request("GET", url)
+    for delay in (2, 4, 8):
+        content_type = response.headers.get("content-type", "").partition(";")[0].strip().lower()
+        if response.status != 429 or content_type.endswith(("/json", "+json")):
+            break
+        sleep(delay)
+        response = transport.request("GET", url)
+    return shared_http.json_body(response, 200, "public_health")
 
 
 def facts(page, path):
@@ -1055,8 +1067,7 @@ def main(argv=None):
         transport = shared_http.HTTP()
         require(transport.request("GET", browser_test.PRIVATE + "/health").status in {401, 403},
                 "private_api_direct_request_allowed")
-        require(shared_http.json_body(transport.request("GET", PUBLIC + "/health"), 200, "public_health")
-                == {"status": "ok", "profile": "int-beta"}, "public_database_health")
+        require(public_health(transport) == {"status": "ok", "profile": "int-beta"}, "public_database_health")
         executable = resolve_browser({"INT_HITO_A_BROWSER_EXECUTABLE":
                                       os.environ.get("INT_HITO_B_BROWSER_EXECUTABLE", "")})
         from playwright.sync_api import sync_playwright

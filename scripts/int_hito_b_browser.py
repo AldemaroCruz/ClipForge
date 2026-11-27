@@ -804,7 +804,7 @@ def check_manual_export(page, job_id, scratch, report):
     check(report, "original_preview_manual_range_and_idempotent_export")
 
 
-def retry_editorial_request(page, control, first):
+def retry_editorial_request(page, control, first, *, approval_key=None, delay_ms=1_500):
     url = first.url
     method = first.request.method
     original_body = first.request.post_data_buffer
@@ -813,27 +813,61 @@ def retry_editorial_request(page, control, first):
     def same_update(request):
         return request.method == method and request.url == url
 
+    def observed(request):
+        if approval_key is None:
+            return same_update(request)
+        return request.method not in {"GET", "HEAD", "OPTIONS"} or request.url == url
+
+    def matches_request(request):
+        return (same_update(request) and request.post_data_buffer == original_body
+                and (approval_key is None or (request.headers.get("idempotency-key") == approval_key
+                                              and bool(request.headers.get("x-csrf-token")))))
+
     def guard(route):
-        if same_update(route.request) and route.request.post_data_buffer != original_body:
+        if observed(route.request) and not matches_request(route.request):
             route.abort("blockedbyclient")
             return
         route.fallback()
 
     # Let the failed action release its busy state and the platform drain capacity.
-    page.wait_for_timeout(1_500)
-    page.route(url, guard)
+    page.wait_for_timeout(delay_ms)
+    scope = "**/*" if approval_key is not None else url
+    page.route(scope, guard)
     try:
         with page.expect_response(lambda item: same_update(item.request)) as event:
-            with page.expect_request(same_update) as sent:
+            with page.expect_request(observed) as sent:
                 control.click()
-            require(sent.value.post_data_buffer == original_body, "editorial_draft_retry_changed_body")
+            require(matches_request(sent.value), "editorial_approval_retry_changed_request"
+                    if approval_key is not None else "editorial_draft_retry_changed_body")
         return event.value
     finally:
-        page.unroute(url, guard)
+        page.unroute(scope, guard)
+
+
+def approved_export_retry_key(response, path, revision):
+    export = re.fullmatch(r"/jobs/[0-9a-f]{32}/drafts/([0-9a-f]{32})/exports", path)
+    if (type(revision) is not int or revision < 1 or not export
+            or response.request.method != "POST" or response.url != PUBLIC + path):
+        return None
+    key = f"approved-{export.group(1)}-{revision}"
+    if response.request.headers.get("idempotency-key") != key or not response.request.headers.get("x-csrf-token"):
+        return None
+    try:
+        body = json.loads(response.request.post_data_buffer or b"")
+    except ValueError:
+        return None
+    if type(body) is dict and set(body) == {"revision"} and type(body["revision"]) is int and body["revision"] == revision:
+        return key
+    return None
+
+
+def platform_throttled(response):
+    content_type = response.headers.get("content-type", "").partition(";")[0].strip().lower()
+    return response.status == 429 and not content_type.endswith(("/json", "+json"))
 
 
 def click_response(page, control, path, method, status, *, failing_prerequisite=None,
-                   retry_draft_capacity=False, retry_range_capacity=False):
+                   retry_draft_capacity=False, retry_range_capacity=False, approval_revision=None):
     def match(response):
         return response.request.method == method and (
             response.url.startswith(PUBLIC + path)
@@ -843,13 +877,20 @@ def click_response(page, control, path, method, status, *, failing_prerequisite=
     with page.expect_response(match) as event:
         control.click()
     response = event.value
-    content_type = response.headers.get("content-type", "").partition(";")[0].strip().lower()
-    if response.status == 429 and not content_type.endswith(("/json", "+json")):
+    if platform_throttled(response):
         draft_save = (retry_draft_capacity and method == "PUT"
                       and ID.fullmatch(response.url.removeprefix(PUBLIC + path)))
         range_preview = (retry_range_capacity and method == "POST" and response.url == PUBLIC + path
                          and re.fullmatch(r"/jobs/[0-9a-f]{32}/editor/range", path))
-        if draft_save or range_preview:
+        approval_key = approved_export_retry_key(response, path, approval_revision)
+        if approval_key:
+            first = response
+            for delay_ms in (1_500, 3_000, 6_000):
+                print("INT browser retrying the same approved export after a platform 429.", flush=True)
+                response = retry_editorial_request(page, control, first, approval_key=approval_key, delay_ms=delay_ms)
+                if not platform_throttled(response):
+                    break
+        elif draft_save or range_preview:
             action = "draft PUT" if draft_save else "read-only range POST"
             print(f"INT browser retrying the same {action} after a platform 429.", flush=True)
             response = retry_editorial_request(page, control, response)
@@ -1040,7 +1081,8 @@ def save_style(page, job, size, color, text):
 def start_editorial_export(page, job, draft):
     path = f"/jobs/{job}/drafts/{draft['id']}/exports"
     activated = monotonic()
-    response = click_response(page, page.locator("#editorial-export"), path, "POST", 202)
+    response = click_response(page, page.locator("#editorial-export"), path, "POST", 202,
+                              approval_revision=draft["revision"])
     item = response.json()
     require(ID.fullmatch(item.get("id", "")) and item["draft_id"] == draft["id"], "editorial_export_identity")
     return item["id"], activated, response.request.headers["idempotency-key"]
