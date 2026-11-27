@@ -12,9 +12,11 @@
   const idPattern = /^[a-f0-9]{32}$/;
   const candidatePattern = /^[1-9][0-9]*$/;
   const active = status => ["queued", "running", "validating", "rendering"].includes(status);
+  const framingDefaults = {framing: "contain", crop_x: 0.5, crop_y: 0.5, crop_zoom: 1};
   let view = null;
   let previewEnd = null;
   let frameCallback = null;
+  let framingCapture = null;
 
   function node(tag, value, className) {
     const result = document.createElement(tag);
@@ -32,6 +34,10 @@
 
   function request(state, suffix, options = {}) {
     return auth.json("/jobs/" + state.id + suffix, {...options, signal: state.controller.signal});
+  }
+
+  function sourcePath(state) {
+    return "/jobs/" + state.id + "/source";
   }
 
   function visible(state) {
@@ -88,6 +94,7 @@
     }
     stopPreview();
     resetFrameObservation();
+    resetFramingPreview();
     source.removeAttribute("src");
     source.load();
     details.open = false;
@@ -659,9 +666,169 @@
     replaceCueRows(el("cues"), cues.map(cue => cueRow(cue, duration, updateSample)), keepSelection);
   }
 
+  function framingOptions() {
+    return {
+      framing: el("framing").value,
+      crop_x: Number((el("crop-x").valueAsNumber / 100).toFixed(6)),
+      crop_y: Number((el("crop-y").valueAsNumber / 100).toFixed(6)),
+      crop_zoom: Number(el("crop-zoom").valueAsNumber.toFixed(6)),
+    };
+  }
+
+  function fillFramingControls(options) {
+    el("framing").value = options.framing ?? framingDefaults.framing;
+    el("crop-x").value = 100 * (options.crop_x ?? framingDefaults.crop_x);
+    el("crop-y").value = 100 * (options.crop_y ?? framingDefaults.crop_y);
+    el("crop-zoom").value = options.crop_zoom ?? framingDefaults.crop_zoom;
+    updateFramingPreview();
+  }
+
+  function cropRectangle(width, height, options) {
+    // Match the local preview and the FFmpeg graph's even source pixel boundaries.
+    const even = value => Math.floor(value / 2) * 2;
+    const cropWidth = Math.max(2, even(Math.min(width, height * 9 / 16) / options.crop_zoom));
+    const cropHeight = Math.max(2, even(Math.min(height, width * 16 / 9) / options.crop_zoom));
+    return {width: cropWidth, height: cropHeight,
+      x: even((width - cropWidth) * options.crop_x), y: even((height - cropHeight) * options.crop_y)};
+  }
+
+  function updateFramingPreview() {
+    const options = framingOptions();
+    el("crop-controls").hidden = options.framing !== "crop";
+    el("crop-x-value").value = Math.round(100 * options.crop_x) + "%";
+    el("crop-y-value").value = Math.round(100 * options.crop_y) + "%";
+    el("crop-zoom-value").value = options.crop_zoom.toFixed(2) + "×";
+    const result = el("framing-result");
+    if (result.hidden) return;
+
+    const original = el("framing-original");
+    const canvas = el("framing-canvas");
+    const box = el("framing-box");
+    const context = canvas.getContext("2d");
+    const {width, height} = original;
+    result.dataset.mode = options.framing;
+    box.hidden = options.framing !== "crop";
+    context.fillStyle = "#000";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    if (options.framing === "crop") {
+      const rect = cropRectangle(width, height, options);
+      for (const [key, value] of Object.entries(rect)) box.dataset[key] = value;
+      Object.assign(box.style, {
+        left: 100 * rect.x / width + "%", top: 100 * rect.y / height + "%",
+        width: 100 * rect.width / width + "%", height: 100 * rect.height / height + "%",
+      });
+      context.drawImage(original, rect.x, rect.y, rect.width, rect.height, 0, 0, canvas.width, canvas.height);
+      return;
+    }
+    for (const key of ["x", "y", "width", "height"]) delete box.dataset[key];
+    if (options.framing === "blur") {
+      const cover = Math.max(canvas.width / width, canvas.height / height);
+      context.filter = "blur(8px)";
+      context.drawImage(original, (canvas.width - width * cover) / 2 - 8,
+        (canvas.height - height * cover) / 2 - 8, width * cover + 16, height * cover + 16);
+      context.filter = "none";
+    }
+    const contain = Math.min(canvas.width / width, canvas.height / height);
+    const fitWidth = Math.floor(width * contain / 2) * 2;
+    const fitHeight = Math.floor(height * contain / 2) * 2;
+    context.drawImage(original, (canvas.width - fitWidth) / 2, (canvas.height - fitHeight) / 2, fitWidth, fitHeight);
+  }
+
+  function resetFramingPreview() {
+    framingCapture?.abort();
+    framingCapture = null;
+    const result = el("framing-result");
+    result.hidden = true;
+    delete result.dataset.time;
+    delete result.dataset.mode;
+    el("framing-original").width = 0;
+    el("framing-original").height = 0;
+    el("framing-status").textContent = "";
+    el("framing-preview").disabled = false;
+  }
+
+  function showFramingFrame(video, time) {
+    const original = el("framing-original");
+    original.width = video.videoWidth;
+    original.height = video.videoHeight;
+    original.getContext("2d").drawImage(video, 0, 0);
+    const result = el("framing-result");
+    result.dataset.time = time.toFixed(3);
+    el("framing-time").textContent = "Fotograma del original · " + result.dataset.time + " s";
+    result.hidden = false;
+    updateFramingPreview();
+  }
+
+  function waitForFrame(video, url, time, signal) {
+    return new Promise((resolve, reject) => {
+      let sought = false;
+      function loadedFrame() {
+        if (sought && !video.seeking && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+          resolve();
+        }
+      }
+      video.addEventListener("loadedmetadata", () => {
+        const end = Number.isFinite(video.duration) ? Math.max(0, video.duration - 0.001) : time;
+        video.currentTime = Math.min(time, end);
+        sought = true;
+        loadedFrame();
+      }, {once: true, signal});
+      video.addEventListener("loadeddata", loadedFrame, {signal});
+      video.addEventListener("seeked", loadedFrame, {signal});
+      video.addEventListener("error", () => reject(new Error("No se pudo cargar el fotograma del original.")),
+        {once: true, signal});
+      signal.addEventListener("abort", () => reject(signal.reason), {once: true});
+      video.src = url;
+    });
+  }
+
+  async function previewFraming() {
+    const state = view;
+    if (!state?.draft || state.draftBusy || !visible(state) || framingCapture) return;
+    const {start, end} = rangeFields();
+    if (!el("start").reportValidity()) return;
+    const frame = state.frameTime;
+    if (Number.isFinite(frame) && frame >= start && frame < end && !source.seeking
+        && source.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      showFramingFrame(source, frame);
+      el("framing-status").textContent = "";
+      return;
+    }
+
+    const capture = new AbortController();
+    framingCapture = capture;
+    el("framing-preview").disabled = true;
+    el("framing-status").textContent = "Cargando un fotograma del original.";
+    const video = node("video");
+    video.preload = "auto";
+    video.muted = true;
+    const timer = setTimeout(() => capture.abort(new Error("No se pudo cargar el fotograma a tiempo.")), 20000);
+    try {
+      await waitForFrame(video, sourcePath(state), start, capture.signal);
+      if (framingCapture === capture && visible(state)) {
+        showFramingFrame(video, video.currentTime);
+        el("framing-status").textContent = "";
+      }
+    } catch (error) {
+      if (framingCapture === capture && visible(state)) el("framing-status").textContent = error.message;
+    } finally {
+      clearTimeout(timer);
+      capture.abort();
+      video.removeAttribute("src");
+      video.load();
+      if (framingCapture === capture) {
+        framingCapture = null;
+        el("framing-preview").disabled = false;
+      }
+    }
+  }
+
   function mountDraft(state, item) {
     const keepSelection = state.draft?.id === item.id;
-    if (!keepSelection) draftStyles.reset();
+    if (!keepSelection) {
+      draftStyles.reset();
+      resetFramingPreview();
+    }
     state.draft = item;
     state.range = {start: item.start, end: item.end};
     el("draft-form").hidden = false;
@@ -672,6 +839,7 @@
     el("start").value = item.start;
     el("end").value = item.end;
     fillStyleControls(el, item.options);
+    fillFramingControls(item.options);
     setCues(item.cues, item.start, item.end, keepSelection);
     el("revision").textContent = "Revisión guardada " + item.revision;
     updateSample();
@@ -714,7 +882,7 @@
       title: el("title").value.trim(),
       clip_file: item.clip_file ?? null,
       ...range,
-      options: captionStyle(item.options),
+      options: {...captionStyle(item.options), ...framingOptions()},
       cues: readCues(),
     };
   }
@@ -727,6 +895,10 @@
       && value.options.subtitle_color === (item.options.subtitle_color ?? "#FFFFFF").toUpperCase()
       && value.options.subtitle_position === (item.options.subtitle_position ?? "bottom")
       && value.options.subtitle_outline === (item.options.subtitle_outline ?? 3)
+      && Object.entries(framingDefaults).every(([key, fallback]) => {
+        const saved = item.options[key] ?? fallback;
+        return value.options[key] === (typeof saved === "number" ? Number(saved.toFixed(6)) : saved);
+      })
       && value.cues.length === item.cues.length
       && value.cues.every((cue, index) => {
         const saved = item.cues[index];
@@ -885,10 +1057,11 @@
       clearTimers(state);
       stopPreview();
       resetFrameObservation();
+      resetFramingPreview();
       resetConsent();
       return;
     }
-    source.src = "/jobs/" + state.id + "/source";
+    source.src = sourcePath(state);
     observeSourceFrames(state);
     selectionControls(state);
     if (state.manualTogglePending) {
@@ -925,6 +1098,10 @@
   trackCaptionCue(el("cues"), updateSample);
   el("apply-range").addEventListener("click", () => draftAction("range"));
   el("range-preview").addEventListener("click", () => draftAction("preview"));
+  el("framing-preview").addEventListener("click", previewFraming);
+  for (const control of ["framing", "crop-x", "crop-y", "crop-zoom"]) {
+    el(control).addEventListener("input", updateFramingPreview);
+  }
   for (const edge of ["start", "end"]) {
     el("preview-" + edge).addEventListener("click", () => reviewEdge(edge));
     el("mark-" + edge).addEventListener("click", () => markEdge(edge));

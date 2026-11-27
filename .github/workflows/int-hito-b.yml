@@ -18,6 +18,11 @@ on:
         required: false
         type: boolean
         default: false
+      focused_c05_framing:
+        description: Verify manual framing against the accepted C04 baseline
+        required: false
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -320,7 +325,7 @@ jobs:
         if: inputs.focused_c04_styles
         shell: bash
         env:
-          REUSE_OTHER_EVIDENCE: ${{ inputs.reuse_int_provider_evidence }}
+          REUSE_OTHER_EVIDENCE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c05_framing }}
         run: |
           set -euo pipefail
           test "$REUSE_OTHER_EVIDENCE" = false
@@ -355,6 +360,47 @@ jobs:
           python -m scripts.int_hito_c_styles_evidence --source "$DELIVERY_DIR/c04-baseline" \
             --commit "$GITHUB_SHA" --model "$INT_EDITORIAL_OPENAI_MODEL" --receipt "$receipt"
           printf 'INT_C04_ACCEPTANCE=%s\n' "$receipt" >> "$GITHUB_ENV"
+
+      - name: Constrain focused C05 acceptance to manual framing
+        if: inputs.focused_c05_framing
+        shell: bash
+        env:
+          REUSE_OTHER_EVIDENCE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c04_styles }}
+        run: |
+          set -euo pipefail
+          test "$REUSE_OTHER_EVIDENCE" = false
+          base=733ce2a42d59dd7ba32d0478a51c9c6707fcf9f7
+          git merge-base --is-ancestor "$base" HEAD
+          git diff --name-only --no-renames -z "$base" HEAD | while IFS= read -r -d '' path; do
+            case "$path" in
+              .github/workflows/int-hito-b.yml|scripts/deploy_int_beta.sh|scripts/int_hito_b_browser.py|scripts/int_hito_c_framing_browser.py|scripts/int_hito_c_styles_evidence.py) ;;
+              app/static/beta.html|app/static/editorial.js|app/static/mvp.css|tests/browser_hito_b_e2e.py) ;;
+              *) printf 'Outside the verified C05 scope: %s\n' "$path" >&2; exit 1 ;;
+            esac
+          done
+
+      - name: Download the accepted C04 evidence
+        if: inputs.focused_c05_framing
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          github-token: ${{ github.token }}
+          run-id: 46082146402
+          artifact-ids: 15237993284
+          path: ${{ env.DELIVERY_DIR }}/c05-baseline
+          merge-multiple: true
+
+      - name: Verify the pinned C04 receipts
+        if: inputs.focused_c05_framing
+        shell: bash
+        run: |
+          set -euo pipefail
+          receipt="$DELIVERY_DIR/reports/c05-baseline.json"
+          python -m scripts.int_hito_c_styles_evidence --source "$DELIVERY_DIR/c05-baseline" \
+            --commit "$GITHUB_SHA" --model "$INT_EDITORIAL_OPENAI_MODEL" --receipt "$receipt" \
+            --accepted-styles 733ce2a42d59dd7ba32d0478a51c9c6707fcf9f7 46082146402 15237993284 \
+            4158e19ed89b9819442fd50c44f1051c6080b92e76c01bfcf52cbd197ddbf402 \
+            6ff30b32f6a53cd376d7cd08021948a8f94ef4d2ac4585704ec7f83c0d140b05
+          printf 'INT_C05_ACCEPTANCE=%s\n' "$receipt" >> "$GITHUB_ENV"
 
       - name: Check the exact source scope of the reused evidence
         id: reuse_scope
@@ -483,6 +529,7 @@ jobs:
         run: bash scripts/deploy_int_beta.sh prepare
 
       - name: Run the additive PostgreSQL migration from INT
+        if: ${{ !inputs.focused_c05_framing }}
         env:
           CLIPFORGE_GCP_DEPLOY_TOKEN: ${{ steps.publishing.outputs.access_token }}
           GOOGLE_OAUTH_ACCESS_TOKEN: ${{ steps.terraform_identity.outputs.access_token }}
@@ -510,11 +557,14 @@ jobs:
             ${{ env.DELIVERY_DIR }}/reports/browser-styles.json
             ${{ env.DELIVERY_DIR }}/reports/styles-desktop.png
             ${{ env.DELIVERY_DIR }}/reports/styles-mobile.png
+            ${{ env.DELIVERY_DIR }}/reports/browser-framing.json
+            ${{ env.DELIVERY_DIR }}/reports/framing-desktop.png
+            ${{ env.DELIVERY_DIR }}/reports/framing-mobile.png
           if-no-files-found: error
 
       - name: Replace the public revision and verify persistence
         id: acceptance_verify
-        if: ${{ !inputs.focused_c04_styles && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.focused_c04_styles && !inputs.focused_c05_framing && steps.reuse_scope.outputs.mode != 'deletion' }}
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
         run: bash scripts/deploy_int_beta.sh acceptance-verify
@@ -533,7 +583,7 @@ jobs:
 
       - name: Create the three synthetic capacity accounts
         id: capacity_setup
-        if: ${{ !inputs.focused_c04_styles && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.focused_c04_styles && !inputs.focused_c05_framing && steps.reuse_scope.outputs.mode != 'deletion' }}
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
         run: bash scripts/deploy_int_beta.sh capacity-setup
@@ -550,7 +600,7 @@ jobs:
 
       - name: Check three near-limit uploads and concurrent processing
         id: capacity_load
-        if: ${{ !inputs.focused_c04_styles && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.focused_c04_styles && !inputs.focused_c05_framing && steps.reuse_scope.outputs.mode != 'deletion' }}
         run: bash scripts/deploy_int_beta.sh capacity-load
 
       - name: Publish the capacity evidence
@@ -565,7 +615,7 @@ jobs:
 
       - name: Export and measure both precise cuts
         id: capacity_cuts
-        if: ${{ !inputs.focused_c04_styles && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.focused_c04_styles && !inputs.focused_c05_framing && steps.reuse_scope.outputs.mode != 'deletion' }}
         run: bash scripts/deploy_int_beta.sh capacity-cuts
 
       - name: Publish the precise-cut evidence
@@ -580,7 +630,7 @@ jobs:
 
       - name: Check three-account editorial acceptance and finish cleanup
         id: capacity_editorial
-        if: ${{ !inputs.focused_c04_styles && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.focused_c04_styles && !inputs.focused_c05_framing && steps.reuse_scope.outputs.mode != 'deletion' }}
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
         run: bash scripts/deploy_int_beta.sh capacity-editorial
@@ -602,7 +652,7 @@ jobs:
         run: bash scripts/deploy_int_beta.sh capacity-cleanup
 
       - name: Restore the previous INT components after a failed acceptance
-        if: ${{ always() && (failure() || cancelled()) && (steps.acceptance_open.outcome == 'success' || steps.acceptance_open.outcome == 'failure' || steps.acceptance_open.outcome == 'cancelled' || (inputs.focused_c04_styles && steps.deploy_prepare.outcome == 'success')) }}
+        if: ${{ always() && (failure() || cancelled()) && (steps.acceptance_open.outcome == 'success' || steps.acceptance_open.outcome == 'failure' || steps.acceptance_open.outcome == 'cancelled' || ((inputs.focused_c04_styles || inputs.focused_c05_framing) && steps.deploy_prepare.outcome == 'success')) }}
         run: bash scripts/deploy_int_beta.sh rollback
 
       - name: Retain public acceptance and scoped rollout evidence

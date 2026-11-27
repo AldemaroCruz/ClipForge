@@ -158,6 +158,49 @@
                   <button type="button" id="editorial-range-preview" class="secondary">Reproducir recorte</button>
                   <button type="button" id="editorial-apply-range" class="secondary">Aplicar recorte</button>
                 </div>
+                <section aria-labelledby="editorial-framing-heading">
+                  <h4 id="editorial-framing-heading">Encuadre vertical</h4>
+                  <label for="editorial-framing">Encuadre de la exportación</label>
+                  <select id="editorial-framing">
+                    <option value="contain">Imagen completa · bandas negras</option>
+                    <option value="blur">Imagen completa · fondo desenfocado</option>
+                    <option value="crop">Recorte manual · 9:16</option>
+                  </select>
+                  <div id="editorial-crop-controls" class="mvp-range framing-sliders" hidden>
+                    <div>
+                      <label for="editorial-crop-x">Posición horizontal</label>
+                      <input type="range" id="editorial-crop-x" min="0" max="100" step="any" value="50">
+                      <output id="editorial-crop-x-value" for="editorial-crop-x">50%</output>
+                    </div>
+                    <div>
+                      <label for="editorial-crop-y">Posición vertical</label>
+                      <input type="range" id="editorial-crop-y" min="0" max="100" step="any" value="50">
+                      <output id="editorial-crop-y-value" for="editorial-crop-y">50%</output>
+                    </div>
+                    <div>
+                      <label for="editorial-crop-zoom">Zoom</label>
+                      <input type="range" id="editorial-crop-zoom" min="1" max="3" step="any" value="1">
+                      <output id="editorial-crop-zoom-value" for="editorial-crop-zoom">1.00×</output>
+                    </div>
+                  </div>
+                  <div class="actions">
+                    <button type="button" id="editorial-framing-preview" class="secondary">Ver encuadre en un fotograma</button>
+                  </div>
+                  <p id="editorial-framing-status" class="status beta-message" role="status"></p>
+                  <div id="editorial-framing-result" class="framing-result" role="group" aria-label="Vista previa del encuadre 9:16" hidden>
+                    <figure>
+                      <figcaption id="editorial-framing-time">Fotograma del original</figcaption>
+                      <div class="framing-source">
+                        <canvas id="editorial-framing-original" aria-label="Fotograma original"></canvas>
+                        <div id="editorial-framing-box" class="framing-crop-box" aria-hidden="true" hidden></div>
+                      </div>
+                    </figure>
+                    <figure>
+                      <figcaption>Encuadre 9:16</figcaption>
+                      <canvas id="editorial-framing-canvas" width="270" height="480" aria-label="Resultado del encuadre vertical"></canvas>
+                    </figure>
+                  </div>
+                </section>
                 <h4>Subtítulos</h4>
                 <label class="editorial-check"><input type="checkbox" id="editorial-burn">Incrustar subtítulos en el MP4</label>
                 <div class="mvp-range">

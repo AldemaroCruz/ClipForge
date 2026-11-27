@@ -23,6 +23,49 @@
 .mvp-range input {
   margin-bottom: 6px;
 }
+.framing-sliders input {
+  accent-color: var(--accent);
+  padding: 0;
+}
+.framing-sliders output {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.framing-result {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, min(38%, 10rem));
+  gap: 12px;
+  align-items: start;
+  margin-block: 12px;
+}
+.framing-result figure {
+  min-width: 0;
+  margin: 0;
+}
+.framing-result figcaption {
+  margin-bottom: 6px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.framing-source {
+  position: relative;
+  overflow: hidden;
+  border-radius: 8px;
+}
+.framing-result canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  background: #05080d;
+}
+.framing-crop-box {
+  position: absolute;
+  pointer-events: none;
+  outline: 2px solid #a4e3c9;
+  outline-offset: -2px;
+  box-shadow: 0 0 0 1500px #02081277;
+}
 #mvp-status {
   margin-block: 12px;
 }

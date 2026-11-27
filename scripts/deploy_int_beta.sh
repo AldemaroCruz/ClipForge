@@ -209,6 +209,21 @@ create_fixture() {
     [[ "$(stat -c %s "$DELIVERY_DIR/fixture.mp4")" -gt 8388608 ]]
 }
 
+create_framing_fixture() {
+    local speech colors
+    speech='En Guatemala los vecinos recuperaron un huerto comunitario. Guardaron semillas de maíz, compartieron turnos para regar y enseñaron a otras escuelas a cultivar.'
+    espeak-ng -v es -s 148 -w "$DELIVERY_DIR/voice.wav" "$speech $speech"
+    colors="color=black:s=1280x720:r=24,drawbox=x=0:y=0:w=420:h=360:c=red:t=fill"
+    colors+=",drawbox=x=420:y=0:w=440:h=360:c=green:t=fill,drawbox=x=860:y=0:w=420:h=360:c=blue:t=fill"
+    colors+=",drawbox=x=0:y=360:w=420:h=360:c=yellow:t=fill,drawbox=x=420:y=360:w=440:h=360:c=magenta:t=fill"
+    colors+=",drawbox=x=860:y=360:w=420:h=360:c=cyan:t=fill"
+    ffmpeg -hide_banner -loglevel error -nostdin \
+        -f lavfi -i "$colors" -stream_loop -1 -i "$DELIVERY_DIR/voice.wav" \
+        -t 32 -c:v libx264 -preset veryfast -pix_fmt yuv420p -threads 2 \
+        -b:v 2800k -minrate 2800k -maxrate 2800k -bufsize 5600k -x264-params nal-hrd=cbr \
+        -c:a aac -b:a 96k -movflags +faststart "$DELIVERY_DIR/framing.mp4"
+}
+
 create_capacity_fixtures() {
     local minutes
     mkdir "$DELIVERY_DIR/capacity"
@@ -297,11 +312,13 @@ browser_acceptance() {
         --report "$reports/browser-$phase.json" "$@"
 }
 
-verify_styles_baseline() {
-    local receipt="${INT_C04_ACCEPTANCE:-}"
-    [[ "$receipt" == "$reports/c04-baseline.json" && -f "$receipt" && ! -L "$receipt" ]]
-    jq -e --arg commit "$GITHUB_SHA" --slurpfile previous "$reports/previous-live.json" '
-        .schema == "clipforge-int-c04-baseline-1" and .status == "passed" and .target_commit == $commit and
+verify_focused_baseline() {
+    local increment="$1" receipt="$2"
+    [[ "$increment" == c04 || "$increment" == c05 ]]
+    [[ "$receipt" == "$reports/$increment-baseline.json" && -f "$receipt" && ! -L "$receipt" ]]
+    jq -e --arg schema "clipforge-int-$increment-baseline-1" --arg commit "$GITHUB_SHA" \
+        --slurpfile previous "$reports/previous-live.json" '
+        .schema == $schema and .status == "passed" and .target_commit == $commit and
         (.baseline | {
             commit, frontend_revision, api_revision, worker_image, migrator_image,
             editorial: (.editorial | del(.api_daily_limit))
@@ -351,12 +368,14 @@ case "${1:-}" in
         tf validate -no-color
         capture_previous
         if [[ -n "${INT_C04_ACCEPTANCE:-}" ]]; then
-            verify_styles_baseline
+            verify_focused_baseline c04 "$INT_C04_ACCEPTANCE"
             # The additive migration can run while the accepted API and public frontend still serve traffic.
             if ! run jobs update "$migrator" --image "$TF_VAR_web_image"; then
                 restore_migrator_pin
                 exit 1
             fi
+        elif [[ -n "${INT_C05_ACCEPTANCE:-}" ]]; then
+            verify_focused_baseline c05 "$INT_C05_ACCEPTANCE"
         else
             trap rollback_delivery EXIT
             apply_beta false "run-$GITHUB_RUN_ID-b$GITHUB_RUN_ATTEMPT" private
@@ -377,12 +396,19 @@ case "${1:-}" in
         ;;
     acceptance-open)
         if [[ -n "${INT_C04_ACCEPTANCE:-}" ]]; then
-            verify_styles_baseline
+            verify_focused_baseline c04 "$INT_C04_ACCEPTANCE"
             create_fixture
-            : > "$DELIVERY_DIR/c04-promoting"
+            : > "$DELIVERY_DIR/focused-promoting"
             apply_beta true "run-$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT" replacement
             capture_rollout after
             browser_acceptance styles --video "$DELIVERY_DIR/fixture.mp4"
+        elif [[ -n "${INT_C05_ACCEPTANCE:-}" ]]; then
+            verify_focused_baseline c05 "$INT_C05_ACCEPTANCE"
+            create_framing_fixture
+            : > "$DELIVERY_DIR/focused-promoting"
+            apply_beta true "run-$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT" replacement
+            capture_rollout after
+            browser_acceptance framing --video "$DELIVERY_DIR/framing.mp4"
         elif [[ -n "${INT_DELETION_REPLAY_REPORT:-}" ]]; then
             [[ "$INT_DELETION_REPLAY_REPORT" == "$reports/deletion-replay.json" && ! -L "$INT_DELETION_REPLAY_REPORT" ]]
             jq -e '.schema == "clipforge-int-hito-b-delete-evidence-1" and .status == "passed"
@@ -408,7 +434,7 @@ case "${1:-}" in
         capacity_acceptance "${1#capacity-}"
         ;;
     rollback)
-        if [[ -n "${INT_C04_ACCEPTANCE:-}" && ! -f "$DELIVERY_DIR/c04-promoting" ]]; then
+        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_C05_ACCEPTANCE:-}" && ! -f "$DELIVERY_DIR/focused-promoting" ]]; then
             restore_migrator_pin
         else
             restore_failed_delivery

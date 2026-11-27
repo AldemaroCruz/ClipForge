@@ -20,13 +20,13 @@ REPORTS = {
 }
 
 
-def native_report(root, name):
+def native_report(root, name, expected):
     path = root / name
     if root.is_symlink() or path.is_symlink():
         raise ValueError("Símbolo de archivo en el recibo de aceptación")
     with path.open("rb") as source:
         raw = source.read(128 * 1024 + 1)
-    if len(raw) > 128 * 1024 or hashlib.sha256(raw).hexdigest() != REPORTS[name]:
+    if len(raw) > 128 * 1024 or hashlib.sha256(raw).hexdigest() != expected:
         raise ValueError(f"Hash incorrecto para {name}")
     return json.loads(raw)
 
@@ -34,7 +34,7 @@ def native_report(root, name):
 def verify(root, commit, model):
     if not re.fullmatch(r"[a-f0-9]{40}", commit) or commit == BASE:
         raise ValueError("La candidata C04 debe tener su propio commit")
-    rollout, preview, load, cuts, editorial = (native_report(root, name) for name in REPORTS)
+    rollout, preview, load, cuts, editorial = (native_report(root, name, digest) for name, digest in REPORTS.items())
     revisions = {"frontend": rollout["frontend_revision"], "api": rollout["api_revision"]}
     if rollout["commit"] != BASE or rollout["editorial"]["model"] != model:
         raise ValueError("Base editorial distinta de la aprobada")
@@ -50,14 +50,43 @@ def verify(root, commit, model):
     }
 
 
+def verify_styles_release(root, commit, model, accepted_commit, run, artifact, rollout_digest, browser_digest):
+    if (not re.fullmatch(r"[a-f0-9]{40}", commit) or not re.fullmatch(r"[a-f0-9]{40}", accepted_commit)
+            or commit == accepted_commit):
+        raise ValueError("La candidata C05 debe descender de la aceptación C04")
+    expected = {"after-rollout.json": rollout_digest, "browser-styles.json": browser_digest}
+    rollout, browser = (native_report(root, name, digest) for name, digest in expected.items())
+    revisions = {"frontend": rollout["frontend_revision"], "api": rollout["api_revision"]}
+    required = {
+        "normal_creator_style_persisted_after_relogin",
+        "normal_other_creator_cannot_list_same_style_or_read_mutate_it",
+        "confirmed_project_style_applied_to_all_preserving_each_cue",
+        "style_in_export_and_caption_sidecars",
+        "default_style_snapshotted_on_new_work_and_render",
+        "template_update_and_delete_preserve_applied_values_and_export_bytes",
+    }
+    passed = {entry["name"] for entry in browser["checks"] if entry["status"] == "passed"}
+    if (rollout["commit"] != accepted_commit or rollout["editorial"]["model"] != model
+            or rollout["editorial"]["daily_limit"] != 100 or browser["commit"] != accepted_commit
+            or browser["revisions"] != revisions or browser["status"] != "passed"
+            or browser["phase"] != "styles" or not required <= passed):
+        raise ValueError("La evidencia C04 no corresponde a la versión aceptada")
+    return {
+        "schema": "clipforge-int-c05-baseline-1", "status": "passed", "target_commit": commit,
+        "baseline": rollout, "evidence": {"run_id": run, "artifact_id": artifact, "sha256": expected},
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, type=Path)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--receipt", required=True, type=Path)
+    parser.add_argument("--accepted-styles", nargs=5, metavar=("SHA", "RUN", "ARTIFACT", "ROLLOUT_HASH", "BROWSER_HASH"))
     args = parser.parse_args()
-    receipt = verify(args.source, args.commit, args.model)
+    receipt = (verify_styles_release(args.source, args.commit, args.model, *args.accepted_styles)
+               if args.accepted_styles else verify(args.source, args.commit, args.model))
     with args.receipt.open("x", encoding="utf-8") as output:
         json.dump(receipt, output, indent=2, ensure_ascii=False)
         output.write("\n")

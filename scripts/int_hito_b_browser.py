@@ -1338,7 +1338,7 @@ def verify(browser, args, admin, report, revisions):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["prepare", "verify", "deletion-recheck", "styles"])
+    parser.add_argument("mode", choices=["prepare", "verify", "deletion-recheck", "styles", "framing"])
     parser.add_argument("--commit", required=True)
     parser.add_argument("--frontend-revision", required=True)
     parser.add_argument("--api-revision", required=True)
@@ -1358,7 +1358,7 @@ def main():
         shared_http.private_file(args.state, must_exist=args.mode == "verify")
         require(args.report != args.state, "report_and_state_paths_must_differ")
         shared_http.private_file(args.report, must_exist=False)
-        require((args.mode in {"prepare", "styles"} and args.video is not None and args.video.is_absolute()
+        require((args.mode in {"prepare", "styles", "framing"} and args.video is not None and args.video.is_absolute()
                  and args.video.is_file() and args.video.suffix.lower() == ".mp4") or
                 (args.mode in {"verify", "deletion-recheck"} and args.video is None), "fixture_argument")
         admin = shared_http.validate_admin(json.loads(os.environ.pop("INT_BOOTSTRAP_ADMIN_JSON", "")))
@@ -1383,6 +1383,9 @@ def main():
             try:
                 if args.mode == "styles":
                     from scripts.int_hito_c_styles_browser import acceptance
+                    acceptance(browser, args, admin, report)
+                elif args.mode == "framing":
+                    from scripts.int_hito_c_framing_browser import acceptance
                     acceptance(browser, args, admin, report)
                 elif args.mode == "deletion-recheck":
                     from scripts.int_hito_b_deletion_browser import recheck

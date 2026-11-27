@@ -1,4 +1,5 @@
 """Chromium regression for the INT beta frontend with local synthetic responses."""
+import base64
 import json
 import os
 from pathlib import Path
@@ -27,6 +28,27 @@ CHUNK = 8 * 1024 * 1024
 MAX_SIZE = 2 * CHUNK
 CSP = "default-src 'self'; connect-src 'self' https://storage.googleapis.com; media-src 'self'"
 
+# Three generated 128×72 frames at 5 fps, six RGB bands (red through cyan) encoded with
+# FFmpeg VP8. Inline fixture keeps real Chromium decoding independent of host encoders.
+FRAMING_WEBM = base64.b64decode(
+    "GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQJChYECGFOAZwH/////////EU2bdKtNu4tT"
+    "q4QVSalmU6yBoU27i1OrhBZUrmtTrIHLTbuMU6uEElTDZ1OsggEc7AEAAAAAAABoAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmpSrXsYMPQkBNgIxMYXZm"
+    "NjEuMS4xMDBXQYxMYXZmNjEuMS4xMDAWVK5rzK4BAAAAAAAAQ9eBAXPFiPp5vdwdWdGonIEAIrWc"
+    "g3VuZIiBAIaFVl9WUDiDgQEj44OEC+vCAOCUsIGAuoFImoECVbCIVbeBAlW4gQISVMNn1nNzn2PA"
+    "gGfImUWjh0VOQ09ERVJEh4xMYXZmNjEuMS4xMDBzc7FjwItjxYj6eb3cHVnRqGfIoEWjh0VOQ09E"
+    "RVJEh5NMYXZjNjEuMy4xMDAgbGlidnB4H0O2dUHe54EAo0GJgQAAgPAOAJ0BKoAASAAARwiFhYiF"
+    "hIgCAgKUxt/4D+DnLMYF4D+Bn6q8wzoL2c/UDEBfgP4A+yX+A/gD14H0A6kB/Af4D0gPAA/wH+Ie"
+    "hP/DOoBdYD+AJTbxe4BhnGwemn3zz+sTHOovVkSbh3qhohDZ03tP1aYiAgtDM8T/fYZoxuBxAP79"
+    "bs1Rwdt73auK6KMk5SQOr/4bAM0+3Rphd4cPrCjBO90YjhMGYZnzcR5/8f/Mv/9qI/+RYJPWoSlQ"
+    "95FY/ENl3ei6e7X8wEydIS8cAy2WXbLAAAVf//fbD6lZhHPUUaRbOeiyGvkNLQiHNxSYXmQHTAbl"
+    "+/9Osb/0sSub3KjPt+y9p+7g4b9MD81x2bks3yKpOIQfyNaqbmrzrSgAKz/6jpIpAmMCT9ya/58x"
+    "J7/zcf/2+FzWl9Gr2pgYpyc6M/NILPjln0E05ogboEkkm4wPOnWZb518y2FblmG+IsOW6gBKbloF"
+    "IgDiAKBJIAxgAAE3SKKnAHGAAAAvoAVEwAAAAAdAo66BAMgAMQIAARAQABgAGggv9AA/LsKpm4AA"
+    "2g3XN/G0ABEA4gA4AxgAACbosAAAo52BAZAAEQIAARAQABgAGNAv9AAZQ8p4AAAAwh2QAA=="
+)
+
 
 class BrowserHitoBTest(unittest.TestCase):
     @classmethod
@@ -44,7 +66,7 @@ class BrowserHitoBTest(unittest.TestCase):
                       "ai_configured": True, "analysis": None, "selection_posts": [], "draft": None,
                       "range_posts": [], "draft_updates": [], "approved": {},
                       "caption": None, "project_caption": None, "caption_updates": [], "deletions": [],
-                      "saved_style": None}
+                      "saved_style": None, "framing_source": None, "source_reads": 0}
         self.context = self.browser.new_context(service_workers="block")
         self.addCleanup(self.context.close)
         self.context.route("**/*", self.handle)
@@ -81,6 +103,11 @@ class BrowserHitoBTest(unittest.TestCase):
                 route.fulfill(status=404)
             return
         if path in {f"/jobs/{JOB}/clips/{CLIP}", f"/jobs/{JOB}/source"}:
+            if path.endswith("/source"):
+                self.state["source_reads"] += 1
+                if self.state["framing_source"] is not None:
+                    route.fulfill(status=200, content_type="video/webm", body=self.state["framing_source"])
+                    return
             route.fulfill(status=404 if self.state["status"] == "deleted" else 503, content_type="video/mp4")
             return
         data, status = self.api(path, request)
@@ -671,6 +698,83 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertEqual({}, self.state["approved"])
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])
+
+    def test_manual_framing_previews_a_real_frame_and_versions_a_crop_only_edit(self):
+        cues = [{"start": 0, "end": 1, "text": "Texto que se conserva."},
+                {"start": 2, "end": 3, "text": "Segmento posterior."}]
+        style = {"id": STYLE, "font": FONT, "revision": 1}
+        self.state["status"] = "completed"
+        self.store_draft(title="Encuadre de prueba", start=0, end=12, cues=cues,
+                         style_template=style, options={"burn_subtitles": True, "subtitle_font_size": 76})
+        self.state["framing_source"] = FRAMING_WEBM
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        self.page.get_by_text("Propuestas por IA y edición", exact=True).click()
+        form = self.page.locator("#editorial-draft-form")
+        expect(form).to_be_visible()
+        self.page.locator("#editorial-cues textarea").nth(1).focus()
+        mode = form.get_by_label("Encuadre de la exportación")
+        mode.select_option("crop")
+        for suffix, value in (("x", "0"), ("y", "0"), ("zoom", "2.2")):
+            self.set_framing_value(suffix, value)
+        result = self.page.locator("#editorial-framing-result")
+        expect(result).to_be_hidden()
+        self.assertEqual(0, self.state["source_reads"])
+        form.get_by_role("button", name="Ver encuadre en un fotograma").click()
+        expect(result).to_have_attribute("data-mode", "crop")
+        expect(result).to_have_attribute("data-time", "0.000")
+        box = result.locator("#editorial-framing-box")
+        self.assertEqual(["0", "0", "18", "32"], [box.get_attribute("data-" + name)
+                         for name in ("x", "y", "width", "height")])
+        frame = result.locator("#editorial-framing-canvas")
+        pixel = "canvas => Array.from(canvas.getContext('2d').getImageData(135,240,1,1).data)"
+        r, g, b, _ = frame.evaluate(pixel)
+        self.assertTrue(r > 224 and g < 40 and b < 40)
+        reads = self.state["source_reads"]
+        self.assertGreater(reads, 0)
+        self.set_framing_value("x", "100")
+        self.set_framing_value("y", "100")
+        self.assertEqual(["110", "40"], [box.get_attribute("data-x"), box.get_attribute("data-y")])
+        r, g, b, _ = frame.evaluate(pixel)
+        self.assertTrue(r < 40 and g > 224 and b > 224)
+        mode.select_option("blur")
+        expect(result).to_have_attribute("data-mode", "blur")
+        expect(box).to_be_hidden()
+        mode.select_option("contain")
+        expect(result).to_have_attribute("data-mode", "contain")
+        self.assertEqual([0, 0, 0], frame.evaluate(
+            "canvas => Array.from(canvas.getContext('2d').getImageData(135,1,1,1).data).slice(0,3)"))
+        mode.select_option("crop")
+        self.assertEqual(reads, self.state["source_reads"])
+        self.page.set_viewport_size({"width": 390, "height": 844})
+        layout = frame.bounding_box()
+        self.assertAlmostEqual(9 / 16, layout["width"] / layout["height"], places=2)
+
+        self.page.locator("#editorial-save").click()
+        self.until_text("#editorial-draft-status", "Borrador guardado")
+        saved = self.state["draft"]
+        self.assertEqual(2, saved["revision"])
+        self.assertEqual((0, 12, cues, style), (saved["start"], saved["end"], saved["cues"], saved["style_template"]))
+        self.assertEqual(("crop", 1, 1, 2.2), tuple(saved["options"][name]
+                         for name in ("framing", "crop_x", "crop_y", "crop_zoom")))
+        expect(self.page.locator("#editorial-sample .caption-frame span")).to_have_text("Segmento posterior.")
+        self.assertEqual([], self.state["range_posts"])
+        self.assertEqual([], self.state["selection_posts"])
+        self.assertEqual({}, self.state["approved"])
+
+        self.page.reload()
+        self.page.get_by_text("Propuestas por IA y edición", exact=True).click()
+        expect(mode).to_have_value("crop")
+        expect(self.page.locator("#editorial-crop-zoom")).to_have_value("2.2")
+        expect(result).to_be_hidden()
+        self.assertEqual(reads, self.state["source_reads"])
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
+    def set_framing_value(self, control, value):
+        self.page.locator("#editorial-crop-" + control).evaluate("""(field, value) => {
+            field.value = value;
+            field.dispatchEvent(new Event('input', {bubbles: true}));
+        }""", value)
 
     def test_quick_caption_correction_preserves_intervals_style_and_the_other_clip(self):
         style = {"burn_subtitles": True, "subtitle_font_size": 76, "subtitle_color": "#EDAD42",
