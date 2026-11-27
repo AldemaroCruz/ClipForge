@@ -97,6 +97,27 @@ class PublicProxyTests(unittest.TestCase):
         self.assertEqual(CaseInsensitiveDict(outbound["headers"])["X-CSRF-Token"], "fixture")
         self.assertEqual(result.headers["cache-control"], "no-store")
 
+    def test_relays_only_the_style_delete_and_keeps_its_revision(self):
+        path = f"/caption-styles/{JOB_ID}"
+        trusted = {"Origin": proxy.PUBLIC_ORIGIN, "X-CSRF-Token": "fixture"}
+        self.assertEqual(self.client.delete(path + "?revision=7").status_code, 403)
+        self.assertEqual(self.client.delete(path + "?revision=7", headers={
+            **trusted, "Origin": "https://unapproved.invalid",
+        }).status_code, 403)
+        self.assertEqual(self.client.delete("/caption-styles", headers=trusted).status_code, 404)
+        self.assertEqual(self.client.delete(f"/jobs/{JOB_ID}", headers=trusted).status_code, 404)
+        self.upstream.request.assert_not_called()
+
+        self.response.headers["Content-Type"] = "application/json"
+        self.response.iter_content.return_value = iter([b'{"deleted":true}'])
+        result = self.client.delete(path + "?revision=7", headers=trusted)
+        self.assertEqual((result.status_code, result.json()), (200, {"deleted": True}))
+        args, outbound = self.upstream.request.call_args
+        self.assertEqual(args, ("DELETE", proxy.API_ORIGIN + path))
+        self.assertEqual(outbound["params"], [("revision", "7")])
+        self.assertEqual(CaseInsensitiveDict(outbound["headers"])["X-CSRF-Token"], "fixture")
+        self.assertEqual(result.headers["cache-control"], "no-store")
+
     def test_relays_single_clip_range_and_partial_response(self):
         self.response.status_code = 206
         self.response.headers.update({"Accept-Ranges": "bytes", "Content-Range": "bytes 10-19/50"})

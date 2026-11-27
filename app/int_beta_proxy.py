@@ -186,7 +186,7 @@ def asset(request: Request, name: str):
     return FileResponse(STATIC / name)
 
 
-@app.api_route("/{path:path}", methods=["GET", "HEAD", "POST", "PUT"])
+@app.api_route("/{path:path}", methods=["GET", "HEAD", "POST", "PUT", "DELETE"])
 async def forward(request: Request, path: str):
     validate_request(request)
     path = "/" + path
