@@ -73,24 +73,56 @@ reúne evidencia real y queda fuera del contrato de replay del workflow.
 
 ### Punto de continuación
 
-Al cierre de `45932688939`, el portal respondió `34483012…` y salud OK.
-Durante ese despliegue se observó el frontend `clipforge-int-beta-00042-p29`
-y el worker en generación 39. El digest candidato del worker en el
-recibo es
-`sha256:396ab7506b2d8c2626770926829be8e600b27f3d79299c27887e255ec19b91f1`.
-El registro vigente de la API, el worker y el migrador requiere lectura
-administrativa. [Recibo nativo de la candidata](https://github.com/AldemaroCruz/ClipForge/actions/runs/45932688939/artifacts/15170025636)
+Al recuperar el acceso, `34483012…` servía el frontend
+`clipforge-int-beta-00042-p29` y la API `clipforge-int-beta-api-00043-chv`
+al 100 %. Ambas revisiones usaban
+`sha256:cb741be3a8724d417c41980a19da2df7be27f366c1b22a0348d86f2f6b5c49e3`.
+El worker generación 39 usaba
+`sha256:396ab7506b2d8c2626770926829be8e600b27f3d79299c27887e255ec19b91f1`
+y el migrador generación 28 tenía el digest web candidato. Coinciden con el
+recibo nativo. La migración terminó antes de la prueba. El runner perdió
+comunicación antes del paso de publicación de evidencia y quedó pendiente
+la reversión. [Recibo nativo de la candidata](https://github.com/AldemaroCruz/ClipForge/actions/runs/45932688939/artifacts/15170025636)
 
-La sesión local rechazó la consulta de Cloud Run al requerir
-reautenticación. Para retomar, ejecutar
-`gcloud auth login admin@ixbalam.studio` y completar el acceso en el
-navegador. Con la sesión vigente, contrastar los componentes activos,
-restaurar la base anterior según la sección de reversión y consultar las
-reservas del día UTC en sólo lectura. El último valor comprobado fue
-7 de 10 antes de las selecciones largas. Autorizar sólo una reejecución
-normal del job protegido con los artefactos íntegros y el cupo requerido.
-La limpieza pendiente de la tercera corrida comprende tres cuentas y
-tres proyectos sintéticos identificados por sus recibos.
+Entre `3996c23` y `3448301` cambiaron el workflow, el arnés de navegador y
+la documentación. La aplicación, los locks y la infraestructura quedaron
+idénticos en fuente. Los dos builds tienen digest OCI distintos. La
+comparación de ambas parejas de imágenes confirmó los mismos archivos de
+aplicación, binarios de medios, modelos y paquetes. Las pruebas funcionales
+de `3996c23` se conservan como evidencia de esas funciones. El contrato
+vigente exige un recibo completo de la candidata que se promueva.
+[Validación de 3996c23](https://github.com/AldemaroCruz/ClipForge/actions/runs/45924575800/artifacts/15165314861) · [Validación de 3448301](https://github.com/AldemaroCruz/ClipForge/actions/runs/45932688939/artifacts/15170025636)
+
+Se completó la reversión de `45932688939` el 27 de noviembre. Se
+comprobó que el esquema y el formato de las tareas permiten restaurar la
+base, y que no había leases activos. La exportación histórica en cola
+es anterior al incidente y conservó su estado. INT sirve
+`2b7b513e7892772b2d5fe222e9dee8c429f3a6e5` con las dos revisiones
+descritas en la sección de reversión al 100 %. La API directa sigue
+protegida. El worker restaurado quedó en generación 40, con 2 vCPU,
+4 GiB, una tarea, paralelismo 1, 1.200 s y cero reintentos. Usa OpenAI
+`gpt-6-luna`, timeout 40 s y la referencia al secreto versión 1. El
+migrador quedó en generación 29 con su pin anterior. Se conservó su
+última ejecución exitosa y la restauración del pin se hizo sin otra
+migración.
+
+Se eliminaron lógicamente los tres proyectos QA de `45924575800` desde
+sus cuentas. El mecanismo normal de administración desactivó las tres
+cuentas y revocó las diez sesiones registradas. La comprobación de
+las 12:51 UTC observó 51 generaciones pendientes por retención de GCS
+en los tres proyectos, con el primer reintento el **3 de diciembre a
+las 20:42 de Guatemala**. El estado físico permanece diferido. El
+recibo agregado de la limpieza de cuenta y proyecto tiene SHA-256
+`06bff10090165e9e26eddef170627aec344334cd811236c99a70d4fe47febd44`.
+
+El workflow conserva los jobs `frontend`, `api` y `deploy`. La aceptación
+publica artefactos separados al terminar los pasos de video breve,
+persistencia, altas sintéticas, carga C01, cortes C03 y editorial. Cada
+artefacto de etapa contiene el rollout verificado y su recibo. Los
+recibos de capacidad se vinculan a la corrida, intento, SHA, revisiones
+y modelo. Las credenciales de los creadores sintéticos permanecen en
+el directorio privado del mismo runner. El paso de reversión usa la
+identidad WIF protegida y restaura también el pin del migrador.
 
 ### Aceptación de selección con IA
 
@@ -118,6 +150,15 @@ respuestas reales, una breve, tres largas con 2,319 s de solapamiento y
 un reintento consentido de una larga que había devuelto cero propuestas.
 Los cuatro recorridos produjeron una propuesta válida cada uno. El
 intento anterior había consumido una llamada breve.
+
+La consulta de recuperación del 27 de noviembre a las 12:51 UTC
+confirmó **7 de 10 reservas usadas** después de la limpieza de las
+cuentas. Quedó una reserva en documentos y seis en el registro de
+proyectos eliminados. La política exige al menos cuatro reservas
+disponibles para una aceptación nueva. La ventana siguiente comienza
+el 28 de noviembre a las 00:00 UTC, el **27 a las 18:00 de Guatemala**.
+La lectura debe repetirse antes de revisar el único job `deploy`
+pendiente con los artefactos de su propia corrida.
 
 ## Aceptación
 
@@ -186,7 +227,9 @@ tomó 0,871 s, la consulta de estado 0,128 s y la navegación probada
 y el de RSS del hijo 1.494.818.816 bytes. El pico total de cgroup
 quedó sin dato por ejecución. El worker tenía 2 vCPU, 4 GiB y una tarea
 por ejecución. El resultado corresponde a esta carga sintética y a
-las revisiones probadas. [Recibo de la prueba](https://github.com/AldemaroCruz/ClipForge/actions/runs/45924575800/artifacts/15168803647)
+las revisiones probadas. Cloud Monitoring publica la métrica de memoria
+del job sin una etiqueta por ejecución que permita asignar a cada caso
+su pico total. [Recibo de la prueba](https://github.com/AldemaroCruz/ClipForge/actions/runs/45924575800/artifacts/15168803647) · [Métricas de Cloud Run](https://docs.cloud.google.com/monitoring/api/metrics_gcp_p_z)
 
 ### C02 · Corrección rápida
 

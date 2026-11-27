@@ -41,6 +41,18 @@ REUSED_PROVIDER_COMMIT = "9f644e4c73318d9115d88168905cf07c72711c3c"
 REUSED_PROVIDER_SHA256 = "663d16e3667df49394a3cf78379f74346b80eceea1db597f61bd0c4edfc2f04e"
 REUSED_PROVIDER_MAX_BYTES = 128 * 1024
 PARALLEL_CASES = tuple(f"20m_parallel_{index}" for index in range(1, 4))
+CHECKPOINT_PREDECESSORS = {"load": "setup", "cuts": "load", "editorial": "cuts"}
+CAPACITY_STATE_SCHEMA = "clipforge-int-hito-b-capacity-state-1"
+MAX_CHECKPOINT_BYTES = 1024 * 1024
+CHECKPOINT_METADATA = {
+    "schema", "url", "commit", "revisions", "editorial_model", "run_id", "run_attempt", "phase",
+    "status", "phase_started_utc", "phase_finished_utc",
+}
+CHECKPOINT_RESULTS = {
+    "cases": dict, "checks": list, "synthetic_account_ids": list, "creators_logged_in": int,
+    "limits": dict, "overlap": dict, "late_automatic_caption": dict, "large_inputs": dict,
+    "large_upload_resume": dict, "precise_cuts": list, "phase_receipts": dict,
+}
 
 
 @dataclass(frozen=True)
@@ -171,7 +183,7 @@ def upload_hooks(case):
     return remember, hold
 
 
-def wait_for_uploads(cases, report):
+def wait_for_uploads(cases, report, *, remember_jobs=None):
     """Release each authenticated POST only after every browser uploaded its video."""
     hooks = []
     try:
@@ -196,6 +208,8 @@ def wait_for_uploads(cases, report):
             cases[0].page.wait_for_timeout(250)
         del report["case"]
         require(len({case.job_id for case in cases}) == len(cases), "different_jobs_expected")
+        if remember_jobs is not None:
+            remember_jobs({case.label: case.job_id for case in cases})
         release_times = []
         for case in cases:
             require(bool(case.upload_key)
@@ -576,9 +590,9 @@ def editorial_capacity(cases, args, report, reused_provider=None):
     browser_test.check(report, "three_twenty_minute_jobs_and_subtitled_exports")
 
 
-def run_batch(cases, args, report, overlap=None):
+def run_batch(cases, args, report, overlap=None, *, remember_jobs=None):
     report["step"] = "upload"
-    skew = wait_for_uploads(cases, report)
+    skew = wait_for_uploads(cases, report, remember_jobs=remember_jobs)
     for case in cases:
         report["cases"][case.label] = {"status": "running", "input_seconds": case.fixture.duration,
                                        "bytes": case.fixture.size, "upload_http_statuses": case.transfer.copy(),
@@ -616,9 +630,88 @@ def deactivate(browser, args, admin, accounts, report):
     report["synthetic_accounts_deactivated"] = True
 
 
+def new_accounts():
+    return [{"username": "qa_beta_" + secrets.token_hex(10), "password": secrets.token_urlsafe(36)}
+            for _ in range(3)]
+
+
+@contextmanager
+def creator_pages(browser, args, accounts):
+    with ExitStack() as stack:
+        transfers = [[] for _ in accounts]
+        pages = [stack.enter_context(browser_test.browser_page(browser, storage=True, transfer=transfer))
+                 for transfer in transfers]
+        for page, account in zip(pages, accounts, strict=True):
+            browser_test.login(page, account, args.commit)
+        yield pages, transfers
+
+
+def load_capacity(browser, args, report, accounts, pages, transfers, *, remember_jobs=None):
+    report["step"] = "creator_login_and_capacity_limits"
+    for index, page in enumerate(pages, 1):
+        require(browser_test.browser_get(page, "/auth/users")["status"] == 403, "creator_admin_access")
+        require(project_ids(page) == [], "new_account_has_existing_projects")
+        report["creators_logged_in"] = index
+    limits = facts(pages[0], "/beta/limits")
+    require(limits["worker_concurrency"] == 3 and limits["max_duration_seconds"] >= 1_200
+            and limits["active_jobs_per_user"] == 1 and limits["queue_capacity"] >= 3
+            and limits["formats"] == ["MP4 (H.264 + AAC)"], "capacity_limits_unexpected")
+    report["limits"] = {key: limits[key] for key in (
+        "worker_concurrency", "active_jobs_per_user", "queue_capacity", "max_duration_seconds",
+        "max_bytes", "max_dimension", "formats",
+    )}
+    ready = fixtures(args.fixture_dir, limits)
+    for page in pages:
+        page.wait_for_function("() => !document.querySelector('#upload-submit').disabled")
+    warm = [Case(f"{minutes}m", ready[minutes], page, transfer)
+            for minutes, page, transfer in zip(MINUTES[:3], pages, transfers, strict=True)]
+    run_batch(warm, args, report)
+    run_batch([Case("20m", ready[20], pages[0], transfers[0])], args, report)
+    large = large_fixture(args.large_fixture, limits) if args.large_fixture else None
+    parallel = [Case(name, large or ready[20], page, transfer)
+                for name, page, transfer in zip(PARALLEL_CASES, pages, transfers, strict=True)]
+    with ExitStack() as uploads:
+        if large:
+            uploads.enter_context(interrupt_large_upload(parallel[0], report))
+        run_batch(parallel, args, report, (browser, accounts, warm[0]), remember_jobs=remember_jobs)
+    if large:
+        transfers_verified = {}
+        for case, account in zip(parallel, accounts, strict=True):
+            browser_test.logout(case.page)
+            browser_test.login(case.page, account, args.commit)
+            persisted = browser_test.open_saved_job(case.page, case.job_id)
+            require(persisted["clips"] == case.last_job["clips"], "large_file_results_lost_after_relogin")
+            transfers_verified[case.label] = case.job_id
+        report["large_inputs"] = {"bytes_each": large.size, "duration_seconds": large.duration,
+                                  "synthetic_jobs": transfers_verified}
+        browser_test.check(report, "three_near_limit_videos_persisted_after_relogin")
+    report["step"] = "creator_isolation"
+    check_isolation(parallel, report)
+    return parallel
+
+
+def cut_capacity(args, report, page, transfer):
+    from scripts.int_hito_c_cuts_browser import acceptance as check_precise_cuts
+
+    source = args.precise_fixture
+    meta = probe_media(source, pilot=True)
+    fixture = Fixture(source, source.stat().st_size, meta["duration_seconds"])
+    case = Case("native_timing", fixture, page, transfer)
+    run_batch([case], args, report)
+    check_precise_cuts(page, args, report, job=case.job_id)
+
+
+def delete_large_projects(cases, report):
+    for case in cases:
+        url = f"/jobs/{case.job_id}"
+        require(browser_test.browser_post(case.page, url + "/deletion", {})["status"] == 202
+                and browser_test.browser_get(case.page, url)["status"] == 404,
+                "large_synthetic_project_cleanup")
+    browser_test.check(report, "large_synthetic_projects_removed_from_accounts")
+
+
 def acceptance(browser, args, admin, report, reused_provider=None):
-    accounts = [{"username": "qa_beta_" + secrets.token_hex(10), "password": secrets.token_urlsafe(36)}
-                for _ in range(3)]
+    accounts = new_accounts()
     attempted = []
     try:
         report["step"] = "create_normal_accounts"
@@ -629,69 +722,15 @@ def acceptance(browser, args, admin, report, reused_provider=None):
                 attempted.append(account)
                 browser_test.create_account(page, account)
             browser_test.logout(page)
-        with ExitStack() as stack:
-            transfers = [[] for _ in accounts]
-            pages = [stack.enter_context(browser_test.browser_page(browser, storage=True, transfer=transfer))
-                     for transfer in transfers]
-            report["step"] = "creator_login_and_capacity_limits"
-            for index, (page, account) in enumerate(zip(pages, accounts, strict=True)):
-                browser_test.login(page, account, args.commit)
-                require(browser_test.browser_get(page, "/auth/users")["status"] == 403, "creator_admin_access")
-                require(project_ids(page) == [], "new_account_has_existing_projects")
-                report["creators_logged_in"] = index + 1
-            limits = facts(pages[0], "/beta/limits")
-            require(limits["worker_concurrency"] == 3 and limits["max_duration_seconds"] >= 1_200
-                    and limits["active_jobs_per_user"] == 1 and limits["queue_capacity"] >= 3
-                    and limits["formats"] == ["MP4 (H.264 + AAC)"], "capacity_limits_unexpected")
-            report["limits"] = {key: limits[key] for key in (
-                "worker_concurrency", "active_jobs_per_user", "queue_capacity", "max_duration_seconds",
-                "max_bytes", "max_dimension", "formats",
-            )}
-            ready = fixtures(args.fixture_dir, limits)
-            for page in pages:
-                page.wait_for_function("() => !document.querySelector('#upload-submit').disabled")
-            warm = [Case(f"{minutes}m", ready[minutes], page, transfer)
-                    for minutes, page, transfer in zip(MINUTES[:3], pages, transfers, strict=True)]
-            run_batch(warm, args, report)
-            run_batch([Case("20m", ready[20], pages[0], transfers[0])], args, report)
-            large = large_fixture(args.large_fixture, limits) if args.large_fixture else None
-            parallel = [Case(name, large or ready[20], page, transfer)
-                        for name, page, transfer in zip(PARALLEL_CASES, pages, transfers, strict=True)]
-            with ExitStack() as uploads:
-                if large:
-                    uploads.enter_context(interrupt_large_upload(parallel[0], report))
-                run_batch(parallel, args, report, (browser, accounts, warm[0]))
-            if large:
-                transfers_verified = {}
-                for case, account in zip(parallel, accounts, strict=True):
-                    browser_test.logout(case.page)
-                    browser_test.login(case.page, account, args.commit)
-                    persisted = browser_test.open_saved_job(case.page, case.job_id)
-                    require(persisted["clips"] == case.last_job["clips"], "large_file_results_lost_after_relogin")
-                    transfers_verified[case.label] = case.job_id
-                report["large_inputs"] = {"bytes_each": large.size, "duration_seconds": large.duration,
-                                          "synthetic_jobs": transfers_verified}
-                browser_test.check(report, "three_near_limit_videos_persisted_after_relogin")
-            report["step"] = "creator_isolation"
-            check_isolation(parallel, report)
+        report["step"] = "creator_login_and_capacity_limits"
+        with creator_pages(browser, args, accounts) as (pages, transfers):
+            parallel = load_capacity(browser, args, report, accounts, pages, transfers)
             if args.precise_fixture:
-                from scripts.int_hito_c_cuts_browser import acceptance as check_precise_cuts
-
-                source = args.precise_fixture
-                meta = probe_media(source, pilot=True)
-                fixture = Fixture(source, source.stat().st_size, meta["duration_seconds"])
-                case = Case("native_timing", fixture, pages[0], transfers[0])
-                run_batch([case], args, report)
-                check_precise_cuts(case.page, args, report, job=case.job_id)
-                browser_test.open_saved_job(case.page, parallel[0].job_id)
+                cut_capacity(args, report, pages[0], transfers[0])
+                browser_test.open_saved_job(pages[0], parallel[0].job_id)
             editorial_capacity(parallel, args, report, reused_provider)
-            if large:
-                for case in parallel:
-                    url = f"/jobs/{case.job_id}"
-                    require(browser_test.browser_post(case.page, url + "/deletion", {})["status"] == 202
-                            and browser_test.browser_get(case.page, url)["status"] == 404,
-                            "large_synthetic_project_cleanup")
-                browser_test.check(report, "large_synthetic_projects_removed_from_accounts")
+            if args.large_fixture:
+                delete_large_projects(parallel, report)
             for page in pages:
                 browser_test.logout(page)
     finally:
@@ -704,6 +743,192 @@ def acceptance(browser, args, admin, report, reused_provider=None):
     require(report.get("synthetic_accounts_deactivated") is True, "synthetic_account_cleanup_failed")
 
 
+def checkpoint_identity(report):
+    return {key: report[key] for key in ("commit", "revisions", "editorial_model", "run_id", "run_attempt")}
+
+
+def load_checkpoint(path, phase, identity):
+    require(path.is_absolute() and not path.is_symlink(), "capacity_checkpoint_path")
+    with path.open("rb") as stream:
+        info = os.fstat(stream.fileno())
+        require(stat.S_ISREG(info.st_mode) and 0 < info.st_size <= MAX_CHECKPOINT_BYTES, "capacity_checkpoint_size")
+        if os.name == "posix":
+            require(info.st_uid == os.getuid() and info.st_mode & 0o077 == 0, "capacity_checkpoint_permissions")
+        raw = stream.read(MAX_CHECKPOINT_BYTES + 1)
+    require(0 < len(raw) <= MAX_CHECKPOINT_BYTES, "capacity_checkpoint_size")
+    value = json.loads(raw)
+    require(type(value) is dict and CHECKPOINT_METADATA <= set(value) <= CHECKPOINT_METADATA | CHECKPOINT_RESULTS.keys()
+            and value["schema"] == SCHEMA and value["url"] == PUBLIC
+            and value["phase"] == phase and value["status"] == "passed"
+            and checkpoint_identity(value) == identity, "capacity_checkpoint_identity")
+    require(all(type(value[key]) is expected for key, expected in CHECKPOINT_RESULTS.items() if key in value),
+            "capacity_checkpoint_results")
+    require(all(key in value for key in ("cases", "checks", "synthetic_account_ids", "phase_receipts")),
+            "capacity_checkpoint_required_results")
+    return {key: value[key] for key in CHECKPOINT_RESULTS if key in value}
+
+
+def write_capacity_state(path, state, *, initial=False):
+    if initial:
+        shared_http.write_new(path, state)
+        return
+    shared_http.private_file(path)
+    with tempfile.TemporaryDirectory(prefix="capacity-state-", dir=path.parent) as scratch:
+        replacement = Path(scratch) / "state.json"
+        shared_http.write_new(replacement, state)
+        replacement.replace(path)
+
+
+def read_capacity_state(path, identity):
+    value = json.loads(shared_http.read_private(path))
+    require(type(value) is dict and set(value) == {"schema", "identity", "accounts", "attempted", "jobs"}
+            and value["schema"] == CAPACITY_STATE_SCHEMA and value["identity"] == identity,
+            "capacity_private_state_identity")
+    accounts, attempted, jobs = (value[key] for key in ("accounts", "attempted", "jobs"))
+    require(type(accounts) is list and len(accounts) == len(PARALLEL_CASES) and
+            all(type(account) is dict and set(account) == {"username", "password", "id"}
+                and browser_test.ACCOUNT.fullmatch(account["username"])
+                and isinstance(account["password"], str) and 24 <= len(account["password"]) <= 128
+                and (account["id"] is None or browser_test.ID.fullmatch(account["id"]))
+                for account in accounts)
+            and len({account["username"] for account in accounts}) == len(accounts), "capacity_private_accounts")
+    require(type(attempted) is list and attempted == [row["username"] for row in accounts[:len(attempted)]]
+            and all(row["id"] is None or row["username"] in attempted for row in accounts),
+            "capacity_private_attempted_accounts")
+    require(type(jobs) is dict and set(jobs) <= set(PARALLEL_CASES)
+            and all(browser_test.ID.fullmatch(job) for job in jobs.values())
+            and len(set(jobs.values())) == len(jobs), "capacity_private_jobs")
+    return value
+
+
+def setup_capacity(browser, args, admin, report):
+    accounts = [{**account, "id": None} for account in new_accounts()]
+    state = {"schema": CAPACITY_STATE_SCHEMA, "identity": checkpoint_identity(report),
+             "accounts": accounts, "attempted": [], "jobs": {}}
+    write_capacity_state(args.state, state, initial=True)
+    report["step"] = "create_normal_accounts"
+    report["synthetic_account_ids"] = []
+    with browser_test.browser_page(browser) as page:
+        browser_test.login(page, admin, args.commit)
+        page.goto(PUBLIC + "/account", wait_until="domcontentloaded")
+        existing = {user["username"] for user in facts(page, "/auth/users")["users"]}
+        require(existing.isdisjoint(account["username"] for account in accounts), "capacity_account_collision")
+        for account in accounts:
+            state["attempted"].append(account["username"])
+            write_capacity_state(args.state, state)
+            with page.expect_response(lambda item: item.url == PUBLIC + "/auth/users"
+                                      and item.request.method == "POST") as created:
+                browser_test.create_account(page, account)
+            owner_id = created.value.json()["user"]["id"]
+            require(browser_test.ID.fullmatch(owner_id) and owner_id not in report["synthetic_account_ids"],
+                    "capacity_account_id")
+            account["id"] = owner_id
+            report["synthetic_account_ids"].append(owner_id)
+            write_capacity_state(args.state, state)
+        browser_test.logout(page)
+
+
+def cleanup_capacity(browser, args, admin, report, state, *, remove_projects=True):
+    report["step"] = "capacity_cleanup"
+    with browser_test.browser_page(browser) as page:
+        browser_test.login(page, admin, args.commit)
+        users = {user["username"]: user for user in facts(page, "/auth/users")["users"]}
+        pending = []
+        owner_ids = []
+        for label, account in zip(PARALLEL_CASES, state["accounts"], strict=True):
+            if account["username"] not in state["attempted"]:
+                continue
+            user = users.get(account["username"])
+            if user is None:
+                require(account["id"] is None, "capacity_cleanup_owner_missing")
+                continue
+            require(user["is_admin"] is False and browser_test.ID.fullmatch(user["id"])
+                    and account["id"] in (None, user["id"]), "capacity_cleanup_owner_identity")
+            owner_ids.append(user["id"])
+            unconfirmed = account["id"] is None
+            require(not unconfirmed or user["is_active"] is True, "capacity_cleanup_owner_unconfirmed")
+            if not user["is_active"]:
+                continue
+            job_id = state["jobs"].get(label)
+            if unconfirmed or (remove_projects and job_id):
+                with browser_test.browser_page(browser) as creator:
+                    browser_test.login(creator, account, args.commit)
+                    if unconfirmed:
+                        owner = facts(creator, "/auth/me")["user"]
+                        require(owner["id"] == user["id"] and owner["username"] == account["username"]
+                                and owner["is_admin"] is False, "capacity_cleanup_owner_unconfirmed")
+                        account["id"] = user["id"]
+                        write_capacity_state(args.state, state)
+                    if remove_projects and job_id:
+                        url = f"/jobs/{job_id}"
+                        observed = browser_test.browser_get(creator, url)
+                        if observed["status"] != 404:
+                            require(observed["status"] == 200 and observed["body"]["id"] == job_id,
+                                    "capacity_cleanup_job_identity")
+                            require(browser_test.browser_post(creator, url + "/deletion", {})["status"] == 202
+                                    and browser_test.browser_get(creator, url)["status"] == 404,
+                                    "large_synthetic_project_cleanup")
+                    browser_test.logout(creator)
+            pending.append(account)
+        if pending:
+            browser_test.deactivate_accounts(page, pending)
+            users = {user["id"]: user for user in facts(page, "/auth/users")["users"]}
+            require(all(users[owner_id]["is_active"] is False for owner_id in owner_ids),
+                    "synthetic_account_cleanup_failed")
+        browser_test.logout(page)
+    report["synthetic_account_ids"] = owner_ids
+    report["synthetic_accounts_deactivated"] = True
+
+
+def acceptance_phase(browser, args, admin, report, reused_provider):
+    if args.phase == "setup":
+        setup_capacity(browser, args, admin, report)
+        return
+    state = read_capacity_state(args.state, checkpoint_identity(report))
+    if args.phase == "cleanup":
+        cleanup_capacity(browser, args, admin, report, state)
+        return
+
+    accounts = state["accounts"]
+    require(all(account["id"] for account in accounts)
+            and report["synthetic_account_ids"] == [account["id"] for account in accounts],
+            "capacity_checkpoint_accounts")
+    if args.phase == "load":
+        def remember_jobs(jobs):
+            state["jobs"] = jobs
+            write_capacity_state(args.state, state)
+
+        report["step"] = "creator_login_and_capacity_limits"
+        with creator_pages(browser, args, accounts) as (pages, transfers):
+            load_capacity(browser, args, report, accounts, pages, transfers, remember_jobs=remember_jobs)
+            for page in pages:
+                browser_test.logout(page)
+        return
+
+    inputs = report["large_inputs"]
+    require(set(state["jobs"]) == set(PARALLEL_CASES) and inputs["synthetic_jobs"] == state["jobs"],
+            "capacity_checkpoint_jobs")
+    if args.phase == "cuts":
+        report["step"] = "native_cuts_login"
+        with creator_pages(browser, args, accounts[:1]) as (pages, transfers):
+            cut_capacity(args, report, pages[0], transfers[0])
+            browser_test.logout(pages[0])
+        return
+
+    report["step"] = "parallel_editorial_relogin"
+    fixture = Fixture(args.large_fixture, inputs["bytes_each"], inputs["duration_seconds"])
+    with creator_pages(browser, args, accounts) as (pages, transfers):
+        cases = [Case(label, fixture, page, transfer, job_id=state["jobs"][label])
+                 for label, page, transfer in zip(PARALLEL_CASES, pages, transfers, strict=True)]
+        for case in cases:
+            browser_test.open_saved_job(case.page, case.job_id)
+        editorial_capacity(cases, args, report, reused_provider)
+        delete_large_projects(cases, report)
+        for page in pages:
+            browser_test.logout(page)
+    cleanup_capacity(browser, args, admin, report, state, remove_projects=False)
+
+
 def arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--commit", required=True)
@@ -713,12 +938,35 @@ def arguments(argv=None):
     parser.add_argument("--precise-fixture", type=Path)
     parser.add_argument("--large-fixture", type=Path)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--phase", choices=("setup", "load", "cuts", "editorial", "cleanup"))
+    parser.add_argument("--state", type=Path, help="private same-attempt state kept outside acceptance artifacts")
+    parser.add_argument("--prior-report", type=Path, help="successful checkpoint for the preceding capacity phase")
     parser.add_argument("--editorial-model", default="")
     parser.add_argument("--reuse-provider-report", type=Path,
                         help="reuse the exact reviewed INT three-account provider report")
     parser.add_argument("--case-timeout", type=int, default=1_800, help="seconds for each worker batch")
     parser.add_argument("--response-budget", type=int, default=30, help="seconds per portal operation under load")
     return parser.parse_args(argv)
+
+
+def start_checkpoint(args, report):
+    expected = CHECKPOINT_PREDECESSORS.get(args.phase)
+    require(args.state is not None and args.state.is_absolute()
+            and args.state != args.report and args.state != args.prior_report
+            and (args.prior_report is not None) == (expected is not None),
+            "capacity_checkpoint_arguments")
+    run_id = os.environ.get("GITHUB_RUN_ID", "")
+    attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
+    require(re.fullmatch(r"[1-9][0-9]{0,19}", run_id) and re.fullmatch(r"[1-9][0-9]{0,5}", attempt),
+            "capacity_workflow_identity")
+    report.update(phase=args.phase, editorial_model=args.editorial_model, run_id=run_id,
+                  run_attempt=attempt, phase_started_utc=utc())
+    if expected is not None:
+        report.update(load_checkpoint(args.prior_report, expected, checkpoint_identity(report)))
+    if args.phase in {"load", "editorial"}:
+        require(args.large_fixture is not None, "capacity_large_fixture_required")
+    if args.phase == "cuts":
+        require(args.precise_fixture is not None, "capacity_precise_fixture_required")
 
 
 def main(argv=None):
@@ -729,11 +977,17 @@ def main(argv=None):
         require(not args.editorial_model or browser_test.MODEL.fullmatch(args.editorial_model), "editorial_model_shape")
         require(300 <= args.case_timeout <= 7_200 and 5 <= args.response_budget <= 120, "time_budget_shape")
         shared_http.private_file(args.report, must_exist=False)
-        reused_provider = (load_provider_evidence(args.reuse_provider_report, args.editorial_model)
-                           if args.reuse_provider_report else None)
         report["commit"] = args.commit
         report["revisions"] = browser_test.cloud_revisions(args.frontend_revision, args.api_revision)
-        admin = shared_http.validate_admin(json.loads(os.environ.pop("INT_BOOTSTRAP_ADMIN_JSON", "")))
+        if args.phase:
+            start_checkpoint(args, report)
+        else:
+            require(args.state is None and args.prior_report is None, "capacity_checkpoint_phase_required")
+        reused_provider = (load_provider_evidence(args.reuse_provider_report, args.editorial_model)
+                           if args.reuse_provider_report else None)
+        admin_value = os.environ.pop("INT_BOOTSTRAP_ADMIN_JSON", "")
+        admin = (shared_http.validate_admin(json.loads(admin_value))
+                 if args.phase in {None, "setup", "editorial", "cleanup"} else None)
         transport = shared_http.HTTP()
         require(transport.request("GET", browser_test.PRIVATE + "/health").status in {401, 403},
                 "private_api_direct_request_allowed")
@@ -749,7 +1003,10 @@ def main(argv=None):
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(executable_path=str(executable), env=child_env, headless=True)
             try:
-                acceptance(browser, args, admin, report, reused_provider)
+                if args.phase:
+                    acceptance_phase(browser, args, admin, report, reused_provider)
+                else:
+                    acceptance(browser, args, admin, report, reused_provider)
             finally:
                 browser.close()
         report["status"] = "passed"
@@ -760,6 +1017,13 @@ def main(argv=None):
     except Exception as error:
         report["failure"] = "capacity_acceptance_failed"
         report["failure_type"] = type(error).__name__
+    if "phase_started_utc" in report:
+        report["phase_finished_utc"] = utc()
+        report.setdefault("phase_receipts", {})[args.phase] = {
+            "started_utc": report["phase_started_utc"],
+            "finished_utc": report["phase_finished_utc"],
+            "status": report["status"],
+        }
     try:
         shared_http.write_new(args.report, report)
     except (OSError, shared_http.AcceptanceError):

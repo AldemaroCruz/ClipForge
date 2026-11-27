@@ -442,11 +442,116 @@ jobs:
           CLOUDSDK_AUTH_ACCESS_TOKEN: ${{ steps.terraform_identity.outputs.access_token }}
         run: bash scripts/deploy_int_beta.sh migrate
 
-      - name: Open the public frontend and check the real creator flow
+      - name: Open the public frontend and verify the short creator flow
+        id: acceptance_open
         # The exported WIF credentials can refresh during long acceptance and rollback.
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
-        run: bash scripts/deploy_int_beta.sh acceptance
+        run: bash scripts/deploy_int_beta.sh acceptance-open
+
+      - name: Publish the short creator evidence
+        if: ${{ always() && (steps.acceptance_open.outcome == 'success' || steps.acceptance_open.outcome == 'failure') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hito-b-int-${{ github.run_id }}-${{ github.run_attempt }}-short
+          path: |
+            ${{ env.DELIVERY_DIR }}/reports/previous-live.json
+            ${{ env.DELIVERY_DIR }}/reports/before-rollout.json
+            ${{ env.DELIVERY_DIR }}/reports/after-rollout.json
+            ${{ env.DELIVERY_DIR }}/reports/browser-prepare.json
+            ${{ env.DELIVERY_DIR }}/reports/browser-deletion-recheck.json
+          if-no-files-found: error
+
+      - name: Replace the public revision and verify persistence
+        id: acceptance_verify
+        if: ${{ steps.reuse_scope.outputs.mode != 'deletion' }}
+        env:
+          INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
+        run: bash scripts/deploy_int_beta.sh acceptance-verify
+
+      - name: Publish the replacement and persistence evidence
+        if: ${{ always() && (steps.acceptance_verify.outcome == 'success' || steps.acceptance_verify.outcome == 'failure') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hito-b-int-${{ github.run_id }}-${{ github.run_attempt }}-persistence
+          path: |
+            ${{ env.DELIVERY_DIR }}/reports/after-rollout.json
+            ${{ env.DELIVERY_DIR }}/reports/browser-verify.json
+          if-no-files-found: error
+
+      - name: Create the three synthetic capacity accounts
+        id: capacity_setup
+        if: ${{ steps.reuse_scope.outputs.mode != 'deletion' }}
+        env:
+          INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
+        run: bash scripts/deploy_int_beta.sh capacity-setup
+
+      - name: Publish the synthetic account receipt
+        if: ${{ always() && (steps.capacity_setup.outcome == 'success' || steps.capacity_setup.outcome == 'failure') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hito-b-int-${{ github.run_id }}-${{ github.run_attempt }}-synthetic
+          path: |
+            ${{ env.DELIVERY_DIR }}/reports/after-rollout.json
+            ${{ env.DELIVERY_DIR }}/reports/browser-capacity-setup.json
+          if-no-files-found: error
+
+      - name: Check three near-limit uploads and concurrent processing
+        id: capacity_load
+        if: ${{ steps.reuse_scope.outputs.mode != 'deletion' }}
+        run: bash scripts/deploy_int_beta.sh capacity-load
+
+      - name: Publish the capacity evidence
+        if: ${{ always() && (steps.capacity_load.outcome == 'success' || steps.capacity_load.outcome == 'failure') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hito-b-int-${{ github.run_id }}-${{ github.run_attempt }}-load
+          path: |
+            ${{ env.DELIVERY_DIR }}/reports/after-rollout.json
+            ${{ env.DELIVERY_DIR }}/reports/browser-capacity-load.json
+          if-no-files-found: error
+
+      - name: Export and measure both precise cuts
+        id: capacity_cuts
+        if: ${{ steps.reuse_scope.outputs.mode != 'deletion' }}
+        run: bash scripts/deploy_int_beta.sh capacity-cuts
+
+      - name: Publish the precise-cut evidence
+        if: ${{ always() && (steps.capacity_cuts.outcome == 'success' || steps.capacity_cuts.outcome == 'failure') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hito-b-int-${{ github.run_id }}-${{ github.run_attempt }}-cuts
+          path: |
+            ${{ env.DELIVERY_DIR }}/reports/after-rollout.json
+            ${{ env.DELIVERY_DIR }}/reports/browser-capacity-cuts.json
+          if-no-files-found: error
+
+      - name: Check three-account editorial acceptance and finish cleanup
+        id: capacity_editorial
+        if: ${{ steps.reuse_scope.outputs.mode != 'deletion' }}
+        env:
+          INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
+        run: bash scripts/deploy_int_beta.sh capacity-editorial
+
+      - name: Publish the long editorial evidence
+        if: ${{ always() && (steps.capacity_editorial.outcome == 'success' || steps.capacity_editorial.outcome == 'failure') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hito-b-int-${{ github.run_id }}-${{ github.run_attempt }}-editorial
+          path: |
+            ${{ env.DELIVERY_DIR }}/reports/after-rollout.json
+            ${{ env.DELIVERY_DIR }}/reports/browser-capacity.json
+          if-no-files-found: error
+
+      - name: Clean up this run's synthetic accounts after a failure
+        if: ${{ always() && (failure() || cancelled()) && (steps.capacity_setup.outcome == 'success' || steps.capacity_setup.outcome == 'failure' || steps.capacity_setup.outcome == 'cancelled') }}
+        env:
+          INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
+        run: bash scripts/deploy_int_beta.sh capacity-cleanup
+
+      - name: Restore the previous INT components after a failed acceptance
+        if: ${{ always() && (failure() || cancelled()) && (steps.acceptance_open.outcome == 'success' || steps.acceptance_open.outcome == 'failure' || steps.acceptance_open.outcome == 'cancelled') }}
+        run: bash scripts/deploy_int_beta.sh rollback
 
       - name: Retain public acceptance and scoped rollout evidence
         if: ${{ always() && steps.setup.outcome == 'success' }}

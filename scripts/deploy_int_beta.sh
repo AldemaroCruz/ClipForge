@@ -12,6 +12,7 @@ project=clipforgebeta2
 region=us-central1
 frontend=clipforge-int-beta
 api=clipforge-int-beta-api
+migrator=clipforge-int-beta-migrate
 public=https://clipforge-int-beta-816643438938.us-central1.run.app
 private=https://clipforge-int-beta-api-816643438938.us-central1.run.app
 export TF_IN_AUTOMATION=1 TF_INPUT=0
@@ -80,32 +81,36 @@ verify_revision() {
 }
 
 capture_rollout() {
-    local phase="$1"
+    local phase="$1" worker_spec worker_configuration worker_editorial migrator_image
     FRONTEND_REVISION="$(verify_revision "$frontend" "$public")"
     API_REVISION="$(verify_revision "$api" "$private")"
-    worker_spec="$(run jobs describe clipforge-int-worker --format='value(spec.template.spec.template.spec.containers[0].image)')"
-    [[ "$worker_spec" == "$TF_VAR_worker_image" ]]
+    worker_spec="$(run jobs describe clipforge-int-worker --format='json(metadata.generation,spec.template.spec)')"
+    [[ "$(jq -er '.spec.template.spec.template.spec.containers[0].image' <<< "$worker_spec")" == "$TF_VAR_worker_image" ]]
+    worker_configuration="$(jq -ec '{
+        generation: (.metadata.generation | tonumber),
+        task_count: (.spec.template.spec.taskCount // 1),
+        parallelism: (.spec.template.spec.parallelism // 1),
+        timeout_seconds: (.spec.template.spec.template.spec.timeoutSeconds | tonumber),
+        max_retries: .spec.template.spec.template.spec.maxRetries,
+        cpu: .spec.template.spec.template.spec.containers[0].resources.limits.cpu,
+        memory: .spec.template.spec.template.spec.containers[0].resources.limits.memory
+    }' <<< "$worker_spec")"
+    worker_editorial="$(editorial_settings <<< "$worker_spec")"
+    migrator_image="$(run jobs describe "$migrator" --format='value(spec.template.spec.template.spec.containers[0].image)')"
+    [[ "$migrator_image" == "$TF_VAR_web_image" ]]
     jq -n --arg commit "$GITHUB_SHA" --arg frontend "$FRONTEND_REVISION" --arg api "$API_REVISION" \
         --arg public_url "$public" --arg api_url "$private" --arg web "$TF_VAR_web_image" \
-        --arg worker "$TF_VAR_worker_image" \
-        '{commit:$commit,frontend_revision:$frontend,api_revision:$api,public_url:$public_url,api_url:$api_url,web_image:$web,worker_image:$worker}' \
+        --arg worker "$TF_VAR_worker_image" --arg migrator "$migrator_image" \
+        --arg utc "$(date -u +%FT%TZ)" --argjson worker_configuration "$worker_configuration" \
+        --argjson editorial "$worker_editorial" \
+        '{commit:$commit,frontend_revision:$frontend,api_revision:$api,public_url:$public_url,api_url:$api_url,
+          web_image:$web,worker_image:$worker,migrator_image:$migrator,observed_utc:$utc,
+          worker_configuration:$worker_configuration,editorial:$editorial}' \
         > "$reports/$phase-rollout.json"
 }
 
-capture_previous() {
-    local version front previous_api worker_spec worker worker_editorial
-    if ! version="$(curl --silent --fail --max-time 10 "$public/environment" |
-        jq -er 'select(.environment == "INT") | .revision')"; then
-        return 0
-    fi
-    [[ "$version" =~ ^[a-f0-9]{40}$ ]]
-    front="$(run services describe "$frontend" --format=json |
-        jq -er '.status.traffic[] | select(.percent == 100) | .revisionName')"
-    previous_api="$(run services describe "$api" --format=json |
-        jq -er '.status.traffic[] | select(.percent == 100) | .revisionName')"
-    worker_spec="$(run jobs describe clipforge-int-worker --format='json(spec.template.spec.template.spec.containers)')"
-    worker="$(jq -er '.spec.template.spec.template.spec.containers[0].image' <<< "$worker_spec")"
-    worker_editorial="$(jq -ec '
+editorial_settings() {
+    jq -ec '
         [.spec.template.spec.template.spec.containers[0].env[]?] |
         def val($name): map(select(.name == $name)) | .[0].value;
         {
@@ -117,23 +122,43 @@ capture_previous() {
         select(.provider == "disabled" or (.provider == "openai" and
             (.model | test("^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$")) and
             (.key_version | test("^[1-9][0-9]{0,9}$")) and (.timeout | test("^[0-9]{2,3}$"))))
-        ' <<< "$worker_spec")"
+        '
+}
+
+capture_previous() {
+    local version front previous_api worker_spec worker worker_editorial migrator_image
+    if ! version="$(curl --silent --fail --max-time 10 "$public/environment" |
+        jq -er 'select(.environment == "INT") | .revision')"; then
+        return 0
+    fi
+    [[ "$version" =~ ^[a-f0-9]{40}$ ]]
+    front="$(run services describe "$frontend" --format=json |
+        jq -er '.status.traffic[] | select(.percent == 100) | .revisionName')"
+    previous_api="$(run services describe "$api" --format=json |
+        jq -er '.status.traffic[] | select(.percent == 100) | .revisionName')"
+    worker_spec="$(run jobs describe clipforge-int-worker --format='json(spec.template.spec.template.spec.containers)')"
+    worker="$(jq -er '.spec.template.spec.template.spec.containers[0].image' <<< "$worker_spec")"
+    worker_editorial="$(editorial_settings <<< "$worker_spec")"
+    migrator_image="$(run jobs describe "$migrator" --format='value(spec.template.spec.template.spec.containers[0].image)')"
     [[ "$front" =~ ^clipforge-int-beta-[0-9][0-9a-z-]+$ &&
        "$previous_api" =~ ^clipforge-int-beta-api-[0-9][0-9a-z-]+$ &&
+       "$migrator_image" =~ ^us-central1-docker\.pkg\.dev/clipforgebeta2/clipforge-int/beta-web@sha256:[a-f0-9]{64}$ &&
        "$worker" =~ ^us-central1-docker\.pkg\.dev/clipforgebeta2/clipforge-int/beta-worker@sha256:[a-f0-9]{64}$ ]]
     jq -n --arg commit "$version" --arg frontend "$front" --arg api "$previous_api" --arg worker "$worker" \
-        --argjson editorial "$worker_editorial" \
-        '{commit:$commit,frontend_revision:$frontend,api_revision:$api,worker_image:$worker,editorial:$editorial}' \
+        --arg migrator "$migrator_image" --argjson editorial "$worker_editorial" \
+        '{commit:$commit,frontend_revision:$frontend,api_revision:$api,worker_image:$worker,
+          migrator_image:$migrator,editorial:$editorial}' \
         > "$reports/previous-live.json"
 }
 
 restore_previous() {
-    local previous="$reports/previous-live.json" version front previous_api worker provider model key_version timeout
+    local previous="$reports/previous-live.json" version front previous_api worker provider model key_version timeout migrator_image
     local -a editorial_options
     version="$(jq -er '.commit' "$previous")" || return
     front="$(jq -er '.frontend_revision' "$previous")" || return
     previous_api="$(jq -er '.api_revision' "$previous")" || return
     worker="$(jq -er '.worker_image' "$previous")" || return
+    migrator_image="$(jq -er '.migrator_image' "$previous")" || return
     provider="$(jq -er '.editorial.provider' "$previous")" || return
     if [[ "$provider" == openai ]]; then
         model="$(jq -er '.editorial.model' "$previous")" || return
@@ -154,6 +179,7 @@ restore_previous() {
     run jobs update clipforge-int-worker --image "$worker" "${editorial_options[@]}" || return
     run services update-traffic "$api" --to-revisions "$previous_api=100" || return
     run services update-traffic "$frontend" --to-revisions "$front=100" || return
+    run jobs update "$migrator" --image "$migrator_image" || return
     run services update "$frontend" --no-invoker-iam-check || return
     curl --silent --fail --max-time 15 --retry 3 "$public/health" | jq -e '.status == "ok"' >/dev/null || return
     curl --silent --fail --max-time 15 "$public/environment" |
@@ -198,12 +224,37 @@ PY
 }
 
 capacity_acceptance() {
-    local -a evidence_args=()
+    local phase="$1" report prior="" state="$DELIVERY_DIR/capacity-private.json"
+    local -a evidence_args=() checkpoint_args=()
+    case "$phase" in
+        setup) report="$reports/browser-capacity-setup.json" ;;
+        load)
+            create_capacity_fixtures
+            report="$reports/browser-capacity-load.json"
+            prior="$reports/browser-capacity-setup.json"
+            ;;
+        cuts)
+            report="$reports/browser-capacity-cuts.json"
+            prior="$reports/browser-capacity-load.json"
+            ;;
+        editorial)
+            report="$reports/browser-capacity.json"
+            prior="$reports/browser-capacity-cuts.json"
+            ;;
+        cleanup)
+            [[ -f "$state" ]] || return 0
+            report="$reports/browser-capacity-cleanup.json"
+            ;;
+    esac
+    if [[ -n "$prior" ]]; then
+        checkpoint_args=(--prior-report "$prior")
+    fi
     if [[ -n "${INT_EDITORIAL_CAPACITY_REPORT:-}" ]]; then
         [[ "$INT_EDITORIAL_CAPACITY_REPORT" == "$reports/prior-provider-capacity.json" ]]
-        evidence_args=(--reuse-provider-report "$INT_EDITORIAL_CAPACITY_REPORT")
+        if [[ "$phase" == editorial ]]; then
+            evidence_args=(--reuse-provider-report "$INT_EDITORIAL_CAPACITY_REPORT")
+        fi
     fi
-    create_capacity_fixtures
     env -u CLOUDSDK_AUTH_ACCESS_TOKEN -u GOOGLE_OAUTH_ACCESS_TOKEN \
         -u GOOGLE_APPLICATION_CREDENTIALS -u CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE \
         python -m scripts.int_hito_b_capacity_browser --commit "$GITHUB_SHA" \
@@ -211,7 +262,17 @@ capacity_acceptance() {
         --editorial-model "$editorial_model" --fixture-dir "$DELIVERY_DIR/capacity" \
         --precise-fixture "$DELIVERY_DIR/capacity/precise.mp4" \
         --large-fixture "$DELIVERY_DIR/capacity/large.mp4" \
-        --report "$reports/browser-capacity.json" "${evidence_args[@]}"
+        --phase "$phase" --state "$state" --report "$report" \
+        "${checkpoint_args[@]}" "${evidence_args[@]}"
+}
+
+load_replacement_rollout() {
+    local rollout="$reports/after-rollout.json"
+    [[ -f "$rollout" && ! -L "$rollout" ]]
+    jq -e --arg commit "$GITHUB_SHA" --arg web "$TF_VAR_web_image" --arg worker "$TF_VAR_worker_image" \
+        '.commit == $commit and .web_image == $web and .worker_image == $worker' "$rollout" >/dev/null
+    FRONTEND_REVISION="$(jq -er '.frontend_revision' "$rollout")"
+    API_REVISION="$(jq -er '.api_revision' "$rollout")"
 }
 
 browser_acceptance() {
@@ -225,16 +286,21 @@ browser_acceptance() {
         --report "$reports/browser-$phase.json" "$@"
 }
 
+restore_failed_delivery() {
+    if [[ -f "$reports/previous-live.json" ]] && restore_previous; then
+        printf '%s\n' 'The last healthy public beta revisions, worker and migrator pin were restored.' > "$reports/acceptance-failure.txt"
+    elif apply_beta false "run-$GITHUB_RUN_ID-b$GITHUB_RUN_ATTEMPT" hidden; then
+        printf '%s\n' 'Public access disabled after unsuccessful Hito B acceptance.' > "$reports/acceptance-failure.txt"
+    else
+        printf '%s\n' 'Hito B acceptance failed and disabling public access also failed.' > "$reports/acceptance-failure.txt"
+        return 1
+    fi
+}
+
 rollback_delivery() {
     local result="$?"
     if [[ "$result" -ne 0 ]]; then
-        if [[ -f "$reports/previous-live.json" ]] && restore_previous; then
-            printf '%s\n' 'The last healthy public beta revisions and worker digest were restored.' > "$reports/acceptance-failure.txt"
-        elif apply_beta false "run-$GITHUB_RUN_ID-b$GITHUB_RUN_ATTEMPT" hidden; then
-            printf '%s\n' 'Public access disabled after unsuccessful Hito B acceptance.' > "$reports/acceptance-failure.txt"
-        else
-            printf '%s\n' 'Hito B acceptance failed and disabling public access also failed.' > "$reports/acceptance-failure.txt"
-        fi
+        restore_failed_delivery
     fi
 }
 
@@ -253,11 +319,10 @@ case "${1:-}" in
         ;;
     migrate)
         trap rollback_delivery EXIT
-        CLOUDSDK_AUTH_ACCESS_TOKEN="$CLIPFORGE_GCP_DEPLOY_TOKEN" run jobs execute clipforge-int-beta-migrate --wait
+        CLOUDSDK_AUTH_ACCESS_TOKEN="$CLIPFORGE_GCP_DEPLOY_TOKEN" run jobs execute "$migrator" --wait
         trap - EXIT
         ;;
-    acceptance)
-        trap rollback_delivery EXIT
+    acceptance-open)
         if [[ -n "${INT_DELETION_REPLAY_REPORT:-}" ]]; then
             [[ "$INT_DELETION_REPLAY_REPORT" == "$reports/deletion-replay.json" && ! -L "$INT_DELETION_REPLAY_REPORT" ]]
             jq -e '.schema == "clipforge-int-hito-b-delete-evidence-1" and .status == "passed"
@@ -271,12 +336,19 @@ case "${1:-}" in
             apply_beta true "run-$GITHUB_RUN_ID-b$GITHUB_RUN_ATTEMPT" public
             capture_rollout before
             browser_acceptance prepare --video "$DELIVERY_DIR/fixture.mp4"
-            apply_beta true "run-$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT" replacement
-            capture_rollout after
-            browser_acceptance verify
-            capacity_acceptance
         fi
-        trap - EXIT
+        ;;
+    acceptance-verify)
+        apply_beta true "run-$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT" replacement
+        capture_rollout after
+        browser_acceptance verify
+        ;;
+    capacity-setup|capacity-load|capacity-cuts|capacity-editorial|capacity-cleanup)
+        load_replacement_rollout
+        capacity_acceptance "${1#capacity-}"
+        ;;
+    rollback)
+        restore_failed_delivery
         ;;
     *)
         exit 2
