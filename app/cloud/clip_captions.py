@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 from ..auth_db import get_engine
 from ..presentation import Cue, Presentation
 from ..subtitles import cues_from_segments, validate_cues
-from . import editorial_selection, repository as repo
+from . import caption_styles, editorial_selection, repository as repo
 
 _STYLE = tuple(key for key in Presentation.model_fields if key == "burn_subtitles" or key.startswith("subtitle_"))
 _CLIP = re.compile(r"clip_[0-9]{2}\.mp4")
@@ -37,6 +37,8 @@ class ClipCaptionUpdate(BaseModel):
     style: CaptionStyle
     cues: list[Cue] = Field(max_length=400)
     revision: int = Field(ge=1, strict=True)
+    style_template: caption_styles.StyleRevision | None = None
+    render: bool = Field(default=True, strict=True)
 
 
 class ProjectCaptionUpdate(BaseModel):
@@ -44,6 +46,8 @@ class ProjectCaptionUpdate(BaseModel):
     style: CaptionStyle
     apply_to_all: Literal[True]
     revision: int = Field(ge=1, strict=True)
+    style_template: caption_styles.StyleRevision | None = None
+    render: bool = Field(default=True, strict=True)
 
 
 def project_presentation(job: dict) -> Presentation:
@@ -96,14 +100,22 @@ def render_fingerprint(original, start, end, options, cues):
     return hashlib.sha256(data.encode()).hexdigest()
 
 
-def _base_output(doc, item):
+def _render_identity(fingerprint, template):
+    if template:
+        values = f"{fingerprint}:{template['id']}:{template['revision']}"
+        return hashlib.sha256(values.encode()).hexdigest()
+    return fingerprint
+
+
+def _base_output(doc, item, template):
     filename = item["file"]
     root = f"/jobs/{doc['payload']['id']}/clips/{filename}"
     manifest = doc["manifest"]
     options = item["options"]
     cues = item.get("cues", [])
+    fingerprint = render_fingerprint(manifest["input.mp4"], item["start"], item["end"], options, cues)
     return {
-        "id": render_fingerprint(manifest["input.mp4"], item["start"], item["end"], options, cues),
+        "id": _render_identity(fingerprint, template),
         "mp4": root,
         "srt": f"{root}/subtitles/srt" if cues and PurePosixPath(filename).with_suffix(".srt").name in manifest else None,
         "vtt": f"{root}/subtitles/vtt" if cues and PurePosixPath(filename).with_suffix(".vtt").name in manifest else None,
@@ -140,8 +152,11 @@ def _caption_state(doc, item, connection=None):
         elif payload["status"] == "failed":
             state["retryable"] = not variant["manifest"] and repo.manual_export_retryable(payload)
             state["notice"] = payload.get("error", "No se pudo generar el clip con el estilo guardado.")
+    elif settings.get("draft"):
+        state.update(status="draft", notice="Generá un clip para exportar estos cambios.")
     elif item.get("caption_rendered") is True:
-        state.update(status="completed", output=_base_output(doc, item))
+        _, template = _clip_style(job, settings)
+        state.update(status="completed", output=_base_output(doc, item, template))
     else:
         state["notice"] = "Generá una versión subtitulada desde Editar subtítulos."
     if state["status"] == "completed":
@@ -154,7 +169,17 @@ def _caption_state(doc, item, connection=None):
 
 
 def _project_state(job):
-    return {"style": style_from(project_presentation(job)), "revision": job.get("caption_style_revision", 1)}
+    state = {"style": style_from(project_presentation(job)), "revision": job.get("caption_style_revision", 1)}
+    if job.get("caption_style_template"):
+        state["style_template"] = job["caption_style_template"]
+    return state
+
+
+def _clip_style(job, settings):
+    if "style" in settings:
+        return settings["style"], settings.get("style_template")
+    project = _project_state(job)
+    return project["style"], project.get("style_template")
 
 
 def enrich_job(doc):
@@ -166,7 +191,7 @@ def enrich_job(doc):
         with get_engine().connect() as connection:
             clips = [{**item, "captions": _caption_state(doc, item, connection)} for item in clips]
     result = {key: value for key, value in job.items()
-              if key not in {"clip_caption_settings", "caption_style_revision"}}
+              if key not in {"clip_caption_settings", "caption_style_revision", "caption_style_template"}}
     return {**result, "clips": clips, "caption_style": _project_state(job)}
 
 
@@ -174,15 +199,19 @@ def clip_context(doc, filename, *, connection=None):
     job = doc["payload"]
     item = _clip(doc, filename)
     settings = _settings(job, item)
-    return {
+    style, template = _clip_style(job, settings)
+    context = {
         **_caption_state(doc, item, connection),
         "start": item["start"], "end": item["end"], "duration": round(item["end"] - item["start"], 3),
-        "cues": _cues(doc, item, settings), "style": settings.get("style", _project_state(job)["style"]),
+        "cues": _cues(doc, item, settings), "style": style,
         "source_url": f"/jobs/{job['id']}/source",
     }
+    if template:
+        context["style_template"] = template
+    return context
 
 
-def _plan(connection, doc, item, style, cues, *, inherited=False):
+def _plan(connection, doc, item, style, cues, *, inherited=False, render=True, template=None):
     job, source = doc["payload"], doc["manifest"].get("input.mp4")
     if source is None:
         raise HTTPException(409, "Original no disponible")
@@ -197,16 +226,22 @@ def _plan(connection, doc, item, style, cues, *, inherited=False):
         item.get("caption_rendered") is True
         and fingerprint == render_fingerprint(source, item["start"], item["end"], item["options"], item["cues"])
     )
+    render_identity = _render_identity(fingerprint, template)
     export_id = None if current_render else uuid.uuid5(
-        uuid.NAMESPACE_URL, f"clipforge:{job['id']}:{item['file']}:{fingerprint}",
+        uuid.NAMESPACE_URL, f"clipforge:{job['id']}:{item['file']}:{render_identity}",
     ).hex
+    existing = repo.document(job["id"], "export", export_id, connection, required=False) if export_id else None
     revision = settings["revision"]
     desired = {"revision": revision, "cues": cues, "export_id": export_id}
+    if export_id and not existing and not render:
+        desired.update(export_id=None, draft=True)
     if not inherited:
         desired["style"] = style
+    if template:
+        desired["style_template"] = template
     if desired != settings:
         desired["revision"] += 1
-    if export_id is None or repo.document(job["id"], "export", export_id, connection, required=False):
+    if export_id is None or existing or not render:
         return desired, None
     variant = {
         "id": export_id, "job_id": job["id"], "status": "queued", "created_at": time.time(),
@@ -215,6 +250,8 @@ def _plan(connection, doc, item, style, cues, *, inherited=False):
         "start": item["start"], "end": item["end"], "options": options, "cues": cues,
         "render_fingerprint": fingerprint, "pilot": True,
     }
+    if template:
+        variant.update(style_template=template, caption_revision=desired["revision"])
     return desired, variant
 
 
@@ -236,10 +273,15 @@ def save_clip(job_id, filename, payload: ClipCaptionUpdate, principal):
     with get_engine().begin() as connection:
         doc = repo.beta_document(connection, principal, job_id)
         item = _clip(doc, filename)
-        if payload.revision != _settings(doc["payload"], item)["revision"]:
+        job = doc["payload"]
+        settings = _settings(job, item)
+        if payload.revision != settings["revision"]:
             raise HTTPException(409, "Los subtítulos cambiaron. Volvé a abrir el clip.")
-        desired, variant = _plan(connection, doc, item, payload.style.root,
-                                 [cue.model_dump() for cue in payload.cues])
+        previous_style, previous_template = _clip_style(job, settings)
+        style, template = caption_styles.resolve(connection, principal.id, payload.style_template,
+                                                 payload.style.root, previous_style, previous_template)
+        desired, variant = _plan(connection, doc, item, style, [cue.model_dump() for cue in payload.cues],
+                                 render=payload.render, template=template)
         _publish(connection, principal, doc, [(filename, desired, variant)])
         return clip_context(doc, filename, connection=connection)
 
@@ -253,12 +295,15 @@ def save_project(job_id, payload: ProjectCaptionUpdate, principal):
             raise HTTPException(409, "El estilo cambió. Volvé a abrir el proyecto.")
         if job["status"] != "completed":
             raise HTTPException(409, "Esperá a que termine el procesamiento.")
-        style = payload.style.root
+        style, template = caption_styles.resolve(connection, principal.id, payload.style_template,
+                                                 payload.style.root, current["style"], current.get("style_template"))
         planned = []
         for item in job["clips"]:
-            desired, variant = _plan(connection, doc, item, style, _cues(doc, item, _settings(job, item)), inherited=True)
+            desired, variant = _plan(connection, doc, item, style, _cues(doc, item, _settings(job, item)),
+                                     inherited=True, render=payload.render, template=template)
             planned.append((item["file"], desired, variant))
         job.update(caption_style=style, caption_style_revision=payload.revision + 1)
+        job["caption_style_template"] = template
         _publish(connection, principal, doc, planned)
         return _project_state(job)
 

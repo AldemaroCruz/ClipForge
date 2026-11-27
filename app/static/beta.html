@@ -82,6 +82,9 @@
                   <div><label for="clip-caption-edge">Grosor del contorno</label><input type="number" id="clip-caption-edge" min="0" max="12" step="1" value="3" required></div>
                 </div>
               </div>
+              <details id="clip-caption-styles" class="caption-styles">
+                <summary>Estilos guardados</summary>
+              </details>
               <p id="clip-caption-empty" class="muted" hidden>Este clip no tiene subtítulos. Puedes añadirlos con «Editar subtítulos».</p>
               <div id="clip-caption-cues"></div>
               <button id="clip-caption-add" type="button" class="secondary">Añadir subtítulo</button>
@@ -167,6 +170,9 @@
                   <h4 id="editorial-sample-heading">Vista previa del subtítulo</h4>
                   <div class="caption-frame"><span></span></div>
                 </section>
+                <details id="editorial-styles" class="caption-styles">
+                  <summary>Estilos guardados</summary>
+                </details>
                 <div id="editorial-cues"></div>
                 <button type="button" id="editorial-add-cue" class="secondary">Añadir subtítulo</button>
                 <p id="editorial-revision" class="muted"></p>
@@ -223,6 +229,25 @@
       </ol>
     </section>
   </main>
+  <template id="caption-styles-controls">
+    <label>Estilo guardado<select data-style-field="select"></select></label>
+    <div class="actions">
+      <button type="button" class="secondary" data-style-action="apply">Aplicar estilo</button>
+      <button type="button" class="secondary" data-style-action="apply-all">Aplicar estilo a todos</button>
+      <button type="button" class="secondary" data-style-action="default">Usar en trabajos nuevos</button>
+    </div>
+    <div class="mvp-range">
+      <label>Nombre del estilo<input type="text" maxlength="80" data-style-field="name"></label>
+      <label>Fuente<select data-style-field="font"></select></label>
+    </div>
+    <div class="actions">
+      <button type="button" class="secondary" data-style-action="create">Guardar como estilo nuevo</button>
+      <button type="button" class="secondary" data-style-action="update">Actualizar con los ajustes del editor</button>
+      <button type="button" class="secondary" data-style-action="rename">Renombrar estilo</button>
+      <button type="button" class="secondary beta-danger" data-style-action="remove">Eliminar estilo</button>
+    </div>
+    <p class="status beta-message" role="status" data-style-field="status"></p>
+  </template>
   <dialog id="project-delete-dialog" class="panel beta-dialog" aria-labelledby="project-delete-heading" aria-describedby="project-delete-scope">
     <h2 id="project-delete-heading">Eliminar proyecto</h2>
     <p id="project-delete-title"></p>

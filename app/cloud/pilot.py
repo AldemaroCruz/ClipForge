@@ -12,7 +12,7 @@ from ..auth import settings as auth_settings
 from ..auth_db import get_engine
 from ..environment import identity
 from ..presentation import Presentation
-from . import repository as repo
+from . import caption_styles, repository as repo
 from . import storage
 from .config import (
     BETA_MAX_ACTIVE, BETA_MAX_BYTES, BETA_MAX_DIMENSION, BETA_MAX_SECONDS,
@@ -59,15 +59,21 @@ def _reserve(principal, key, filename, size, burn_subtitles=True):
             INSERT INTO auth_projects(id,workspace_id,owner_id,created_at)
             VALUES (:i,:w,:o,clock_timestamp())
             """), {"i": job_id, "w": principal.workspace_id, "o": principal.id})
+        style = {"burn_subtitles": burn_subtitles}
+        template = caption_styles.default_for(connection, principal.id)
+        if template:
+            style.update(template["style"])
         item = {
             "pilot": True, "id": job_id, "status": "awaiting_upload", "clips": [],
-            "options": Presentation(burn_subtitles=burn_subtitles).model_dump(), "processing_mode": "auto",
-            "caption_style": {"burn_subtitles": burn_subtitles},
+            "options": Presentation.model_validate(style).model_dump(), "processing_mode": "auto",
+            "caption_style": style,
             "selection_mode": "heuristic_voice", "version": identity()["revision"],
             "created_at": now, "upload_expires_at": now + BETA_UPLOAD_SECONDS,
             "source_filename": filename, "source_bytes": size, "retry_count": 0,
             "retryable": False, "upload_tracking": True,
         }
+        if template:
+            item["caption_style_template"] = caption_styles.snapshot(template)
         repo.insert_document(connection, job_id, "job", item)
         repo.remember_request(connection, principal.id, key, fingerprint, job_id, "beta_upload", job_id)
         return item

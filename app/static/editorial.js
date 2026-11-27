@@ -93,6 +93,7 @@
     details.open = false;
     el("selection").reset();
     el("draft-form").reset();
+    draftStyles.reset();
     for (const name of ["config", "status", "draft-status", "summary", "candidates", "exports", "drafts", "runs", "cues"]) {
       el(name).replaceChildren();
     }
@@ -456,6 +457,176 @@
     container.replaceChildren(...rows);
   }
 
+  function mountCaptionStyles(prefix, scope) {
+    const panel = document.getElementById(prefix);
+    const template = document.getElementById("caption-styles-controls");
+    panel.append(template.content.cloneNode(true));
+    const fields = Object.fromEntries([...panel.querySelectorAll("[data-style-field]")]
+      .map(field => [field.dataset.styleField, field]));
+    const actions = Object.fromEntries([...panel.querySelectorAll("[data-style-action]")]
+      .map(button => [button.dataset.styleAction, button]));
+    for (const [key, field] of Object.entries(fields)) field.id = prefix + "-" + key;
+    actions["apply-all"].hidden = !scope.applyAll;
+
+    const path = "/caption-styles";
+    let styles = [];
+    let version = 0;
+    let loaded = false;
+    let busy = false;
+
+    const selected = () => styles.find(item => item.id === fields.select.value);
+    const show = text => { fields.status.textContent = text; };
+
+    function updateControls() {
+      const item = selected();
+      const enabled = loaded && !busy;
+      for (const name of ["select", "name", "font"]) fields[name].disabled = !enabled;
+      for (const [name, button] of Object.entries(actions)) {
+        button.disabled = !enabled || (name !== "create" && !item);
+      }
+      actions["apply-all"].hidden = !scope.applyAll || !scope.canApplyAll();
+      actions.default.textContent = item?.is_default ? "Quitar predeterminado" : "Usar en trabajos nuevos";
+    }
+
+    function selectStyle() {
+      const item = selected();
+      fields.name.value = item?.name ?? "";
+      if (item) fields.font.value = item.font;
+      updateControls();
+    }
+
+    async function refresh(expectedVersion, preferred = null) {
+      const data = await auth.json(path);
+      if (expectedVersion !== version) return;
+      if (!Array.isArray(data.styles) || !Array.isArray(data.fonts) || !data.fonts.length) {
+        throw new Error("No se pudieron comprobar los estilos disponibles.");
+      }
+      styles = data.styles;
+      fields.font.replaceChildren(...data.fonts.map(font => new Option(font.label, font.id)));
+      fields.select.replaceChildren(new Option("Elegir un estilo", ""), ...styles.map(item =>
+        new Option(item.name + (item.is_default ? " · predeterminado" : ""), item.id)));
+      const snapshot = scope.snapshot();
+      fields.select.value = preferred ?? (styles.find(item =>
+        item.id === snapshot?.id && item.revision === snapshot.revision)?.id ?? "");
+      loaded = true;
+      selectStyle();
+    }
+
+    function stylePayload(value) {
+      const keys = ["subtitle_font_size", "subtitle_color", "subtitle_position", "subtitle_outline",
+        "subtitle_outline_color", "subtitle_margin_v", "subtitle_shadow"];
+      return Object.fromEntries(keys.map(key => [key, value[key]]));
+    }
+
+    function write(url, method, data) {
+      return auth.json(url, {...auth.payload(data), method});
+    }
+
+    async function changeCatalog(action, item, expectedVersion) {
+      const itemPath = path + "/" + item?.id;
+      if (action === "remove") {
+        if (!window.confirm("¿Eliminar «" + item.name
+          + "»? Los clips y las exportaciones anteriores conservarán su estilo.")) return;
+        await auth.json(itemPath + "?revision=" + item.revision, {method: "DELETE"});
+        await refresh(expectedVersion, "");
+        if (expectedVersion === version) show("Estilo eliminado.");
+        return;
+      }
+      if (action === "default") {
+        await write(path + "/default", "PUT", item.is_default ? {id: null} : {id: item.id, revision: item.revision});
+        await refresh(expectedVersion, item.id);
+        if (expectedVersion === version) {
+          show(item.is_default ? "Predeterminado quitado." : "Estilo predeterminado para trabajos nuevos.");
+        }
+        return;
+      }
+      const name = fields.name.value.trim();
+      const style = action === "rename" ? item.style : scope.style();
+      if (!style) return;
+      const body = {name, font: action === "rename" ? item.font : fields.font.value, style: stylePayload(style)};
+      const creating = action === "create";
+      const result = creating ? await write(path, "POST", body)
+        : await write(itemPath, "PUT", {...body, revision: item.revision});
+      await refresh(expectedVersion, creating ? result.id : item.id);
+      if (expectedVersion === version) show(creating ? "Estilo guardado." : "Estilo actualizado.");
+    }
+
+    async function run(action) {
+      if (busy || (!loaded && action !== "load")) return;
+      const item = selected();
+      if (!item && !["load", "create"].includes(action)) return;
+      if (["create", "update", "rename"].includes(action) && !fields.name.value.trim()) {
+        show("Escribe un nombre para el estilo.");
+        fields.name.focus();
+        return;
+      }
+      const expectedVersion = version;
+      busy = true;
+      show("");
+      updateControls();
+      try {
+        if (action === "load") {
+          await refresh(expectedVersion, item?.id ?? null);
+        } else if (action === "apply" || action === "apply-all") {
+          const applied = await (action === "apply" ? scope.apply(item) : scope.applyAll(item));
+          if (applied && expectedVersion === version) show("Estilo aplicado.");
+        } else {
+          await changeCatalog(action, item, expectedVersion);
+        }
+      } catch (error) {
+        if (expectedVersion === version) show(error.message);
+      } finally {
+        if (expectedVersion === version) {
+          busy = false;
+          updateControls();
+        }
+      }
+    }
+
+    panel.addEventListener("toggle", () => {
+      if (panel.open) void run("load");
+    });
+    fields.select.addEventListener("change", selectStyle);
+    fields.name.addEventListener("keydown", event => {
+      if (event.key === "Enter") event.preventDefault();
+    });
+    for (const [name, button] of Object.entries(actions)) button.addEventListener("click", () => run(name));
+    updateControls();
+    return {
+      reset() {
+        version += 1;
+        panel.open = false;
+        styles = [];
+        loaded = false;
+        busy = false;
+        fields.select.replaceChildren();
+        fields.font.replaceChildren();
+        fields.name.value = "";
+        show("");
+        updateControls();
+      },
+    };
+  }
+
+  function styleControls(field, options) {
+    return {...options, burn_subtitles: field("burn").checked,
+      subtitle_font_size: field("size").valueAsNumber, subtitle_color: field("color").value.toUpperCase(),
+      subtitle_position: field("position").value, subtitle_outline: field("edge").valueAsNumber};
+  }
+
+  function fillStyleControls(field, style) {
+    field("burn").checked = style.burn_subtitles === true;
+    field("size").value = style.subtitle_font_size ?? 52;
+    field("color").value = style.subtitle_color ?? "#ffffff";
+    field("position").value = style.subtitle_position ?? "bottom";
+    field("edge").value = style.subtitle_outline ?? 3;
+  }
+
+  function editorStyle(field, options) {
+    if (!["size", "edge"].every(name => field(name).reportValidity())) return null;
+    return styleControls(field, options);
+  }
+
   function showCaptionSample(sample, container, style) {
     const row = container.querySelector("[data-preview]") ?? container.firstElementChild;
     sample.hidden = !style.burn_subtitles || !row;
@@ -476,9 +647,7 @@
   }
 
   function captionStyle(options) {
-    return {...options, burn_subtitles: el("burn").checked,
-      subtitle_font_size: el("size").valueAsNumber, subtitle_color: el("color").value.toUpperCase(),
-      subtitle_position: el("position").value, subtitle_outline: el("edge").valueAsNumber};
+    return styleControls(el, options);
   }
 
   function updateSample() {
@@ -492,6 +661,7 @@
 
   function mountDraft(state, item) {
     const keepSelection = state.draft?.id === item.id;
+    if (!keepSelection) draftStyles.reset();
     state.draft = item;
     state.range = {start: item.start, end: item.end};
     el("draft-form").hidden = false;
@@ -501,11 +671,7 @@
     el("end").max = state.duration;
     el("start").value = item.start;
     el("end").value = item.end;
-    el("size").value = item.options.subtitle_font_size ?? 52;
-    el("color").value = item.options.subtitle_color || "#ffffff";
-    el("burn").checked = item.options.burn_subtitles === true;
-    el("position").value = item.options.subtitle_position ?? "bottom";
-    el("edge").value = item.options.subtitle_outline ?? 3;
+    fillStyleControls(el, item.options);
     setCues(item.cues, item.start, item.end, keepSelection);
     el("revision").textContent = "Revisión guardada " + item.revision;
     updateSample();
@@ -628,6 +794,31 @@
     }
   }
 
+  async function applyDraftStyle(template) {
+    const state = view;
+    const item = state?.draft;
+    if (!item || state.draftBusy || !visible(state)) return false;
+    const burn = el("burn").checked;
+    setDraftBusy(state, true);
+    try {
+      const {title, clip_file, start, end, options, cues, revision} = item;
+      const body = auth.payload({title, clip_file: clip_file ?? null, start, end, cues, revision, options,
+        style_template: {id: template.id, revision: template.revision}});
+      body.method = "PUT";
+      const result = await request(state, "/drafts/" + item.id, body);
+      if (!visible(state)) return false;
+      state.draft = result;
+      fillStyleControls(el, result.options);
+      el("burn").checked = burn;
+      el("revision").textContent = "Revisión guardada " + result.revision;
+      updateSample();
+      await loadDrafts(state);
+      return visible(state);
+    } finally {
+      setDraftBusy(state, false);
+    }
+  }
+
   function exportCard(state, item) {
     const title = item.title || "Clip editado";
     const card = node("article", undefined, "beta-clip");
@@ -724,6 +915,11 @@
   el("drafts").addEventListener("change", event => {
     if (view) void openDraft(view, event.target.value);
   });
+  const draftStyles = mountCaptionStyles("editorial-styles", {
+    style: () => editorStyle(el, view?.draft?.options),
+    snapshot: () => view?.draft?.style_template,
+    apply: applyDraftStyle,
+  });
   el("draft-form").addEventListener("submit", event => { event.preventDefault(); void draftAction("save"); });
   el("draft-form").addEventListener("input", updateSample);
   trackCaptionCue(el("cues"), updateSample);
@@ -751,5 +947,6 @@
   });
 
   window.ClipForgeEditorial = {selectJob, createManualDraft};
-  window.ClipForgeCaptionFields = {cueInput, cueRow, readCues, addCue, replaceCueRows, trackCaptionCue, showCaptionSample};
+  window.ClipForgeCaptionFields = {cueInput, cueRow, readCues, addCue, replaceCueRows, trackCaptionCue,
+    showCaptionSample, styleControls, fillStyleControls, editorStyle, mountCaptionStyles};
 })();

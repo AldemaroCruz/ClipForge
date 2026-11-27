@@ -242,9 +242,12 @@ class PrivateApiBoundaryTests(unittest.TestCase):
         ):
             self.assertEqual(self.client.post("/beta/uploads", headers=headers, json={}).status_code, 401)
             self.assertEqual(self.client.put(DRAFT_PATH, headers=headers, json={}).status_code, 401)
+            self.assertEqual(self.client.get("/caption-styles", headers=headers).status_code, 401)
             headers["Cookie"] = f"{auth.SESSION_COOKIE}={session_token}"
             self.assertEqual(self.client.post("/beta/uploads", headers=headers, json={}).status_code, 403)
             self.assertEqual(self.client.put(DRAFT_PATH, headers=headers, json={}).status_code, 403)
+            self.assertEqual(self.client.post("/caption-styles", headers=headers, json={}).status_code, 403)
+            self.assertEqual(self.client.delete(f"/caption-styles/{JOB_ID}?revision=1", headers=headers).status_code, 403)
             headers["X-CSRF-Token"] = csrf
             self.assertEqual(self.client.post("/beta/uploads", headers={**headers, "Origin": proxy.API_ORIGIN},
                                               json={}).status_code, 403)
@@ -259,3 +262,18 @@ class PrivateApiBoundaryTests(unittest.TestCase):
             self.assertEqual(self.client.post(f"/jobs/{JOB_ID}/exports/{'a' * 32}/retry", headers=headers,
                                               json={}).status_code, 404)
             self.assertEqual(self.client.get(f"/jobs/{JOB_ID}/source", headers=headers).status_code, 404)
+
+    def test_public_proxy_allows_only_style_library_routes(self):
+        for method, path in (
+            ("GET", "/caption-styles"),
+            ("GET", f"/caption-styles/{JOB_ID}"),
+            ("POST", "/caption-styles"),
+            ("PUT", f"/caption-styles/{JOB_ID}"),
+            ("PUT", "/caption-styles/default"),
+            ("DELETE", f"/caption-styles/{JOB_ID}"),
+        ):
+            with self.subTest(method=method, path=path):
+                self.assertTrue(proxy.allowed(method, path))
+        self.assertFalse(proxy.allowed("DELETE", "/caption-styles"))
+        self.assertFalse(proxy.allowed("GET", "/caption-styles/default"))
+        self.assertFalse(proxy.allowed("DELETE", f"/jobs/{JOB_ID}"))

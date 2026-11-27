@@ -9,6 +9,7 @@ from .migrate_project_deletions import REVISION as DELETION_REVISION, upgrade_pr
 
 BETA_REVISION = "cloud_beta01_0001"
 EDITORIAL_REVISION = "cloud_editorial01_0001"
+STYLES_REVISION = "cloud_caption_styles_0001"
 BETA_DDL = (
     """CREATE TABLE cloud_feedback (
         id VARCHAR(32) PRIMARY KEY,
@@ -37,6 +38,20 @@ EDITORIAL_DDL = (
     """CREATE INDEX cloud_selections_day_idx ON cloud_documents ((payload->>'day_utc'))
        WHERE kind='selection'""",
 )
+STYLES_DDL = (
+    """CREATE TABLE cloud_caption_styles (
+        id VARCHAR(32) PRIMARY KEY CHECK(id ~ '^[0-9a-f]{32}$'),
+        owner_id VARCHAR(32) NOT NULL REFERENCES auth_users(id),
+        name VARCHAR(80) NOT NULL CHECK(char_length(name) >= 1),
+        name_key TEXT NOT NULL,
+        font VARCHAR(32) NOT NULL CHECK(font = 'DejaVu Sans Bold'),
+        style JSONB NOT NULL CHECK(jsonb_typeof(style) = 'object'),
+        revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+        is_default BOOLEAN NOT NULL DEFAULT false,
+        UNIQUE(owner_id,name_key))""",
+    """CREATE UNIQUE INDEX cloud_caption_styles_default_idx
+       ON cloud_caption_styles(owner_id) WHERE is_default""",
+)
 
 
 def upgrade_editorial(connection):
@@ -52,6 +67,23 @@ def upgrade_editorial(connection):
         connection.execute(text(statement))
     connection.execute(text("INSERT INTO cloud_editorial_schema_migrations(revision) VALUES (:r)"),
                        {"r": EDITORIAL_REVISION})
+    return "applied"
+
+
+def upgrade_styles(connection):
+    connection.execute(text("""CREATE TABLE IF NOT EXISTS cloud_caption_style_schema_migrations (
+        revision VARCHAR(32) PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp())"""))
+    revisions = connection.execute(text(
+        "SELECT revision FROM cloud_caption_style_schema_migrations ORDER BY revision"
+    )).scalars().all()
+    if revisions == [STYLES_REVISION]:
+        return "current"
+    if revisions:
+        raise ValueError("Unknown cloud caption styles schema revision")
+    for statement in STYLES_DDL:
+        connection.execute(text(statement))
+    connection.execute(text("INSERT INTO cloud_caption_style_schema_migrations(revision) VALUES (:r)"),
+                       {"r": STYLES_REVISION})
     return "applied"
 
 
@@ -72,9 +104,11 @@ def upgrade_beta(engine=None):
             connection.execute(text("INSERT INTO cloud_beta_schema_migrations(revision) VALUES (:r)"), {"r": BETA_REVISION})
         editorial = upgrade_editorial(connection)
         deletion = upgrade_project_deletions(connection)
+        styles = upgrade_styles(connection)
     return {"status": "applied" if not revisions else "current", "revision": BETA_REVISION,
             "editorial_status": editorial, "editorial_revision": EDITORIAL_REVISION,
-            "deletion_status": deletion, "deletion_revision": DELETION_REVISION}
+            "deletion_status": deletion, "deletion_revision": DELETION_REVISION,
+            "styles_status": styles, "styles_revision": STYLES_REVISION}
 
 
 def beta_schema_ready(connection):
@@ -85,6 +119,13 @@ def beta_schema_ready(connection):
 def editorial_schema_ready(connection):
     revisions = connection.execute(text("SELECT revision FROM cloud_editorial_schema_migrations ORDER BY revision")).scalars().all()
     return revisions == [EDITORIAL_REVISION]
+
+
+def styles_schema_ready(connection):
+    revisions = connection.execute(text(
+        "SELECT revision FROM cloud_caption_style_schema_migrations ORDER BY revision"
+    )).scalars().all()
+    return revisions == [STYLES_REVISION]
 
 
 def main():

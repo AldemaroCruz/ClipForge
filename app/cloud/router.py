@@ -20,7 +20,7 @@ from ..auth_db import get_engine
 from ..editorial import EditorialContent, DraftUpdate, ProjectName, RangeChange, RevisionRequest, retime_cues, validate_range
 from ..presentation import Presentation, ExportRequest
 from ..subtitles import SubtitleError, cues_from_segments, to_srt, to_vtt, validate_cues
-from . import clip_captions, project_deletion
+from . import caption_styles, clip_captions, project_deletion
 from . import editorial_selection as selection
 from . import repository as repo
 from .config import beta_enabled
@@ -30,6 +30,10 @@ from .dispatch import reconcile
 router = APIRouter()
 VERSION = "0.4.2"
 SOURCE_PREVIEW_RANGE_BYTES = 8 * 1024 * 1024
+
+
+class CloudDraftUpdate(DraftUpdate):
+    style_template: caption_styles.StyleRevision | None = None
 
 
 def _int_product_route():
@@ -274,7 +278,7 @@ def clip_caption_context(job_id: str, filename: str):
 @router.put("/jobs/{job_id}/clips/{filename}/captions", status_code=202, dependencies=[Depends(_int_product_route)])
 def save_clip_captions(job_id: str, filename: str, payload: clip_captions.ClipCaptionUpdate, request: Request):
     item = clip_captions.save_clip(job_id, filename, payload, request.state.principal)
-    return _dispatch(item) if item["status"] == "queued" else item
+    return _dispatch(item) if payload.render and item["status"] == "queued" else item
 
 
 @router.post("/jobs/{job_id}/clips/{filename}/captions/retry", status_code=202, dependencies=[Depends(_int_product_route)])
@@ -285,7 +289,8 @@ def retry_clip_captions(job_id: str, filename: str, request: Request):
 
 @router.put("/jobs/{job_id}/captions", status_code=202, dependencies=[Depends(_int_product_route)])
 def save_project_captions(job_id: str, payload: clip_captions.ProjectCaptionUpdate, request: Request):
-    return _dispatch(clip_captions.save_project(job_id, payload, request.state.principal))
+    item = clip_captions.save_project(job_id, payload, request.state.principal)
+    return _dispatch(item) if payload.render else item
 
 
 def _workspace(job_id):
@@ -419,6 +424,8 @@ def candidate_to_draft(job_id: str, run_id: str, candidate_id: int, request: Req
              "selection_origin": {"analysis_id": run_id, "candidate_id": str(candidate_id), "mode": "llm",
                                   "range_id": candidate["range_id"], "transcript_sha256": identity["transcript_sha256"],
                                   "provider": item["provider"], "model": item["model"]}}
+    if job["payload"].get("caption_style_template"):
+        draft["style_template"] = job["payload"]["caption_style_template"]
     with get_engine().begin() as connection:
         current = repo.beta_document(connection, principal, job_id)
         previous = repo.document(job_id, "draft", draft_id, connection, required=False)
@@ -460,13 +467,19 @@ def create_draft(job_id: str, payload: EditorialContent, request: Request):
     owner = request.state.principal.id
     fingerprint = hashlib.sha256(repo.packed({"job_id": job_id, "kind": "draft", "content": content}).encode()).hexdigest()
     with repo.request_transaction(owner, request.headers.get("Idempotency-Key"), fingerprint) as (c, previous, key):
+        job = None
         if beta_enabled():
-            repo.beta_document(c, request.state.principal, job_id)
+            job = repo.beta_document(c, request.state.principal, job_id)["payload"]
         if previous:
             if previous["kind"] != "draft" or previous["job_id"] != job_id:
                 raise HTTPException(409, "La clave identifica otra solicitud")
             item = repo.document(job_id, "draft", previous["item_id"], c)["payload"]
         else:
+            if job and job.get("caption_style_template") and (
+                caption_styles.style_values(content["options"])
+                == caption_styles.style_values(clip_captions.project_presentation(job).model_dump())
+            ):
+                item["style_template"] = job["caption_style_template"]
             repo.insert_document(c, job_id, "draft", item)
             repo.remember_request(c, owner, key, fingerprint, job_id, "draft", item["id"])
     return item
@@ -478,15 +491,28 @@ def draft(job_id: str, draft_id: str):
 
 
 @router.put("/jobs/{job_id}/drafts/{draft_id}")
-def update_draft(job_id: str, draft_id: str, payload: DraftUpdate, request: Request):
+def update_draft(job_id: str, draft_id: str, payload: CloudDraftUpdate, request: Request):
     content = _content(job_id, payload)
+    is_beta = beta_enabled()
+    if payload.style_template is not None and not is_beta:
+        raise HTTPException(404, "Función no disponible")
+    principal = request.state.principal
     with get_engine().begin() as c:
-        if beta_enabled():
-            repo.beta_document(c, request.state.principal, job_id)
+        if is_beta:
+            repo.beta_document(c, principal, job_id)
         previous = repo.document(job_id, "draft", draft_id, c)
         if previous["revision"] != payload.revision:
             raise HTTPException(409, "El borrador cambió en otra pestaña")
-        item = {**previous["payload"], **content, "revision": payload.revision+1, "updated_at": time.time()}
+        current = previous["payload"]
+        item = {**current, **content, "revision": payload.revision+1, "updated_at": time.time()}
+        if is_beta:
+            options, template = caption_styles.resolve(c, principal.id, payload.style_template, content["options"],
+                                                        current["options"], current.get("style_template"))
+            item["options"] = options
+            if template:
+                item["style_template"] = template
+            else:
+                item.pop("style_template", None)
         repo.update_document(c, job_id, "draft", item, payload.revision)
     return item
 
@@ -571,6 +597,8 @@ def export_draft(job_id: str, draft_id: str, payload: RevisionRequest, request: 
             "title": snapshot["title"], "clip_file": snapshot["clip_file"] or f"manual_{draft_id[:8]}.mp4",
             "source_clip_file": snapshot["clip_file"], "status": "queued", "created_at": time.time(), "version": VERSION,
             "start": snapshot["start"], "end": snapshot["end"], "options": snapshot["options"], "cues": snapshot["cues"]}
+    if snapshot.get("style_template"):
+        item["style_template"] = snapshot["style_template"]
     pilot = _doc(job_id)["payload"].get("pilot") is True
     key = f"draft-{draft_id}-{payload.revision}" if pilot else None
     return _submit_export(job_id, item, request, pilot=pilot, request_key=key)

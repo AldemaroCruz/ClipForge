@@ -37,11 +37,13 @@ ROUTES = {
         rf"/projects|/jobs/{JOB}(?:/clips/{CLIP}|/source|/workspace|/exports|/exports/{JOB}/files/{EXPORT_FILE})?",
         r"/beta/limits",
         r"/ai/config",
+        rf"/caption-styles(?:/{JOB})?",
         rf"/jobs/{JOB}/(?:selections(?:/context|/{JOB})?|drafts(?:/{JOB})?|deletion)",
         rf"/jobs/{JOB}/clips/{CLIP}/(?:captions|subtitles/(?:srt|vtt))",
     ),
     "POST": (
         r"/auth/(?:login|logout|password|recover|users)",
+        r"/caption-styles",
         rf"/auth/(?:users/{JOB}/deactivate|admin/users/{JOB}/recovery)",
         rf"/beta/(?:uploads|uploads/{JOB}/start|jobs/{JOB}/retry)",
         rf"/jobs/{JOB}/editor/(?:range|exports)",
@@ -49,7 +51,8 @@ ROUTES = {
         rf"/jobs/{JOB}/(?:selections(?:/preview|/{JOB}/candidates/[1-5]/draft)?|drafts(?:/{JOB}/exports)?|deletion)",
         rf"/jobs/{JOB}/clips/{CLIP}/captions/retry",
     ),
-    "PUT": (rf"/jobs/{JOB}/(?:drafts/{JOB}|clips/{CLIP}/captions|captions)",),
+    "PUT": (rf"/jobs/{JOB}/(?:drafts/{JOB}|clips/{CLIP}/captions|captions)", rf"/caption-styles/(?:{JOB}|default)"),
+    "DELETE": (rf"/caption-styles/{JOB}",),
 }
 INBOUND = {
     "accept", "content-type", "cookie", "idempotency-key", "origin",

@@ -167,6 +167,7 @@ def create_account(page, account):
             and created["is_active"] is True,
             "creator_account_creation_identity")
     page.wait_for_function(ready)
+    return created
 
 
 def deactivate_accounts(page, accounts):
@@ -199,7 +200,7 @@ def check_feedback_removed(page, report):
     check(report, "feedback_controls_and_routes_removed")
 
 
-def upload_video(page, path, report, transfer):
+def upload_video(page, path, report, transfer, *, existing_projects=(), track_reservation=None):
     report["step"] = "limits"
     page.locator("#upload-video").wait_for(state="visible")
     page.wait_for_function("() => !document.querySelector('#upload-submit').disabled")
@@ -244,9 +245,16 @@ def upload_video(page, path, report, transfer):
     report["step"] = "browser_upload"
     page.locator("#upload-video").set_input_files(str(path))
     start = monotonic()
-    with page.expect_request(lambda request: request.url == PUBLIC + "/beta/uploads" and request.method == "POST") as sent:
+    with page.expect_response(lambda response: response.url == PUBLIC + "/beta/uploads"
+                              and response.request.method == "POST") as sent:
         page.locator("#upload-submit").click()
-    request = sent.value
+    reserved = sent.value
+    require(reserved.status == 201, "browser_reservation_rejected")
+    reserved_id = reserved.json()["id"]
+    require(ID.fullmatch(reserved_id), "browser_reservation_id")
+    if track_reservation is not None:
+        track_reservation(reserved_id)
+    request = reserved.request
     request_key = request.headers.get("idempotency-key")
     require(request_key, "upload_idempotency_key_missing")
     require(request.post_data_json.get("burn_subtitles") is True
@@ -263,7 +271,7 @@ def upload_video(page, path, report, transfer):
     report["step"] = "worker"
     page.wait_for_function("() => new URL(location.href).searchParams.has('job')")
     job_id = page.evaluate("() => new URL(location.href).searchParams.get('job')")
-    require(ID.fullmatch(job_id), "job_selection_shape")
+    require(job_id == reserved_id, "job_selection_shape")
     page.wait_for_function("""() =>
       /^Completado/.test(document.querySelector('#job-status').textContent) ||
       document.querySelector('#job-status').textContent === 'Fallido'
@@ -285,7 +293,8 @@ def upload_video(page, path, report, transfer):
             and repeated["status"] == 202 and repeated["id"] == job_id, "repeated_submission_changed_job")
     projects = browser_get(page, "/projects")["body"]
     after = browser_get(page, "/jobs/" + job_id)["body"]
-    require([item["id"] for item in projects["projects"]] == [job_id] and after["clips"] == job["clips"],
+    require(sorted(item["id"] for item in projects["projects"]) == sorted((*existing_projects, job_id))
+            and after["clips"] == job["clips"],
             "repeated_submission_changed_results")
     check(report, "idempotent_upload_and_start")
     require(page.evaluate("""() => !Object.values(localStorage).concat(Object.values(sessionStorage))
@@ -1329,7 +1338,7 @@ def verify(browser, args, admin, report, revisions):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["prepare", "verify", "deletion-recheck"])
+    parser.add_argument("mode", choices=["prepare", "verify", "deletion-recheck", "styles"])
     parser.add_argument("--commit", required=True)
     parser.add_argument("--frontend-revision", required=True)
     parser.add_argument("--api-revision", required=True)
@@ -1349,7 +1358,7 @@ def main():
         shared_http.private_file(args.state, must_exist=args.mode == "verify")
         require(args.report != args.state, "report_and_state_paths_must_differ")
         shared_http.private_file(args.report, must_exist=False)
-        require((args.mode == "prepare" and args.video is not None and args.video.is_absolute()
+        require((args.mode in {"prepare", "styles"} and args.video is not None and args.video.is_absolute()
                  and args.video.is_file() and args.video.suffix.lower() == ".mp4") or
                 (args.mode in {"verify", "deletion-recheck"} and args.video is None), "fixture_argument")
         admin = shared_http.validate_admin(json.loads(os.environ.pop("INT_BOOTSTRAP_ADMIN_JSON", "")))
@@ -1372,7 +1381,10 @@ def main():
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(executable_path=str(executable), env=child_env, headless=True)
             try:
-                if args.mode == "deletion-recheck":
+                if args.mode == "styles":
+                    from scripts.int_hito_c_styles_browser import acceptance
+                    acceptance(browser, args, admin, report)
+                elif args.mode == "deletion-recheck":
                     from scripts.int_hito_b_deletion_browser import recheck
                     recheck(browser, args, admin, report)
                 else:

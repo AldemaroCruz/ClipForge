@@ -75,6 +75,29 @@
 .editorial-cue:last-child {
   margin-bottom: 12px;
 }
+.caption-styles {
+  min-width: 0;
+  margin-block: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.caption-styles summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+.caption-styles .actions {
+  gap: 8px;
+  margin-block: 10px 0;
+}
+.caption-styles label {
+  min-width: 0;
+}
+.caption-styles select {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+}
 .caption-text {
   margin-top: 6px;
   min-height: 4.375rem;

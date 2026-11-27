@@ -21,6 +21,8 @@ CLIP = "clip_01.mp4"
 EXPORT = "c" * 32
 DRAFT = "d" * 32
 CAPTION = "f" * 32
+STYLE = "9" * 32
+FONT = "DejaVu Sans Bold"
 CHUNK = 8 * 1024 * 1024
 MAX_SIZE = 2 * CHUNK
 CSP = "default-src 'self'; connect-src 'self' https://storage.googleapis.com; media-src 'self'"
@@ -41,7 +43,8 @@ class BrowserHitoBTest(unittest.TestCase):
                       "manual": None, "manual_keys": [], "manual_retries": [],
                       "ai_configured": True, "analysis": None, "selection_posts": [], "draft": None,
                       "range_posts": [], "draft_updates": [], "approved": {},
-                      "caption": None, "project_caption": None, "caption_updates": [], "deletions": []}
+                      "caption": None, "project_caption": None, "caption_updates": [], "deletions": [],
+                      "saved_style": None}
         self.context = self.browser.new_context(service_workers="block")
         self.addCleanup(self.context.close)
         self.context.route("**/*", self.handle)
@@ -106,7 +109,7 @@ class BrowserHitoBTest(unittest.TestCase):
 
     def api(self, path, request):
         method = request.method
-        if method in {"POST", "PUT"}:
+        if method in {"POST", "PUT", "DELETE"}:
             self.assertEqual(self.csrf, request.headers.get("x-csrf-token"))
         if path == "/environment":
             return {"environment": "INT", "revision": "b" * 40}, 200
@@ -114,6 +117,31 @@ class BrowserHitoBTest(unittest.TestCase):
             return {"user": {"id": "2" * 32, "username": "fixture", "is_admin": self.state["admin"],
                              "permissions": ["users:manage"] if self.state["admin"] else []},
                     "csrf_token": self.csrf}, 200
+        if path == "/caption-styles":
+            item = self.state["saved_style"]
+            if method == "GET":
+                return {"styles": [item] if item else [], "fonts": [{"id": FONT, "label": FONT}]}, 200
+            self.assertIsNone(item)
+            self.state["saved_style"] = {"id": STYLE, "revision": 1, "is_default": False, **request.post_data_json}
+            return self.state["saved_style"], 201
+        if path == "/caption-styles/default" and method == "PUT":
+            item = self.state["saved_style"]
+            update = request.post_data_json
+            if update["id"] is not None:
+                self.assertEqual({"id": item["id"], "revision": item["revision"]}, update)
+            item["is_default"] = update["id"] is not None
+            return {"default": item["id"] if item["is_default"] else None}, 200
+        if path == f"/caption-styles/{STYLE}":
+            item = self.state["saved_style"]
+            if method == "PUT":
+                update = request.post_data_json
+                self.assertEqual(item["revision"], update["revision"])
+                item.update({**update, "revision": item["revision"] + 1})
+                return item, 200
+            if method == "DELETE":
+                self.assertEqual(f"revision={item['revision']}", urlsplit(request.url).query)
+                self.state["saved_style"] = None
+                return {"deleted": True}, 200
         if path == "/beta/limits":
             return {"max_bytes": MAX_SIZE, "min_duration_seconds": 20, "max_duration_seconds": 180,
                     "max_dimension": 1920, "formats": ["MP4 (H.264 + AAC)"], "worker_concurrency": 1,
@@ -168,7 +196,8 @@ class BrowserHitoBTest(unittest.TestCase):
                 self.assertEqual(caption["revision"], update["revision"])
                 self.state["caption_updates"].append(update)
                 caption.update(style=update["style"], cues=update["cues"], revision=caption["revision"] + 1,
-                               status="queued", output=None)
+                               status="queued" if update.get("render", True) else "draft", output=None)
+                self.apply_mock_style(caption, update, "style")
                 return caption, 202
             return caption, 200
         if path == f"/jobs/{JOB}/captions" and method == "PUT" and self.state["project_caption"]:
@@ -178,8 +207,12 @@ class BrowserHitoBTest(unittest.TestCase):
             self.state["caption_updates"].append(update)
             self.assertEqual(self.state["project_caption"]["revision"], update["revision"])
             state = {"style": update["style"], "revision": update["revision"] + 1}
+            self.apply_mock_style(state, update, "style")
             self.state["project_caption"] = state
-            self.state["caption"].update(style=state["style"], revision=self.state["caption"]["revision"] + 1)
+            caption = self.state["caption"]
+            caption.update({**state, "revision": caption["revision"] + 1})
+            if not update.get("render", True):
+                caption.update(status="draft", output=None)
             return state, 200
         if path == f"/jobs/{JOB}/workspace":
             return {"source_duration": self.state.get("duration", 426.55)}, 200
@@ -246,6 +279,7 @@ class BrowserHitoBTest(unittest.TestCase):
                 self.state["draft_updates"].append(updated)
                 self.assertEqual(self.state["draft"]["revision"], updated["revision"])
                 self.state["draft"].update({**updated, "revision": updated["revision"] + 1})
+                self.apply_mock_style(self.state["draft"], updated, "options")
             return self.state["draft"], 200
         if path == f"/jobs/{JOB}/drafts/{DRAFT}/exports" and method == "POST":
             revision = request.post_data_json["revision"]
@@ -258,6 +292,13 @@ class BrowserHitoBTest(unittest.TestCase):
             return item, 202
         self.state["unexpected"].append(path)
         return {}, 404
+
+    def apply_mock_style(self, destination, update, key):
+        if reference := update.get("style_template"):
+            item = self.state["saved_style"]
+            self.assertEqual({"id": item["id"], "revision": item["revision"]}, reference)
+            destination[key] = {**destination[key], **item["style"]}
+            destination["style_template"] = {**reference, "font": item["font"]}
 
     @staticmethod
     def cue_fixture():
@@ -513,6 +554,121 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertEqual("top", editor.get_by_label("Posición").input_value())
         self.assertEqual("6", editor.get_by_label("Grosor del contorno").input_value())
         self.assertEqual([], self.state["selection_posts"])
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
+    def test_saved_caption_style_manages_presets_and_applies_without_rendering(self):
+        cues = self.cue_fixture()
+        style = {"burn_subtitles": True, "subtitle_font_size": 52, "subtitle_color": "#FFFFFF",
+                 "subtitle_position": "bottom", "subtitle_outline": 3}
+        self.state.update(status="completed", project_caption={"style": style.copy(), "revision": 1},
+                          sibling_clip={"file": "clip_02.mp4", "start": 401, "end": 426}, caption={
+                              "start": 392, "end": 421.5, "duration": 29.5, "cues": cues,
+                              "style": style.copy(), "revision": 1, "status": "completed", "output": None,
+                          })
+        self.page.set_viewport_size({"width": 390, "height": 844})
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        self.page.locator(f'[data-clip-file="{CLIP}"]').get_by_role("button", name="Editar subtítulos").click()
+        panel = self.page.locator("#clip-caption-styles")
+        panel.locator("summary").click()
+        select = panel.get_by_label("Estilo guardado")
+        expect(select).to_be_enabled()
+        name = panel.get_by_label("Nombre del estilo")
+        expect(panel.get_by_label("Fuente")).to_have_value(FONT)
+        self.page.locator("#clip-caption-size").fill("76")
+        self.page.locator("#clip-caption-color").fill("#b8273d")
+        self.page.locator("#clip-caption-position").select_option("top")
+        name.fill("Estilo del portal")
+        name.press("Enter")
+        panel.get_by_role("button", name="Guardar como estilo nuevo").click()
+        expect(panel.get_by_role("status")).to_have_text("Estilo guardado.")
+        expect(select).to_have_value(STYLE)
+        self.assertEqual([], self.state["caption_updates"])
+        panel.get_by_role("button", name="Usar en trabajos nuevos").click()
+        expect(panel.get_by_role("status")).to_have_text("Estilo predeterminado para trabajos nuevos.")
+        self.assertTrue(self.state["saved_style"]["is_default"])
+        expect(select.locator("option:checked")).to_have_text("Estilo del portal · predeterminado")
+
+        self.page.locator("#clip-caption-size").fill("61")
+        text = self.page.locator("#clip-caption-cues textarea")
+        text.fill("Edición todavía sin guardar.")
+        self.page.locator('#clip-caption-cues [data-field="start"]').fill("1.25")
+        panel.get_by_role("button", name="Aplicar estilo", exact=True).click()
+        expect(panel.get_by_role("status")).to_have_text("Estilo aplicado.")
+        expect(text).to_have_value("Edición todavía sin guardar.")
+        expect(self.page.locator('#clip-caption-cues [data-field="start"]')).to_have_value("1.25")
+        expect(self.page.locator("#clip-caption-sample .caption-frame span")).to_have_text("Edición todavía sin guardar.")
+        expect(self.page.locator("#clip-caption-size")).to_have_value("76")
+        saved = self.state["caption"]
+        self.assertEqual(cues, saved["cues"])
+        self.assertEqual("draft", saved["status"])
+        self.assertFalse(self.state["caption_updates"][-1]["render"])
+        self.assertEqual({"id": STYLE, "revision": 1, "font": FONT}, saved["style_template"])
+
+        scope = []
+
+        def confirm_all(dialog):
+            scope.append(dialog.message)
+            dialog.accept()
+
+        self.page.once("dialog", confirm_all)
+        panel.get_by_role("button", name="Aplicar estilo a todos").click()
+        expect(panel.get_by_role("status")).to_have_text("Estilo aplicado.")
+        self.assertIn("los 2 clips de este proyecto", scope[0])
+        self.assertIn("reemplazará", scope[0])
+        self.assertNotIn("cues", self.state["caption_updates"][-1])
+        self.assertFalse(self.state["caption_updates"][-1]["render"])
+        expect(text).to_have_value("Edición todavía sin guardar.")
+
+        name.fill("Estilo renombrado")
+        self.page.locator("#clip-caption-size").fill("89")
+        panel.get_by_role("button", name="Renombrar estilo").click()
+        expect(panel.get_by_role("status")).to_have_text("Estilo actualizado.")
+        self.assertEqual(76, self.state["saved_style"]["style"]["subtitle_font_size"])
+        panel.get_by_role("button", name="Actualizar con los ajustes del editor").click()
+        expect(panel.get_by_role("status")).to_have_text("Estilo actualizado.")
+        self.assertEqual(89, self.state["saved_style"]["style"]["subtitle_font_size"])
+        self.assertEqual(76, self.state["caption"]["style"]["subtitle_font_size"])
+        self.assertEqual(1, self.state["caption"]["style_template"]["revision"])
+        self.page.once("dialog", lambda dialog: dialog.accept())
+        panel.get_by_role("button", name="Eliminar estilo").click()
+        expect(panel.get_by_role("status")).to_have_text("Estilo eliminado.")
+        self.assertIsNone(self.state["saved_style"])
+        self.assertEqual(2, len(self.state["caption_updates"]))
+        self.assertEqual([], self.state["selection_posts"])
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
+    def test_saved_style_applies_to_editorial_draft_without_changing_pending_content(self):
+        cues = self.cue_fixture()
+        self.state.update(status="completed", saved_style={"id": STYLE, "name": "Estilo del portal",
+                          "revision": 1, "font": FONT, "is_default": False, "style": {
+                              "subtitle_font_size": 76, "subtitle_color": "#BA2988",
+                              "subtitle_position": "top", "subtitle_outline": 6,
+                          }})
+        self.store_draft(title="Título guardado", start=392, end=421.5, cues=cues,
+                         options={"burn_subtitles": True, "subtitle_font_size": 52})
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        self.page.get_by_text("Propuestas por IA y edición", exact=True).click()
+        self.page.locator("#editorial-start").fill("393")
+        text = self.page.locator("#editorial-cues textarea")
+        text.fill("Edición después de abrir.")
+        panel = self.page.locator("#editorial-styles")
+        panel.locator("summary").click()
+        panel.get_by_label("Estilo guardado").select_option(STYLE)
+        panel.get_by_role("button", name="Aplicar estilo", exact=True).click()
+        expect(panel.get_by_role("status")).to_have_text("Estilo aplicado.")
+        expect(text).to_have_value("Edición después de abrir.")
+        expect(self.page.locator("#editorial-start")).to_have_value("393")
+        expect(self.page.locator("#editorial-sample .caption-frame span")).to_have_text("Edición después de abrir.")
+        expect(self.page.locator("#editorial-size")).to_have_value("76")
+        saved = self.state["draft"]
+        self.assertEqual((392, 421.5, cues), (saved["start"], saved["end"], saved["cues"]))
+        self.assertEqual(2, saved["revision"])
+        self.assertEqual({"id": STYLE, "revision": 1, "font": FONT}, saved["style_template"])
+        self.assertEqual([], self.state["selection_posts"])
+        self.assertEqual([], self.state["range_posts"])
+        self.assertEqual({}, self.state["approved"])
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])
 

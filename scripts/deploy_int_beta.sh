@@ -297,6 +297,32 @@ browser_acceptance() {
         --report "$reports/browser-$phase.json" "$@"
 }
 
+verify_styles_baseline() {
+    local receipt="${INT_C04_ACCEPTANCE:-}"
+    [[ "$receipt" == "$reports/c04-baseline.json" && -f "$receipt" && ! -L "$receipt" ]]
+    jq -e --arg commit "$GITHUB_SHA" --slurpfile previous "$reports/previous-live.json" '
+        .schema == "clipforge-int-c04-baseline-1" and .status == "passed" and .target_commit == $commit and
+        (.baseline | {
+            commit, frontend_revision, api_revision, worker_image, migrator_image,
+            editorial: (.editorial | del(.api_daily_limit))
+        }) == $previous[0]
+    ' "$receipt" > /dev/null
+}
+
+restore_migrator_pin() {
+    local image current
+    image="$(jq -er '.migrator_image' "$reports/previous-live.json")" || return
+    [[ "$image" =~ ^us-central1-docker\.pkg\.dev/clipforgebeta2/clipforge-int/beta-web@sha256:[a-f0-9]{64}$ ]] || return
+    current="$(run jobs describe "$migrator" --format='value(spec.template.spec.template.spec.containers[0].image)')" || return
+    if [[ "$image" != "$current" ]]; then
+        run jobs update "$migrator" --image "$image"
+    fi
+}
+
+run_migration() {
+    CLOUDSDK_AUTH_ACCESS_TOKEN="$CLIPFORGE_GCP_DEPLOY_TOKEN" run jobs execute "$migrator" --wait
+}
+
 restore_failed_delivery() {
     if [[ -f "$reports/previous-live.json" ]] && restore_previous; then
         printf '%s\n' 'The last healthy public beta revisions, worker and migrator pin were restored.' > "$reports/acceptance-failure.txt"
@@ -324,17 +350,40 @@ case "${1:-}" in
             -backend-config=bucket=clipforgebeta2-tfstate-int -backend-config=prefix=terraform/int-beta
         tf validate -no-color
         capture_previous
-        trap rollback_delivery EXIT
-        apply_beta false "run-$GITHUB_RUN_ID-b$GITHUB_RUN_ATTEMPT" private
-        trap - EXIT
+        if [[ -n "${INT_C04_ACCEPTANCE:-}" ]]; then
+            verify_styles_baseline
+            # The additive migration can run while the accepted API and public frontend still serve traffic.
+            if ! run jobs update "$migrator" --image "$TF_VAR_web_image"; then
+                restore_migrator_pin
+                exit 1
+            fi
+        else
+            trap rollback_delivery EXIT
+            apply_beta false "run-$GITHUB_RUN_ID-b$GITHUB_RUN_ATTEMPT" private
+            trap - EXIT
+        fi
         ;;
     migrate)
-        trap rollback_delivery EXIT
-        CLOUDSDK_AUTH_ACCESS_TOKEN="$CLIPFORGE_GCP_DEPLOY_TOKEN" run jobs execute "$migrator" --wait
-        trap - EXIT
+        if [[ -n "${INT_C04_ACCEPTANCE:-}" ]]; then
+            if ! run_migration; then
+                restore_migrator_pin
+                exit 1
+            fi
+        else
+            trap rollback_delivery EXIT
+            run_migration
+            trap - EXIT
+        fi
         ;;
     acceptance-open)
-        if [[ -n "${INT_DELETION_REPLAY_REPORT:-}" ]]; then
+        if [[ -n "${INT_C04_ACCEPTANCE:-}" ]]; then
+            verify_styles_baseline
+            create_fixture
+            : > "$DELIVERY_DIR/c04-promoting"
+            apply_beta true "run-$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT" replacement
+            capture_rollout after
+            browser_acceptance styles --video "$DELIVERY_DIR/fixture.mp4"
+        elif [[ -n "${INT_DELETION_REPLAY_REPORT:-}" ]]; then
             [[ "$INT_DELETION_REPLAY_REPORT" == "$reports/deletion-replay.json" && ! -L "$INT_DELETION_REPLAY_REPORT" ]]
             jq -e '.schema == "clipforge-int-hito-b-delete-evidence-1" and .status == "passed"
                 and .commit == "18924d0cafddaaa30c986e52bb4cfc3776c06059"' \
@@ -359,7 +408,11 @@ case "${1:-}" in
         capacity_acceptance "${1#capacity-}"
         ;;
     rollback)
-        restore_failed_delivery
+        if [[ -n "${INT_C04_ACCEPTANCE:-}" && ! -f "$DELIVERY_DIR/c04-promoting" ]]; then
+            restore_migrator_pin
+        else
+            restore_failed_delivery
+        fi
         ;;
     *)
         exit 2
