@@ -45,6 +45,7 @@ de esa candidata verifica los tres incrementos.
 | [45921581845](https://github.com/AldemaroCruz/ClipForge/actions/runs/45921581845) | `df593f354730c56e945121cea8809ffcbf3c0bc7` corrige el selector rápido, el estado HTTP 202 y el nombre del enlace VTT editorial. Pasaron el MP4 y los subtítulos corregidos. La selección breve devolvió cero propuestas para 74 rangos elegibles y se restauró la base. [Recibo del intento](https://github.com/AldemaroCruz/ClipForge/actions/runs/45921581845/artifacts/15165459107) |
 | [45924575800](https://github.com/AldemaroCruz/ClipForge/actions/runs/45924575800) | `3996c23c657bd3f220d08b9b9b2f8934236a5939` incorpora un único reintento breve, con nuevo consentimiento, para una respuesta real vacía. Se comprobaron C01, C02 y C03 durante el despliegue. El flujo completo falló después con HTTP 429 no JSON en el POST de previsualización editorial. [Recibo del intento](https://github.com/AldemaroCruz/ClipForge/actions/runs/45924575800/artifacts/15168803647) |
 | [45932688939](https://github.com/AldemaroCruz/ClipForge/actions/runs/45932688939) | `34483012f5626f8d4e24d194a403f0c3339120e9` acota el reintento de rango y usa WIF renovable. Frontend, API, publicación y migración pasaron. GitHub cerró el job al perder comunicación con el runner administrado durante la aceptación, el 27 de noviembre a las 04:43:41 UTC. El paso de conservación de evidencia quedó pendiente y el portal seguía sirviendo esa candidata. [Job de despliegue](https://github.com/AldemaroCruz/ClipForge/actions/runs/45932688939/job/140291299219) |
+| [46002851221](https://github.com/AldemaroCruz/ClipForge/actions/runs/46002851221) | `d39e61acf4a89f8dd4d738184808afb4b674eb05` agrega recibos por etapa. Frontend, pruebas de API, Gitleaks y la revisión Bandit de INT pasaron. El build se detuvo con 404 en los cuatro paquetes Kerberos Noble `1.20.1-6ubuntu2.10`. [Validación conservada](https://github.com/AldemaroCruz/ClipForge/actions/runs/46002851221/artifacts/15198503797) |
 
 El recibo de validación liga el SHA a la imagen web
 `sha256:b8b8f544142ab0ed73099b1056667e76d6b4b5253833cdffdb420cb8bad07ef5`
@@ -70,6 +71,13 @@ corrida. Permite un solo reintento del mismo POST de rango ante 429
 no JSON y usa las credenciales WIF renovables de la misma identidad
 durante la aceptación y su reversión. El recibo de la corrida anterior
 reúne evidencia real y queda fuera del contrato de replay del workflow.
+
+El siguiente build actualiza únicamente los cuatro paquetes Kerberos
+afectados a `1.20.1-6ubuntu2.12`. Se verificaron las firmas de los
+índices Noble Updates y Noble Security, y la identidad y el SHA-256 de
+cada paquete amd64. La candidata nueva se valida con los gates vigentes
+y requiere sus propios recibos de aceptación.
+[Índice firmado de Noble Updates](https://archive.ubuntu.com/ubuntu/dists/noble-updates/InRelease)
 
 ### Punto de continuación
 
@@ -154,8 +162,8 @@ intento anterior había consumido una llamada breve.
 La consulta de recuperación del 27 de noviembre a las 12:51 UTC
 confirmó **7 de 10 reservas usadas** después de la limpieza de las
 cuentas. Quedó una reserva en documentos y seis en el registro de
-proyectos eliminados. La política exige al menos cuatro reservas
-disponibles para una aceptación nueva. La ventana siguiente comienza
+proyectos eliminados. El recorrido completo requiere al menos cuatro
+reservas disponibles para una aceptación nueva. La ventana siguiente comienza
 el 28 de noviembre a las 00:00 UTC, el **27 a las 18:00 de Guatemala**.
 La lectura debe repetirse antes de revisar el único job `deploy`
 pendiente con los artefactos de su propia corrida.

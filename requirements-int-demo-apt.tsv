@@ -1,10 +1,10 @@
 ca-certificates	20260816ubuntu0.24.04.2	all	f9fbacd417b515450b831032cc39d18059e9874e67525679a43c16071dabf9a0	https://archive.ubuntu.com/ubuntu/pool/main/c/ca-certificates/ca-certificates_20260816ubuntu0.24.04.2_all.deb
 libexpat1	2.6.1-2ubuntu0.7	amd64	780696796d079bd43f559938eb85e57ce2c220f837f363973a250fdebaaac1e0	https://archive.ubuntu.com/ubuntu/pool/main/e/expat/libexpat1_2.6.1-2ubuntu0.7_amd64.deb
-libgssapi-krb5-2	1.20.1-6ubuntu2.10	amd64	0d4a0187bcdbbe3e6a10bfa574100087d12052d0d0ef28614fd6210021c587b2	https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libgssapi-krb5-2_1.20.1-6ubuntu2.10_amd64.deb
-libk5crypto3	1.20.1-6ubuntu2.10	amd64	273f7cc95a68d927d7f71c3e78b7717a16a8d86e646a206bae7bf797150ae9db	https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libk5crypto3_1.20.1-6ubuntu2.10_amd64.deb
+libgssapi-krb5-2	1.20.1-6ubuntu2.12	amd64	c55fd903e1906f38fc9ccf7ecc4f1f38c72a9a417ae2a4642cdcbfd53b3b7677	https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libgssapi-krb5-2_1.20.1-6ubuntu2.12_amd64.deb
+libk5crypto3	1.20.1-6ubuntu2.12	amd64	418e89e180a4869997c1e67c3a60c0288e47ff2c86da64a48acc6a2ae87a1622	https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libk5crypto3_1.20.1-6ubuntu2.12_amd64.deb
 libkeyutils1	1.6.3-3build1	amd64	0679f198b0128179e46cdf956fb2022c23c758664c00bc8efa0382d509683a8a	https://archive.ubuntu.com/ubuntu/pool/main/k/keyutils/libkeyutils1_1.6.3-3build1_amd64.deb
-libkrb5-3	1.20.1-6ubuntu2.10	amd64	60b48c5a3233f1d8caba30d6573edc8e131911ab6d63adcd664f7cbe62708362	https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libkrb5-3_1.20.1-6ubuntu2.10_amd64.deb
-libkrb5support0	1.20.1-6ubuntu2.10	amd64	9224ede3246a82a845ea97652ecfae57f88e8d8f520d8a186f9157167574fb34	https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libkrb5support0_1.20.1-6ubuntu2.10_amd64.deb
+libkrb5-3	1.20.1-6ubuntu2.12	amd64	54b88e9bb6a98d6f4792948d6d87a1fdcfbcfef2b98498b59d71208c3cdf2c66	https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libkrb5-3_1.20.1-6ubuntu2.12_amd64.deb
+libkrb5support0	1.20.1-6ubuntu2.12	amd64	f13093e6ef78a4af392ae67106a329783b2703fa51b5b32d25f7ec335fc15f76	https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libkrb5support0_1.20.1-6ubuntu2.12_amd64.deb
 libldap2	2.6.10+dfsg-0ubuntu0.24.04.1	amd64	7f3f8e565401256f21d5aa562c9f92dbb63537b73aaea6283e4db5264f1598f4	https://archive.ubuntu.com/ubuntu/pool/main/o/openldap/libldap2_2.6.10+dfsg-0ubuntu0.24.04.1_amd64.deb
 libpq5	16.15-0ubuntu0.24.04.1	amd64	3f96dd36bcd7841172c1ead4965da20a193bb9ccf9a93a3f5a3ac7f56369dbb1	https://archive.ubuntu.com/ubuntu/pool/main/p/postgresql-16/libpq5_16.15-0ubuntu0.24.04.1_amd64.deb
 libpython3.12-minimal	3.12.3-1ubuntu0.17	amd64	d646ad7112b5adec21ba0e1af015f04ae8ca7f5efdc619622547dd6673c4c14b	https://archive.ubuntu.com/ubuntu/pool/main/p/python3.12/libpython3.12-minimal_3.12.3-1ubuntu0.17_amd64.deb
