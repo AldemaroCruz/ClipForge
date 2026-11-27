@@ -49,6 +49,11 @@ EDITORIAL_BRIEF = (
     "Puede mostrar cualquiera de estas acciones: guardar semillas de maíz, turnarse para regar "
     "o enseñar a las escuelas. Una acción clara basta para proponer un clip."
 )
+EMPTY_SELECTION_BRIEF = (
+    "Elige un solo range_id del catálogo con una frase clara sobre el huerto, el maíz, "
+    "el riego o el trabajo de los vecinos. Basta que el fragmento mencione una de esas acciones "
+    "de la historia del huerto comunitario. Explica en qué momento se escucha."
+)
 
 
 def cloud_revisions(frontend, api):
@@ -934,14 +939,28 @@ def fetch_editorial_export(page, job, draft, receipt, scratch, *, check_pixels=T
             "size": draft["options"]["subtitle_font_size"], "burned_pixels": pixels, "wall_seconds": ready_seconds}
 
 
+def complete_short_selection(page, job, model, report):
+    editorial = report["editorial"]
+    report["step"] = "real_provider_selection"
+    started = start_selection(page, job, model)
+    selection = finish_selection(page, job, started, model, 120, allow_empty=True)
+    if not selection["proposals"]:
+        editorial["initial_empty_selection"] = {key: value for key, value in selection.items() if key != "id"}
+        report["step"] = "retry_empty_short_editorial_selection_with_consent"
+        started = start_selection(page, job, model, brief=EMPTY_SELECTION_BRIEF)
+        require(started[0] != selection["id"], "editorial_retry_reused_empty_selection")
+        selection = finish_selection(page, job, started, model, 120, allow_empty=True)
+    editorial["selection"] = {key: value for key, value in selection.items() if key != "id"}
+    require(selection["proposals"] > 0, "real_provider_proposal_receipt")
+    return selection
+
+
 def prepare_editorial(page, job, args, report, style):
     editorial = {}
+    report["editorial"] = editorial
     selection = None
     if args.editorial_model:
-        report["step"] = "real_provider_selection"
-        started = start_selection(page, job, args.editorial_model)
-        selection = finish_selection(page, job, started, args.editorial_model, 120)
-        editorial["selection"] = {key: value for key, value in selection.items() if key != "id"}
+        selection = complete_short_selection(page, job, args.editorial_model, report)
     else:
         config = browser_get(page, "/ai/config")
         require(config["status"] == 200 and config["body"]["configured"] is False
@@ -949,9 +968,9 @@ def prepare_editorial(page, job, args, report, style):
                 "editorial_disabled_state")
         editorial["selection"] = {"provider": "disabled", "real_provider_called": False,
                                   "status": "provider_not_configured"}
-    report["editorial"] = editorial
     report["step"] = "editorial_draft_and_burned_subtitles"
-    open_late_draft(page, job, 86, 109, generated=selection is not None, expected_style=style)
+    open_late_draft(page, job, 86, 109, generated=selection is not None, expected_style=style,
+                    analysis_id=selection["id"] if selection else None)
     exports = []
     variants = (
         ("Edición y acción.\nCorazón y mañana.", 32, "#FF0000"),

@@ -483,13 +483,6 @@ def load_provider_evidence(path, model):
             "provider_overlap": overlap, "cases": receipts}
 
 
-EMPTY_SELECTION_BRIEF = (
-    "Elige un solo range_id del catálogo con una frase clara sobre el huerto, el maíz, "
-    "el riego o el trabajo de los vecinos. Basta que el fragmento mencione una de esas acciones "
-    "de la historia del huerto comunitario. Explica en qué momento se escucha."
-)
-
-
 def editorial_capacity(cases, args, report, reused_provider=None):
     editorial = {}
     report["editorial"] = editorial
@@ -520,7 +513,7 @@ def editorial_capacity(cases, args, report, reused_provider=None):
             report["case"] = case.label
             report["step"] = "retry_empty_editorial_selection_with_consent"
             receipt = browser_test.start_selection(case.page, case.job_id, args.editorial_model,
-                                                   brief=EMPTY_SELECTION_BRIEF)
+                                                   brief=browser_test.EMPTY_SELECTION_BRIEF)
             require(receipt[0] != initial["id"], "editorial_retry_reused_empty_selection")
             retry = browser_test.finish_selection(case.page, case.job_id, receipt, args.editorial_model, 1200)
             row = editorial[case.label]
