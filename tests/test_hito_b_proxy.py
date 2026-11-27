@@ -9,9 +9,11 @@ from fastapi.testclient import TestClient
 from requests.structures import CaseInsensitiveDict
 
 from app import auth, int_beta, int_beta_proxy as proxy
+from app.cloud import router as media
 
 
 JOB_ID = "b" * 32
+SOURCE_PATH = f"/jobs/{JOB_ID}/source"
 CLIP_PATH = f"/jobs/{JOB_ID}/clips/clip_01.mp4"
 DRAFT_PATH = f"/jobs/{JOB_ID}/drafts/" + "c" * 32
 
@@ -128,6 +130,77 @@ class PrivateApiBoundaryTests(unittest.TestCase):
                         [(proxy.PROXY_ORIGIN_HEADER, proxy.PUBLIC_ORIGIN)] * 2):
             with self.subTest(headers=headers):
                 self.assertEqual(self.client.get("/environment", headers=headers).status_code, 403)
+
+    def test_int_source_preview_bounds_only_large_open_ended_original_ranges(self):
+        token = secrets.token_urlsafe(32)
+        principal = auth.Principal("a" * 32, "member_fixture", False, True, "c" * 32)
+        signed_in = (SimpleNamespace(), None, principal)
+        headers = {proxy.PROXY_ORIGIN_HEADER: proxy.PUBLIC_ORIGIN, "Cookie": f"{auth.SESSION_COOKIE}={token}"}
+        config = auth.Settings(proxy.PUBLIC_ORIGIN, secure=True, ttl_seconds=3600)
+        database = Mock()
+        database.execute.return_value.scalar_one_or_none.return_value = JOB_ID
+        cap = 8 * 1024 * 1024
+        total = 2 * cap + 98
+        original = {"name": "original", "generation": "7", "content_type": "video/mp4", "bytes": total}
+        clip = {**original, "name": "clip", "generation": "9", "bytes": cap + 18}
+        doc = {"payload": {"clips": [{"file": "clip_01.mp4"}]},
+               "manifest": {"input.mp4": original, "clip_01.mp4": clip}}
+        cases = (
+            (SOURCE_PATH, total, "bytes=1024-", f"bytes=1024-{1024 + cap - 1}", 1024, 1024 + cap - 1),
+            (SOURCE_PATH, total, f"bytes={total - 12}-", f"bytes={total - 12}-{total - 1}", total - 12, total - 1),
+            (SOURCE_PATH, total, f"bytes=0-{cap}", f"bytes=0-{cap}", 0, cap),
+            (SOURCE_PATH, total, "bytes=-7", "bytes=-7", total - 7, total - 1),
+            (SOURCE_PATH, 16, "bytes=2-", "bytes=2-", 2, 15),
+            (SOURCE_PATH, total, None, None, 0, total - 1),
+            (CLIP_PATH, clip["bytes"], "bytes=0-", "bytes=0-", 0, clip["bytes"] - 1),
+        )
+        with (
+            patch.object(auth, "settings", return_value=config),
+            patch.object(auth, "_http_storage", side_effect=lambda: nullcontext(database)),
+            patch.object(auth, "_session", side_effect=lambda db, supplied: signed_in if supplied == token else None),
+            patch.object(media, "beta_enabled", return_value=True),
+            patch.object(media, "_doc", return_value=doc) as project,
+            patch.object(media.storage, "open_object") as opened,
+        ):
+            for path, size, requested, forwarded, start, end in cases:
+                with self.subTest(path=path, size=size, requested=requested):
+                    original["bytes"] = size
+                    object_item = original if path == SOURCE_PATH else clip
+                    content = b"x" * (end - start + 1)
+                    response_headers = CaseInsensitiveDict({"Content-Length": str(len(content))})
+                    if requested is not None:
+                        response_headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+                    upstream = Mock(status_code=206 if requested is not None else 200, headers=response_headers)
+                    upstream.iter_content.return_value = iter((content,))
+                    opened.reset_mock()
+                    opened.return_value = upstream
+                    result = self.client.get(path, headers={**headers, "Range": requested} if requested else headers)
+                    opened.assert_called_once_with(object_item, forwarded)
+                    self.assertEqual((result.status_code, result.content), (upstream.status_code, content))
+                    self.assertEqual(result.headers["content-length"], str(len(content)))
+                    self.assertEqual(result.headers.get("content-range"), response_headers.get("Content-Range"))
+                    self.assertEqual(result.headers["accept-ranges"], "bytes")
+                    self.assertEqual(result.headers["content-type"], "video/mp4")
+                    self.assertEqual(result.headers["cache-control"], "no-store")
+                    self.assertTrue(result.headers["content-disposition"].startswith(
+                        "inline;" if path == SOURCE_PATH else "attachment;"))
+                    upstream.close.assert_called_once_with()
+
+            original["bytes"] = total
+            opened.reset_mock()
+            opened.side_effect = media.storage.StorageError("synthetic upstream refusal")
+            unsatisfiable = f"bytes={total}-"
+            result = self.client.get(SOURCE_PATH, headers={**headers, "Range": unsatisfiable})
+            self.assertEqual(result.status_code, 503)
+            opened.assert_called_once_with(original, unsatisfiable)
+
+            opened.reset_mock()
+            project.reset_mock()
+            database.execute.return_value.scalar_one_or_none.return_value = None
+            result = self.client.get(SOURCE_PATH, headers={**headers, "Range": "bytes=0-"})
+            self.assertEqual(result.status_code, 404)
+            project.assert_not_called()
+            opened.assert_not_called()
 
     def test_cleanup_trigger_is_private_and_reports_retryable_failures(self):
         path = int_beta.CLEANUP_PATH

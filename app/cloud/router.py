@@ -29,6 +29,7 @@ from .dispatch import reconcile
 
 router = APIRouter()
 VERSION = "0.4.2"
+SOURCE_PREVIEW_RANGE_BYTES = 8 * 1024 * 1024
 
 
 def _int_product_route():
@@ -175,9 +176,27 @@ def _needs_dispatch(job_id, kind, items):
             """), {"job": job_id, "kind": kind}).scalar_one()
 
 
+def _source_preview_range(item, range_header):
+    size = item.get("bytes")
+    if type(size) is not int or size <= SOURCE_PREVIEW_RANGE_BYTES:
+        return range_header
+    opened = re.fullmatch(r"bytes=([0-9]{1,19})-", range_header or "")
+    if not opened:
+        return range_header
+    start = int(opened.group(1))
+    if start >= size:
+        return range_header
+    end = min(start + SOURCE_PREVIEW_RANGE_BYTES - 1, size - 1)
+    return f"bytes={start}-{end}"
+
+
 def _stream(item, request, filename, inline=False, *, chunk_large=False):
+    range_header = request.headers.get("Range")
+    if chunk_large and beta_enabled():
+        # Browsers can request the next window when playback needs more bytes.
+        range_header = _source_preview_range(item, range_header)
     try:
-        upstream = storage.open_object(item, request.headers.get("Range"))
+        upstream = storage.open_object(item, range_header)
     except storage.StorageError:
         raise HTTPException(503, "El objeto privado no está disponible") from None
     def chunks():
@@ -191,7 +210,7 @@ def _stream(item, request, filename, inline=False, *, chunk_large=False):
     if content_range is not None:
         headers["Content-Range"] = content_range
     length = upstream.headers.get("Content-Length")
-    # Large open-ended ranges must remain chunked across both Cloud Run hops.
+    # Large responses must remain chunked across both Cloud Run hops.
     if length is not None and (not chunk_large or (length.isdecimal() and int(length) <= 30 * 1024 * 1024)):
         headers["Content-Length"] = length
     return StreamingResponse(chunks(), status_code=upstream.status_code, media_type=item["content_type"], headers=headers)

@@ -883,17 +883,13 @@ def click_response(page, control, path, method, status, *, failing_prerequisite=
         range_preview = (retry_range_capacity and method == "POST" and response.url == PUBLIC + path
                          and re.fullmatch(r"/jobs/[0-9a-f]{32}/editor/range", path))
         approval_key = approved_export_retry_key(response, path, approval_revision)
-        if approval_key:
+        if approval_key or draft_save or range_preview:
             first = response
             for delay_ms in (1_500, 3_000, 6_000):
-                print("INT browser retrying the same approved export after a platform 429.", flush=True)
+                print("INT browser retrying the same editorial request after a platform 429.", flush=True)
                 response = retry_editorial_request(page, control, first, approval_key=approval_key, delay_ms=delay_ms)
                 if not platform_throttled(response):
                     break
-        elif draft_save or range_preview:
-            action = "draft PUT" if draft_save else "read-only range POST"
-            print(f"INT browser retrying the same {action} after a platform 429.", flush=True)
-            response = retry_editorial_request(page, control, response)
     if response.status != status:
         stage = "prerequisite" if failing_prerequisite and response.url == PUBLIC + failing_prerequisite else "request"
         content_type = response.headers.get("content-type", "").partition(";")[0].strip().lower()
