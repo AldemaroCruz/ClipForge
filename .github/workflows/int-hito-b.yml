@@ -443,9 +443,8 @@ jobs:
         run: bash scripts/deploy_int_beta.sh migrate
 
       - name: Open the public frontend and check the real creator flow
+        # The exported WIF credentials can refresh during long acceptance and rollback.
         env:
-          GOOGLE_OAUTH_ACCESS_TOKEN: ${{ steps.terraform_identity.outputs.access_token }}
-          CLOUDSDK_AUTH_ACCESS_TOKEN: ${{ steps.terraform_identity.outputs.access_token }}
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
         run: bash scripts/deploy_int_beta.sh acceptance
 

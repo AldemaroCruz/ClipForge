@@ -650,13 +650,14 @@ def check_manual_export(page, job_id, scratch, report):
     check(report, "original_preview_manual_range_and_idempotent_export")
 
 
-def retry_draft_put(page, control, first):
+def retry_editorial_request(page, control, first):
     url = first.url
+    method = first.request.method
     original_body = first.request.post_data_buffer
     require(original_body, "editorial_draft_retry_original_body_missing")
 
     def same_update(request):
-        return request.method == "PUT" and request.url == url
+        return request.method == method and request.url == url
 
     def guard(route):
         if same_update(route.request) and route.request.post_data_buffer != original_body:
@@ -664,7 +665,7 @@ def retry_draft_put(page, control, first):
             return
         route.fallback()
 
-    # Let the failed save release its busy state and the platform drain capacity.
+    # Let the failed action release its busy state and the platform drain capacity.
     page.wait_for_timeout(1_500)
     page.route(url, guard)
     try:
@@ -678,7 +679,7 @@ def retry_draft_put(page, control, first):
 
 
 def click_response(page, control, path, method, status, *, failing_prerequisite=None,
-                   retry_draft_capacity=False):
+                   retry_draft_capacity=False, retry_range_capacity=False):
     def match(response):
         return response.request.method == method and (
             response.url.startswith(PUBLIC + path)
@@ -689,14 +690,19 @@ def click_response(page, control, path, method, status, *, failing_prerequisite=
         control.click()
     response = event.value
     content_type = response.headers.get("content-type", "").partition(";")[0].strip().lower()
-    if (retry_draft_capacity and method == "PUT" and response.status == 429
-            and not content_type.endswith(("/json", "+json"))
-            and ID.fullmatch(response.url.removeprefix(PUBLIC + path))):
-        print("INT browser retrying the same draft PUT after a platform 429.", flush=True)
-        response = retry_draft_put(page, control, response)
+    if response.status == 429 and not content_type.endswith(("/json", "+json")):
+        draft_save = (retry_draft_capacity and method == "PUT"
+                      and ID.fullmatch(response.url.removeprefix(PUBLIC + path)))
+        range_preview = (retry_range_capacity and method == "POST" and response.url == PUBLIC + path
+                         and re.fullmatch(r"/jobs/[0-9a-f]{32}/editor/range", path))
+        if draft_save or range_preview:
+            action = "draft PUT" if draft_save else "read-only range POST"
+            print(f"INT browser retrying the same {action} after a platform 429.", flush=True)
+            response = retry_editorial_request(page, control, response)
     if response.status != status:
         stage = "prerequisite" if failing_prerequisite and response.url == PUBLIC + failing_prerequisite else "request"
-        kind = "json" if "application/json" in response.headers.get("content-type", "") else "nonjson"
+        content_type = response.headers.get("content-type", "").partition(";")[0].strip().lower()
+        kind = "json" if content_type.endswith(("/json", "+json")) else "nonjson"
         raise BrowserAcceptanceError(f"editorial_{stage}_http_{response.status}_{kind}")
     return response
 
@@ -840,7 +846,8 @@ def open_late_draft(page, job, start, end, *, generated, expected_style=None, an
         if (observed["start"], observed["end"]) != (start, end):
             page.locator("#editorial-start").fill(str(start))
             page.locator("#editorial-end").fill(str(end))
-            click_response(page, page.locator("#editorial-apply-range"), f"/jobs/{job}/editor/range", "POST", 200)
+            click_response(page, page.locator("#editorial-apply-range"), f"/jobs/{job}/editor/range", "POST", 200,
+                           retry_range_capacity=True)
     else:
         details = page.locator("#mvp-editor-details")
         if details.get_attribute("open") is None:

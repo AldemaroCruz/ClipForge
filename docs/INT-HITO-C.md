@@ -41,7 +41,9 @@ de esa candidata verifica los tres incrementos.
 | Corrida | Decisión y artefactos |
 |---|---|
 | [45875033327](https://github.com/AldemaroCruz/ClipForge/actions/runs/45875033327) | Cancelada durante la espera de aprobación de `deploy`. Sus resultados e imágenes siguen vigentes como evidencia de su propio SHA. Validación [15145122337](https://github.com/AldemaroCruz/ClipForge/actions/runs/45875033327/artifacts/15145122337) y OCI [15144214329](https://github.com/AldemaroCruz/ClipForge/actions/runs/45875033327/artifacts/15144214329). |
-| [45876391413](https://github.com/AldemaroCruz/ClipForge/actions/runs/45876391413) | Candidata seleccionada. `frontend` y `api` pasaron. `deploy` espera aprobación y consume los OCI [15146133485](https://github.com/AldemaroCruz/ClipForge/actions/runs/45876391413/artifacts/15146133485) y el recibo de su propio job `api`. El historial conserva [validación 15145558753](https://github.com/AldemaroCruz/ClipForge/actions/runs/45876391413/artifacts/15145558753) y generará `hito-b-int-45876391413-1` al ejecutar el despliegue. |
+| [45876391413](https://github.com/AldemaroCruz/ClipForge/actions/runs/45876391413) | Primera candidata de C01–C03. `frontend` y `api` pasaron. `deploy` migró y abrió el portal. La prueba buscó un atributo ausente en «Corregir texto» y venció antes de enviar el PUT. Se restauró la base. Quedan los OCI [15146133485](https://github.com/AldemaroCruz/ClipForge/actions/runs/45876391413/artifacts/15146133485), [validación 15145558753](https://github.com/AldemaroCruz/ClipForge/actions/runs/45876391413/artifacts/15145558753) y [recibo del intento](https://github.com/AldemaroCruz/ClipForge/actions/runs/45876391413/artifacts/15164223544). |
+| [45921581845](https://github.com/AldemaroCruz/ClipForge/actions/runs/45921581845) | `df593f354730c56e945121cea8809ffcbf3c0bc7` corrige el selector rápido, el estado HTTP 202 y el nombre del enlace VTT editorial. Pasaron el MP4 y los subtítulos corregidos. La selección breve devolvió cero propuestas para 74 rangos elegibles y se restauró la base. [Recibo del intento](https://github.com/AldemaroCruz/ClipForge/actions/runs/45921581845/artifacts/15165459107) |
+| [45924575800](https://github.com/AldemaroCruz/ClipForge/actions/runs/45924575800) | `3996c23c657bd3f220d08b9b9b2f8934236a5939` incorpora un único reintento breve, con nuevo consentimiento, para una respuesta real vacía. Se comprobaron C01, C02 y C03 durante el despliegue. El flujo completo falló después con HTTP 429 no JSON en el POST de previsualización editorial. [Recibo del intento](https://github.com/AldemaroCruz/ClipForge/actions/runs/45924575800/artifacts/15168803647) |
 
 El recibo de validación liga el SHA a la imagen web
 `sha256:b8b8f544142ab0ed73099b1056667e76d6b4b5253833cdffdb420cb8bad07ef5`
@@ -50,17 +52,23 @@ y a la imagen del worker
 Son los digest candidatos. Los OCI vencen el 3 de diciembre de 2026
 a las 18:59 UTC.
 
-GitHub mantiene la corrida en el grupo `clipforge-int-hito-a-delivery`
-y la espera en el environment protegido `int` sin ocupar un runner.
-El proceso anterior para dos corridas se detuvo después de publicar
-la selección. El cliente local de esta sesión quedó preparado para
-una sola revisión por la API normal de GitHub con la identidad
-`AldemaroCruz`. Comprueba SHA, artefactos y cupo antes de aprobar.
-Si la sesión se interrumpe, la misma revisión queda disponible en
-Actions. Con al menos cuatro reservas libres y el cliente local
-detenido, la acción es **Review deployments → int → Approve and deploy**
-en la corrida seleccionada. El environment carece de temporizador
-y el workflow se inicia con `workflow_dispatch`.
+Durante la interrupción inicial la primera candidata quedó esperando en
+GitHub. Se recuperó esa misma corrida con la revisión de `AldemaroCruz`
+y una consulta de sólo lectura que confirmó 0 de 10 reservas usadas.
+Cada candidata posterior se ejecutó por separado en el mismo grupo
+`clipforge-int-hito-a-delivery`.
+
+El tercer despliegue llegó a las revisiones `clipforge-int-beta-00040-8lw`
+y `clipforge-int-beta-api-00041-w58`, worker generación 37 con
+`sha256:13fabbfc3087cbef90f5163505c60672618591ad1e1e85d1cb0a02e32941d1b8`.
+El último paso editorial recibió HTTP 429 en el frontend y el token
+estático venció antes de la reversión automática. Se restauró el portal
+con la sesión administrativa y se verificó el commit base. La corrección
+posterior mantiene la revisión protegida y los artefactos de su propia
+corrida. Permite un solo reintento del mismo POST de rango ante 429
+no JSON y usa las credenciales WIF renovables de la misma identidad
+durante la aceptación y su reversión. El recibo de la corrida anterior
+reúne evidencia real y queda fuera del contrato de replay del workflow.
 
 ### Aceptación de selección con IA
 
@@ -83,8 +91,11 @@ que la corrección conserva transcripción, selección y otros clips.
 C03 modifica la revisión de bordes y el render de los rangos de origen;
 se comprueban los archivos realmente exportados. El contrato de
 reutilización del workflow vincula la evidencia previa a padres y cambios
-específicos. La candidata seleccionada ejecuta la aceptación con llamadas
-nuevas y conserva la evidencia histórica.
+específicos. La evidencia de `45924575800` registra cinco llamadas y cinco
+respuestas reales, una breve, tres largas con 2,319 s de solapamiento y
+un reintento consentido de una larga que había devuelto cero propuestas.
+Los cuatro recorridos produjeron una propuesta válida cada uno. El
+intento anterior había consumido una llamada breve.
 
 ## Aceptación
 
@@ -129,8 +140,31 @@ incluir páginas de archivos y memoria de sus procesos. El scratch suma
 los tamaños lógicos de los archivos presentes en el directorio de la tarea
 en cada muestra, incluido el original local. Ambas mediciones pueden
 superponerse y sus máximos corresponder a distintos instantes. La copia
-local mide otro recorrido que la transferencia desde GCS. El recorrido con
-GCS y tres cuentas simultáneas queda para INT. [Filesystem de Cloud Run](https://docs.cloud.google.com/run/docs/container-contract#file-system)
+local mide otro recorrido que la transferencia desde GCS.
+[Filesystem de Cloud Run](https://docs.cloud.google.com/run/docs/container-contract#file-system)
+
+En `45924575800`, INT publicó el límite de 2.147.483.648 bytes y rechazó
+2.147.483.649 bytes en la reserva del servidor. Tres creadores cargaron y
+procesaron sendos MP4 H.264/AAC de **2.116.336.669 bytes y 1.200 s**. Una
+carga reanudó la misma sesión desde 8.388.608 bytes. Las tres confirmaciones
+repetidas conservaron su ID y su lista de clips. Cada cuenta verificó
+cinco MP4 con audio y subtítulos, SRT y VTT, recuperación tras volver a
+iniciar sesión y denegación de acceso cruzado.
+
+| Cuenta sintética | Carga (s) | Confirmación a resultado (s) | Descarga del worker (s) | Transcripción (s) | Render (s) | Publicación (s) |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 | 264,432 | 318,052 | 30,969 | 36,860 | 154,512 | 2,394 |
+| 2 | 264,644 | 321,839 | 30,720 | 37,601 | 156,855 | 2,806 |
+| 3 | 264,277 | 479,987 | 31,241 | 101,326 | 249,598 | 3,013 |
+
+Las tres ejecuciones pasaron en Cloud Run, con 228,319 s de intersección
+entre toma y finalización de la tarea. Durante ese solapamiento el login
+tomó 0,871 s, la consulta de estado 0,128 s y la navegación probada
+0,365–0,645 s. El máximo muestreado de scratch fue 2.167.344.550 bytes
+y el de RSS del hijo 1.494.818.816 bytes. El pico total de cgroup
+quedó sin dato por ejecución. El worker tenía 2 vCPU, 4 GiB y una tarea
+por ejecución. El resultado corresponde a esta carga sintética y a
+las revisiones probadas. [Recibo de la prueba](https://github.com/AldemaroCruz/ClipForge/actions/runs/45924575800/artifacts/15168803647)
 
 ### C02 · Corrección rápida
 
@@ -141,11 +175,17 @@ los controles de tiempos y estilo. La prueba local de Chromium usó
 datos sintéticos y verificó persistencia de la corrección al recargar y
 la disponibilidad de MP4, SRT y WebVTT para la nueva revisión.
 
+En INT se corrigió «recorte» a «fragmento» y se comprobó el cambio en
+MP4, SRT y WebVTT. Se conservaron los tiempos, estilo y otros dos clips,
+así como el análisis del original y la selección. El texto y el resultado
+persistieron luego del reemplazo de la revisión y el nuevo inicio de sesión.
+[Recibo de la prueba](https://github.com/AldemaroCruz/ClipForge/actions/runs/45924575800/artifacts/15168803647)
+
 ### C03 · Bordes del recorte
 
 En **Propuestas por IA y edición**, **Revisar inicio** y **Revisar final**
-reproducen ventanas alrededor de los bordes. Usa **Marcar inicio en este
-fotograma** o **Marcar final después de este fotograma** para ajustar los
+reproducen ventanas alrededor de los bordes. Usa **Usar este fotograma
+como inicio** o **Terminar antes de este fotograma** para ajustar los
 límites. **Aplicar rango** y **Aprobar y exportar** guardan y generan la
 variante correspondiente.
 
@@ -155,6 +195,13 @@ fotogramas, PTS, un marcador de audio y los subtítulos descargables. Con
 FFmpeg 9.1 observó un error de PTS de 0 ms en los dos recorridos, con un
 intervalo máximo entre fotogramas de 83,417 ms. La aceptación remota usa
 además voz sintética para conservar el recorrido real de transcripción.
+
+El recibo de INT confirma los mismos dos intervalos. Los MP4 descargados
+duraron 4,519792 s y 5,982459 s, con 86 y 114 fotogramas. El mayor intervalo
+entre fotogramas fue 83,417 ms. El desvío máximo observado de PTS y el
+cambio de sincronía audiovisual fueron 0 ms en las comparaciones. Los
+subtítulos se comprobaron en los MP4 y en SRT y VTT.
+[Recibo de la prueba](https://github.com/AldemaroCruz/ClipForge/actions/runs/45924575800/artifacts/15168803647)
 
 ### Reversión
 
