@@ -45,6 +45,12 @@ REUSED_PROVIDER_MAX_BYTES = 128 * 1024
 PARALLEL_CASES = tuple(f"20m_parallel_{index}" for index in range(1, 4))
 ACCOUNT_CASES = (("3m", "20m", "native_timing", PARALLEL_CASES[0]),
                  ("5m", PARALLEL_CASES[1]), ("10m", PARALLEL_CASES[2]))
+EDITORIAL_ACTIONS = (
+    ("guardar semillas para el huerto", r"\b(?:guard\w*|conserv\w*)\b[^.!?]{0,42}\bsemill\w*\b"),
+    ("repartir el riego entre los vecinos", r"\b(?:compart\w*|turnos?)\b[^.!?]{0,42}\b(?:reg\w*|riego)\b"),
+    ("compartir lo aprendido con las escuelas", r"\b(?:enseñ\w*|escuel\w*)\b[^.!?]{0,60}\b(?:conserv\w*|cultiv\w*|semill\w*)\b"),
+    ("explicar el origen del huerto", r"\bhuerto comunitario\b"),
+)
 CHECKPOINT_PREDECESSORS = {"load": "setup", "cuts": "load", "editorial": "cuts"}
 CAPACITY_STATE_SCHEMA = "clipforge-int-hito-b-capacity-state-1"
 MAX_CHECKPOINT_BYTES = 1024 * 1024
@@ -470,15 +476,99 @@ def hold_selection(page, path):
             route.abort()
 
 
+def anchored_editorial_briefs(payload):
+    """Find alternative objectives in the visible synthetic catalogue."""
+    ranges = []
+    for chunk in payload.get("chunks", [payload]):
+        segments = chunk["segments"]
+        positions = {segment["id"]: index for index, segment in enumerate(segments)}
+        for interval in chunk["eligible_ranges"]:
+            start, end = interval["start_segment"], interval["end_segment"]
+            first, last = positions.get(start), positions.get(end)
+            range_id = interval["range_id"]
+            require(first is not None and last is not None and first <= last
+                    and type(start) is int and type(end) is int and 0 < start <= end
+                    and range_id == f"r{start}_{end}" and 20 <= interval["duration_seconds"] <= 60,
+                    "editorial_preview_catalog_identity")
+            ranges.append((range_id, " ".join(segment["text"] for segment in segments[first:last + 1])))
+    briefs = []
+    for objective, phrase_pattern in EDITORIAL_ACTIONS:
+        matches = [(range_id, match.group(0)) for range_id, text in ranges
+                   if (match := re.search(phrase_pattern, text, re.IGNORECASE))]
+        if not matches:
+            continue
+        anchor = matches[0][1]
+        choices = list(dict.fromkeys(range_id for range_id, phrase in matches if phrase.casefold() == anchor.casefold()))[:2]
+        briefs.append(
+            f"Para un clip educativo, busca una acción concreta para {objective}. "
+            f"En el catálogo revisado figura «{anchor}» en {' y '.join(choices)}. "
+            "Evalúa esos intervalos completos y elige uno si explica la acción con claridad. "
+            "Si otro rango del catálogo conserva mejor la explicación, puedes elegirlo. "
+            "Usa un título y un motivo fieles al texto."
+        )
+        if len(briefs) == 2:
+            break
+    return briefs
+
+
+def review_capacity_selection(case, model, brief):
+    page = case.page
+    config = facts(page, "/ai/config")
+    require(config.get("configured") is True and config.get("provider") == "openai" and config.get("model") == model,
+            "expected_real_editorial_provider")
+    browser_test.open_editorial(page)
+    page.locator("#editorial-brief").fill(brief)
+    path = f"/jobs/{case.job_id}/selections"
+    preview = browser_test.click_response(page, page.locator("#editorial-preview-button"),
+                                          path + "/preview", "POST", 200).json()
+    token = preview["preview_token"]
+    spec = preview["spec"]
+    windows = preview["analysis_windows"]
+    calls = preview["budget"]["provider_calls"]
+    require(browser_test.SHA256.fullmatch(token) and spec.get("brief") == brief and spec.get("mode") == "llm"
+            and spec.get("window_start") == 0 and spec.get("window_end") is None
+            and windows and abs(windows[0]["start"]) <= .1 and abs(windows[-1]["end"] - 1200) <= .1
+            and type(calls) is int and calls == len(windows)
+            and preview["provider"]["provider"] == "openai" and preview["provider"]["model"] == model,
+            "editorial_full_review_identity")
+    panel = page.locator("#editorial-consent-panel")
+    panel.wait_for()
+    destination = panel.locator("#editorial-destination").inner_text()
+    require(model in destination and "https://api.openai.com/v1/responses" in destination, "editorial_review_destination")
+    payload = panel.locator("#editorial-payload")
+    if not payload.is_visible():
+        panel.get_by_text("Ver texto y rangos", exact=True).click()
+    payload.wait_for()
+    require(json.loads(payload.inner_text()) == preview["payload_text"], "editorial_review_payload_differs")
+    consent = page.locator("#editorial-consent")
+    require(not consent.is_checked(), "editorial_previous_consent_retained")
+    consent.check()
+    return path, preview
+
+
+def confirm_capacity_consent(request, preview, previous):
+    body = request.post_data_json
+    require(isinstance(body, dict), "editorial_fresh_review_consent")
+    request_id = body.get("request_id")
+    token = preview["preview_token"]
+    require(isinstance(request_id, str) and browser_test.ID.fullmatch(request_id) and body.get("consent") is True
+            and body == {**preview["spec"], "request_id": request_id, "preview_token": token, "consent": True}
+            and all(request_id != old["request_id"] and token != old["preview_token"] for old in previous),
+            "editorial_fresh_review_consent")
+
+
 def start_parallel_selections(cases, model, report):
     """Finish all previews and consent before dispatching any selection."""
     report["step"] = "three_editorial_previews"
     previews = []
+    briefs = []
     for case in cases:
         report["case"] = case.label
-        previews.append(browser_test.prepare_selection(case.page, case.job_id, model))
+        path, preview = review_capacity_selection(case, model, browser_test.EDITORIAL_BRIEF)
+        previews.append((path, preview))
+        briefs.append(anchored_editorial_briefs(preview["payload_text"]))
     report["editorial"]["planned_provider_calls"] = {
-        case.label: calls for case, (_, calls) in zip(cases, previews, strict=True)
+        case.label: preview["budget"]["provider_calls"] for case, (_, preview) in zip(cases, previews, strict=True)
     }
     with ExitStack() as stack:
         pending = [stack.enter_context(hold_selection(case.page, path))
@@ -493,6 +583,8 @@ def start_parallel_selections(cases, model, report):
             require(monotonic() < deadline, "editorial_submission_barrier_timeout")
             cases[0].page.wait_for_timeout(100)
         require(all(len(requests) == 1 for requests, _ in pending), "editorial_submission_count")
+        for (requests, _), (_, preview) in zip(pending, previews, strict=True):
+            confirm_capacity_consent(requests[0].request, preview, [])
         released = []
         for requests, _ in pending:
             released.append(monotonic())
@@ -503,8 +595,46 @@ def start_parallel_selections(cases, model, report):
             require(monotonic() < deadline, "editorial_submission_response_timeout")
             cases[0].page.wait_for_timeout(100)
         require(all(len(responses) == 1 for _, responses in pending), "editorial_submission_response_count")
-        return [browser_test.selection_receipt(responses[0], case.job_id, calls, began)
-                for case, (_, calls), (_, responses), began in zip(cases, previews, pending, released, strict=True)]
+        receipts = [
+            browser_test.selection_receipt(responses[0], case.job_id, preview["budget"]["provider_calls"], began)
+            for case, (_, preview), (_, responses), began in zip(cases, previews, pending, released, strict=True)
+        ]
+        return receipts, briefs
+
+
+def retry_capacity_selection(case, model, briefs, initial, initial_receipt, row):
+    require(briefs, "editorial_synthetic_catalog_anchor_missing")
+    row["concurrent_selection"] = row["selection"]
+    row["retry_selections"] = []
+    submitted = [initial_receipt[1]]
+    run_ids = {initial["id"]}
+    for brief in briefs:
+        path, preview = review_capacity_selection(case, model, brief)
+        with hold_selection(case.page, path) as (requests, responses):
+            case.page.locator("#editorial-run").click()
+            deadline = monotonic() + 30
+            while not requests:
+                require(monotonic() < deadline, "editorial_retry_submission_timeout")
+                case.page.wait_for_timeout(100)
+            require(len(requests) == 1, "editorial_retry_submission_count")
+            confirm_capacity_consent(requests[0].request, preview, submitted)
+            began = monotonic()
+            requests.pop().fallback()
+            deadline = monotonic() + 60
+            while not responses:
+                require(monotonic() < deadline, "editorial_retry_response_timeout")
+                case.page.wait_for_timeout(100)
+            require(len(responses) == 1, "editorial_retry_response_count")
+            receipt = browser_test.selection_receipt(responses[0], case.job_id, preview["budget"]["provider_calls"], began)
+        require(receipt[0] not in run_ids, "editorial_retry_reused_empty_selection")
+        run_ids.add(receipt[0])
+        submitted.append(receipt[1])
+        retry = browser_test.finish_selection(case.page, case.job_id, receipt, model, 1200, allow_empty=True)
+        row["selection"] = {key: value for key, value in retry.items() if key != "id"}
+        row["retry_selections"].append(row["selection"])
+        if retry["proposals"]:
+            return retry
+    raise BrowserAcceptanceError("real_provider_proposal_receipt")
 
 
 def provider_overlap(selections):
@@ -578,7 +708,7 @@ def editorial_capacity(cases, args, report, reused_provider=None):
         editorial.update(provider_evidence=reused_provider, live_provider_config_verified=len(cases),
                          live_inference_phase="protected_browser_prepare")
     if fresh_provider:
-        pending = start_parallel_selections(cases, args.editorial_model, report)
+        pending, briefs = start_parallel_selections(cases, args.editorial_model, report)
         report["step"] = "three_real_editorial_selections"
         selections = []
         for case, receipt in zip(cases, pending, strict=True):
@@ -594,14 +724,9 @@ def editorial_capacity(cases, args, report, reused_provider=None):
                 continue
             report["case"] = case.label
             report["step"] = "retry_empty_editorial_selection_with_consent"
-            receipt = browser_test.start_selection(case.page, case.job_id, args.editorial_model,
-                                                   brief=browser_test.EMPTY_SELECTION_BRIEF)
-            require(receipt[0] != initial["id"], "editorial_retry_reused_empty_selection")
-            retry = browser_test.finish_selection(case.page, case.job_id, receipt, args.editorial_model, 1200)
-            row = editorial[case.label]
-            row["concurrent_selection"] = row["selection"]
-            row["selection"] = {key: value for key, value in retry.items() if key != "id"}
-            selections[index] = retry
+            selections[index] = retry_capacity_selection(
+                case, args.editorial_model, briefs[index], initial, pending[index], editorial[case.label],
+            )
         del report["case"]
     else:
         selections = [None] * len(cases)
