@@ -36,11 +36,15 @@ OBSERVED_STATES = ACTIVE | {"queued", "validating", "completed", "failed"}
 PUBLIC = browser_test.PUBLIC
 START_PATH = re.compile(re.escape(PUBLIC) + r"/beta/uploads/([a-f0-9]{32})/start$")
 UPLOAD_TIMEOUT = 720
+QUEUE_FULL_DETAIL = "La cola del piloto está llena. Intenta nuevamente cuando termine un trabajo."
+QUEUE_FULL_MAX_RETRIES = 8
 POLL_MS = 1_000
 REUSED_PROVIDER_COMMIT = "9f644e4c73318d9115d88168905cf07c72711c3c"
 REUSED_PROVIDER_SHA256 = "663d16e3667df49394a3cf78379f74346b80eceea1db597f61bd0c4edfc2f04e"
 REUSED_PROVIDER_MAX_BYTES = 128 * 1024
 PARALLEL_CASES = tuple(f"20m_parallel_{index}" for index in range(1, 4))
+ACCOUNT_CASES = (("3m", "20m", "native_timing", PARALLEL_CASES[0]),
+                 ("5m", PARALLEL_CASES[1]), ("10m", PARALLEL_CASES[2]))
 CHECKPOINT_PREDECESSORS = {"load": "setup", "cuts": "load", "editorial": "cuts"}
 CAPACITY_STATE_SCHEMA = "clipforge-int-hito-b-capacity-state-1"
 MAX_CHECKPOINT_BYTES = 1024 * 1024
@@ -70,6 +74,11 @@ class Case:
     transfer: list[int]
     upload_key: str = ""
     reservation_body: dict = field(default_factory=dict)
+    reservation_id: str = ""
+    reservation_statuses: list[int] = field(default_factory=list)
+    reservation_error: str = ""
+    queue_retry_at: float = 0
+    queue_retries: int = 0
     job_id: str = ""
     activation: Any = None
     upload_start: float = 0
@@ -165,11 +174,41 @@ def interrupt_large_upload(case, report):
     browser_test.check(report, "large_upload_resumed_after_connection_reset")
 
 
-def upload_hooks(case):
+def upload_hooks(case, remember_reservation):
     def remember(request):
         if request.url == PUBLIC + "/beta/uploads" and request.method == "POST":
-            case.upload_key = request.headers.get("idempotency-key", "")
-            case.reservation_body = request.post_data_json
+            key = request.headers.get("idempotency-key", "")
+            body = request.post_data_json
+            if (not key or not isinstance(body, dict)
+                    or (case.upload_key and (key != case.upload_key or body != case.reservation_body))):
+                case.reservation_error = "upload_reservation_retry_changed_request"
+                return
+            case.upload_key = key
+            case.reservation_body = body
+
+    def receive(response):
+        if response.url != PUBLIC + "/beta/uploads" or response.request.method != "POST":
+            return
+        case.reservation_statuses.append(response.status)
+        kind = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if kind != "application/json" or response.status not in {201, 429}:
+            return
+        try:
+            payload = response.json()
+            if response.status == 429 and payload == {"detail": QUEUE_FULL_DETAIL}:
+                case.queue_retry_at = monotonic() + min(60, 5 * 2**case.queue_retries)
+            if response.status == 201:
+                reservation_id = payload.get("id")
+                if (not isinstance(reservation_id, str) or not browser_test.ID.fullmatch(reservation_id)
+                        or payload.get("status") != "awaiting_upload"
+                        or (case.reservation_id and case.reservation_id != reservation_id)):
+                    case.reservation_error = "upload_reservation_identity"
+                    return
+                case.reservation_id = reservation_id
+                if remember_reservation is not None:
+                    remember_reservation(case.label, reservation_id)
+        except Exception:
+            case.reservation_error = "upload_reservation_receipt_failed"
 
     def hold(route):
         match = START_PATH.fullmatch(route.request.url)
@@ -180,19 +219,20 @@ def upload_hooks(case):
         case.activation = route
         case.held_at = monotonic()
 
-    return remember, hold
+    return remember, receive, hold
 
 
-def wait_for_uploads(cases, report, *, remember_jobs=None):
+def wait_for_uploads(cases, report, *, remember_reservation=None):
     """Release each authenticated POST only after every browser uploaded its video."""
     hooks = []
     try:
         for case in cases:
             case.transfer.clear()
-            remember, hold = upload_hooks(case)
+            remember, receive, hold = upload_hooks(case, remember_reservation)
             case.page.on("request", remember)
+            case.page.on("response", receive)
             case.page.route(START_PATH, hold)
-            hooks.append((case.page, remember, hold))
+            hooks.append((case.page, remember, receive, hold))
         for case in cases:
             report["case"] = case.label
             case.page.locator("#upload-video").set_input_files(str(case.fixture.path))
@@ -203,21 +243,29 @@ def wait_for_uploads(cases, report, *, remember_jobs=None):
             require(monotonic() < deadline, "browser_upload_timeout")
             for case in cases:
                 report["case"] = case.label
-                if not case.activation:
-                    require(case.page.locator("#upload-submit").is_disabled(), "browser_upload_stopped")
+                require(not case.reservation_error, case.reservation_error)
+                submit = case.page.locator("#upload-submit")
+                if case.activation or submit.is_disabled():
+                    continue
+                require(case.queue_retry_at and not case.reservation_id, "browser_upload_stopped")
+                require(case.queue_retries < QUEUE_FULL_MAX_RETRIES, "upload_queue_full_after_retries")
+                if monotonic() >= case.queue_retry_at:
+                    case.queue_retry_at = 0
+                    case.queue_retries += 1
+                    submit.click()
             cases[0].page.wait_for_timeout(250)
         del report["case"]
         require(len({case.job_id for case in cases}) == len(cases), "different_jobs_expected")
-        if remember_jobs is not None:
-            remember_jobs({case.label: case.job_id for case in cases})
-        release_times = []
         for case in cases:
+            require(not case.reservation_error and case.job_id == case.reservation_id, "upload_reservation_receipt")
             require(bool(case.upload_key)
                     and case.reservation_body.get("burn_subtitles") is True
                     and case.reservation_body.get("bytes") == case.fixture.size, "browser_reservation_contract")
             require(any(status in {200, 201} for status in case.transfer), "direct_storage_upload_missing")
             if case.fixture.size > browser_test.CHUNK_BYTES:
                 require(308 in case.transfer, "resumable_multichunk_not_observed")
+        release_times = []
+        for case in cases:
             case.activated_at = monotonic()
             release_times.append(case.activated_at)
             case.activation.fallback()
@@ -228,8 +276,16 @@ def wait_for_uploads(cases, report, *, remember_jobs=None):
             """, arg=case.job_id, timeout=60_000)
         return round(max(release_times) - min(release_times), 3)
     finally:
-        for page, remember, hold in hooks:
+        for case in cases:
+            report["cases"].setdefault(case.label, {}).update(
+                reservation_http_statuses=case.reservation_statuses.copy(), upload_http_statuses=case.transfer.copy(),
+                queue_full_retries=case.queue_retries, reservation_confirmed=bool(case.reservation_id),
+            )
+            if case.activation and not case.activated_at:
+                case.activation.abort()
+        for page, remember, receive, hold in hooks:
             page.remove_listener("request", remember)
+            page.remove_listener("response", receive)
             page.unroute(START_PATH, hold)
 
 
@@ -590,14 +646,14 @@ def editorial_capacity(cases, args, report, reused_provider=None):
     browser_test.check(report, "three_twenty_minute_jobs_and_subtitled_exports")
 
 
-def run_batch(cases, args, report, overlap=None, *, remember_jobs=None):
+def run_batch(cases, args, report, overlap=None, *, remember_reservation=None):
     report["step"] = "upload"
-    skew = wait_for_uploads(cases, report, remember_jobs=remember_jobs)
+    skew = wait_for_uploads(cases, report, remember_reservation=remember_reservation)
     for case in cases:
-        report["cases"][case.label] = {"status": "running", "input_seconds": case.fixture.duration,
-                                       "bytes": case.fixture.size, "upload_http_statuses": case.transfer.copy(),
-                                       "upload_seconds": round(case.held_at - case.upload_start, 3),
-                                       "state_observations": case.events}
+        report["cases"][case.label].update(
+            status="running", input_seconds=case.fixture.duration, bytes=case.fixture.size,
+            upload_seconds=round(case.held_at - case.upload_start, 3), state_observations=case.events,
+        )
         if case.fixture.path == args.large_fixture:
             report["cases"][case.label]["synthetic_job_id"] = case.job_id
     report["step"] = "parallel" if overlap else "processing"
@@ -646,7 +702,7 @@ def creator_pages(browser, args, accounts):
         yield pages, transfers
 
 
-def load_capacity(browser, args, report, accounts, pages, transfers, *, remember_jobs=None):
+def load_capacity(browser, args, report, accounts, pages, transfers, *, remember_reservation=None):
     report["step"] = "creator_login_and_capacity_limits"
     for index, page in enumerate(pages, 1):
         require(browser_test.browser_get(page, "/auth/users")["status"] == 403, "creator_admin_access")
@@ -665,15 +721,16 @@ def load_capacity(browser, args, report, accounts, pages, transfers, *, remember
         page.wait_for_function("() => !document.querySelector('#upload-submit').disabled")
     warm = [Case(f"{minutes}m", ready[minutes], page, transfer)
             for minutes, page, transfer in zip(MINUTES[:3], pages, transfers, strict=True)]
-    run_batch(warm, args, report)
-    run_batch([Case("20m", ready[20], pages[0], transfers[0])], args, report)
+    run_batch(warm, args, report, remember_reservation=remember_reservation)
+    run_batch([Case("20m", ready[20], pages[0], transfers[0])], args, report,
+              remember_reservation=remember_reservation)
     large = large_fixture(args.large_fixture, limits) if args.large_fixture else None
     parallel = [Case(name, large or ready[20], page, transfer)
                 for name, page, transfer in zip(PARALLEL_CASES, pages, transfers, strict=True)]
     with ExitStack() as uploads:
         if large:
             uploads.enter_context(interrupt_large_upload(parallel[0], report))
-        run_batch(parallel, args, report, (browser, accounts, warm[0]), remember_jobs=remember_jobs)
+        run_batch(parallel, args, report, (browser, accounts, warm[0]), remember_reservation=remember_reservation)
     if large:
         transfers_verified = {}
         for case, account in zip(parallel, accounts, strict=True):
@@ -690,14 +747,14 @@ def load_capacity(browser, args, report, accounts, pages, transfers, *, remember
     return parallel
 
 
-def cut_capacity(args, report, page, transfer):
+def cut_capacity(args, report, page, transfer, *, remember_reservation=None):
     from scripts.int_hito_c_cuts_browser import acceptance as check_precise_cuts
 
     source = args.precise_fixture
     meta = probe_media(source, pilot=True)
     fixture = Fixture(source, source.stat().st_size, meta["duration_seconds"])
     case = Case("native_timing", fixture, page, transfer)
-    run_batch([case], args, report)
+    run_batch([case], args, report, remember_reservation=remember_reservation)
     check_precise_cuts(page, args, report, job=case.job_id)
 
 
@@ -795,7 +852,8 @@ def read_capacity_state(path, identity):
     require(type(attempted) is list and attempted == [row["username"] for row in accounts[:len(attempted)]]
             and all(row["id"] is None or row["username"] in attempted for row in accounts),
             "capacity_private_attempted_accounts")
-    require(type(jobs) is dict and set(jobs) <= set(PARALLEL_CASES)
+    allowed_cases = {label for account_cases in ACCOUNT_CASES for label in account_cases}
+    require(type(jobs) is dict and set(jobs) <= allowed_cases
             and all(browser_test.ID.fullmatch(job) for job in jobs.values())
             and len(set(jobs.values())) == len(jobs), "capacity_private_jobs")
     return value
@@ -828,14 +886,14 @@ def setup_capacity(browser, args, admin, report):
         browser_test.logout(page)
 
 
-def cleanup_capacity(browser, args, admin, report, state, *, remove_projects=True):
+def cleanup_capacity(browser, args, admin, report, state):
     report["step"] = "capacity_cleanup"
     with browser_test.browser_page(browser) as page:
         browser_test.login(page, admin, args.commit)
         users = {user["username"]: user for user in facts(page, "/auth/users")["users"]}
         pending = []
         owner_ids = []
-        for label, account in zip(PARALLEL_CASES, state["accounts"], strict=True):
+        for account_cases, account in zip(ACCOUNT_CASES, state["accounts"], strict=True):
             if account["username"] not in state["attempted"]:
                 continue
             user = users.get(account["username"])
@@ -849,17 +907,17 @@ def cleanup_capacity(browser, args, admin, report, state, *, remove_projects=Tru
             require(not unconfirmed or user["is_active"] is True, "capacity_cleanup_owner_unconfirmed")
             if not user["is_active"]:
                 continue
-            job_id = state["jobs"].get(label)
-            if unconfirmed or (remove_projects and job_id):
+            jobs = [state["jobs"][label] for label in account_cases if label in state["jobs"]]
+            if unconfirmed or jobs:
                 with browser_test.browser_page(browser) as creator:
                     browser_test.login(creator, account, args.commit)
+                    owner = facts(creator, "/auth/me")["user"]
+                    require(owner["id"] == user["id"] and owner["username"] == account["username"]
+                            and owner["is_admin"] is False, "capacity_cleanup_owner_unconfirmed")
                     if unconfirmed:
-                        owner = facts(creator, "/auth/me")["user"]
-                        require(owner["id"] == user["id"] and owner["username"] == account["username"]
-                                and owner["is_admin"] is False, "capacity_cleanup_owner_unconfirmed")
                         account["id"] = user["id"]
                         write_capacity_state(args.state, state)
-                    if remove_projects and job_id:
+                    for job_id in jobs:
                         url = f"/jobs/{job_id}"
                         observed = browser_test.browser_get(creator, url)
                         if observed["status"] != 404:
@@ -893,25 +951,31 @@ def acceptance_phase(browser, args, admin, report, reused_provider):
     require(all(account["id"] for account in accounts)
             and report["synthetic_account_ids"] == [account["id"] for account in accounts],
             "capacity_checkpoint_accounts")
+
+    def remember_reservation(label, job_id):
+        previous = state["jobs"].get(label)
+        require(previous in (None, job_id), "capacity_private_reservation_changed")
+        state["jobs"][label] = job_id
+        write_capacity_state(args.state, state)
+
     if args.phase == "load":
-        def remember_jobs(jobs):
-            state["jobs"] = jobs
-            write_capacity_state(args.state, state)
 
         report["step"] = "creator_login_and_capacity_limits"
         with creator_pages(browser, args, accounts) as (pages, transfers):
-            load_capacity(browser, args, report, accounts, pages, transfers, remember_jobs=remember_jobs)
+            load_capacity(browser, args, report, accounts, pages, transfers,
+                          remember_reservation=remember_reservation)
             for page in pages:
                 browser_test.logout(page)
         return
 
     inputs = report["large_inputs"]
-    require(set(state["jobs"]) == set(PARALLEL_CASES) and inputs["synthetic_jobs"] == state["jobs"],
+    require(set(PARALLEL_CASES) <= set(state["jobs"])
+            and inputs["synthetic_jobs"] == {label: state["jobs"][label] for label in PARALLEL_CASES},
             "capacity_checkpoint_jobs")
     if args.phase == "cuts":
         report["step"] = "native_cuts_login"
         with creator_pages(browser, args, accounts[:1]) as (pages, transfers):
-            cut_capacity(args, report, pages[0], transfers[0])
+            cut_capacity(args, report, pages[0], transfers[0], remember_reservation=remember_reservation)
             browser_test.logout(pages[0])
         return
 
@@ -926,7 +990,7 @@ def acceptance_phase(browser, args, admin, report, reused_provider):
         delete_large_projects(cases, report)
         for page in pages:
             browser_test.logout(page)
-    cleanup_capacity(browser, args, admin, report, state, remove_projects=False)
+    cleanup_capacity(browser, args, admin, report, state)
 
 
 def arguments(argv=None):

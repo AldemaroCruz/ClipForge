@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from unittest.mock import Mock, patch
 
+from fastapi import HTTPException
 from sqlalchemy import text
 
 from app.auth import create_user, register_project
@@ -209,6 +210,57 @@ class PilotCapacityDatabaseTests(unittest.TestCase):
         with self.engine.connect() as connection:
             claimed = connection.execute(text("SELECT task_id FROM cloud_outbox WHERE dispatched_at IS NOT NULL")).scalars().all()
         self.assertEqual(set(claimed), {captions[0], *others})
+
+    def test_inactive_pending_upload_releases_admission_without_changing_projects(self):
+        queued_task, running_task, deleted_task = (self.enqueue() for _ in range(3))
+        queued, running, deleted = (self.table[task] for task in (queued_task, running_task, deleted_task))
+        pending_owner = create_user("qa_capacity_" + secrets.token_hex(8), secrets.token_urlsafe(24))
+        requester = create_user("qa_capacity_" + secrets.token_hex(8), secrets.token_urlsafe(24))
+        pending = uuid.uuid4().hex
+        register_project(pending, pending_owner)
+        snapshot = text("""
+            SELECT (SELECT jsonb_agg(to_jsonb(p) ORDER BY p.id) FROM auth_projects p),
+                   (SELECT jsonb_agg(to_jsonb(d) ORDER BY d.id) FROM cloud_documents d),
+                   (SELECT jsonb_agg(to_jsonb(t) ORDER BY t.id) FROM cloud_tasks t)
+        """)
+        with self.engine.begin() as connection:
+            connection.execute(text("""
+                UPDATE auth_users SET is_active=false
+                WHERE id IN (SELECT owner_id FROM auth_projects WHERE id IN (:queued, :running, :deleted))
+            """), {"queued": queued, "running": running, "deleted": deleted})
+            connection.execute(text("""
+                UPDATE auth_projects SET deletion_started_at=clock_timestamp() WHERE id=:job
+            """), {"job": deleted})
+            connection.execute(text("""
+                UPDATE cloud_tasks SET status='cancelled', lease_until=clock_timestamp()+interval '1 hour'
+                WHERE id=:task
+            """), {"task": deleted_task})
+            connection.execute(text("""
+                UPDATE cloud_tasks SET status='running', lease_until=clock_timestamp()+interval '1 hour'
+                WHERE id=:task
+            """), {"task": running_task})
+            connection.execute(text("""
+                UPDATE cloud_documents SET payload=jsonb_set(payload, '{status}', '"rendering"')
+                WHERE job_id=:job AND kind='job'
+            """), {"job": running})
+            expires = connection.execute(text(
+                "SELECT extract(epoch FROM clock_timestamp()+interval '1 hour')"
+            )).scalar_one()
+            repository.insert_document(connection, pending, "job", {
+                "id": pending, "pilot": True, "status": "awaiting_upload",
+                "upload_expires_at": float(expires),
+            })
+            before = connection.execute(snapshot).one()
+
+        with self.engine.begin() as connection, self.assertRaises(HTTPException) as full:
+            repository.admit_beta(connection, requester.id)
+        self.assertEqual(full.exception.status_code, 429)
+
+        with self.engine.begin() as connection:
+            connection.execute(text("UPDATE auth_users SET is_active=false WHERE id=:owner"),
+                               {"owner": pending_owner.id})
+            repository.admit_beta(connection, requester.id)
+            self.assertEqual(connection.execute(snapshot).one(), before)
 
     def test_ambiguous_cloud_failure_has_cooldown_before_retry(self):
         task_id = self.enqueue()

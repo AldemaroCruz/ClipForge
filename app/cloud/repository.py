@@ -108,8 +108,8 @@ def remember_request(c, owner, key, fingerprint, job_id, kind, item_id):
 
 
 def admit_beta(c, owner, current_job="", *, caption_job=""):
-    # One lock covers independent accounts and replicas. Pending uploads
-    # release their capacity when their server-controlled deadline expires.
+    # Only an active owner can use a pending upload to start processing.
+    # Already queued work and live task leases still consume capacity.
     c.execute(text("SELECT pg_advisory_xact_lock(:lock)"), {"lock": BETA_ADMISSION_LOCK})
     active, own = c.execute(text("""
         WITH candidates AS (
@@ -117,12 +117,13 @@ def admit_beta(c, owner, current_job="", *, caption_job=""):
                  CASE WHEN d.payload->'clip_captions'=CAST('true' AS jsonb)
                       THEN d.job_id ELSE d.id END AS slot
           FROM cloud_documents d JOIN auth_projects p ON p.id=d.job_id
+          JOIN auth_users u ON u.id=p.owner_id
           WHERE d.kind IN ('job','export','selection') AND d.payload->'pilot'=CAST('true' AS jsonb)
             AND p.deletion_started_at IS NULL AND d.job_id<>:j
             AND NOT (d.job_id=:caption AND COALESCE(d.payload->'clip_captions'=CAST('true' AS jsonb),false))
             AND (
             d.payload->>'status' IN ('queued','validating','transcribing','rendering','running')
-            OR (d.payload->>'status'='awaiting_upload' AND
+            OR (d.payload->>'status'='awaiting_upload' AND u.is_active AND
                 CASE WHEN jsonb_typeof(d.payload->'upload_expires_at')='number'
                     THEN (d.payload->>'upload_expires_at')::double precision > extract(epoch from clock_timestamp())
                     ELSE false END))
