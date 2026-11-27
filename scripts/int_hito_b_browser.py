@@ -28,6 +28,7 @@ from scripts import int_hito_a_acceptance as shared_http
 from scripts.int_hito_a_browser import (
     BROWSER_ENV_ALLOWLIST, BrowserAcceptanceError, require, resolve_browser,
 )
+from scripts.int_hito_b_browser_ui import submit_quick_caption_correction
 
 
 PUBLIC = "https://clipforge-int-beta-816643438938.us-central1.run.app"
@@ -455,16 +456,18 @@ def check_quick_caption_correction(page, job_id, file, edited, index, before, sc
 
     page.on("request", capture)
     try:
+        report["step"] = "quick_caption_open"
         card.get_by_role("button", name="Corregir texto", exact=True).click()
         editor = page.locator('#clip-caption-editor[data-mode="quick"]')
-        editor.locator('[data-field="text"]').nth(index).fill(new_text)
-        save = editor.get_by_role("button", name="Guardar y exportar", exact=True)
-        response = click_response(page, save, path, "PUT", 200)
+        report["step"] = "quick_caption_submit"
+        response = submit_quick_caption_correction(page, editor, index, new_text, PUBLIC + path)
         require(response.request.post_data_json.get("revision") == edited["revision"],
                 "quick_caption_revision")
+        report["step"] = "quick_caption_render"
         corrected = caption_output(page, job_id, file, edited["output"]["id"])
         require(corrected["cues"] == expected and corrected["style"] == edited["style"],
                 "quick_caption_text_or_style")
+        report["step"] = "quick_caption_downloads"
         downloads = editor.locator("#clip-caption-downloads")
         downloads.wait_for(state="visible")
         require(set(downloads.get_by_role("link").evaluate_all("(links) => links.map(a => a.getAttribute('href'))"))
@@ -489,6 +492,7 @@ def check_quick_caption_correction(page, job_id, file, edited, index, before, sc
         "other_clips_unchanged": len(original["clips"]) - 1, "source_analysis_unchanged": True,
     }
     check(report, "quick_caption_word_correction_mp4_srt_vtt_without_reprocessing")
+    report["step"] = "quick_caption_reopen_full_editor"
     card.get_by_role("button", name="Editar subtítulos", exact=True).click()
     page.locator('#clip-caption-editor[data-mode="full"] #clip-caption-size').wait_for()
     return corrected, rendered

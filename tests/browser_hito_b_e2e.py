@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from playwright.sync_api import sync_playwright
 
 from scripts.int_hito_a_browser import resolve_browser
+from scripts.int_hito_b_browser_ui import submit_quick_caption_correction
 
 
 STATIC = Path(__file__).resolve().parent.parent / "app" / "static"
@@ -161,6 +162,7 @@ class BrowserHitoBTest(unittest.TestCase):
                 self.state["caption_updates"].append(update)
                 caption.update(style=update["style"], cues=update["cues"], revision=caption["revision"] + 1,
                                status="queued", output=None)
+                return caption, 202
             return caption, 200
         if path == f"/jobs/{JOB}/captions" and method == "PUT" and self.state["project_caption"]:
             update = request.post_data_json
@@ -417,9 +419,9 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertEqual(0, editor.locator("#clip-caption-cues input").count())
         downloads = editor.locator("#clip-caption-downloads")
         self.assertEqual(base, downloads.get_by_role("link", name="Descargar MP4").get_attribute("href"))
-        first.fill("Edición de ClipForge.")
+        first.fill("Borrador sin guardar.")
         self.assertTrue(downloads.is_hidden())
-        editor.get_by_role("button", name="Guardar y exportar").click()
+        submit_quick_caption_correction(self.page, editor, 0, "Edición de ClipForge.", ORIGIN + base + "/captions")
         self.until_text("#clip-caption-status", "Corrección guardada")
         self.assertTrue(downloads.is_hidden())
 

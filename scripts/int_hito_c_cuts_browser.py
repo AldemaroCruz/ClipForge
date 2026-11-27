@@ -66,7 +66,7 @@ def acceptance(page, args, report, *, job):
         report["step"] = "precise_cut_" + label + "_measure"
         with tempfile.TemporaryDirectory(prefix="clipforge-precise-", dir=args.report.parent) as scratch:
             local = Path(scratch)
-            for extension, name in (("mp4", "MP4 editado"), ("srt", "SRT"), ("vtt", "WebVTT")):
+            for extension, name in (("mp4", "MP4 editado"), ("srt", "SRT"), ("vtt", "VTT")):
                 portal.save_download(page, row.get_by_role("link", name="Descargar " + name, exact=True),
                                      local / f"clip.{extension}")
             try:
