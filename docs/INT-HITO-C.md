@@ -44,6 +44,7 @@ de esa candidata verifica los tres incrementos.
 | [45876391413](https://github.com/AldemaroCruz/ClipForge/actions/runs/45876391413) | Primera candidata de C01–C03. `frontend` y `api` pasaron. `deploy` migró y abrió el portal. La prueba buscó un atributo ausente en «Corregir texto» y venció antes de enviar el PUT. Se restauró la base. Quedan los OCI [15146133485](https://github.com/AldemaroCruz/ClipForge/actions/runs/45876391413/artifacts/15146133485), [validación 15145558753](https://github.com/AldemaroCruz/ClipForge/actions/runs/45876391413/artifacts/15145558753) y [recibo del intento](https://github.com/AldemaroCruz/ClipForge/actions/runs/45876391413/artifacts/15164223544). |
 | [45921581845](https://github.com/AldemaroCruz/ClipForge/actions/runs/45921581845) | `df593f354730c56e945121cea8809ffcbf3c0bc7` corrige el selector rápido, el estado HTTP 202 y el nombre del enlace VTT editorial. Pasaron el MP4 y los subtítulos corregidos. La selección breve devolvió cero propuestas para 74 rangos elegibles y se restauró la base. [Recibo del intento](https://github.com/AldemaroCruz/ClipForge/actions/runs/45921581845/artifacts/15165459107) |
 | [45924575800](https://github.com/AldemaroCruz/ClipForge/actions/runs/45924575800) | `3996c23c657bd3f220d08b9b9b2f8934236a5939` incorpora un único reintento breve, con nuevo consentimiento, para una respuesta real vacía. Se comprobaron C01, C02 y C03 durante el despliegue. El flujo completo falló después con HTTP 429 no JSON en el POST de previsualización editorial. [Recibo del intento](https://github.com/AldemaroCruz/ClipForge/actions/runs/45924575800/artifacts/15168803647) |
+| [45932688939](https://github.com/AldemaroCruz/ClipForge/actions/runs/45932688939) | `34483012f5626f8d4e24d194a403f0c3339120e9` acota el reintento de rango y usa WIF renovable. Frontend, API, publicación y migración pasaron. GitHub cerró el job al perder comunicación con el runner administrado durante la aceptación, el 27 de noviembre a las 04:43:41 UTC. El paso de conservación de evidencia quedó pendiente y el portal seguía sirviendo esa candidata. [Job de despliegue](https://github.com/AldemaroCruz/ClipForge/actions/runs/45932688939/job/140291299219) |
 
 El recibo de validación liga el SHA a la imagen web
 `sha256:b8b8f544142ab0ed73099b1056667e76d6b4b5253833cdffdb420cb8bad07ef5`
@@ -69,6 +70,27 @@ corrida. Permite un solo reintento del mismo POST de rango ante 429
 no JSON y usa las credenciales WIF renovables de la misma identidad
 durante la aceptación y su reversión. El recibo de la corrida anterior
 reúne evidencia real y queda fuera del contrato de replay del workflow.
+
+### Punto de continuación
+
+Al cierre de `45932688939`, el portal respondió `34483012…` y salud OK.
+Durante ese despliegue se observó el frontend `clipforge-int-beta-00042-p29`
+y el worker en generación 39. El digest candidato del worker en el
+recibo es
+`sha256:396ab7506b2d8c2626770926829be8e600b27f3d79299c27887e255ec19b91f1`.
+El registro vigente de la API, el worker y el migrador requiere lectura
+administrativa. [Recibo nativo de la candidata](https://github.com/AldemaroCruz/ClipForge/actions/runs/45932688939/artifacts/15170025636)
+
+La sesión local rechazó la consulta de Cloud Run al requerir
+reautenticación. Para retomar, ejecutar
+`gcloud auth login admin@ixbalam.studio` y completar el acceso en el
+navegador. Con la sesión vigente, contrastar los componentes activos,
+restaurar la base anterior según la sección de reversión y consultar las
+reservas del día UTC en sólo lectura. El último valor comprobado fue
+7 de 10 antes de las selecciones largas. Autorizar sólo una reejecución
+normal del job protegido con los artefactos íntegros y el cupo requerido.
+La limpieza pendiente de la tercera corrida comprende tres cuentas y
+tres proyectos sintéticos identificados por sus recibos.
 
 ### Aceptación de selección con IA
 

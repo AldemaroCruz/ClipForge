@@ -54,7 +54,7 @@ Prioridad P0: bloqueante para su hito. P1: mejora necesaria/próxima. P2: optimi
 | ID | Entrega | Estado | Aceptación |
 |---|---|---|---|
 | C00 | Reutilización de la base de INT | Comprobado | Rama, revisiones, cuotas y componentes documentados en [Hito C](INT-HITO-C.md). |
-| C01 | Entrada de hasta 2 GiB | Evidencia funcional en INT, promoción pendiente | [45924575800](https://github.com/AldemaroCruz/ClipForge/actions/runs/45924575800) verificó tres videos de 2.116.336.669 bytes, simultaneidad, reanudación, persistencia y aislamiento. El gate editorial posterior falló y se restauró la base. |
+| C01 | Entrada de hasta 2 GiB | Evidencia funcional en INT, promoción pendiente | [45924575800](https://github.com/AldemaroCruz/ClipForge/actions/runs/45924575800) verificó tres videos de 2.116.336.669 bytes, simultaneidad, reanudación, persistencia y aislamiento. [45932688939](https://github.com/AldemaroCruz/ClipForge/actions/runs/45932688939) perdió su runner antes de conservar la aceptación final. |
 | C02 | Corrección rápida de subtítulos | Evidencia funcional en INT, promoción pendiente | Corrección comprobada en MP4/SRT/WebVTT, otros clips conservados y persistencia al volver a iniciar sesión tras el reemplazo. |
 | C03 | Ajuste preciso de recortes | Evidencia funcional en INT, promoción pendiente | Dos recortes tardíos exportados, con PTS, audio y subtítulos comprobados sobre los archivos descargados. |
 
