@@ -29,7 +29,7 @@
 #editorial h3 {
   margin-block: 18px 8px;
 }
-#editorial textarea {
+#editorial-brief, .caption-text {
   display: block;
   width: 100%;
   padding: 9px 12px;
@@ -40,7 +40,7 @@
   font: inherit;
   resize: vertical;
 }
-#editorial textarea:focus-visible {
+#editorial-brief:focus-visible, .caption-text:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
@@ -75,27 +75,58 @@
 .editorial-cue:last-child {
   margin-bottom: 12px;
 }
-.editorial-sample {
-  display: grid;
-  min-height: 120px;
-  align-content: end;
+.caption-text {
+  margin-top: 6px;
+  min-height: 4.375rem;
+}
+.caption-sample {
+  margin: 16px 0;
   padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  text-align: center;
+}
+.caption-sample > h4 {
+  margin: 0 0 10px;
+  font-size: 1rem;
+}
+.caption-frame {
+  /* The export and its ASS script both use a 1080 × 1920 frame. */
+  position: relative;
+  container-type: inline-size;
+  width: min(100%, 11.25rem);
+  aspect-ratio: 9 / 16;
+  margin-inline: auto;
   background: #09101e;
   border-radius: 8px;
-  text-align: center;
+  overflow: hidden;
+}
+@font-face {
+  font-family: "ClipForge Caption";
+  src: url("/static/caption-font.ttf") format("truetype"), local("DejaVu Sans Bold");
+  font-style: normal;
+  font-weight: 700;
+}
+.caption-frame > span {
+  position: absolute;
+  inset-inline: calc(95 / 1080 * 100cqw);
+  bottom: var(--caption-margin);
+  font-family: "ClipForge Caption", "DejaVu Sans", sans-serif;
+  font-weight: 700;
+  line-height: 1.15;
   overflow-wrap: anywhere;
-  white-space: pre-wrap;
+  white-space: pre-line;
+  text-wrap: balance;
+  paint-order: stroke fill;
 }
-.editorial-sample[data-position="top"] {
-  align-content: start;
+.caption-frame[data-position="top"] > span {
+  top: var(--caption-margin);
+  bottom: auto;
 }
-.editorial-sample[data-position="center"] {
-  align-content: center;
-}
-.editorial-sample span {
-  font-family: "DejaVu Sans", sans-serif;
-  font-weight: bold;
-  text-shadow: 1px 1px 2px #000;
+.caption-frame[data-position="center"] > span {
+  top: 50%;
+  bottom: auto;
+  transform: translateY(-50%);
 }
 #editorial-candidates article {
   overflow-wrap: anywhere;

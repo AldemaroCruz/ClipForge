@@ -81,6 +81,22 @@ class EditorialCatalogTests(unittest.TestCase):
             with patch.dict(os.environ, {"CLIPFORGE_AI_CONFIG_REVISION": "4"}):
                 self.assertNotEqual(first, editor.provider_config()[1])
 
+    def test_daily_reservation_increase_preserves_existing_int_consent_tokens(self):
+        with patch.dict(os.environ, {**SETTINGS, "CLIPFORGE_AI_DAILY_LIMIT": "10",
+                                     "OPENAI_API_KEY": "fixture-provider-credential"}):
+            original, before = editor.provider_config()
+            legacy = {"config": original.fingerprint(include_key=False),
+                      "revision": SETTINGS["CLIPFORGE_AI_CONFIG_REVISION"]}
+            self.assertEqual(before, hashlib.sha256(repository.packed(legacy).encode()).hexdigest())
+
+            with patch.dict(os.environ, {"CLIPFORGE_AI_DAILY_LIMIT": "100"}):
+                api, api_consent = editor.provider_config()
+                worker_config, worker_consent = editor.provider_config(worker=True)
+                self.assertEqual((api.daily_limit, worker_config.daily_limit), (100, 100))
+                self.assertEqual(editor.config_status()["daily_limit"], 100)
+                self.assertEqual((api_consent, worker_consent), (before, before))
+                self.assertNotEqual(api.fingerprint(include_key=False), legacy["config"])
+
     def test_combines_windows_and_resolves_duplicates_and_overlaps_globally(self):
         def item(start, end, score):
             return {"start": start, "end": end, "criteria": {"clarity": score, "completeness": score, "hook": score}}

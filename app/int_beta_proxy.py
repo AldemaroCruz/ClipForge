@@ -23,6 +23,7 @@ METADATA_IDENTITY = (
 REQUEST_SIZE = 32 * 1024
 ASSETS = frozenset({
     "account.css", "account.js", "auth.js", "recover.js", "beta.css", "beta.js", "mvp.css", "mvp.js", "editorial.js",
+    "caption-font.ttf", "caption-font-license.txt",
 })
 STATIC = Path(__file__).with_name("static")
 JOB = r"[a-f0-9]{32}"

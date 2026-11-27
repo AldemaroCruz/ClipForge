@@ -1,6 +1,7 @@
 """Prepare and execute a consented, text-only selection on the durable pilot queue."""
 
 from bisect import bisect_left, bisect_right
+from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -41,7 +42,10 @@ def provider_config(*, worker=False):
         raise AIError("AI_DISABLED", "La selección por IA está desactivada en INT. Podés usar los clips automáticos y el editor.")
     if config.provider != "openai" or not re.fullmatch(r"[1-9][0-9]{0,18}", revision):
         raise AIError("AI_CONFIG_INVALID", "El proveedor de INT aún no tiene una configuración de servidor válida.")
-    public_fingerprint = {"config": config.fingerprint(include_key=False), "revision": revision}
+    # Preserve existing consent tokens, which included the original INT limit of 10.
+    # The current admission limit controls reservations without changing the provider request.
+    consent_config = replace(config, daily_limit=10)
+    public_fingerprint = {"config": consent_config.fingerprint(include_key=False), "revision": revision}
     return config, hashlib.sha256(repo.packed(public_fingerprint).encode()).hexdigest()
 
 

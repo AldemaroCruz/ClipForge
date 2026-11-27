@@ -127,21 +127,6 @@
   border-radius: 8px;
   margin: 12px auto;
 }
-.beta-caption-editor textarea {
-  display: block;
-  width: 100%;
-  padding: 9px 12px;
-  color: inherit;
-  background: #0f192b;
-  border: 1px solid #49607f;
-  border-radius: 8px;
-  font: inherit;
-  resize: vertical;
-}
-.beta-caption-editor textarea:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
-}
 .beta-caption-editor input[type="color"] {
   min-height: 46px;
 }

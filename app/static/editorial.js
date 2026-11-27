@@ -391,6 +391,7 @@
     input.dataset.field = name;
     input.required = true;
     if (name === "text") {
+      input.className = "caption-text";
       input.maxLength = 500;
       input.rows = 2;
     } else {
@@ -410,7 +411,9 @@
       cueInput("Fin desde el recorte (s)", "end", cue.end, duration));
     row.append(times, cueInput("Texto del subtítulo", "text", cue.text),
       button("Quitar subtítulo", () => {
+        const neighbor = row.nextElementSibling ?? row.previousElementSibling;
         row.remove();
+        neighbor?.querySelector(".caption-text")?.focus();
         onChange();
       }));
     return row;
@@ -437,16 +440,39 @@
     return true;
   }
 
+  function trackCaptionCue(container, onChange) {
+    container.addEventListener("focusin", event => {
+      const row = event.target.closest(".editorial-cue");
+      if (!row) return;
+      container.querySelector("[data-preview]")?.removeAttribute("data-preview");
+      row.dataset.preview = "";
+      onChange();
+    });
+  }
+
+  function replaceCueRows(container, rows, keepSelection) {
+    const selected = [...container.children].findIndex(row => row.hasAttribute("data-preview"));
+    if (keepSelection && rows[selected]) rows[selected].dataset.preview = "";
+    container.replaceChildren(...rows);
+  }
+
   function showCaptionSample(sample, container, style) {
-    const span = sample.firstElementChild;
-    sample.hidden = !style.burn_subtitles;
-    sample.dataset.position = style.subtitle_position;
-    span.textContent = container.querySelector('[data-field="text"]')?.value || "Texto de muestra";
+    const row = container.querySelector("[data-preview]") ?? container.firstElementChild;
+    sample.hidden = !style.burn_subtitles || !row;
+    if (sample.hidden) return;
+    const frame = sample.querySelector(".caption-frame");
+    const span = frame.firstElementChild;
+    const units = value => `calc(${value} / 1080 * 100cqw)`;
+    frame.dataset.position = style.subtitle_position;
+    span.textContent = row.querySelector(".caption-text").value;
     span.style.color = style.subtitle_color;
-    span.style.fontSize = Math.min(48, Math.max(10, (style.subtitle_font_size || 52) * .36)) + "px";
-    span.style.webkitTextStroke = ((style.subtitle_outline || 0) * .25) + "px "
-      + (style.subtitle_outline_color ?? "#201510");
-    span.style.textShadow = (style.subtitle_shadow ?? 1) ? "1px 1px 2px #000" : "none";
+    // ASS font size measures the font's ascent plus descent. CSS measures its em square.
+    span.style.fontSize = units((style.subtitle_font_size || 52) * 2048 / 2384);
+    span.style.setProperty("--caption-margin", units(style.subtitle_margin_v ?? 230));
+    span.style.webkitTextStrokeWidth = units((style.subtitle_outline ?? 3) * 2);
+    span.style.webkitTextStrokeColor = style.subtitle_outline_color ?? "#201510";
+    const shadow = style.subtitle_shadow ?? 1;
+    span.style.textShadow = shadow ? `${units(shadow)} ${units(shadow)} rgb(0 0 0 / 50%)` : "none";
   }
 
   function captionStyle(options) {
@@ -459,12 +485,13 @@
     showCaptionSample(el("sample"), el("cues"), captionStyle(view?.draft?.options));
   }
 
-  function setCues(cues, start, end) {
+  function setCues(cues, start, end, keepSelection) {
     const duration = Math.round((end - start) * 1000) / 1000;
-    el("cues").replaceChildren(...cues.map(cue => cueRow(cue, duration, updateSample)));
+    replaceCueRows(el("cues"), cues.map(cue => cueRow(cue, duration, updateSample)), keepSelection);
   }
 
   function mountDraft(state, item) {
+    const keepSelection = state.draft?.id === item.id;
     state.draft = item;
     state.range = {start: item.start, end: item.end};
     el("draft-form").hidden = false;
@@ -479,7 +506,7 @@
     el("burn").checked = item.options.burn_subtitles === true;
     el("position").value = item.options.subtitle_position ?? "bottom";
     el("edge").value = item.options.subtitle_outline ?? 3;
-    setCues(item.cues, item.start, item.end);
+    setCues(item.cues, item.start, item.end, keepSelection);
     el("revision").textContent = "Revisión guardada " + item.revision;
     updateSample();
     updateFrameControls();
@@ -699,6 +726,7 @@
   });
   el("draft-form").addEventListener("submit", event => { event.preventDefault(); void draftAction("save"); });
   el("draft-form").addEventListener("input", updateSample);
+  trackCaptionCue(el("cues"), updateSample);
   el("apply-range").addEventListener("click", () => draftAction("range"));
   el("range-preview").addEventListener("click", () => draftAction("preview"));
   for (const edge of ["start", "end"]) {
@@ -723,5 +751,5 @@
   });
 
   window.ClipForgeEditorial = {selectJob, createManualDraft};
-  window.ClipForgeCaptionFields = {cueRow, readCues, addCue, showCaptionSample};
+  window.ClipForgeCaptionFields = {cueInput, cueRow, readCues, addCue, replaceCueRows, trackCaptionCue, showCaptionSample};
 })();

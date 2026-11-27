@@ -81,7 +81,7 @@ verify_revision() {
 }
 
 capture_rollout() {
-    local phase="$1" worker_spec worker_configuration worker_editorial migrator_image
+    local phase="$1" worker_spec worker_configuration worker_editorial api_daily_limit migrator_image
     FRONTEND_REVISION="$(verify_revision "$frontend" "$public")"
     API_REVISION="$(verify_revision "$api" "$private")"
     worker_spec="$(run jobs describe clipforge-int-worker --format='json(metadata.generation,spec.template.spec)')"
@@ -96,6 +96,14 @@ capture_rollout() {
         memory: .spec.template.spec.template.spec.containers[0].resources.limits.memory
     }' <<< "$worker_spec")"
     worker_editorial="$(editorial_settings <<< "$worker_spec")"
+    if [[ -n "$editorial_model" ]]; then
+        api_daily_limit="$(run revisions describe "$API_REVISION" --format='json(spec.containers)' |
+            jq -er '.spec.containers[0].env[] | select(.name == "CLIPFORGE_AI_DAILY_LIMIT") | .value | tonumber')"
+        [[ "$api_daily_limit" == 100 ]]
+        jq -e --arg model "$editorial_model" '.provider == "openai" and .model == $model and .daily_limit == 100' \
+            <<< "$worker_editorial" > /dev/null
+        worker_editorial="$(jq -c --argjson limit "$api_daily_limit" '. + {api_daily_limit: $limit}' <<< "$worker_editorial")"
+    fi
     migrator_image="$(run jobs describe "$migrator" --format='value(spec.template.spec.template.spec.containers[0].image)')"
     [[ "$migrator_image" == "$TF_VAR_web_image" ]]
     jq -n --arg commit "$GITHUB_SHA" --arg frontend "$FRONTEND_REVISION" --arg api "$API_REVISION" \
@@ -117,10 +125,12 @@ editorial_settings() {
             provider: (val("CLIPFORGE_AI_PROVIDER") // "disabled"),
             model: (val("CLIPFORGE_AI_MODEL") // ""),
             timeout: (val("CLIPFORGE_AI_TIMEOUT_SECONDS") // ""),
+            daily_limit: ((val("CLIPFORGE_AI_DAILY_LIMIT") // "10") | tonumber),
             key_version: (map(select(.name == "OPENAI_API_KEY")) | .[0].valueFrom.secretKeyRef.key // "")
         } |
         select(.provider == "disabled" or (.provider == "openai" and
             (.model | test("^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$")) and
+            (.daily_limit >= 1 and .daily_limit <= 100 and .daily_limit == (.daily_limit | floor)) and
             (.key_version | test("^[1-9][0-9]{0,9}$")) and (.timeout | test("^[0-9]{2,3}$"))))
         '
 }
@@ -152,7 +162,7 @@ capture_previous() {
 }
 
 restore_previous() {
-    local previous="$reports/previous-live.json" version front previous_api worker provider model key_version timeout migrator_image
+    local previous="$reports/previous-live.json" version front previous_api worker provider model key_version timeout daily_limit migrator_image
     local -a editorial_options
     version="$(jq -er '.commit' "$previous")" || return
     front="$(jq -er '.frontend_revision' "$previous")" || return
@@ -164,14 +174,15 @@ restore_previous() {
         model="$(jq -er '.editorial.model' "$previous")" || return
         key_version="$(jq -er '.editorial.key_version' "$previous")" || return
         timeout="$(jq -er '.editorial.timeout' "$previous")" || return
+        daily_limit="$(jq -er '.editorial.daily_limit' "$previous")" || return
         editorial_options=(
-            --update-env-vars "CLIPFORGE_REVISION=$version,CLIPFORGE_AI_PROVIDER=openai,CLIPFORGE_AI_MODEL=$model,CLIPFORGE_AI_CONFIG_REVISION=$key_version,CLIPFORGE_AI_TIMEOUT_SECONDS=$timeout"
+            --update-env-vars "CLIPFORGE_REVISION=$version,CLIPFORGE_AI_PROVIDER=openai,CLIPFORGE_AI_MODEL=$model,CLIPFORGE_AI_CONFIG_REVISION=$key_version,CLIPFORGE_AI_TIMEOUT_SECONDS=$timeout,CLIPFORGE_AI_DAILY_LIMIT=$daily_limit"
             --update-secrets "OPENAI_API_KEY=clipforge-int-openai-key:$key_version"
         )
     else
         editorial_options=(
             --update-env-vars "CLIPFORGE_REVISION=$version,CLIPFORGE_AI_PROVIDER=disabled"
-            --remove-env-vars CLIPFORGE_AI_MODEL,CLIPFORGE_AI_CONFIG_REVISION,CLIPFORGE_AI_TIMEOUT_SECONDS
+            --remove-env-vars CLIPFORGE_AI_MODEL,CLIPFORGE_AI_CONFIG_REVISION,CLIPFORGE_AI_TIMEOUT_SECONDS,CLIPFORGE_AI_DAILY_LIMIT
             --remove-secrets OPENAI_API_KEY
         )
     fi

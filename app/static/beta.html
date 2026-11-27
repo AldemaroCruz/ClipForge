@@ -67,6 +67,10 @@
           <p id="clip-caption-status" class="status beta-message" role="status"></p>
           <video id="clip-caption-preview" controls playsinline preload="none" aria-label="Vista previa del clip guardado" hidden></video>
           <form id="clip-caption-form" hidden>
+            <section id="clip-caption-sample" class="caption-sample" aria-labelledby="clip-caption-sample-heading" hidden>
+              <h4 id="clip-caption-sample-heading">Vista previa del subtítulo</h4>
+              <div class="caption-frame"><span></span></div>
+            </section>
             <fieldset id="clip-caption-fields" class="beta-caption-fields">
               <legend id="clip-caption-legend">Estilo y sincronización</legend>
               <div id="clip-caption-advanced">
@@ -77,7 +81,6 @@
                   <div><label for="clip-caption-position">Posición</label><select id="clip-caption-position"><option value="bottom">Abajo</option><option value="center">Centro</option><option value="top">Arriba</option></select></div>
                   <div><label for="clip-caption-edge">Grosor del contorno</label><input type="number" id="clip-caption-edge" min="0" max="12" step="1" value="3" required></div>
                 </div>
-                <p id="clip-caption-sample" class="editorial-sample" hidden><span></span></p>
               </div>
               <p id="clip-caption-empty" class="muted" hidden>Este clip no tiene subtítulos. Puedes añadirlos con «Editar subtítulos».</p>
               <div id="clip-caption-cues"></div>
@@ -160,7 +163,10 @@
                   <div><label for="editorial-position">Posición</label><select id="editorial-position"><option value="bottom">Abajo</option><option value="center">Centro</option><option value="top">Arriba</option></select></div>
                   <div><label for="editorial-edge">Grosor del contorno</label><input type="number" id="editorial-edge" min="0" max="12" step="1" value="3" required></div>
                 </div>
-                <p id="editorial-sample" class="editorial-sample" hidden><span></span></p>
+                <section id="editorial-sample" class="caption-sample" aria-labelledby="editorial-sample-heading" hidden>
+                  <h4 id="editorial-sample-heading">Vista previa del subtítulo</h4>
+                  <div class="caption-frame"><span></span></div>
+                </section>
                 <div id="editorial-cues"></div>
                 <button type="button" id="editorial-add-cue" class="secondary">Añadir subtítulo</button>
                 <p id="editorial-revision" class="muted"></p>

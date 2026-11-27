@@ -59,6 +59,20 @@ COPY app/static/account.css app/static/account.html app/static/account.js app/st
      app/static/login.html app/static/recover.html app/static/recover.js \
      app/static/beta.html app/static/beta.css app/static/beta.js app/static/mvp.css app/static/mvp.js \
      app/static/editorial.js /app/app/static/
+RUN --network=none --mount=type=bind,source=debs,target=/debs <<'FONT'
+set -eu
+entry="$(awk '$1 == "fonts-dejavu-core" { print $4, $5; found++ } END { if (found != 1) exit 1 }' \
+    /opt/clipforge-custody/requirements-int-beta-apt.tsv)"
+read -r digest url <<EOF
+$entry
+EOF
+font_deb="/debs/${url##*/}"
+printf '%s  %s\n' "$digest" "$font_deb" | sha256sum --check
+dpkg-deb --fsys-tarfile "$font_deb" | \
+    tar -xOf - ./usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf > /app/app/static/caption-font.ttf
+dpkg-deb --fsys-tarfile "$font_deb" | \
+    tar -xOf - ./usr/share/doc/fonts-dejavu-core/copyright > /app/app/static/caption-font-license.txt
+FONT
 RUN find /app -xdev -type d -exec chmod 0555 {} + && find /app -xdev -type f -exec chmod 0444 {} +
 USER 10001:10001
 RUN --network=none python -c 'import app.int_beta, app.int_beta_proxy, psycopg, sys; assert psycopg.pq.__impl__ == "python"; assert "app.main" not in sys.modules'

@@ -15,9 +15,6 @@ on:
         default: false
 
 permissions: {}
-concurrency:
-  group: clipforge-int-hito-a-delivery
-  cancel-in-progress: false
 
 env:
   APPROVED_COMMIT: ${{ inputs.approved_commit }}
@@ -256,6 +253,10 @@ jobs:
   deploy:
     needs: [frontend, api]
     if: github.repository == 'AldemaroCruz/ClipForge' && github.ref == 'refs/heads/ci/bootstrap-sec03'
+    # Hold the INT deployment lock only after both validation jobs finish.
+    concurrency:
+      group: clipforge-int-hito-a-delivery
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     environment: int
     permissions:
@@ -477,6 +478,8 @@ jobs:
           path: |
             ${{ env.DELIVERY_DIR }}/reports/after-rollout.json
             ${{ env.DELIVERY_DIR }}/reports/browser-verify.json
+            ${{ env.DELIVERY_DIR }}/reports/preview-desktop.png
+            ${{ env.DELIVERY_DIR }}/reports/preview-mobile.png
           if-no-files-found: error
 
       - name: Create the three synthetic capacity accounts

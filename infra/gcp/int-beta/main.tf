@@ -93,6 +93,7 @@ locals {
     CLIPFORGE_AI_MODEL           = var.editorial_provider.model
     CLIPFORGE_AI_CONFIG_REVISION = var.editorial_provider.credential_version
     CLIPFORGE_AI_TIMEOUT_SECONDS = "40"
+    CLIPFORGE_AI_DAILY_LIMIT     = "100"
   })
   database = {
     CLIPFORGE_ENVIRONMENT                 = "INT"

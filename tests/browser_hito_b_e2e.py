@@ -6,7 +6,7 @@ import secrets
 import unittest
 from urllib.parse import urlsplit
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 from scripts.int_hito_a_browser import resolve_browser
 from scripts.int_hito_b_browser_ui import submit_quick_caption_correction
@@ -69,6 +69,13 @@ class BrowserHitoBTest(unittest.TestCase):
         asset = path.removeprefix("/static/")
         if path.startswith("/static/") and asset in assets:
             route.fulfill(status=200, content_type=assets[asset], body=(STATIC / asset).read_bytes())
+            return
+        if path == "/static/caption-font.ttf":
+            font = STATIC / "caption-font.ttf"
+            if font.is_file():
+                route.fulfill(status=200, content_type="font/ttf", body=font.read_bytes())
+            else:
+                route.fulfill(status=404)
             return
         if path in {f"/jobs/{JOB}/clips/{CLIP}", f"/jobs/{JOB}/source"}:
             route.fulfill(status=404 if self.state["status"] == "deleted" else 503, content_type="video/mp4")
@@ -388,6 +395,127 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])
 
+    def test_caption_preview_tracks_cue_and_export_style_at_both_widths(self):
+        style = {"burn_subtitles": True, "subtitle_font_size": 52, "subtitle_color": "#FFFFFF",
+                 "subtitle_position": "bottom", "subtitle_outline": 3}
+        cues = [{"start": 1.2, "end": 3.25, "text": "Primera frase."},
+                {"start": 8.25, "end": 10.5, "text": "Frase posterior."}]
+        self.state.update(status="completed", caption={
+            "start": 392.0, "end": 421.5, "duration": 29.5, "cues": cues, "style": style,
+            "revision": 1, "status": "completed", "output": None,
+        })
+        self.page.set_viewport_size({"width": 1280, "height": 800})
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        open_editor = self.page.get_by_role("button", name="Editar subtítulos", exact=True)
+        open_editor.click()
+        editor = self.page.locator("#clip-caption-form")
+        fields = editor.get_by_role("textbox", name="Texto del subtítulo", exact=True)
+        first, later = fields.nth(0), fields.nth(1)
+        preview = editor.get_by_role("region", name="Vista previa del subtítulo")
+        expect(preview.get_by_role("heading", name="Vista previa del subtítulo")).to_be_visible()
+        frame = preview.locator(".caption-frame")
+        sample = frame.locator("span")
+        expect(sample).to_have_text(cues[0]["text"])
+        self.assertEqual(0, preview.get_by_role("textbox").count())
+
+        field_style = """node => {
+            const style = getComputedStyle(node);
+            return [style.font, style.backgroundColor, style.border, style.padding, style.minHeight];
+        }"""
+        first.fill("Primera frase editada.")
+        expect(sample).to_have_text("Primera frase editada.")
+        first_style = first.evaluate(field_style)
+        expect(first).to_have_css("outline-width", "2px")
+        later.fill("Frase posterior editada.")
+        expect(sample).to_have_text("Frase posterior editada.")
+        expect(later).to_have_css("outline-width", "2px")
+        self.assertEqual(first_style, later.evaluate(field_style))
+        later.evaluate("""node => {
+            node.setSelectionRange(0, 5);
+            node.dispatchEvent(new Event('input', {bubbles: true}));
+        }""")
+        self.assertEqual([0, 5], later.evaluate("node => [node.selectionStart, node.selectionEnd]"))
+
+        editor.get_by_role("button", name="Añadir subtítulo").click()
+        added = fields.nth(2)
+        expect(added).to_be_focused()
+        expect(added).to_have_css("outline-width", "2px")
+        self.assertEqual(first_style, added.evaluate(field_style))
+        added.fill("Segmento nuevo.")
+        expect(sample).to_have_text("Segmento nuevo.")
+        editor.get_by_role("button", name="Quitar subtítulo").nth(2).click()
+        expect(fields).to_have_count(2)
+        expect(sample).not_to_have_text("Segmento nuevo.")
+        later.focus()
+        expect(sample).to_have_text("Frase posterior editada.")
+
+        geometry = """node => {
+            const {width, height, y, left, right} = node.getBoundingClientRect();
+            const text = node.querySelector('span');
+            const style = getComputedStyle(text);
+            return {width, height, y, left, right, scrollWidth: node.scrollWidth,
+                    textY: text.getBoundingClientRect().y, size: parseFloat(style.fontSize),
+                    stroke: parseFloat(style.webkitTextStrokeWidth)};
+        }"""
+        original = frame.evaluate(geometry)
+        editor.get_by_label("Tamaño del texto").fill("76")
+        editor.get_by_label("Color del texto").fill("#edad42")
+        editor.get_by_label("Posición").select_option("top")
+        editor.get_by_label("Grosor del contorno").fill("6")
+        expect(sample).to_have_text("Frase posterior editada.")
+        expect(sample).to_have_css("color", "rgb(237, 173, 66)")
+        desktop = frame.evaluate(geometry)
+        self.assertLess(desktop["textY"] - desktop["y"], original["textY"] - original["y"])
+        self.assertAlmostEqual(desktop["size"] / original["size"], 76 / 52, delta=0.02)
+        self.assertAlmostEqual(desktop["stroke"] / original["stroke"], 2, delta=0.05)
+
+        self.page.set_viewport_size({"width": 320, "height": 720})
+        narrow = frame.evaluate(geometry)
+        for bounds, window in ((desktop, 1280), (narrow, 320)):
+            self.assertAlmostEqual(bounds["width"] / bounds["height"], 9 / 16, delta=0.01)
+            self.assertGreaterEqual(bounds["left"], 0)
+            self.assertLessEqual(bounds["right"], window)
+            self.assertLessEqual(bounds["scrollWidth"], bounds["width"] + 1)
+        self.assertAlmostEqual(desktop["size"] / desktop["height"], narrow["size"] / narrow["height"], places=4)
+        self.assertAlmostEqual(desktop["stroke"] / desktop["height"], narrow["stroke"] / narrow["height"], places=4)
+        # A narrow editor can still reach the preview's desktop maximum width.
+        frame.evaluate("node => node.style.maxWidth = '90px'")
+        small_frame = frame.evaluate(geometry)
+        frame.evaluate("node => node.style.removeProperty('max-width')")
+        self.assertLess(small_frame["height"], narrow["height"])
+        self.assertAlmostEqual(desktop["size"] / desktop["height"], small_frame["size"] / small_frame["height"], places=4)
+        self.assertAlmostEqual(desktop["stroke"] / desktop["height"],
+                               small_frame["stroke"] / small_frame["height"], places=4)
+
+        editor.get_by_label("Incrustar subtítulos en el MP4").uncheck()
+        expect(preview).to_be_hidden()
+        editor.get_by_label("Incrustar subtítulos en el MP4").check()
+        expect(sample).to_have_text("Frase posterior editada.")
+        editor.get_by_role("button", name="Guardar y generar clip").click()
+        self.until_text("#clip-caption-status", "Subtítulos guardados")
+        expect(sample).to_have_text("Frase posterior editada.")
+        saved = self.state["caption_updates"][-1]
+        self.assertEqual([(1.2, 3.25, "Primera frase editada."), (8.25, 10.5, "Frase posterior editada.")],
+                         [(cue["start"], cue["end"], cue["text"]) for cue in saved["cues"]])
+        self.assertEqual({"burn_subtitles": True, "subtitle_font_size": 76, "subtitle_color": "#EDAD42",
+                          "subtitle_position": "top", "subtitle_outline": 6}, saved["style"])
+
+        self.page.reload()
+        open_editor.click()
+        expect(first).to_have_value("Primera frase editada.")
+        expect(later).to_have_value("Frase posterior editada.")
+        self.assertEqual(["1.2", "8.25"], editor.get_by_label("Inicio desde el recorte (s)").evaluate_all(
+            "fields => fields.map(field => field.value)"))
+        self.assertEqual(["3.25", "10.5"], editor.get_by_label("Fin desde el recorte (s)").evaluate_all(
+            "fields => fields.map(field => field.value)"))
+        self.assertEqual("76", editor.get_by_label("Tamaño del texto").input_value())
+        self.assertEqual("#edad42", editor.get_by_label("Color del texto").input_value())
+        self.assertEqual("top", editor.get_by_label("Posición").input_value())
+        self.assertEqual("6", editor.get_by_label("Grosor del contorno").input_value())
+        self.assertEqual([], self.state["selection_posts"])
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
     def test_quick_caption_correction_preserves_intervals_style_and_the_other_clip(self):
         style = {"burn_subtitles": True, "subtitle_font_size": 76, "subtitle_color": "#EDAD42",
                  "subtitle_position": "top", "subtitle_outline": 6}
@@ -417,6 +545,11 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertTrue(first.evaluate("node => node === document.activeElement"))
         self.assertTrue(editor.locator("#clip-caption-advanced").is_hidden())
         self.assertEqual(0, editor.locator("#clip-caption-cues input").count())
+        sample = editor.get_by_role("region", name="Vista previa del subtítulo").locator(".caption-frame span")
+        expect(sample).to_have_text(cues[0]["text"])
+        later = editor.get_by_role("textbox", name="Subtítulo 2 · 8.250–10.500 s")
+        later.focus()
+        expect(sample).to_have_text(cues[1]["text"])
         downloads = editor.locator("#clip-caption-downloads")
         self.assertEqual(base, downloads.get_by_role("link", name="Descargar MP4").get_attribute("href"))
         first.fill("Borrador sin guardar.")
@@ -603,6 +736,11 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertTrue(self.page.locator("#editorial-preview-button").is_disabled())
         self.assertEqual("392", self.page.locator("#editorial-start").input_value())
         self.page.locator("#editorial-burn").check()
+        form = self.page.locator("#editorial-draft-form")
+        sample = form.get_by_role("region", name="Vista previa del subtítulo").locator(".caption-frame span")
+        expect(sample).to_have_text(self.cue_fixture()[0]["text"])
+        form.get_by_role("textbox", name="Texto del subtítulo", exact=True).fill("Desde el borrador manual.")
+        expect(sample).to_have_text("Desde el borrador manual.")
         self.page.locator("#editorial-export").click()
         self.page.get_by_role("link", name="Descargar VTT").wait_for()
         self.assertEqual([], self.state["selection_posts"])

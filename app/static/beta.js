@@ -428,19 +428,17 @@ async function initBeta() {
   }
 
   function updateCaptionSample() {
-    if (!captionView?.data || captionView.quick) return;
-    captionFields.showCaptionSample(caption("sample"), caption("cues"), captionStyle(captionView));
+    if (!captionView?.data) return;
+    const style = captionView.quick ? captionView.data.style : captionStyle(captionView);
+    captionFields.showCaptionSample(caption("sample"), caption("cues"), style);
   }
 
   function quickCueRow(cue, index) {
-    const row = betaText("label", "Subtítulo " + (index + 1) + " · "
-      + cue.start.toFixed(3) + "–" + cue.end.toFixed(3) + " s", "editorial-cue");
-    const input = document.createElement("textarea");
-    input.required = true;
-    input.maxLength = 500;
-    input.rows = 2;
-    input.value = cue.text;
-    row.append(input);
+    const row = betaText("div", "", "editorial-cue");
+    const range = "Subtítulo " + (index + 1) + " · " + cue.start.toFixed(3) + "–" + cue.end.toFixed(3) + " s";
+    const field = captionFields.cueInput("Texto del subtítulo", "text", cue.text);
+    field.firstElementChild.setAttribute("aria-label", range + " — Texto del subtítulo");
+    row.append(betaText("p", range, "muted"), field);
     return row;
   }
 
@@ -486,6 +484,7 @@ async function initBeta() {
       || !Array.isArray(data.cues) || !Number.isSafeInteger(data.revision)) {
       throw new Error("No se pudo verificar la versión del clip.");
     }
+    const keepSelection = Boolean(view.data);
     view.data = data;
     view.dirty = false;
     caption("range").textContent = view.quick ? "Tiempos dentro del clip."
@@ -497,8 +496,9 @@ async function initBeta() {
     caption("position").value = data.style.subtitle_position ?? "bottom";
     caption("edge").value = data.style.subtitle_outline ?? 3;
     if (!preserveCues) {
-      caption("cues").replaceChildren(...(view.quick ? data.cues.map(quickCueRow) : data.cues.map(cue =>
-        captionFields.cueRow(cue, data.duration, updateCaptionSample))));
+      const rows = view.quick ? data.cues.map(quickCueRow)
+        : data.cues.map(cue => captionFields.cueRow(cue, data.duration, updateCaptionSample));
+      captionFields.replaceCueRows(caption("cues"), rows, keepSelection);
     }
     const empty = view.quick && !data.cues.length;
     caption("empty").hidden = !empty;
@@ -864,10 +864,10 @@ async function initBeta() {
     if (captionView?.quick) {
       captionView.dirty = true;
       caption("downloads").hidden = true;
-    } else {
-      updateCaptionSample();
     }
+    updateCaptionSample();
   });
+  captionFields?.trackCaptionCue(caption("cues"), updateCaptionSample);
   caption("apply-all").addEventListener("click", () => saveCaptions(true));
   caption("add").addEventListener("click", () => {
     if (!captionView?.data) return;

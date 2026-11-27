@@ -38,6 +38,7 @@ COMMIT = re.compile(r"[0-9a-f]{40}")
 ID = re.compile(r"[0-9a-f]{32}")
 CLIP = re.compile(r"clip_[0-9]{2}[.]mp4")
 SHA256 = re.compile(r"[0-9a-f]{64}")
+CAPTION_FONT_SHA256 = "5c1247acef7f2b8522a31742c76d6adcb5569bacc0be7ceaa4dc39dd252ce895"
 ACCOUNT = re.compile(r"qa_beta_[0-9a-f]{20}")
 CHUNK_BYTES = 8 * 1024 * 1024
 MAX_CLIP_BYTES = 200 * 1024 * 1024
@@ -603,6 +604,159 @@ def verify_clip_styles(page, job, saved, original, scratch, report):
             save_download(page, card.get_by_role("link", name="MP4 inicial", exact=True), target)
             require(digest_of(target) == before["sha256"], "initial_clip_bytes_changed_after_replacement")
     check(report, "automatic_clips_and_saved_caption_versions_after_replacement")
+    return states
+
+
+def verify_caption_preview(page, job_id, states, screenshots, scratch, report):
+    report["step"] = "caption_preview_portal"
+    user = browser_get(page, "/auth/me")
+    require(user["status"] == 200 and user["body"]["user"]["is_admin"] is False,
+            "caption_preview_requires_normal_creator")
+    available = [(name, state) for name, state in states.items() if len(state["cues"]) >= 2
+                 and state["cues"][1]["end"] - state["cues"][1]["start"] >= .25
+                 and min(state["cues"][-1]["end"], state["duration"] - .1) - state["cues"][-1]["start"] >= .04]
+    require(available, "caption_preview_fixture_cues")
+    file, before = available[0]
+    card = page.locator(f'#clip-list [data-clip-file="{file}"]')
+    editor = page.locator("#clip-caption-form")
+    preview = editor.get_by_role("region", name="Vista previa del subtítulo", exact=True)
+    frame = preview.locator(".caption-frame")
+    sample = frame.locator("span")
+    fields = editor.get_by_role("textbox", name="Texto del subtítulo", exact=True)
+    field_style = """node => {
+        const css = getComputedStyle(node);
+        return [css.font, css.backgroundColor, css.border, css.padding, css.minHeight, css.outlineWidth];
+    }"""
+
+    page.set_viewport_size({"width": 1280, "height": 900})
+    card.get_by_role("button", name="Editar subtítulos", exact=True).click()
+    preview.get_by_role("heading", name="Vista previa del subtítulo", exact=True).wait_for()
+    asset = page.evaluate("""async () => {
+        const [font, license, unrelated] = await Promise.all(
+            ['/static/caption-font.ttf', '/static/caption-font-license.txt', '/static/nonpublic-caption-preview.txt']
+                .map(path => fetch(path, {credentials: 'same-origin', redirect: 'error'})));
+        const digest = await crypto.subtle.digest('SHA-256', await font.arrayBuffer());
+        return {fontStatus: font.status, fontType: font.headers.get('content-type'),
+                sha256: Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join(''),
+                licenseStatus: license.status, licensePresent: (await license.text()).includes('Bitstream'),
+                unrelatedStatus: unrelated.status};
+    }""")
+    require(asset["fontStatus"] == 200 and asset["fontType"] == "font/ttf"
+            and asset["sha256"] == CAPTION_FONT_SHA256, "caption_preview_webfont_response")
+    require(asset["licenseStatus"] == 200 and asset["licensePresent"] and asset["unrelatedStatus"] == 404,
+            "caption_preview_proxy_static_allowlist")
+    require(sample.text_content() == before["cues"][0]["text"], "caption_preview_initial_cue")
+
+    edited_cues = [dict(cue) for cue in before["cues"]]
+    for index, caption in enumerate(("Primera frase editada.", "Segundo subtítulo editado.")):
+        field = fields.nth(index)
+        field.fill(caption)
+        edited_cues[index]["text"] = caption
+        require(sample.text_content() == caption, "caption_preview_selected_cue")
+        if index == 0:
+            text_style = field.evaluate(field_style)
+        else:
+            require(field.evaluate(field_style) == text_style, "caption_preview_text_field_style")
+    require(text_style[-1] == "2px", "caption_preview_field_focus")
+
+    last_end = editor.locator('[data-field="end"]').last
+    last_end.fill(str(round(min(edited_cues[-1]["end"], before["duration"] - .1), 3)))
+    editor.get_by_role("button", name="Añadir subtítulo", exact=True).click()
+    added = fields.nth(len(edited_cues))
+    added.fill("Segmento temporal.")
+    require(sample.text_content() == "Segmento temporal." and added.evaluate(field_style) == text_style,
+            "caption_preview_dynamic_cue_style")
+    editor.get_by_role("button", name="Quitar subtítulo", exact=True).last.click()
+    require(fields.count() == len(edited_cues) and sample.text_content() != "Segmento temporal.",
+            "caption_preview_removed_cue")
+    last_end.fill(str(edited_cues[-1]["end"]))
+    fields.nth(1).focus()
+
+    editor.locator("#clip-caption-size").fill("76")
+    editor.locator("#clip-caption-color").fill("#ff0000")
+    editor.locator("#clip-caption-position").select_option("bottom")
+    editor.locator("#clip-caption-edge").fill("8")
+    require(sample.text_content() == edited_cues[1]["text"], "caption_preview_lost_selection_on_style_change")
+    expected_style = {**before["style"], "subtitle_font_size": 76, "subtitle_color": "#FF0000",
+                      "subtitle_position": "bottom", "subtitle_outline": 8}
+    geometry = frame.evaluate("""async frame => {
+        const text = frame.firstElementChild;
+        await document.fonts.ready;
+        const {width, height} = frame.getBoundingClientRect();
+        const css = getComputedStyle(text);
+        return {width, height, color: css.color, bottom: parseFloat(css.bottom),
+                size: parseFloat(css.fontSize), stroke: parseFloat(css.webkitTextStrokeWidth)};
+    }""")
+    require(geometry["color"] == "rgb(255, 0, 0)" and geometry["height"] > 0
+            and math.isclose(geometry["size"] / geometry["height"], 76 * 2048 / 2384 / 1920, abs_tol=.0001)
+            and math.isclose(geometry["stroke"] / geometry["width"], 16 / 1080, abs_tol=.0001)
+            and math.isclose(geometry["bottom"] / geometry["height"],
+                             expected_style["subtitle_margin_v"] / 1920, abs_tol=.0001),
+            "caption_preview_style_proportions")
+    devtools = page.context.new_cdp_session(page)
+    try:
+        devtools.send("DOM.enable")
+        devtools.send("CSS.enable")
+        root = devtools.send("DOM.getDocument")["root"]["nodeId"]
+        node = devtools.send("DOM.querySelector", {
+            "nodeId": root, "selector": "#clip-caption-sample .caption-frame > span",
+        })["nodeId"]
+        fonts = devtools.send("CSS.getPlatformFontsForNode", {"nodeId": node})["fonts"]
+    finally:
+        devtools.detach()
+    require(len(fonts) == 1 and fonts[0]["postScriptName"] == "DejaVuSans-Bold"
+            and fonts[0]["isCustomFont"] and fonts[0]["glyphCount"] > 0, "caption_preview_font_fallback")
+
+    path = f"/jobs/{job_id}/clips/{file}/captions"
+    click_response(page, editor.locator("#clip-caption-save"), path, "PUT", 202)
+    output = caption_output(page, job_id, file, before["output"]["id"])
+    require(output["cues"] == edited_cues and output["style"] == expected_style, "caption_preview_save_contents")
+    rendered = read_caption_variant(page, job_id, file, output, scratch, cue_index=1)
+    open_saved_job(page, job_id)
+    card.get_by_role("button", name="Editar subtítulos", exact=True).click()
+    fields.nth(1).focus()
+    require(sample.text_content() == edited_cues[1]["text"]
+            and fields.evaluate_all("inputs => inputs.map(input => input.value)") == [cue["text"] for cue in edited_cues]
+            and editor.locator(".editorial-cue").evaluate_all("""rows => rows.map(row =>
+                [...row.querySelectorAll('input[type=number]')].map(input => input.valueAsNumber))""")
+            == [[cue["start"], cue["end"]] for cue in edited_cues]
+            and editor.locator("#clip-caption-size").input_value() == "76"
+            and editor.locator("#clip-caption-color").input_value() == "#ff0000"
+            and editor.locator("#clip-caption-position").input_value() == "bottom"
+            and editor.locator("#clip-caption-edge").input_value() == "8", "caption_preview_reopen_contents")
+    player = page.locator("#clip-caption-preview")
+    require(player.get_attribute("src") == output["output"]["mp4"] + "?inline=true", "caption_preview_player_export")
+    player.evaluate("node => { node.preload = 'metadata'; node.load(); }")
+    page.wait_for_function("""() => {
+        const node = document.querySelector('#clip-caption-preview');
+        return node.videoWidth > 0 && node.videoHeight > 0 && !node.error;
+    }""")
+    media = player.evaluate("node => [node.videoWidth, node.videoHeight]")
+    require(media == [1080, 1920], "caption_preview_export_geometry")
+
+    viewports = []
+    for width, height, filename in ((1280, 900, "preview-desktop.png"), (390, 844, "preview-mobile.png")):
+        page.set_viewport_size({"width": width, "height": height})
+        bounds = frame.evaluate("""node => {
+            const {width, height, left, right} = node.getBoundingClientRect();
+            return {width, height, left, right, scrollWidth: node.scrollWidth,
+                    pageWidth: document.documentElement.scrollWidth};
+        }""")
+        require(bounds["height"] > 0 and math.isclose(bounds["width"] / bounds["height"],
+                                                     media[0] / media[1], abs_tol=.001)
+                and bounds["left"] >= 0 and bounds["right"] <= width
+                and bounds["scrollWidth"] <= bounds["width"] + 1 and bounds["pageWidth"] <= width + 1,
+                "caption_preview_responsive_frame")
+        editor.screenshot(path=screenshots / filename, animations="disabled")
+        viewports.append({"viewport": [width, height], "frame": [bounds["width"], bounds["height"]],
+                          "screenshot": filename})
+    card.get_by_role("button", name="Corregir texto", exact=True).click()
+    page.locator('#clip-caption-editor[data-mode="quick"] textarea').nth(1).focus()
+    require(sample.text_content() == edited_cues[1]["text"], "caption_preview_quick_cue")
+    report["caption_preview"] = {"font_sha256": CAPTION_FONT_SHA256, "font_postscript": fonts[0]["postScriptName"],
+                                 "font_http": asset["fontStatus"], "clip_frame": media,
+                                 "style": expected_style, "viewports": viewports, "export": rendered}
+    check(report, "normal_creator_caption_preview_real_font_responsive_saved_and_reopened")
 
 
 def check_manual_export(page, job_id, scratch, report):
@@ -1104,11 +1258,21 @@ def verify(browser, args, admin, report, revisions):
     with browser_page(browser) as page:
         login(page, creator, args.commit)
         job = open_saved_job(page, state["job"])
-        verify_clip_styles(page, job, state["captions"], state["clips"], args.state.parent, report)
+        clips = verify_clip_styles(page, job, state["captions"], state["clips"], args.state.parent, report)
         report["clips"] = state["clips"]
         check_feedback_removed(page, report)
         report["step"] = "editorial_persistence"
         verify_editorial(page, state["job"], state["editorial"], args.state.parent, report)
+        verify_caption_preview(page, state["job"], clips, args.report.parent, args.state.parent, report)
+        if args.editorial_model:
+            report["step"] = "editorial_daily_reservation_limit"
+            config = browser_get(page, "/ai/config")
+            require(config["status"] == 200 and config["body"].get("configured") is True
+                    and config["body"].get("provider") == "openai"
+                    and config["body"].get("model") == args.editorial_model
+                    and config["body"].get("daily_limit") == 100, "editorial_daily_reservation_limit")
+            report["editorial_admission"] = {"daily_limit": 100, "time_basis": "UTC", "model": args.editorial_model}
+            check(report, "normal_creator_editorial_config_100_daily_reservations")
         logout(page)
     check(report, "saved_job_and_identical_clip_bytes_after_replacement")
     report["step"] = "isolation"
