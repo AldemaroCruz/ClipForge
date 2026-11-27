@@ -46,6 +46,7 @@ de esa candidata verifica los tres incrementos.
 | [45924575800](https://github.com/AldemaroCruz/ClipForge/actions/runs/45924575800) | `3996c23c657bd3f220d08b9b9b2f8934236a5939` incorpora un único reintento breve, con nuevo consentimiento, para una respuesta real vacía. Se comprobaron C01, C02 y C03 durante el despliegue. El flujo completo falló después con HTTP 429 no JSON en el POST de previsualización editorial. [Recibo del intento](https://github.com/AldemaroCruz/ClipForge/actions/runs/45924575800/artifacts/15168803647) |
 | [45932688939](https://github.com/AldemaroCruz/ClipForge/actions/runs/45932688939) | `34483012f5626f8d4e24d194a403f0c3339120e9` acota el reintento de rango y usa WIF renovable. Frontend, API, publicación y migración pasaron. GitHub cerró el job al perder comunicación con el runner administrado durante la aceptación, el 27 de noviembre a las 04:43:41 UTC. El paso de conservación de evidencia quedó pendiente y el portal seguía sirviendo esa candidata. [Job de despliegue](https://github.com/AldemaroCruz/ClipForge/actions/runs/45932688939/job/140291299219) |
 | [46002851221](https://github.com/AldemaroCruz/ClipForge/actions/runs/46002851221) | `d39e61acf4a89f8dd4d738184808afb4b674eb05` agrega recibos por etapa. Frontend, pruebas de API, Gitleaks y la revisión Bandit de INT pasaron. El build se detuvo con 404 en los cuatro paquetes Kerberos Noble `1.20.1-6ubuntu2.10`. [Validación conservada](https://github.com/AldemaroCruz/ClipForge/actions/runs/46002851221/artifacts/15198503797) |
+| [46004291744](https://github.com/AldemaroCruz/ClipForge/actions/runs/46004291744) | `bd344e9456c197819946383e7486600253d959cc`, intento 1. Frontend y API aprobaron, incluido el build y escaneo de los OCI. El único `deploy` espera revisión en `int` sin runner asignado. [OCI 15201366295](https://github.com/AldemaroCruz/ClipForge/actions/runs/46004291744/artifacts/15201366295) · [Validación 15200657301](https://github.com/AldemaroCruz/ClipForge/actions/runs/46004291744/artifacts/15200657301) |
 
 El recibo de validación liga el SHA a la imagen web
 `sha256:b8b8f544142ab0ed73099b1056667e76d6b4b5253833cdffdb420cb8bad07ef5`
@@ -165,8 +166,14 @@ cuentas. Quedó una reserva en documentos y seis en el registro de
 proyectos eliminados. El recorrido completo requiere al menos cuatro
 reservas disponibles para una aceptación nueva. La ventana siguiente comienza
 el 28 de noviembre a las 00:00 UTC, el **27 a las 18:00 de Guatemala**.
-La lectura debe repetirse antes de revisar el único job `deploy`
-pendiente con los artefactos de su propia corrida.
+La consulta de las 13:12 UTC confirmó el mismo total. Al abrir la
+ventana se repite la consulta de sólo lectura. Con al menos cuatro
+reservas disponibles, el revisor `AldemaroCruz` puede usar
+**Review deployments → int → Approve and deploy** únicamente en
+`46004291744`. Los OCI de su propio intento vencen el 4 de diciembre
+a las 13:17 UTC. El workflow vuelve a verificar el SHA y los OCI
+antes de usar WIF. Los artefactos por etapa quedarán en esa misma
+corrida.
 
 ## Aceptación
 
