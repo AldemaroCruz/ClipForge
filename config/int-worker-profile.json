@@ -1,0 +1,399 @@
+{
+  "comparison": {
+    "artifact_digest": "sha256:7378883207a15af1b972707e77e266b6740ffe89d20bbd34d844c1b9ce550817",
+    "artifact_id": "15241712846",
+    "attempt": "1",
+    "commit": "1fdd3d61718e23e67fa4625690416c677a198722",
+    "run_id": "46090214731"
+  },
+  "measurement": {
+    "cohorts": {
+      "2": {
+        "cases": {
+          "creator_1": {
+            "activation_to_cloud_creation_seconds": 0.789,
+            "claim_to_atomic_publication_seconds": 155.079,
+            "cloud_creation_to_start_seconds": 15.596,
+            "cloud_start_to_worker_entry_seconds": 19.083,
+            "container_memory_max_sampled_bytes": null,
+            "container_memory_peak_bytes": null,
+            "execution": "clipforge-int-worker-k4bnq",
+            "per_clip_render": [
+              {
+                "render_seconds": 25.065,
+                "seconds_since_recorder_start": 51.112
+              },
+              {
+                "render_seconds": 24.601,
+                "seconds_since_recorder_start": 75.723
+              },
+              {
+                "render_seconds": 24.826,
+                "seconds_since_recorder_start": 100.559
+              },
+              {
+                "render_seconds": 25.228,
+                "seconds_since_recorder_start": 125.799
+              },
+              {
+                "render_seconds": 23.096,
+                "seconds_since_recorder_start": 148.905
+              }
+            ],
+            "portal_publication": {
+              "activated_to_first_and_all_seconds": 191.375,
+              "first_and_all_observed_atomically": true,
+              "upload_to_first_and_all_seconds": 218.268
+            },
+            "process_rss_max_sampled_bytes": 856850432,
+            "provider_calls": 0,
+            "scratch_max_sampled_bytes": 237699502,
+            "stage_seconds": {
+              "download": 2.066,
+              "model_load": 0.512,
+              "probe": 0.182,
+              "publish": 2.71,
+              "render": 122.878,
+              "selection": 0.005,
+              "transcription": 23.298,
+              "validation": 2.225
+            },
+            "upload_seconds": 26.669,
+            "worker_entry_to_claim_seconds": 0.641
+          },
+          "creator_2": {
+            "activation_to_cloud_creation_seconds": 0.616,
+            "claim_to_atomic_publication_seconds": 159.546,
+            "cloud_creation_to_start_seconds": 15.768,
+            "cloud_start_to_worker_entry_seconds": 19.14,
+            "container_memory_max_sampled_bytes": null,
+            "container_memory_peak_bytes": null,
+            "execution": "clipforge-int-worker-5hhpp",
+            "per_clip_render": [
+              {
+                "render_seconds": 23.723,
+                "seconds_since_recorder_start": 57.628
+              },
+              {
+                "render_seconds": 23.942,
+                "seconds_since_recorder_start": 81.581
+              },
+              {
+                "render_seconds": 24.122,
+                "seconds_since_recorder_start": 105.714
+              },
+              {
+                "render_seconds": 23.984,
+                "seconds_since_recorder_start": 129.709
+              },
+              {
+                "render_seconds": 24.009,
+                "seconds_since_recorder_start": 153.729
+              }
+            ],
+            "portal_publication": {
+              "activated_to_first_and_all_seconds": 196.525,
+              "first_and_all_observed_atomically": true,
+              "upload_to_first_and_all_seconds": 223.367
+            },
+            "process_rss_max_sampled_bytes": 856477696,
+            "provider_calls": 0,
+            "scratch_max_sampled_bytes": 238267176,
+            "stage_seconds": {
+              "download": 2.12,
+              "model_load": 0.522,
+              "probe": 0.127,
+              "publish": 2.364,
+              "render": 119.844,
+              "selection": 0.004,
+              "transcription": 31.147,
+              "validation": 2.223
+            },
+            "upload_seconds": 26.41,
+            "worker_entry_to_claim_seconds": 0.601
+          },
+          "creator_3": {
+            "activation_to_cloud_creation_seconds": 0.407,
+            "claim_to_atomic_publication_seconds": 234.097,
+            "cloud_creation_to_start_seconds": 15.978,
+            "cloud_start_to_worker_entry_seconds": 20.007,
+            "container_memory_max_sampled_bytes": null,
+            "container_memory_peak_bytes": null,
+            "execution": "clipforge-int-worker-qtxlk",
+            "per_clip_render": [
+              {
+                "render_seconds": 38.924,
+                "seconds_since_recorder_start": 74.717
+              },
+              {
+                "render_seconds": 38.047,
+                "seconds_since_recorder_start": 112.777
+              },
+              {
+                "render_seconds": 37.256,
+                "seconds_since_recorder_start": 150.044
+              },
+              {
+                "render_seconds": 39.369,
+                "seconds_since_recorder_start": 189.428
+              },
+              {
+                "render_seconds": 38.237,
+                "seconds_since_recorder_start": 227.677
+              }
+            ],
+            "portal_publication": {
+              "activated_to_first_and_all_seconds": 271.768,
+              "first_and_all_observed_atomically": true,
+              "upload_to_first_and_all_seconds": 298.56
+            },
+            "process_rss_max_sampled_bytes": 878460928,
+            "provider_calls": 0,
+            "scratch_max_sampled_bytes": 238485939,
+            "stage_seconds": {
+              "download": 2.106,
+              "model_load": 0.799,
+              "probe": 0.175,
+              "publish": 2.764,
+              "render": 191.908,
+              "selection": 0.036,
+              "transcription": 32.706,
+              "validation": 2.242
+            },
+            "upload_seconds": 26.749,
+            "worker_entry_to_claim_seconds": 0.609
+          }
+        },
+        "median_claim_to_atomic_publication_seconds": 159.546,
+        "median_upload_to_first_and_all_seconds": 223.367,
+        "worker": {
+          "configuration_sha256": "dda85d0e797846730d595af3fc67a8df9b6531f3fae00e6c3879545878f509c0",
+          "cpu": "2",
+          "generation": 57,
+          "image": "us-central1-docker.pkg.dev/clipforgebeta2/clipforge-int/beta-worker@sha256:2e419a975173295eeb1796cb0be3fd36f56cd4cad5920a5d7a8a4694ba546f3c",
+          "memory": "4Gi",
+          "observed_generation": 57,
+          "parallelism": 1,
+          "source": "1fdd3d61718e23e67fa4625690416c677a198722",
+          "task_count": 1,
+          "timeout_seconds": 1200
+        }
+      },
+      "4": {
+        "cases": {
+          "creator_1": {
+            "activation_to_cloud_creation_seconds": 0.704,
+            "claim_to_atomic_publication_seconds": 162.739,
+            "cloud_creation_to_start_seconds": 8.023,
+            "cloud_start_to_worker_entry_seconds": 41.882,
+            "container_memory_max_sampled_bytes": null,
+            "container_memory_peak_bytes": null,
+            "execution": "clipforge-int-worker-2bkt6",
+            "per_clip_render": [
+              {
+                "render_seconds": 25.757,
+                "seconds_since_recorder_start": 53.342
+              },
+              {
+                "render_seconds": 25.482,
+                "seconds_since_recorder_start": 78.834
+              },
+              {
+                "render_seconds": 25.266,
+                "seconds_since_recorder_start": 104.112
+              },
+              {
+                "render_seconds": 25.665,
+                "seconds_since_recorder_start": 129.791
+              },
+              {
+                "render_seconds": 26.112,
+                "seconds_since_recorder_start": 155.918
+              }
+            ],
+            "portal_publication": {
+              "activated_to_first_and_all_seconds": 215.113,
+              "first_and_all_observed_atomically": true,
+              "upload_to_first_and_all_seconds": 241.433
+            },
+            "process_rss_max_sampled_bytes": 878555136,
+            "provider_calls": 0,
+            "scratch_max_sampled_bytes": 238485874,
+            "stage_seconds": {
+              "download": 2.124,
+              "model_load": 0.879,
+              "probe": 0.214,
+              "publish": 2.914,
+              "render": 128.358,
+              "selection": 0.005,
+              "transcription": 24.824,
+              "validation": 1.867
+            },
+            "upload_seconds": 26.024,
+            "worker_entry_to_claim_seconds": 0.829
+          },
+          "creator_2": {
+            "activation_to_cloud_creation_seconds": 0.88,
+            "claim_to_atomic_publication_seconds": 134.359,
+            "cloud_creation_to_start_seconds": 7.845,
+            "cloud_start_to_worker_entry_seconds": 41.469,
+            "container_memory_max_sampled_bytes": null,
+            "container_memory_peak_bytes": null,
+            "execution": "clipforge-int-worker-kmj6s",
+            "per_clip_render": [
+              {
+                "render_seconds": 20.584,
+                "seconds_since_recorder_start": 44.71
+              },
+              {
+                "render_seconds": 20.726,
+                "seconds_since_recorder_start": 65.447
+              },
+              {
+                "render_seconds": 20.848,
+                "seconds_since_recorder_start": 86.306
+              },
+              {
+                "render_seconds": 20.775,
+                "seconds_since_recorder_start": 107.094
+              },
+              {
+                "render_seconds": 20.51,
+                "seconds_since_recorder_start": 127.615
+              }
+            ],
+            "portal_publication": {
+              "activated_to_first_and_all_seconds": 186.567,
+              "first_and_all_observed_atomically": true,
+              "upload_to_first_and_all_seconds": 212.835
+            },
+            "process_rss_max_sampled_bytes": 862924800,
+            "provider_calls": 0,
+            "scratch_max_sampled_bytes": 238487092,
+            "stage_seconds": {
+              "download": 2.148,
+              "model_load": 0.79,
+              "probe": 0.212,
+              "publish": 2.874,
+              "render": 103.512,
+              "selection": 0.005,
+              "transcription": 21.546,
+              "validation": 1.776
+            },
+            "upload_seconds": 25.857,
+            "worker_entry_to_claim_seconds": 0.764
+          },
+          "creator_3": {
+            "activation_to_cloud_creation_seconds": 0.459,
+            "claim_to_atomic_publication_seconds": 100.345,
+            "cloud_creation_to_start_seconds": 8.267,
+            "cloud_start_to_worker_entry_seconds": 42.515,
+            "container_memory_max_sampled_bytes": null,
+            "container_memory_peak_bytes": null,
+            "execution": "clipforge-int-worker-68pk8",
+            "per_clip_render": [
+              {
+                "render_seconds": 13.447,
+                "seconds_since_recorder_start": 41.529
+              },
+              {
+                "render_seconds": 12.688,
+                "seconds_since_recorder_start": 54.228
+              },
+              {
+                "render_seconds": 13.341,
+                "seconds_since_recorder_start": 67.579
+              },
+              {
+                "render_seconds": 13.501,
+                "seconds_since_recorder_start": 81.094
+              },
+              {
+                "render_seconds": 13.279,
+                "seconds_since_recorder_start": 94.384
+              }
+            ],
+            "portal_publication": {
+              "activated_to_first_and_all_seconds": 153.529,
+              "first_and_all_observed_atomically": true,
+              "upload_to_first_and_all_seconds": 179.748
+            },
+            "process_rss_max_sampled_bytes": 855986176,
+            "provider_calls": 0,
+            "scratch_max_sampled_bytes": 237546927,
+            "stage_seconds": {
+              "download": 2.038,
+              "model_load": 0.57,
+              "probe": 0.148,
+              "publish": 2.405,
+              "render": 66.329,
+              "selection": 0.004,
+              "transcription": 25.677,
+              "validation": 1.818
+            },
+            "upload_seconds": 26.084,
+            "worker_entry_to_claim_seconds": 0.585
+          }
+        },
+        "median_claim_to_atomic_publication_seconds": 134.359,
+        "median_upload_to_first_and_all_seconds": 212.835,
+        "worker": {
+          "configuration_sha256": "dda85d0e797846730d595af3fc67a8df9b6531f3fae00e6c3879545878f509c0",
+          "cpu": "4",
+          "generation": 58,
+          "image": "us-central1-docker.pkg.dev/clipforgebeta2/clipforge-int/beta-worker@sha256:2e419a975173295eeb1796cb0be3fd36f56cd4cad5920a5d7a8a4694ba546f3c",
+          "memory": "4Gi",
+          "observed_generation": 58,
+          "parallelism": 1,
+          "source": "1fdd3d61718e23e67fa4625690416c677a198722",
+          "task_count": 1,
+          "timeout_seconds": 1200
+        }
+      }
+    },
+    "comparison_commit": "1fdd3d61718e23e67fa4625690416c677a198722",
+    "fixture": {
+      "bytes": 203010729,
+      "duration_seconds": 600,
+      "sha256": "69b4c7d27cd19a2e2880ff1067a6eeb8203e61d9fa4ac6580f5c0fbb09e63a7d"
+    },
+    "public": {
+      "api_revision": "clipforge-int-beta-api-00059-2jg",
+      "commit": "cbfb913190f5893df371e8ba156ebc7976a2058a",
+      "frontend_revision": "clipforge-int-beta-00058-zmf",
+      "migrator_image": "us-central1-docker.pkg.dev/clipforgebeta2/clipforge-int/beta-web@sha256:5f12993b27e5b8977419b1027e5a1bb667dfe6abb6fedf6583ec598ac9b11378",
+      "web_image": "us-central1-docker.pkg.dev/clipforgebeta2/clipforge-int/beta-web@sha256:5f12993b27e5b8977419b1027e5a1bb667dfe6abb6fedf6583ec598ac9b11378"
+    },
+    "restored_worker": {
+      "configuration_sha256": "dda85d0e797846730d595af3fc67a8df9b6531f3fae00e6c3879545878f509c0",
+      "cpu": "2",
+      "generation": 59,
+      "image": "us-central1-docker.pkg.dev/clipforgebeta2/clipforge-int/beta-worker@sha256:52ba797eacebcb6237f72ffab1261b67599a6ff895752db20ec8481c50ca9b5f",
+      "memory": "4Gi",
+      "observed_generation": 59,
+      "parallelism": 1,
+      "source": "cbfb913190f5893df371e8ba156ebc7976a2058a",
+      "task_count": 1,
+      "timeout_seconds": 1200
+    },
+    "same_output_mp4_bytes_for_all_cases": false,
+    "schema": "clipforge-int-worker-benchmark-comparison-1"
+  },
+  "reason": "En INT, con el mismo video de 600 s y tres creadores concurrentes, 4 vCPU redujeron la mediana hasta los cinco clips de 223.367 s a 212.835 s y desde la toma del trabajo hasta publicaci\u00f3n de 159.546 s a 134.359 s. Ambos grupos pasaron con los mismos ajustes y 4 GiB.",
+  "reports": {
+    "worker-benchmark-baseline.json": "0eeb7042c4cd1e192b58c6a5070555ce6df40b3df3f962521317088586263420",
+    "worker-benchmark-cpu2-after.json": "bb45af45b1869b155cb29f80ed673f7d2eaf1296a631931cfb027c0aad0ee797",
+    "worker-benchmark-cpu2-before.json": "bb45af45b1869b155cb29f80ed673f7d2eaf1296a631931cfb027c0aad0ee797",
+    "worker-benchmark-cpu2-benchmark.json": "ad3b3bc9ea7cff5da6f778de63253f7eb33a2ca57e0ab8d4ebc29241ccac6923",
+    "worker-benchmark-cpu2-cleanup.json": "d0d975dbfaa5fc5ab399c8ca9be79761fdcdbe79d0eb5f220725022578f99b1a",
+    "worker-benchmark-cpu2-setup.json": "bbc96193859d8aa9869b4d698c97001a146ea1d3b8c7465bad727d8d072d2103",
+    "worker-benchmark-cpu4-after.json": "0ecfcda9b0beaeb17fb876e77bd2d08131b088fb63da8b66dd96088ea1ecf39f",
+    "worker-benchmark-cpu4-before.json": "0ecfcda9b0beaeb17fb876e77bd2d08131b088fb63da8b66dd96088ea1ecf39f",
+    "worker-benchmark-cpu4-benchmark.json": "1176208317b868d15fa26ad06fe685732c15b30fea1f480dbc6b8ea332ca69a2",
+    "worker-benchmark-cpu4-cleanup.json": "ad53c89f34573a28a7b11a59ef08d6a927587f69d38699443ad43c2c4ac5a2ce",
+    "worker-benchmark-cpu4-setup.json": "5b3118a7aa8464586a9d8228197b93c75bcd4b6712fe3468a5798447239aa782",
+    "worker-benchmark-restored.json": "d017a68dce7239b19de76259cd52b926c393aeefa36b786675179789b79159da"
+  },
+  "schema": "clipforge-int-worker-profile-1",
+  "worker_cpu": 4
+}

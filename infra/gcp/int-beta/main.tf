@@ -82,6 +82,8 @@ locals {
   worker_identity   = "clipforge-worker-int@${local.project}.iam.gserviceaccount.com"
   migrator_identity = "clipforge-migrate-int@${local.project}.iam.gserviceaccount.com"
   deploy_identity   = "clipforge-deploy-int@${local.project}.iam.gserviceaccount.com"
+  worker_profile    = "${path.module}/../../../config/int-worker-profile.json"
+  worker_cpu        = fileexists(local.worker_profile) ? tostring(jsondecode(file(local.worker_profile)).worker_cpu) : "2"
   credentials = {
     application = "clipforge-int-pg-app-password"
     migrator    = "clipforge-int-pg-migrator-password"
@@ -240,7 +242,7 @@ resource "google_cloud_run_v2_job" "task" {
   for_each = {
     worker = {
       name  = local.worker_job, identity = local.worker_identity, credential = local.credentials.application
-      image = var.worker_image, args = ["-m", "app.cloud.worker"], cpu = "2", memory = "4Gi", timeout = "1200s"
+      image = var.worker_image, args = ["-m", "app.cloud.worker"], cpu = local.worker_cpu, memory = "4Gi", timeout = "1200s"
       user  = "clipforge_app", extra = merge(local.cloud, local.editorial)
     }
     migrate = {
@@ -252,6 +254,12 @@ resource "google_cloud_run_v2_job" "task" {
   name                = each.value.name
   location            = local.region
   deletion_protection = true
+  lifecycle {
+    precondition {
+      condition     = each.key != "worker" || contains(["2", "4"], local.worker_cpu)
+      error_message = "An INT worker profile requires an observed 2 or 4 vCPU decision."
+    }
+  }
   template {
     task_count  = 1
     parallelism = 1

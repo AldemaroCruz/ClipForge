@@ -6,6 +6,7 @@ umask 077
 [[ "$GITHUB_WORKFLOW_REF" == 'AldemaroCruz/ClipForge/.github/workflows/int-hito-b.yml@refs/heads/ci/bootstrap-sec03' ]]
 [[ "$GITHUB_SHA" =~ ^[a-f0-9]{40}$ && "$GITHUB_SHA" == "$APPROVED_COMMIT" ]]
 [[ "$DELIVERY_DIR" == "$RUNNER_TEMP"/clipforge-beta-deploy.* && -d "$DELIVERY_DIR" ]]
+[[ "${INT_ADOPT_WORKER_PROFILE:-false}" != true ]]
 
 reports="$DELIVERY_DIR/reports"
 project=clipforgebeta2
@@ -391,6 +392,14 @@ case "${1:-}" in
         publish_beta
         ;;
     prepare)
+        if [[ -e config/int-worker-profile.json ]]; then
+            expected_cpu="$(jq -er '.worker_cpu | select(. == 2 or . == 4)' config/int-worker-profile.json)"
+            active_cpu="$(run jobs describe clipforge-int-worker --format='value(spec.template.spec.template.spec.containers[0].resources.limits.cpu)')"
+            if [[ "$active_cpu" != "$expected_cpu" ]]; then
+                printf '%s\n' 'The worker profile must be adopted before a regular INT rollout.' >&2
+                exit 1
+            fi
+        fi
         tf init -input=false -lockfile=readonly -no-color \
             -backend-config=bucket=clipforgebeta2-tfstate-int -backend-config=prefix=terraform/int-beta
         tf validate -no-color

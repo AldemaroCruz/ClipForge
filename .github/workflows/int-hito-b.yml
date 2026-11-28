@@ -32,6 +32,11 @@ on:
         description: Accepted INT commit to keep serving during an INT worker-only comparison
         required: false
         type: string
+      adopt_worker_profile:
+        description: Adopt the tested worker image and reviewed INT CPU on the accepted public revision
+        required: false
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -182,6 +187,7 @@ jobs:
             --scanner-exit "$scanner_exit" --receipt "$CI_REPORTS/bandit-review.json"
 
       - name: Prepare hash-locked runtime inputs
+        if: ${{ !inputs.adopt_worker_profile }}
         shell: bash
         run: |
           set -euo pipefail
@@ -225,6 +231,7 @@ jobs:
           python -m scripts.prepare_int_runtime fetch --source "$CI_CONTEXT" --weights "$runtime/weights"
 
       - name: Build once and scan the exact two runtime images
+        if: ${{ !inputs.adopt_worker_profile }}
         id: candidate
         shell: bash
         run: |
@@ -260,6 +267,7 @@ jobs:
           path: ${{ env.CI_REPORTS }}
           if-no-files-found: error
       - name: Transfer the scanned OCI archives
+        if: ${{ !inputs.adopt_worker_profile }}
         id: artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -290,6 +298,7 @@ jobs:
       INT_EDITORIAL_OPENAI_MODEL: ${{ vars.INT_EDITORIAL_OPENAI_MODEL }}
       INT_EDITORIAL_OPENAI_KEY_VERSION: ${{ vars.INT_EDITORIAL_OPENAI_KEY_VERSION }}
       INT_WORKER_BENCHMARK_BASE: ${{ inputs.worker_benchmark_base }}
+      INT_ADOPT_WORKER_PROFILE: ${{ inputs.adopt_worker_profile }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -300,6 +309,7 @@ jobs:
         with:
           python-version: '3.12'
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        if: ${{ !inputs.adopt_worker_profile }}
         with:
           terraform_version: 1.15.8
           terraform_wrapper: false
@@ -314,28 +324,80 @@ jobs:
           root="$(mktemp -d "$RUNNER_TEMP/clipforge-beta-deploy.XXXXXXXX")"
           mkdir "$root/reports" "$root/images"
           printf 'DELIVERY_DIR=%s\nTF_DATA_DIR=%s/terraform\nCLOUDSDK_CONFIG=%s/gcloud\n' "$root" "$root" "$root" >> "$GITHUB_ENV"
-          docker pull "$SKOPEO_IMAGE"
-          python -m pip install --no-deps --only-binary=:all: --require-hashes \
-            -r requirements-ci-tools.lock -r requirements-int-demo.lock
-          command -v google-chrome
-          if ! command -v ffmpeg >/dev/null || ! command -v espeak-ng >/dev/null; then
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends ffmpeg espeak-ng
+          if [[ "$INT_ADOPT_WORKER_PROFILE" != true ]]; then
+            docker pull "$SKOPEO_IMAGE"
+            python -m pip install --no-deps --only-binary=:all: --require-hashes \
+              -r requirements-ci-tools.lock -r requirements-int-demo.lock
+            command -v google-chrome
+            if ! command -v ffmpeg >/dev/null || ! command -v espeak-ng >/dev/null; then
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends ffmpeg espeak-ng
+            fi
+            command -v ffmpeg ffprobe espeak-ng
           fi
-          command -v ffmpeg ffprobe espeak-ng
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ !inputs.adopt_worker_profile }}
         with:
           artifact-ids: ${{ needs.api.outputs.artifact_id }}
           path: ${{ env.DELIVERY_DIR }}/images
       - name: Verify commit, archive SHA-256 and OCI manifest before OIDC
+        if: ${{ !inputs.adopt_worker_profile }}
         run: python -m scripts.int_hito_b_delivery verify "$DELIVERY_DIR/images" "$DELIVERY_DIR/reports"
+
+      - name: Bind the worker adoption to the exact successful comparison source
+        id: worker_profile_source
+        if: inputs.adopt_worker_profile
+        shell: bash
+        env:
+          OTHER_ACCEPTANCE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c04_styles || inputs.focused_c05_framing || inputs.focused_c06_zip || inputs.worker_benchmark_base != '' }}
+        run: |
+          set -euo pipefail
+          test "$OTHER_ACCEPTANCE" = false
+          refs="$(python -m scripts.int_hito_c_worker_profile refs)"
+          trial="$(jq -er '.commit' <<< "$refs")"
+          test "$(git rev-parse HEAD^)" = "$trial"
+          test "$(git rev-list --parents -n 1 HEAD | wc -w)" -eq 2
+          git diff --name-only --no-renames -z "$trial" HEAD | while IFS= read -r -d '' path; do
+            case "$path" in
+              .github/workflows/int-hito-b.yml|infra/gcp/int-beta/main.tf|config/int-worker-profile.json) ;;
+              scripts/deploy_int_beta.sh|scripts/int_hito_c_worker_benchmark.sh|scripts/int_hito_c_worker_profile.sh) ;;
+              scripts/int_hito_c_worker_profile.py|tests/test_int_hito_c_worker_profile.py) ;;
+              *) printf 'Outside the verified worker-only adoption scope: %s\n' "$path" >&2; exit 1 ;;
+            esac
+          done
+          printf 'run=%s\nartifact=%s\n' "$(jq -er '.run_id' <<< "$refs")" "$(jq -er '.artifact_id' <<< "$refs")" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch the original worker comparison receipts
+        if: inputs.adopt_worker_profile
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.worker_profile_source.outputs.run }}
+          artifact-ids: ${{ steps.worker_profile_source.outputs.artifact }}
+          path: ${{ env.DELIVERY_DIR }}/profile-evidence
+          merge-multiple: true
+
+      - name: Verify native receipt bytes, registry digest, and comparison result before OIDC
+        if: inputs.adopt_worker_profile
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROFILE_RUN: ${{ steps.worker_profile_source.outputs.run }}
+          PROFILE_ARTIFACT: ${{ steps.worker_profile_source.outputs.artifact }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROFILE_RUN" > "$DELIVERY_DIR/profile-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$PROFILE_ARTIFACT" > "$DELIVERY_DIR/profile-artifact.json"
+          python -m scripts.int_hito_c_worker_profile verify \
+            --reports "$DELIVERY_DIR/profile-evidence" --run-metadata "$DELIVERY_DIR/profile-run.json" \
+            --artifact-metadata "$DELIVERY_DIR/profile-artifact.json" --output "$DELIVERY_DIR/reports/worker-profile-verified.json"
 
       - name: Limit the worker comparison to telemetry and its acceptance tools
         if: inputs.worker_benchmark_base != ''
         shell: bash
         env:
-          REUSE_OTHER_EVIDENCE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c04_styles || inputs.focused_c05_framing || inputs.focused_c06_zip }}
+          REUSE_OTHER_EVIDENCE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c04_styles || inputs.focused_c05_framing || inputs.focused_c06_zip || inputs.adopt_worker_profile }}
         run: |
           set -euo pipefail
           test "$REUSE_OTHER_EVIDENCE" = false
@@ -366,7 +428,7 @@ jobs:
         if: inputs.focused_c04_styles
         shell: bash
         env:
-          REUSE_OTHER_EVIDENCE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c05_framing || inputs.focused_c06_zip || inputs.worker_benchmark_base != '' }}
+          REUSE_OTHER_EVIDENCE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c05_framing || inputs.focused_c06_zip || inputs.worker_benchmark_base != '' || inputs.adopt_worker_profile }}
         run: |
           set -euo pipefail
           test "$REUSE_OTHER_EVIDENCE" = false
@@ -406,7 +468,7 @@ jobs:
         if: inputs.focused_c05_framing
         shell: bash
         env:
-          REUSE_OTHER_EVIDENCE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c04_styles || inputs.focused_c06_zip || inputs.worker_benchmark_base != '' }}
+          REUSE_OTHER_EVIDENCE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c04_styles || inputs.focused_c06_zip || inputs.worker_benchmark_base != '' || inputs.adopt_worker_profile }}
         run: |
           set -euo pipefail
           test "$REUSE_OTHER_EVIDENCE" = false
@@ -447,7 +509,7 @@ jobs:
         if: inputs.focused_c06_zip
         shell: bash
         env:
-          REUSE_OTHER_EVIDENCE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c04_styles || inputs.focused_c05_framing || inputs.worker_benchmark_base != '' }}
+          REUSE_OTHER_EVIDENCE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c04_styles || inputs.focused_c05_framing || inputs.worker_benchmark_base != '' || inputs.adopt_worker_profile }}
         run: |
           set -euo pipefail
           test "$REUSE_OTHER_EVIDENCE" = false
@@ -574,6 +636,7 @@ jobs:
           printf 'INT_DELETION_REPLAY_REPORT=%s\n' "$receipt" >> "$GITHUB_ENV"
 
       - name: Authenticate publication identity
+        if: ${{ !inputs.adopt_worker_profile }}
         id: publishing
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
@@ -588,6 +651,7 @@ jobs:
         with:
           version: 582.0.0
       - name: Publish the two scanned digests
+        if: ${{ !inputs.adopt_worker_profile }}
         env:
           GCP_ACCESS_TOKEN: ${{ steps.publishing.outputs.access_token }}
         run: bash scripts/deploy_int_beta.sh publish
@@ -604,16 +668,59 @@ jobs:
           create_credentials_file: true
           export_environment_variables: true
           cleanup_credentials: true
+      - name: Capture the accepted runtime and the exact worker recovery state
+        id: worker_profile_prepare
+        if: inputs.adopt_worker_profile
+        run: bash scripts/int_hito_c_worker_profile.sh prepare
+
+      - name: Retain the exact worker state before applying the profile
+        if: steps.worker_profile_prepare.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: worker-profile-${{ github.run_id }}-${{ github.run_attempt }}-before
+          path: |
+            ${{ env.DELIVERY_DIR }}/reports/worker-profile-baseline.json
+            ${{ env.DELIVERY_DIR }}/reports/worker-profile-verified.json
+          if-no-files-found: error
+
+      - name: Keep the accepted public revision and adopt the tested INT worker
+        id: worker_profile_apply
+        if: inputs.adopt_worker_profile
+        run: bash scripts/int_hito_c_worker_profile.sh apply
+
+      - name: Retain the verified worker profile
+        if: steps.worker_profile_apply.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: worker-profile-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.DELIVERY_DIR }}/reports/worker-profile-*.json
+          if-no-files-found: error
+
+      - name: Restore the prior worker after an unsuccessful profile adoption
+        id: worker_profile_restore
+        if: ${{ always() && (failure() || cancelled()) && (steps.worker_profile_apply.outcome == 'success' || steps.worker_profile_apply.outcome == 'failure' || steps.worker_profile_apply.outcome == 'cancelled') }}
+        run: bash scripts/int_hito_c_worker_profile.sh restore
+
+      - name: Retain the worker restoration evidence
+        if: ${{ always() && (steps.worker_profile_restore.outcome == 'success' || steps.worker_profile_restore.outcome == 'failure') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: worker-profile-${{ github.run_id }}-${{ github.run_attempt }}-recovery
+          path: |
+            ${{ env.DELIVERY_DIR }}/reports/worker-profile-baseline.json
+            ${{ env.DELIVERY_DIR }}/reports/worker-benchmark-restored.json
+          if-no-files-found: error
+
       - name: Apply only the scoped beta plan
         id: deploy_prepare
-        if: inputs.worker_benchmark_base == ''
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' }}
         env:
           GOOGLE_OAUTH_ACCESS_TOKEN: ${{ steps.terraform_identity.outputs.access_token }}
           CLOUDSDK_AUTH_ACCESS_TOKEN: ${{ steps.terraform_identity.outputs.access_token }}
         run: bash scripts/deploy_int_beta.sh prepare
 
       - name: Run the additive PostgreSQL migration from INT
-        if: ${{ inputs.worker_benchmark_base == '' && !inputs.focused_c05_framing && !inputs.focused_c06_zip }}
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c05_framing && !inputs.focused_c06_zip }}
         env:
           CLIPFORGE_GCP_DEPLOY_TOKEN: ${{ steps.publishing.outputs.access_token }}
           GOOGLE_OAUTH_ACCESS_TOKEN: ${{ steps.terraform_identity.outputs.access_token }}
@@ -622,7 +729,7 @@ jobs:
 
       - name: Open the public frontend and verify the short creator flow
         id: acceptance_open
-        if: inputs.worker_benchmark_base == ''
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' }}
         # The exported WIF credentials can refresh during long acceptance and rollback.
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
@@ -650,7 +757,7 @@ jobs:
 
       - name: Replace the public revision and verify persistence
         id: acceptance_verify
-        if: ${{ inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
         run: bash scripts/deploy_int_beta.sh acceptance-verify
@@ -669,7 +776,7 @@ jobs:
 
       - name: Create the three synthetic capacity accounts
         id: capacity_setup
-        if: ${{ inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
         run: bash scripts/deploy_int_beta.sh capacity-setup
@@ -686,7 +793,7 @@ jobs:
 
       - name: Check three near-limit uploads and concurrent processing
         id: capacity_load
-        if: ${{ inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
         run: bash scripts/deploy_int_beta.sh capacity-load
 
       - name: Publish the capacity evidence
@@ -701,7 +808,7 @@ jobs:
 
       - name: Export and measure both precise cuts
         id: capacity_cuts
-        if: ${{ inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
         run: bash scripts/deploy_int_beta.sh capacity-cuts
 
       - name: Publish the precise-cut evidence
@@ -716,7 +823,7 @@ jobs:
 
       - name: Check three-account editorial acceptance and finish cleanup
         id: capacity_editorial
-        if: ${{ inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
         run: bash scripts/deploy_int_beta.sh capacity-editorial
@@ -732,13 +839,13 @@ jobs:
           if-no-files-found: error
 
       - name: Clean up this run's synthetic accounts after a failure
-        if: ${{ always() && inputs.worker_benchmark_base == '' && (failure() || cancelled()) && (steps.capacity_setup.outcome == 'success' || steps.capacity_setup.outcome == 'failure' || steps.capacity_setup.outcome == 'cancelled') }}
+        if: ${{ always() && !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && (failure() || cancelled()) && (steps.capacity_setup.outcome == 'success' || steps.capacity_setup.outcome == 'failure' || steps.capacity_setup.outcome == 'cancelled') }}
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
         run: bash scripts/deploy_int_beta.sh capacity-cleanup
 
       - name: Restore the previous INT components after a failed acceptance
-        if: ${{ always() && inputs.worker_benchmark_base == '' && (failure() || cancelled()) && (steps.acceptance_open.outcome == 'success' || steps.acceptance_open.outcome == 'failure' || steps.acceptance_open.outcome == 'cancelled' || ((inputs.focused_c04_styles || inputs.focused_c05_framing || inputs.focused_c06_zip) && steps.deploy_prepare.outcome == 'success')) }}
+        if: ${{ always() && !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && (failure() || cancelled()) && (steps.acceptance_open.outcome == 'success' || steps.acceptance_open.outcome == 'failure' || steps.acceptance_open.outcome == 'cancelled' || ((inputs.focused_c04_styles || inputs.focused_c05_framing || inputs.focused_c06_zip) && steps.deploy_prepare.outcome == 'success')) }}
         run: bash scripts/deploy_int_beta.sh rollback
 
       - name: Record the accepted services, worker, and matched fixture
@@ -821,7 +928,7 @@ jobs:
           if-no-files-found: error
 
       - name: Retain public acceptance and scoped rollout evidence
-        if: ${{ always() && inputs.worker_benchmark_base == '' && steps.setup.outcome == 'success' }}
+        if: ${{ always() && !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && steps.setup.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hito-b-int-${{ github.run_id }}-${{ github.run_attempt }}

@@ -51,8 +51,9 @@ benchmark_worker() {
 }
 
 benchmark_read_baseline() {
+    local candidate="${1:-$GITHUB_SHA}"
     [[ -f "$benchmark_baseline" && ! -L "$benchmark_baseline" ]] || return
-    jq -e --arg source "$INT_WORKER_BENCHMARK_BASE" --arg target "$GITHUB_SHA" --arg worker "$TF_VAR_worker_image" '
+    jq -e --arg source "$INT_WORKER_BENCHMARK_BASE" --arg target "$candidate" --arg worker "$TF_VAR_worker_image" '
         .schema == "clipforge-int-worker-benchmark-1" and .public.commit == $source
         and .target_commit == $target and .target_worker == $worker and .worker.source == $source
         and .worker.cpu == "2" and .worker.memory == "4Gi"
@@ -148,9 +149,9 @@ benchmark_run() {
 }
 
 benchmark_restore() {
-    local current restored image source
+    local current restored image source candidate="${1:-$GITHUB_SHA}"
     [[ -e "$benchmark_baseline" ]] || return 0
-    benchmark_read_baseline || return
+    benchmark_read_baseline "$candidate" || return
     current="$(benchmark_worker)" || return
     jq -e --argjson current "$current" \
         '.worker.configuration_sha256 == $current.configuration_sha256' "$benchmark_baseline" >/dev/null || return
@@ -158,7 +159,7 @@ benchmark_restore() {
     source="$(jq -er '.worker.source' "$benchmark_baseline")" || return
     if ! jq -e --arg image "$image" --arg source "$source" '.image == $image and .source == $source and .cpu == "2"' \
             <<< "$current" >/dev/null; then
-        jq -e --arg image "$TF_VAR_worker_image" --arg source "$GITHUB_SHA" '.image == $image and .source == $source' \
+        jq -e --arg image "$TF_VAR_worker_image" --arg source "$candidate" '.image == $image and .source == $source' \
             <<< "$current" >/dev/null || return
         run jobs update "$benchmark_job" --image "$image" --cpu 2 --memory 4Gi \
             --update-env-vars "CLIPFORGE_REVISION=$source" || return
