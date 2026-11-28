@@ -63,11 +63,13 @@ Prioridad P0: bloqueante para su hito. P1: mejora necesaria/próxima. P2: optimi
 | ID | Tarea | Estado | Criterio de aceptación |
 |---|---|---|---|
 | D01 | Buscar momentos por tema | Aceptado en INT | Consentimiento, evidencia de transcripción, dos temas y uno ausente, cobertura hasta el final, persistencia, borrador, MP4 y ZIP. |
-| D00 | Referencias temporales de la transcripción | En validación en INT | Guardar tiempos por palabra derivados del audio, ligados al original y a la transcripción. Preparar proyectos anteriores bajo demanda y conservar su versión previa. |
-| D02 | Crear clip desde la transcripción | En validación en INT | Seleccionar un intervalo continuo, revisarlo con audio, abrirlo como borrador y exportarlo individualmente y en el ZIP mixto. |
+| D00 | Referencias temporales de la transcripción | Validado en INT | Guardar tiempos por palabra derivados del audio, ligados al original y a la transcripción. Preparar proyectos anteriores bajo demanda y conservar su versión previa. |
+| D02 | Crear clip desde la transcripción | Validado en INT | Seleccionar un intervalo continuo, revisarlo con audio, abrirlo como borrador y exportarlo individualmente y en el ZIP mixto. |
 | — | Publicación progresiva de clips | Pendiente | Publicar cada clip con su manifiesto y preservar recuperación, idempotencia, aislamiento y eliminación. |
 
-INT sirve D01 en `9e49209aad98f74428b50276836719fd5bd76310`. La primera prueba registró tres reservas, tres llamadas y tres respuestas de OpenAI. La aceptación final reutilizó esa evidencia y comprobó el editor, el MP4 y el ZIP mixto con cero llamadas adicionales. [Búsquedas reales](https://github.com/AldemaroCruz/ClipForge/actions/runs/46116426162/artifacts/15252033378) · [Aceptación final](https://github.com/AldemaroCruz/ClipForge/actions/runs/46120063759)
+D01 se aceptó en INT en `9e49209aad98f74428b50276836719fd5bd76310`. La primera prueba registró tres reservas, tres llamadas y tres respuestas de OpenAI. La aceptación final reutilizó esa evidencia y comprobó el editor, el MP4 y el ZIP mixto con cero llamadas adicionales. [Búsquedas reales](https://github.com/AldemaroCruz/ClipForge/actions/runs/46116426162/artifacts/15252033378) · [Aceptación final](https://github.com/AldemaroCruz/ClipForge/actions/runs/46120063759)
+
+D00 y D02 están activos desde `e7145844fd9db57df9a5ad20593c8df2da00080f`. La prueba de 20 minutos con habla natural comprobó un proyecto nuevo y uno histórico, guardó una versión adicional cuando la alineación cambió el texto o la segmentación y conservó sus correcciones previas. La preparación histórica tardó 82 s en la prueba de INT. En la comparación local con 4 vCPU y 4 GiB, la transcripción tardó 15,1 s sin marcas y 17,3 s con marcas, con un pico del contenedor de 1,29 y 1,30 GiB. El tiempo hasta recibir los clips en INT fue de 130,9 y 234,8 s en una ejecución de cada versión. Esa medición incluye el tiempo en cola y el render. [Ejecución](https://github.com/AldemaroCruz/ClipForge/actions/runs/46153668496) · [Capturas, recibos y audio](https://github.com/AldemaroCruz/ClipForge/actions/runs/46153668496/artifacts/15267434009)
 
 ## Primer incremento recomendado
 

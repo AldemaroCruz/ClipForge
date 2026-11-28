@@ -28,11 +28,15 @@ La prueba con voz sintética cubrió todo el video de 20 minutos, incluida una p
 
 ## Crear clip desde la transcripción
 
+Disponible en INT en el commit `e7145844fd9db57df9a5ad20593c8df2da00080f`. Los proyectos nuevos preparan las marcas durante el procesamiento del video.
+
 1. Abrí un proyecto completado y desplegá **Crear clip desde la transcripción**. Reproducí un pasaje desde su tiempo en la lista.
 2. Seleccioná texto consecutivo con el mouse o marcá inicio y final con los controles de selección. Los controles también funcionan con teclado y en una pantalla estrecha. Revisá el inicio, el final y la duración visible. Los recortes pueden durar de 1 a 60 segundos.
-3. En proyectos anteriores, podés usar los tiempos por segmento mientras pedís **Preparar tiempos por palabra**. Si el transcriptor produce una versión diferente, podés abrir la alineación adicional y conservar la transcripción original. En segmentos con marcas incompletas, la selección usa los límites de la frase.
+3. En proyectos anteriores, podés usar los tiempos por segmento mientras pedís **Preparar marcas por palabra**. Si el transcriptor produce una versión diferente, podés abrir la alineación adicional. La transcripción original sigue disponible. En segmentos con marcas incompletas, la selección usa los límites de la frase.
 4. Reproducí la selección y escuchá los bordes. El transcriptor estima los tiempos. Usá **Crear clip con esta selección** y ajustá los bordes con **Revisar inicio** y **Revisar final** en el editor.
 5. Corregí los subtítulos, aplicá un estilo o logo y guardá el borrador. Exportá y descargá MP4, SRT y VTT desde su tarjeta. También podés incluir esa versión en el ZIP junto con otros clips.
+
+La prueba en INT llevó un pasaje del minuto 18 de una lectura humana de 20 minutos hasta un MP4 con subtítulos y logo y un ZIP con los archivos exactos. Los recibos incluyen fragmentos del audio original y del MP4 para revisar los bordes. [Lectura de LibriVox](https://librivox.org/el-ingenioso-hidalgo-by-miguel-de-cervantes-saavedra/) · [Capturas, recibos y audio](https://github.com/AldemaroCruz/ClipForge/actions/runs/46153668496/artifacts/15267434009)
 
 ## Base de continuidad y reversión de logos
 
