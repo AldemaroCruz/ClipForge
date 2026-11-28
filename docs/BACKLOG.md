@@ -67,6 +67,7 @@ Prioridad P0: bloqueante para su hito. P1: mejora necesaria/próxima. P2: optimi
 | D02 | Crear clip desde la transcripción | Validado en INT | Seleccionar un intervalo continuo, revisarlo con audio, abrirlo como borrador y exportarlo individualmente y en el ZIP mixto. |
 | D03 | Textos del paquete de publicación | Validado en INT | Preparar, corregir y guardar el título, la descripción y los hashtags para una variante exacta. Incluir esa revisión en el ZIP mixto. |
 | E01 | Resaltar palabra actual | Validado en INT | Usar marcas de D00 en el editor y el MP4. Guardar ambos colores en las plantillas y mantener estáticas las frases sin marcas compatibles. |
+| E02 | Traducción revisable de subtítulos | En validación en INT | Traducir revisiones guardadas de clips de 1 a 60 s entre español e inglés. Conservar audio e intervalos, editar la variante y exportar los dos idiomas en el ZIP. |
 | — | Publicación progresiva de clips | Pendiente | Publicar cada clip con su manifiesto y preservar recuperación, idempotencia, aislamiento y eliminación. |
 
 D01 se aceptó en INT en `9e49209aad98f74428b50276836719fd5bd76310`. La primera prueba registró tres reservas, tres llamadas y tres respuestas de OpenAI. La aceptación final reutilizó esa evidencia y comprobó el editor, el MP4 y el ZIP mixto con cero llamadas adicionales. [Búsquedas reales](https://github.com/AldemaroCruz/ClipForge/actions/runs/46116426162/artifacts/15252033378) · [Aceptación final](https://github.com/AldemaroCruz/ClipForge/actions/runs/46120063759)

@@ -372,6 +372,39 @@ def preserve_e01_historical_audio(root, output):
         target.write("\n")
 
 
+def verify_e02_baseline(root, commit, model):
+    accepted = "51da59c5992a88be5114fb69171dedaf9da24eb9"
+    if not re.fullmatch(r"[a-f0-9]{40}", commit) or commit == accepted:
+        raise ValueError("E02 requiere una candidata descendiente del portal aceptado")
+    hashes = {
+        "after-rollout.json": "cadf5e506bb98b50f609ec2abfcdf431e9660fbd1adbcd3f0268fe2a0ddef00e",
+        "browser-e01.json": "9e55be0bb854f0ab5a792a1d16692655d358be8268e63372a20bdfe24eae3c42",
+        "browser-e01-cleanup.json": "345eee1d6a57e2810546f0bd8ae267c9db026448deca564d71e0b552cd70885b",
+        "e01-processing.json": "a15326a1e1ab1c3b6d9d8d8e2bb95c8678f6b3809e6a5543bc32c3d704baabd8",
+    }
+    rollout, browser, cleanup, measured = (native_report(root, name, digest) for name, digest in hashes.items())
+    revisions = {"frontend": rollout["frontend_revision"], "api": rollout["api_revision"]}
+    required = {"e01_late_first_last_repeat_pause_transition_and_same_geometry",
+                "e01_exact_highlight_variant_standard_sidecars_and_saved_publication_in_zip",
+                "e01_owner_boundary_and_immediate_deletion_preserved"}
+    approved = {row["name"] for row in browser["checks"] if row["status"] == "passed"}
+    worker = rollout["worker_configuration"]
+    if (any(report["commit"] != accepted or report["status"] != "passed" for report in (browser, cleanup, measured))
+            or rollout["commit"] != accepted or browser["revisions"] != revisions
+            or browser["phase"] != "e01" or not required <= approved
+            or browser["editorial_usage"] != {"reservations": 0, "calls": 0, "responses": 0}
+            or rollout["editorial"]["model"] != model or rollout["editorial"]["daily_limit"] != 100
+            or rollout["editorial"]["api_daily_limit"] != 100 or worker["generation"] != 87
+            or worker["cpu"] != "4" or worker["memory"] != "4Gi"):
+        raise ValueError("Falta la aceptación nativa de E01 o el perfil aprobado")
+    return {
+        "schema": "clipforge-int-e02-baseline-1", "status": "passed", "target_commit": commit,
+        "baseline": {**rollout, "worker_source": accepted, "worker_cpu": worker["cpu"], "worker_memory": worker["memory"]},
+        "evidence": {"run_id": "46167894270", "artifact_id": "15273392326", "sha256": hashes},
+        "e01_startup": {"job_id": measured["subjects"]["process"], "receipt": measured["cases"]["process"]},
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, type=Path)
@@ -391,6 +424,7 @@ def main():
     group.add_argument("--accepted-d02-base", action="store_true")
     group.add_argument("--accepted-d03-base", action="store_true")
     group.add_argument("--accepted-e01-base", type=Path, metavar="D02_AUDIO_DIR")
+    group.add_argument("--accepted-e02-base", action="store_true")
     args = parser.parse_args()
     if args.accepted_styles:
         receipt = verify_product_release(args.source, args.commit, args.model, "styles", *args.accepted_styles)
@@ -413,6 +447,8 @@ def main():
     elif args.accepted_e01_base:
         receipt = verify_e01_baseline(args.source, args.commit, args.model)
         preserve_e01_historical_audio(args.accepted_e01_base, args.receipt.parent)
+    elif args.accepted_e02_base:
+        receipt = verify_e02_baseline(args.source, args.commit, args.model)
     else:
         receipt = verify(args.source, args.commit, args.model)
     with args.receipt.open("x", encoding="utf-8") as output:

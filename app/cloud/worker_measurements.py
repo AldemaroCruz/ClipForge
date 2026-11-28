@@ -14,6 +14,8 @@ from ..state import write_json_atomic
 SCRATCH_ENV = "CLIPFORGE_WORKER_SCRATCH"
 ENTRY_ENV = "CLIPFORGE_WORKER_ENTRY_EPOCH"
 CLAIM_ENV = "CLIPFORGE_WORKER_CLAIM_EPOCH"
+MODULE_ENTRY_ENV = "CLIPFORGE_WORKER_MODULE_ENTRY_EPOCH"
+IMPORTS_END_ENV = "CLIPFORGE_WORKER_IMPORTS_END_EPOCH"
 SCRATCH_PREFIX = "clipforge-worker-"
 SAMPLE_INTERVAL_SECONDS = 2
 CGROUP = Path("/sys/fs/cgroup")
@@ -117,6 +119,14 @@ def _render_rss():
         return {}
 
 
+def _env_epoch(name):
+    try:
+        value = float(os.getenv(name, ""))
+    except ValueError:
+        return None
+    return value if math.isfinite(value) and value > 0 else None
+
+
 def completed_receipt(directory, task, timings):
     """Capture a completed task's timings within the same publication fence."""
     directory = Path(directory)
@@ -128,16 +138,19 @@ def completed_receipt(directory, task, timings):
     timestamps = {"activated_epoch": task["created_at"].timestamp(),
                   "dispatch_ack_epoch": task["dispatch_ack_epoch"]}
     for name, variable in (("worker_entry_epoch", ENTRY_ENV), ("claim_epoch", CLAIM_ENV)):
-        value = os.getenv(variable)
-        if value:
-            try:
-                stamp = float(value)
-            except ValueError:
-                continue
-            if math.isfinite(stamp) and stamp > 0:
-                timestamps[name] = stamp
+        stamp = _env_epoch(variable)
+        if stamp is not None:
+            timestamps[name] = stamp
+    execution = os.getenv("CLOUD_RUN_EXECUTION", "")
+    operation = task.get("dispatch_operation") or ""
+    startup = {"module_entry_epoch": _env_epoch(MODULE_ENTRY_ENV), "imports_end_epoch": _env_epoch(IMPORTS_END_ENV)}
+    if re.fullmatch(r"clipforge-int-worker-[a-z0-9]{5,12}", execution):
+        startup["execution"] = execution
+    if re.fullmatch(r"projects/(?:clipforgebeta2|816643438938)/locations/us-central1/operations/[a-z0-9-]{8,80}", operation):
+        startup["dispatch_operation"] = operation
     return {"schema": 1, "task_id": task["id"], "fence": task["fence"],
             "kind": task["kind"], "timestamps": {**timestamps, "upload_complete_observed_epoch": time.time()},
+            "startup": startup,
             "stage_seconds": _timings(metrics.get("stage_seconds")) | _timings(timings),
             "container_peak_bytes_through_upload": _read_number(CGROUP / "memory.peak"),
             **_render_rss()}

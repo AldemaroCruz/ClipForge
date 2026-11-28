@@ -14,6 +14,10 @@ import subprocess
 import sys
 import tempfile
 import time
+
+# The Python interpreter and package loader precede this marker.
+MODULE_ENTRY_EPOCH = time.time()
+
 from fastapi import HTTPException
 from sqlalchemy import text
 from ..auth_db import get_engine
@@ -28,9 +32,11 @@ from . import project_deletion
 from . import repository as repo
 from . import storage
 from .worker_measurements import (
-    CLAIM_ENV, ENTRY_ENV, SAMPLE_INTERVAL_SECONDS, SCRATCH_ENV, SCRATCH_PREFIX, WorkerMeasurements,
+    CLAIM_ENV, ENTRY_ENV, SAMPLE_INTERVAL_SECONDS, SCRATCH_ENV, SCRATCH_PREFIX, WorkerMeasurements, MODULE_ENTRY_ENV, IMPORTS_END_ENV,
     completed_receipt, record_stage, scratch_context,
 )
+
+IMPORTS_END_EPOCH = time.time()
 
 
 def _terminate(child):
@@ -72,7 +78,7 @@ def _claim(connection, job_id=None):
             LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE t.status='running' AND (t.lease_until IS NULL OR t.lease_until<=clock_timestamp())
               AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind IN ('process','selection','delete','alignment','publication_ai') OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (NOT :beta OR t.kind IN ('process','selection','delete','alignment','publication_ai','translation_ai') OR e.payload->'pilot'=CAST('true' AS jsonb))
               AND (CAST(:job AS text) IS NULL OR t.job_id=:job)
             ORDER BY t.created_at,t.id LIMIT :limit FOR UPDATE OF t SKIP LOCKED
             """), {**profile, "limit": BETA_WORKER_CONCURRENCY if beta else 1}).mappings().all()
@@ -87,6 +93,8 @@ def _claim(connection, job_id=None):
                 repo.interrupt_selection(item)
             elif kind == "publication_ai":
                 repo.interrupt_publication(item)
+            elif kind == "translation_ai":
+                repo.interrupt_translation(item)
             elif kind == "alignment":
                 repo.alignment_failure(item, "WORKER_INTERRUPTED")
             else:
@@ -99,7 +107,7 @@ def _claim(connection, job_id=None):
                 SELECT count(*), count(*) FILTER (
                     WHERE NOT (t.status='cancelled' AND p.deletion_started_at IS NOT NULL)
                       AND NOT (COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)
-                      AND (t.kind IN ('process','selection','delete','alignment','publication_ai') OR COALESCE(e.payload->'pilot'=CAST('true' AS jsonb),false))))
+                      AND (t.kind IN ('process','selection','delete','alignment','publication_ai','translation_ai') OR COALESCE(e.payload->'pilot'=CAST('true' AS jsonb),false))))
                 FROM cloud_tasks t
                 JOIN auth_projects p ON p.id=t.job_id
                 LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
@@ -119,7 +127,7 @@ def _claim(connection, job_id=None):
             LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
             LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE t.status='queued' AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind IN ('process','selection','delete','alignment','publication_ai') OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (NOT :beta OR t.kind IN ('process','selection','delete','alignment','publication_ai','translation_ai') OR e.payload->'pilot'=CAST('true' AS jsonb))
               AND (CAST(:job AS text) IS NULL OR t.job_id=:job)
               AND NOT (t.id=ANY(CAST(:deferred AS varchar[])))
               AND (NOT COALESCE(e.payload->'clip_captions'=CAST('true' AS jsonb),false) OR NOT EXISTS (
@@ -149,7 +157,7 @@ def cleanup_failed():
             WHERE t.status='failed' AND t.cleaned_at IS NULL
               AND (NOT :beta OR to_jsonb(p)->>'deletion_started_at' IS NULL)
               AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind IN ('process','selection','alignment','publication_ai') OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (NOT :beta OR t.kind IN ('process','selection','alignment','publication_ai','translation_ai') OR e.payload->'pilot'=CAST('true' AS jsonb))
             ORDER BY t.created_at LIMIT 100
             """), {"beta": beta_enabled()}).mappings().all()
     for task in tasks:
@@ -162,7 +170,7 @@ def cleanup_failed():
                     """), {"i": task["id"]}).mappings().first()
                 if current is None or current["status"] != "failed" or current["cleaned_at"] is not None:
                     continue
-                if task["kind"] not in {"selection", "publication_ai"}:
+                if task["kind"] not in {"selection", "publication_ai", "translation_ai"}:
                     manifests = c.execute(text("SELECT manifest FROM cloud_documents WHERE job_id=:j"), {"j": task["job_id"]}).scalars().all()
                     references = {(value["name"], value["generation"]) for manifest in manifests for value in manifest.values()}
                     for item in storage.list_staged(prefix):
@@ -251,7 +259,9 @@ def drain(max_tasks=None, recovery=None):
     beta = beta_enabled()
     execution = os.getenv("CLOUD_RUN_EXECUTION")
     if beta and execution:
-        print(json.dumps({"event": "worker_started", "execution": execution}), flush=True)
+        print(json.dumps({"event": "worker_started", "execution": execution,
+                          "module_entry_epoch": MODULE_ENTRY_EPOCH,
+                          "imports_end_epoch": IMPORTS_END_EPOCH, "supervisor_entry_epoch": started_at}), flush=True)
     # The exact recovery command reserves and claims its target exclusively
     # so a normal shared supervisor cannot claim it between those operations.
     shared = beta and recovery is None
@@ -296,7 +306,10 @@ def drain(max_tasks=None, recovery=None):
                     scratch = tempfile.TemporaryDirectory(prefix=SCRATCH_PREFIX)
                     env = {**os.environ, SCRATCH_ENV: str(Path(scratch.name).resolve())}
                     if beta and execution:
-                        env.update({ENTRY_ENV: str(started_at), CLAIM_ENV: str(claimed_at)})
+                        env.update({
+                            ENTRY_ENV: str(started_at), CLAIM_ENV: str(claimed_at),
+                            MODULE_ENTRY_ENV: str(MODULE_ENTRY_EPOCH), IMPORTS_END_ENV: str(IMPORTS_END_EPOCH),
+                        })
                     measurements = (WorkerMeasurements(scratch.name, task, execution)
                                     if beta and execution and task["kind"] in {"process", "export", "alignment"} else None)
                     status = "interrupted"
@@ -434,7 +447,8 @@ def execute(task_id, fence):
     with get_engine().connect() as c:
         task = c.execute(text("""
             SELECT t.*,p.workspace_id,
-                EXTRACT(EPOCH FROM CASE WHEN o.last_error IS NULL THEN o.dispatched_at END)::float8 AS dispatch_ack_epoch
+                EXTRACT(EPOCH FROM CASE WHEN o.last_error IS NULL THEN o.dispatched_at END)::float8 AS dispatch_ack_epoch,
+                CASE WHEN o.last_error IS NULL THEN o.operation_name END AS dispatch_operation
             FROM cloud_tasks t
             LEFT JOIN cloud_outbox o ON o.task_id=t.id
             JOIN auth_projects p ON p.id=t.job_id
@@ -442,7 +456,7 @@ def execute(task_id, fence):
             LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE t.id=:i AND t.fence=:f AND t.status='running' AND t.lease_until>clock_timestamp()
               AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind IN ('process','selection','delete','alignment','publication_ai') OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (NOT :beta OR t.kind IN ('process','selection','delete','alignment','publication_ai','translation_ai') OR e.payload->'pilot'=CAST('true' AS jsonb))
             """), {"i": task_id, "f": fence, "beta": beta_enabled()}).mappings().first()
         if task is None:
             raise RuntimeError("Task lease unavailable")
@@ -455,6 +469,9 @@ def execute(task_id, fence):
         return execute_task(task)
     if task["kind"] == "publication_ai":
         from .publication import execute_task
+        return execute_task(task, workspace)
+    if task["kind"] == "translation_ai":
+        from .translation import execute_task
         return execute_task(task, workspace)
     # Offline weights are compulsory for automatic cloud transcription.
     if not cfg.local_test and not os.getenv("CLIPFORGE_MODEL_LOCK"):

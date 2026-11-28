@@ -83,13 +83,21 @@ def is_pilot_manual_export(item):
             and (item.get("pilot") is True or item.get("pilot") is None))
 
 
+def translated_stem(item):
+    origin = item.get("translation_origin", {})
+    language, export_id = origin.get("target_language"), item.get("id", "")
+    if language in {"es", "en"} and isinstance(export_id, str) and DOCUMENT_ID.fullmatch(export_id):
+        return f"translation_{language}_{export_id}"
+    return None
+
+
 def _completed_export(document):
     item = document["payload"]
     if item.get("status") != "completed" or item.get("clip_captions") is True:
         return None, {}
     draft_id = item.get("draft_id")
     if item.get("pilot") is True and isinstance(draft_id, str) and DOCUMENT_ID.fullmatch(draft_id):
-        kind = "editorial"
+        kind = "translation" if translated_stem(item) else "editorial"
     elif is_pilot_manual_export(item):
         kind = "manual"
     else:
@@ -111,8 +119,10 @@ def export_selection(document, job_id, workspace_id):
             _validate_object(original, kind, f"workspaces/{workspace_id}/jobs/{job_id}/")
     except HTTPException:
         return {}
-    return {"archive_selection": f"export:{export_id}:{document['revision']}",
-            "archive_files": list(objects)}
+    result = {"archive_selection": f"export:{export_id}:{document['revision']}", "archive_files": list(objects)}
+    if translated_stem(document["payload"]):
+        result["archive_kind"] = "translation"
+    return result
 
 
 def _publication_revisions(tokens, publications):
@@ -152,10 +162,14 @@ def prepare(job_id, tokens: list[str], principal, publications=()) -> Package:
                 export_kind, objects = _completed_export(export)
                 if export["revision"] != item.revision or export["payload"].get("id") != item.output_id or not objects:
                     raise HTTPException(409, "Cambió una exportación seleccionada. Actualizá la lista y volvé a seleccionarla.")
-                stem = f"{export_kind}_{item.output_id}"
+                stem = translated_stem(export["payload"]) or f"{export_kind}_{item.output_id}"
                 entry = {
                     "kind": export_kind, "export_id": item.output_id, "revision": item.revision, "files": files,
                 }
+                if export_kind == "translation":
+                    origin = export["payload"]["translation_origin"]
+                    entry.update(subtitle_language=origin["target_language"], audio_language=origin["audio_language"],
+                                 translation_run_id=origin["run_id"], source=origin["source"])
                 export_provenance.append(entry)
             folder = ""
             text_content = None

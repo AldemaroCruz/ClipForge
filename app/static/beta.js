@@ -477,6 +477,7 @@ async function initBeta() {
   function renderJob() {
     syncZipProject();
     window.ClipForgePublication?.selectProject(zipProject || null);
+    window.ClipForgeTranslation?.selectProject(zipProject || null);
     window.ClipForgeMvp?.selectJob(job);
     window.ClipForgeEditorial?.selectJob(job);
     window.ClipForgeTranscript?.selectJob(job);
@@ -541,8 +542,13 @@ async function initBeta() {
       const variant = clip.captions?.status === "draft" ? " inicial" : "";
       download.setAttribute("aria-label", "Descargar " + label + variant + " en MP4" + (output?.logo ? " con logo" : ""));
       actions.append(download);
-      const publication = window.ClipForgePublication?.action(selectedId, zipToken(clip), label);
+      const mediaSelection = zipToken(clip);
+      const publication = window.ClipForgePublication?.action(selectedId, mediaSelection, label);
       if (publication) actions.append(publication);
+      const translation = mediaSelection && output.srt && window.ClipForgeTranslation?.button(selectedId, {
+        kind: "automatic", id: clip.file, revision: clip.captions.revision, selection: mediaSelection,
+      });
+      if (translation) actions.append(translation);
       if (output?.mp4 && output.mp4 !== path) {
         const original = betaText("a", "MP4 inicial");
         original.href = path;

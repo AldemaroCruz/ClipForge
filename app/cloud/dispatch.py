@@ -42,7 +42,7 @@ def reconcile(*, cleanup_only=False):
                 LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
                 WHERE (t.status IN ('running','cancelled') AND t.lease_until>clock_timestamp())
                   OR (t.status='queued' AND d.payload->'pilot'=CAST('true' AS jsonb)
-                      AND (t.kind IN ('process','selection','delete','alignment','publication_ai') OR e.payload->'pilot'=CAST('true' AS jsonb))
+                      AND (t.kind IN ('process','selection','delete','alignment','publication_ai','translation_ai') OR e.payload->'pilot'=CAST('true' AS jsonb))
                       AND NOT (t.id=ANY(CAST(:deferred AS varchar[])))
                       AND o.dispatched_at>clock_timestamp()-
                         CASE WHEN o.last_error IS NULL THEN interval '5 minutes' ELSE interval '15 seconds' END)
@@ -56,7 +56,7 @@ def reconcile(*, cleanup_only=False):
             LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
             LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind IN ('process','selection','delete','alignment','publication_ai') OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (NOT :beta OR t.kind IN ('process','selection','delete','alignment','publication_ai','translation_ai') OR e.payload->'pilot'=CAST('true' AS jsonb))
               AND (NOT :cleanup_only OR t.kind='delete')
               AND ((t.status='queued' AND
                   NOT (t.id=ANY(CAST(:deferred AS varchar[]))) AND
@@ -88,6 +88,7 @@ def reconcile(*, cleanup_only=False):
         batches = [(task_id,) for task_id in pending] if beta else [pending]
         for task_ids in batches:
             started = time.monotonic()
+            requested_at = time.time()
             try:
                 response = request("POST", url, json={}, timeout=(3, 5)) if beta else request("POST", url, json={})
                 try:
@@ -115,6 +116,8 @@ def reconcile(*, cleanup_only=False):
                         """), {"n": operation, "i": task})
                 if beta:
                     print(json.dumps({"event": "worker_dispatch_ack", "task_id": task_ids[0],
+                                      "request_epoch": requested_at,
+                                      "operation": operation,
                                       "request_seconds": round(time.monotonic() - started, 6)}), flush=True)
                 sent += len(task_ids)
     return {"status": "pending" if failed else "dispatched", "dispatched": sent}

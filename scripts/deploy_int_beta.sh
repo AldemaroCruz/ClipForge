@@ -516,6 +516,65 @@ e01_acceptance() {
     python -m scripts.int_hito_e01_timing "$reports/browser-e01.json" "$reports/e01-processing.json"
 }
 
+create_e02_fixture() {
+    local recipe="$DELIVERY_DIR/e02-recipe.json" row words voice offset slot wav duration tempo input=1
+    local filter="" tracks="[1:a]"
+    local -a media=(-f lavfi -i 'color=c=0x223448:s=640x360:r=24' -f lavfi -i 'anullsrc=r=22050:cl=mono')
+    python -m app.translation_fixture > "$recipe"
+    jq -e '.duration == 54 and ((.speech | length) >= 6 and (.speech | length) <= 48)
+        and all(.speech[]; (.language == "es" or .language == "en") and
+            (.start >= 0 and .duration >= 0.2 and .duration <= 5 and .start + .duration <= 54)
+            and (.text | type == "string" and length > 0 and length <= 200))' "$recipe" > /dev/null
+    filter="[1:a]atrim=duration=54[base];"
+    tracks="[base]"
+    while IFS= read -r row; do
+        words="$(jq -er '.text' <<< "$row")"
+        voice="$(jq -er 'if .language == "es" then "es" else "en-us" end' <<< "$row")"
+        offset="$(jq -er '(.start * 1000 | round)' <<< "$row")"
+        slot="$(jq -er '.duration' <<< "$row")"
+        input=$((input+1))
+        wav="$DELIVERY_DIR/e02-voice-$input.wav"
+        printf '%s' "$words" | espeak-ng -v "$voice" -s 166 -w "$wav" --stdin
+        duration="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$wav")"
+        [[ "$duration" =~ ^[0-9]+[.][0-9]+$ && "$slot" =~ ^[0-9]+([.][0-9]+)?$ ]]
+        tempo="$(LC_ALL=C awk -v real="$duration" -v slot="$slot" 'BEGIN {
+            value=(real > slot) ? real/(slot * 0.97) : 1.0;
+            if (value > 2.0 || real <= 0) exit 2;
+            printf "%.6f", value;
+        }')"
+        media+=(-i "$wav")
+        filter+="[$input:a]atempo=$tempo,adelay=$offset[s$input];"
+        tracks+="[s$input]"
+    done < <(jq -c '.speech[]' "$recipe")
+    filter+="$tracks""amix=inputs=$input:duration=first:normalize=0[audio]"
+    ffmpeg -hide_banner -loglevel error -nostdin "${media[@]}" -filter_complex "$filter" \
+        -map 0:v:0 -map '[audio]' -t 54 -map_metadata -1 -c:v libx264 -preset ultrafast -crf 26 \
+        -pix_fmt yuv420p -threads 2 -c:a aac -b:a 64k -movflags +faststart "$DELIVERY_DIR/translation.mp4"
+}
+
+e02_acceptance() {
+    local previous="$reports/previous-live.json" state="$DELIVERY_DIR/browser-private.json"
+    local video="$DELIVERY_DIR/translation.mp4" owner job source_sha
+    verify_focused_baseline e02 "$INT_E02_ACCEPTANCE"
+    create_e02_fixture
+    source_sha="$(sha256sum "$video" | cut -d ' ' -f 1)"
+    [[ "$source_sha" =~ ^[a-f0-9]{64}$ ]]
+    browser_on_rollout "$previous" e02-prepare --video "$video"
+    owner="$(jq -er '.owner_id | select(test("^[a-f0-9]{32}$"))' "$state")"
+    job="$(jq -er '.job_id | select(test("^[a-f0-9]{32}$"))' "$state")"
+    : > "$DELIVERY_DIR/focused-promoting"
+    run jobs update clipforge-int-worker --image "$TF_VAR_worker_image" \
+        --update-env-vars "CLIPFORGE_REVISION=$GITHUB_SHA"
+    run jobs execute clipforge-int-worker --wait --tasks=1 \
+        --args="-m,app.cloud.translation_fixture,$owner,$job,$source_sha"
+    apply_beta true "run-$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT" replacement
+    capture_rollout after
+    jq -e '.worker_configuration.cpu == "4" and .worker_configuration.memory == "4Gi" and
+        .editorial.daily_limit == 100 and .editorial.api_daily_limit == 100' \
+        "$reports/after-rollout.json" > /dev/null
+    browser_acceptance e02 --video "$video"
+}
+
 capture_prior_worker() {
     run jobs describe clipforge-int-worker --format='json(metadata.generation,status.observedGeneration,spec.template.spec)' |
         jq -e --slurpfile prior "$reports/previous-live.json" '
@@ -550,7 +609,7 @@ caption_color_cleanup() {
 verify_focused_baseline() {
     local increment="$1" receipt="$2"
     case "$increment" in
-        c04|c05|c06|logos|caption-color|mixed-zip|d01|d02|d03|e01) ;;
+        c04|c05|c06|logos|caption-color|mixed-zip|d01|d02|d03|e01|e02) ;;
         *) return 1 ;;
     esac
     [[ "$receipt" == "$reports/$increment-baseline.json" && -f "$receipt" && ! -L "$receipt" ]]
@@ -562,7 +621,7 @@ verify_focused_baseline() {
             commit, frontend_revision, api_revision, worker_image, migrator_image,
             editorial: (.editorial | del(.api_daily_limit))
         }) == ($live | {commit,frontend_revision,api_revision,worker_image,migrator_image,editorial}) and
-        (($increment != "logos" and $increment != "caption-color" and $increment != "mixed-zip" and $increment != "d01" and $increment != "d02" and $increment != "d03" and $increment != "e01") or
+        (($increment != "logos" and $increment != "caption-color" and $increment != "mixed-zip" and $increment != "d01" and $increment != "d02" and $increment != "d03" and $increment != "e01" and $increment != "e02") or
            (($expected | {worker_source,worker_cpu,worker_memory}) == ($live | {worker_source,worker_cpu,worker_memory})
             and $live.migrator_source == $expected.commit)))
     ' "$receipt" > /dev/null
@@ -631,8 +690,11 @@ case "${1:-}" in
             -backend-config=bucket=clipforgebeta2-tfstate-int -backend-config=prefix=terraform/int-beta
         tf validate -no-color
         capture_previous
-        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}${INT_D02_ACCEPTANCE:-}${INT_D03_ACCEPTANCE:-}${INT_E01_ACCEPTANCE:-}" ]]; then
-            if [[ -n "${INT_E01_ACCEPTANCE:-}" ]]; then
+        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}${INT_D02_ACCEPTANCE:-}${INT_D03_ACCEPTANCE:-}${INT_E01_ACCEPTANCE:-}${INT_E02_ACCEPTANCE:-}" ]]; then
+            if [[ -n "${INT_E02_ACCEPTANCE:-}" ]]; then
+                verify_focused_baseline e02 "$INT_E02_ACCEPTANCE"
+                capture_prior_worker "$reports/e02-prior-worker.json"
+            elif [[ -n "${INT_E01_ACCEPTANCE:-}" ]]; then
                 verify_focused_baseline e01 "$INT_E01_ACCEPTANCE"
                 capture_prior_worker "$reports/e01-prior-worker.json"
             elif [[ -n "${INT_D03_ACCEPTANCE:-}" ]]; then
@@ -669,7 +731,7 @@ case "${1:-}" in
         fi
         ;;
     migrate)
-        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}${INT_D02_ACCEPTANCE:-}${INT_D03_ACCEPTANCE:-}${INT_E01_ACCEPTANCE:-}" ]]; then
+        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}${INT_D02_ACCEPTANCE:-}${INT_D03_ACCEPTANCE:-}${INT_E01_ACCEPTANCE:-}${INT_E02_ACCEPTANCE:-}" ]]; then
             if ! run_migration; then
                 restore_migrator_pin
                 exit 1
@@ -721,6 +783,8 @@ case "${1:-}" in
             d03_acceptance
         elif [[ -n "${INT_E01_ACCEPTANCE:-}" ]]; then
             e01_acceptance
+        elif [[ -n "${INT_E02_ACCEPTANCE:-}" ]]; then
+            e02_acceptance
         elif [[ -n "${INT_DELETION_REPLAY_REPORT:-}" ]]; then
             [[ "$INT_DELETION_REPLAY_REPORT" == "$reports/deletion-replay.json" && ! -L "$INT_DELETION_REPLAY_REPORT" ]]
             jq -e '.schema == "clipforge-int-hito-b-delete-evidence-1" and .status == "passed"
@@ -750,7 +814,7 @@ case "${1:-}" in
         run_worker_benchmark "$@"
         ;;
     rollback)
-        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_C05_ACCEPTANCE:-}${INT_C06_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}${INT_CAPTION_COLOR_ACCEPTANCE:-}${INT_MIXED_ZIP_ACCEPTANCE:-}${INT_D01_ACCEPTANCE:-}${INT_D02_ACCEPTANCE:-}${INT_D03_ACCEPTANCE:-}${INT_E01_ACCEPTANCE:-}" && ! -f "$DELIVERY_DIR/focused-promoting" ]]; then
+        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_C05_ACCEPTANCE:-}${INT_C06_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}${INT_CAPTION_COLOR_ACCEPTANCE:-}${INT_MIXED_ZIP_ACCEPTANCE:-}${INT_D01_ACCEPTANCE:-}${INT_D02_ACCEPTANCE:-}${INT_D03_ACCEPTANCE:-}${INT_E01_ACCEPTANCE:-}${INT_E02_ACCEPTANCE:-}" && ! -f "$DELIVERY_DIR/focused-promoting" ]]; then
             restore_migrator_pin
         else
             restore_failed_delivery
@@ -775,6 +839,10 @@ case "${1:-}" in
     e01-cleanup)
         [[ -n "${INT_E01_ACCEPTANCE:-}" ]]
         caption_color_cleanup e01-cleanup
+        ;;
+    e02-cleanup)
+        [[ -n "${INT_E02_ACCEPTANCE:-}" ]]
+        caption_color_cleanup e02-cleanup
         ;;
     *)
         exit 2

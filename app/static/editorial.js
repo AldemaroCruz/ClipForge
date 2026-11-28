@@ -60,7 +60,7 @@
   }
 
   function updateFrameControls() {
-    const available = Boolean(view?.draft && Number.isFinite(view.frameTime) && !source.seeking);
+    const available = Boolean(view?.draft && !view.draft.translation_origin && Number.isFinite(view.frameTime) && !source.seeking);
     el("mark-start").disabled = !available;
     el("mark-end").disabled = !available;
   }
@@ -115,6 +115,7 @@
       "draft-label", "drafts", "draft-form", "output"]) el(name).hidden = true;
     el("draft-empty").hidden = false;
     el("draft-fields").disabled = false;
+    el("drafts").disabled = false;
     view = id ? {id, duration: job.media.duration_seconds, options: job.options,
       controller: new AbortController()} : null;
     resetConsent();
@@ -372,7 +373,10 @@
 
   function setDraftBusy(state, busy) {
     state.draftBusy = busy;
-    if (view === state) el("draft-fields").disabled = busy;
+    if (view === state) {
+      el("draft-fields").disabled = busy;
+      el("drafts").disabled = busy;
+    }
   }
 
   async function createDraft(state, runId, candidateId, control) {
@@ -445,6 +449,34 @@
       body.headers["Idempotency-Key"] = key;
       return request(state, "/transcript-selection/drafts", body);
     });
+  }
+
+  function openTranslationDraft(id, draftId) {
+    if (!idPattern.test(draftId)) return false;
+    return openNewDraft(id, state => request(state, "/drafts/" + draftId));
+  }
+
+  async function openTranslationSource() {
+    const state = view;
+    const source = state?.draft?.translation_origin?.source;
+    if (!source || state.draftBusy) return;
+    if (source.kind === "draft") {
+      await openDraft(state, source.id);
+      if (state.draft.id === source.id && state.draft.revision !== source.revision) {
+        status(state, "Abriste la revisión actual del borrador original.", "draft-status");
+      }
+      return;
+    }
+    const cards = source.kind === "automatic" ? document.getElementById("clip-list") : el("exports");
+    if (source.kind === "export") await loadExports(state);
+    if (!visible(state)) return;
+    const card = [...cards.children].find(element => (element.dataset.exportId || element.dataset.clipFile) === source.id);
+    if (card) {
+      card.scrollIntoView({block: "nearest"});
+      card.querySelector("button[data-subtitle-translation]")?.focus({preventScroll: true});
+    } else if (source.kind === "export") {
+      window.ClipForgeMvp?.focusExport(state.id, source.id);
+    }
   }
 
   async function loadDrafts(state, restore = false) {
@@ -1105,6 +1137,34 @@
     replaceCueRows(el("cues"), cues.map(cue => cueRow(cue, duration, updateSample)), keepSelection);
   }
 
+  function translationDescription(origin) {
+    if (!origin) return "";
+    const names = window.ClipForgeTranslation?.language;
+    return "Audio original · " + (names?.(origin.audio_language) || "Sin identificar")
+      + " · Subtítulos traducidos · " + (names?.(origin.target_language) || origin.target_language)
+      + " · Revisión fuente " + origin.source.revision;
+  }
+
+  function configureTranslation(item) {
+    const origin = item.translation_origin;
+    const note = el("translation-origin");
+    note.hidden = !origin;
+    note.textContent = translationDescription(origin);
+    el("translation-source").hidden = !origin;
+    el("highlight-limitation").hidden = !origin;
+    el("highlight-enabled").disabled = Boolean(origin);
+    if (origin) {
+      el("highlight-enabled").checked = false;
+      highlightControls(el);
+    }
+    for (const name of ["start", "end", "apply-range"]) el(name).disabled = Boolean(origin);
+    el("add-cue").hidden = Boolean(origin);
+    el("translate").hidden = !item.cues.length;
+    for (const control of el("cues").querySelectorAll('input[data-field], .editorial-cue > button')) {
+      control.disabled = Boolean(origin);
+    }
+  }
+
   function framingOptions() {
     return {
       framing: el("framing").value,
@@ -1296,6 +1356,7 @@
     fillFramingControls(item.options);
     draftLogos.fill(item.logo);
     setCues(item.cues, item.start, item.end, keepSelection);
+    configureTranslation(item);
     el("revision").textContent = "Revisión guardada " + item.revision;
     updateSample();
     updateFrameControls();
@@ -1445,6 +1506,7 @@
       if (!visible(state)) return false;
       state.draft = result;
       fillStyleControls(el, result.options);
+      configureTranslation(result);
       draftLogos.fill(result.logo);
       el("burn").checked = burn;
       el("revision").textContent = "Revisión guardada " + result.revision;
@@ -1465,6 +1527,7 @@
       + (item.logo ? " · Con logo" : "")
       + (item.status === "completed" && hasCues && item.options?.burn_subtitles ? " · Subtítulos incrustados" : ""), "muted"));
     if (item.status === "completed") {
+      if (item.translation_origin) card.append(node("p", translationDescription(item.translation_origin), "muted translation-version"));
       const timeline = item.word_highlight_rendered === true ? item.word_highlight : null;
       const highlight = highlightExportText({enabled: item.options?.burn_subtitles && item.options?.subtitle_highlight_enabled,
         base_color: item.options?.subtitle_color, active_color: item.options?.subtitle_highlight_color,
@@ -1492,6 +1555,12 @@
       }
       const publication = window.ClipForgePublication?.action(state.id, item.archive_selection, title);
       if (publication) links.append(publication);
+      if (hasCues && item.archive_selection) {
+        const translation = window.ClipForgeTranslation?.button(state.id, {
+          kind: "export", id: item.id, revision: Number(item.archive_selection.split(":").at(-1)),
+        });
+        if (translation) links.append(translation);
+      }
       card.append(player, links);
       const include = window.ClipForgeZip?.includeExport(state.id, "editorial", item.id, title + " · revisión " + item.draft_revision);
       if (include) card.append(include);
@@ -1591,6 +1660,12 @@
   el("drafts").addEventListener("change", event => {
     if (view) void openDraft(view, event.target.value);
   });
+  el("translate").addEventListener("click", () => {
+    const draft = view?.draft;
+    if (draft && visible(view)) void window.ClipForgeTranslation?.open(view.id,
+      {kind: "draft", id: draft.id, revision: draft.revision}, !formMatches(draft));
+  });
+  el("translation-source").addEventListener("click", () => void openTranslationSource());
   const draftLogos = logos.mount("editorial-logos", updateSample);
   const draftStyles = mountCaptionStyles("editorial-styles", {
     createButton: el("save-style"),
@@ -1635,7 +1710,7 @@
     if (!source.seeking && previewEnd !== null && source.currentTime >= previewEnd) stopPreview();
   });
 
-  window.ClipForgeEditorial = {selectJob, createManualDraft, createTranscriptDraft};
+  window.ClipForgeEditorial = {selectJob, createManualDraft, createTranscriptDraft, openTranslationDraft};
   window.ClipForgeCaptionFields = {cueInput, cueRow, readCues, addCue, replaceCueRows, trackCaptionCue,
     showCaptionSample, styleControls, fillStyleControls, editorStyle, mountCaptionStyles, mountColorControls, sourceTime,
     mountHighlightControls, mountCaptionHighlight, highlightExportText};

@@ -120,8 +120,11 @@
       return;
     }
     download.href = path(state.id, "/file", {selection: state.selection, revision: saved.revision});
+    const previous = saved.reused_from;
     el("saved").textContent = "Revisión " + saved.revision + " guardada para el paquete."
-      + (saved.reused_from ? " Reutiliza la revisión " + saved.reused_from.revision + " de otra exportación del mismo contenido." : "");
+      + (previous ? " Reutiliza la revisión " + previous.revision
+        + (previous.translated_subtitles ? " de la exportación fuente y conserva el idioma de esos textos."
+          : " de otra exportación del mismo contenido.") : "");
     updateIndex(state, [{selection: state.selection, revision: saved.revision}]);
   }
 
@@ -133,6 +136,10 @@
       button.className = "secondary";
       button.dataset.publicationReuse = item.selection;
       button.textContent = "Reutilizar revisión " + item.revision + " · " + (item.title || "Textos guardados");
+      if (item.translated_subtitles) {
+        const name = window.ClipForgeTranslation?.language(item.language) || item.language;
+        button.textContent += " · Exportación fuente · " + name;
+      }
       button.addEventListener("click", () => void reuse(state, item));
       return button;
     }));

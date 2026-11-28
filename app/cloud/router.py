@@ -21,7 +21,7 @@ from ..editorial import EditorialContent, DraftUpdate, ProjectName, RangeChange,
 from ..logo_placement import LogoPlacement
 from ..presentation import Presentation, ExportRequest, separate_highlight
 from ..subtitles import SubtitleError, cues_from_segments, to_srt, to_vtt, validate_cues
-from . import caption_styles, clip_captions, clip_package, creator_logos, project_deletion, publication, transcript_selection
+from . import caption_styles, clip_captions, clip_package, creator_logos, project_deletion, publication, transcript_selection, translation
 from . import word_highlight
 from . import editorial_selection as selection
 from . import repository as repo
@@ -349,6 +349,40 @@ def publication_file(
     return Response(publication.text_bytes(saved), media_type="text/plain",
                     headers={"Content-Disposition": 'attachment; filename="publicacion.txt"',
                              "Cache-Control": "no-store"})
+
+
+@router.get("/jobs/{job_id}/subtitle-translations", dependencies=[Depends(_int_product_route)])
+def subtitle_translations(job_id: str, request: Request, response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    return translation.index(job_id, request.state.principal)
+
+
+@router.post("/jobs/{job_id}/subtitle-translations/preview", dependencies=[Depends(_int_product_route)])
+def subtitle_translation_preview(job_id: str, payload: translation.PreviewRequest, request: Request, response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    return translation.preview(job_id, payload, request.state.principal)
+
+
+@router.post("/jobs/{job_id}/subtitle-translations", status_code=202, dependencies=[Depends(_int_product_route)])
+def translate_subtitles(job_id: str, payload: translation.TranslateRequest, request: Request, response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    item = translation.submit(job_id, payload, request.state.principal)
+    return _dispatch(item) if item["status"] == "queued" else item
+
+
+@router.get("/jobs/{job_id}/subtitle-translations/{run_id}", dependencies=[Depends(_int_product_route)])
+def subtitle_translation_status(job_id: str, run_id: str, request: Request, response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    item = translation.read(job_id, run_id, request.state.principal)
+    if _needs_dispatch(job_id, translation.KIND, [item]):
+        _dispatch({})
+    return item
+
+
+@router.post("/jobs/{job_id}/subtitle-translations/{run_id}/draft", status_code=201,
+             dependencies=[Depends(_int_product_route)])
+def save_subtitle_translation(job_id: str, run_id: str, payload: translation.DraftRequest, request: Request):
+    return translation.save_draft(job_id, run_id, payload, request.state.principal, VERSION)
 
 
 @router.put("/jobs/{job_id}/clips/{filename}/captions", status_code=202, dependencies=[Depends(_int_product_route)])
@@ -690,6 +724,7 @@ def update_draft(job_id: str, draft_id: str, payload: CloudDraftUpdate, request:
         current = previous["payload"]
         item = {**current, **content, "revision": payload.revision+1, "updated_at": time.time()}
         if is_beta:
+            translation.enforce_unchanged_timing(current, item)
             options, template, logo = caption_styles.resolve(
                 c, principal, payload, content["options"], current["options"],
                 current.get("style_template"), current.get("logo"),
@@ -703,11 +738,12 @@ def update_draft(job_id: str, draft_id: str, payload: CloudDraftUpdate, request:
                 item["logo"] = logo
             else:
                 item.pop("logo", None)
-            if aligned:
+            if aligned and not current.get("translation_origin"):
                 word_highlight.attach(item, word_highlight.current(job, aligned, c),
                                       version=word_highlight.selected_version(current))
             else:
                 item.pop("word_highlight", None)
+            translation.force_static(item)
         repo.update_document(c, job_id, "draft", item, payload.revision)
     return item
 
@@ -723,7 +759,9 @@ def _submit_export(job_id, item, request, *, pilot=False, request_key=None):
     idempotency_key = request_key or request.headers.get("Idempotency-Key")
     with repo.request_transaction(owner, idempotency_key, fingerprint) as (c, previous, key):
         if pilot:
-            repo.beta_document(c, request.state.principal, job_id)
+            job = repo.beta_document(c, request.state.principal, job_id)
+            if item.get("translation_origin"):
+                translation.check_original(job, item, request.state.principal.workspace_id)
         if previous:
             if previous["kind"] != "export" or previous["job_id"] != job_id:
                 raise HTTPException(409, "La clave identifica otra solicitud")
@@ -801,6 +839,9 @@ def export_draft(job_id: str, draft_id: str, payload: RevisionRequest, request: 
     origin = snapshot.get("selection_origin", {})
     if origin.get("search_topic") or origin.get("mode") == "transcript":
         item["selection_origin"] = origin
+    if snapshot.get("translation_origin"):
+        item.update({key: snapshot[key] for key in ("translation_origin", "audio_language", "subtitle_language")})
+        translation.force_static(item)
     pilot = _doc(job_id)["payload"].get("pilot") is True
     key = f"draft-{draft_id}-{payload.revision}" if pilot else None
     return _submit_export(job_id, item, request, pilot=pilot, request_key=key)
@@ -861,7 +902,9 @@ def export_file(job_id: str, export_id: str, filename: str, request: Request, in
         raise HTTPException(409, "La variante todavía no está disponible")
     if filename not in doc["manifest"]:
         raise HTTPException(404, "Archivo no encontrado")
-    return _stream(doc["manifest"][filename], request, filename, inline)
+    translated_stem = clip_package.translated_stem(doc["payload"])
+    download_name = f"{translated_stem}.{filename.rsplit('.', 1)[1]}" if translated_stem else filename
+    return _stream(doc["manifest"][filename], request, download_name, inline)
 
 
 def _summary(c, doc):

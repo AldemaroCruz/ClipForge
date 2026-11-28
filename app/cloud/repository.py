@@ -158,7 +158,8 @@ def admit_beta(c, owner, current_job="", *, caption_job=""):
                       THEN d.job_id ELSE d.id END AS slot
           FROM cloud_documents d JOIN auth_projects p ON p.id=d.job_id
           JOIN auth_users u ON u.id=p.owner_id
-          WHERE d.kind IN ('job','export','selection','alignment','publication_ai') AND d.payload->'pilot'=CAST('true' AS jsonb)
+          WHERE d.kind IN ('job','export','selection','alignment','publication_ai','translation_ai')
+            AND d.payload->'pilot'=CAST('true' AS jsonb)
             AND p.deletion_started_at IS NULL AND d.job_id<>:j
             AND NOT (d.job_id=:caption AND COALESCE(d.payload->'clip_captions'=CAST('true' AS jsonb),false))
             AND (
@@ -194,14 +195,21 @@ def admit_selection(c, job_id, day, planned_calls, daily_limit, max_runs, *, kin
         """), {"day": day}).scalar_one()
     if reserved + planned_calls > daily_limit:
         raise HTTPException(429, "Se alcanzó el presupuesto diario de solicitudes por IA. Podés intentarlo otro día.")
-    if kind == "publication_ai":
-        # Keep D03 reservations in the shared aggregate at admission. D02's
-        # unchanged quota query still counts them after restoring its runtime,
-        # even if that runtime later scrubs the D03 project and run documents.
+    if kind in {"publication_ai", "translation_ai"}:
+        # Original runtimes continue counting newer reservations after rollback
+        # or after a project and its run documents are scrubbed.
         c.execute(text("""
             INSERT INTO cloud_deleted_selection_calls(day_utc,planned) VALUES (CAST(CAST(:day AS text) AS date),:planned)
             ON CONFLICT (day_utc) DO UPDATE SET planned=cloud_deleted_selection_calls.planned+EXCLUDED.planned
             """), {"day": day, "planned": planned_calls})
+
+
+def translation_by_fingerprint(c, job_id, fingerprint):
+    return c.execute(text("""
+        SELECT id FROM cloud_documents
+        WHERE job_id=:j AND kind='translation_ai' AND payload->>'preview_fingerprint'=:f
+        ORDER BY updated_at DESC,id DESC LIMIT 1
+        """), {"j": job_id, "f": fingerprint}).scalar()
 
 
 def check_active_workspace(c, principal):
@@ -421,7 +429,7 @@ def worker_progress(job_id, kind, payload):
 
 def finish_task(task, payload, manifest):
     kind = "job" if task["kind"] == "process" else task["kind"]
-    if kind not in {"selection", "alignment", "publication_ai"}:
+    if kind not in {"selection", "alignment", "publication_ai", "translation_ai"}:
         public_beta_failure(payload)
     with get_engine().begin() as c:
         if kind == "alignment":
@@ -457,6 +465,8 @@ def mark_crashed(task):
             interrupt_selection(item)
         elif kind == "publication_ai":
             interrupt_publication(item)
+        elif kind == "translation_ai":
+            interrupt_translation(item)
         elif kind == "alignment":
             alignment_failure(item, "WORKER_INTERRUPTED")
         else:
@@ -476,3 +486,8 @@ def interrupt_selection(item):
 def interrupt_publication(item):
     item.update(status="failed", error_code="AI_TASK_INTERRUPTED", completed_at=time.time(),
                 error="La generación se interrumpió. Podés editar o conservar tus textos guardados.")
+
+
+def interrupt_translation(item):
+    item.update(status="failed", error_code="AI_TASK_INTERRUPTED", completed_at=time.time(),
+                error="La traducción se interrumpió. Podés seguir editando la variante manualmente.")

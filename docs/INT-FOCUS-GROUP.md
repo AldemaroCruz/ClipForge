@@ -63,6 +63,14 @@ Exportá con **Incrustar subtítulos** habilitado para ver el efecto en el MP4. 
 
 La aceptación comprobó el primer y el último término, las repeticiones, las pausas y la posición del texto en el editor y el MP4. Podés abrir las capturas y comparar las exportaciones con y sin resaltado. Los WAV conservan el audio para revisar la sincronía de oído. [Evidencia de E01](https://github.com/AldemaroCruz/ClipForge/actions/runs/46167894270/artifacts/15273392326)
 
+## Traducir subtítulos
+
+1. En el editor o en una tarjeta terminada, abrí **Traducir subtítulos**. Elegí la revisión fuente guardada y confirmá el idioma de sus subtítulos. Podés traducir de español a inglés o de inglés a español en recortes de 1 a 60 segundos.
+2. Abrí **Revisar texto y destino** para ver las frases que se enviarían. Autorizá el envío y pedí la traducción. El panel muestra si está en cola, en procesamiento o lista para revisar.
+3. Revisá nombres, cifras, negaciones y legibilidad. Corregí los campos y pulsá **Guardar como variante**. El original y la variante quedan disponibles en sus tarjetas o en el selector de borradores.
+4. La variante conserva el audio y los tiempos de la revisión fuente. El editor identifica los dos idiomas y mantiene estáticos los subtítulos traducidos. Podés usar los controles de estilo, el logo y el encuadre. La versión original conserva su resaltado.
+5. Exportá el MP4, SRT y VTT. Los archivos de la variante llevan el código del idioma. Seleccioná el original y la variante para incluirlos en el ZIP mixto. En **Preparar textos para publicar** podés reutilizar de forma explícita los textos de publicación del original en su idioma, o solicitar otros desde ese panel por separado.
+
 ## Base de continuidad y reversión de logos
 
 | Componente | Pin aceptado |

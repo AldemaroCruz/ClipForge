@@ -58,7 +58,7 @@ COPY app/cloud/ /app/app/cloud/
 COPY app/static/account.css app/static/account.html app/static/account.js app/static/auth.js \
      app/static/login.html app/static/recover.html app/static/recover.js \
      app/static/beta.html app/static/beta.css app/static/beta.js app/static/mvp.css app/static/mvp.js \
-     app/static/editorial.js app/static/logos.js app/static/transcript.js app/static/publication.js /app/app/static/
+     app/static/editorial.js app/static/logos.js app/static/transcript.js app/static/publication.js app/static/translation.js /app/app/static/
 RUN --network=none --mount=type=bind,source=debs,target=/debs <<'FONT'
 set -eu
 entry="$(awk '$1 == "fonts-dejavu-core" { print $4, $5; found++ } END { if (found != 1) exit 1 }' \

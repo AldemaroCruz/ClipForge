@@ -27,6 +27,7 @@
   let previewEnd = null;
   let pollTimer = null;
   let exportSignature = "";
+  let focusedExport = null;
 
   function disableControls(disabled) {
     controls.forEach(control => { control.disabled = disabled; });
@@ -43,6 +44,7 @@
     }
     results.replaceChildren();
     exportSignature = "";
+    focusedExport = null;
     form.reset();
     status.textContent = "";
     disableControls(true);
@@ -111,6 +113,12 @@
         }
         const publication = window.ClipForgePublication?.action(id, item.archive_selection, "Clip manual");
         if (publication) links.append(publication);
+        if (item.cues?.length && item.archive_selection) {
+          const translation = window.ClipForgeTranslation?.button(id, {
+            kind: "export", id: item.id, revision: Number(item.archive_selection.split(":").at(-1)),
+          });
+          if (translation) links.append(translation);
+        }
         article.append(player, links);
         const include = zip?.includeExport(id, "manual", item.id, "clip manual " + range);
         if (include) article.append(include);
@@ -127,6 +135,23 @@
       }
       return article;
     }));
+    showFocusedExport();
+  }
+
+  function showFocusedExport() {
+    if (!focusedExport) return;
+    const card = [...results.children].find(element => element.dataset.exportId === focusedExport);
+    if (!card) return;
+    focusedExport = null;
+    card.scrollIntoView({block: "nearest"});
+    card.querySelector("button[data-subtitle-translation]")?.focus({preventScroll: true});
+  }
+
+  function focusExport(id, exportId) {
+    if (id !== jobId) return;
+    focusedExport = exportId;
+    details.open = true;
+    showFocusedExport();
   }
 
   async function refreshExports(id, view) {
@@ -252,5 +277,5 @@
     }
   });
 
-  window.ClipForgeMvp = {selectJob};
+  window.ClipForgeMvp = {selectJob, focusExport};
 })();

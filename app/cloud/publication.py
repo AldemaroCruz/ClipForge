@@ -135,6 +135,10 @@ def _cues(rows, duration):
     return result
 
 
+def content_hash(original, start, end, captions, transcript=None):
+    return digest([original, float(start), float(end), captions if captions else {"source_transcript": transcript or {}}])
+
+
 def _resolve(connection, job, selection, workspace):
     # The archive resolver enforces the same completed/current media boundary.
     from . import clip_package
@@ -165,6 +169,7 @@ def _resolve(connection, job, selection, workspace):
         origin = item.get("selection_origin", {})
         if origin.get("mode") == "transcript":
             kind = "transcript"
+    translation_origin = item.get("translation_origin", {})
     for asset_kind, value in assets.items():
         clip_package._validate_object(value, asset_kind, f"workspaces/{workspace}/jobs/{job_id}/")
     try:
@@ -182,20 +187,23 @@ def _resolve(connection, job, selection, workspace):
             transcript = {key.removeprefix("transcript_"): value for key, value in transcript.items()}
         compatible_transcript = bool(transcript) and transcript == _asset(manifest.get("transcript.json", {}))
         context = "subtitles" if captions else "transcript" if compatible_transcript else None
-        language = project.get("language") or "auto"
+        language = translation_origin.get("target_language") or project.get("language") or "auto"
         language = language.lower() if re.fullmatch(LANGUAGE, language) else "auto"
         identity = {"selection": selection, "source": original, "start": start, "end": end,
                     "transcript": transcript, "media": {name: _asset(value) for name, value in assets.items()}}
         for key in ("transcript_version", "alignment_sha256", "alignment_generation", "draft_revision"):
             if (value := origin.get(key, item.get(key))) is not None:
                 identity[key] = value
-        content = digest([original, start, end, captions if captions else {"source_transcript": transcript}])
+        content = content_hash(original, start, end, captions, transcript)
     except (KeyError, TypeError, ValueError, OverflowError):
         raise HTTPException(409, "La fuente de esta exportación no se pudo verificar.") from None
     target = {"kind": kind, "title": plain_text(title)[:120] if isinstance(title, str) else "",
               "title_source": "automatic_title" if chosen.filename else "export_title", "language": language,
               "start": start, "end": end, "has_content": context is not None, "context_source": context}
-    return {"target": target, "binding": identity, "content_sha256": content, "cues": captions}
+    resolved = {"target": target, "binding": identity, "content_sha256": content, "cues": captions}
+    if translation_origin:
+        resolved["translation_source_content_sha256"] = translation_origin["source_content_sha256"]
+    return resolved
 
 
 def _by_selection(connection, job_id, selection):
@@ -217,6 +225,10 @@ def _current_saved(connection, job_id, selection, resolved):
     if saved and saved["content_sha256"] != resolved["content_sha256"]:
         raise HTTPException(409, "Cambió el contenido guardado de esta exportación. Actualizá la lista.")
     return saved
+
+
+def _reusable(source, resolved):
+    return source["content_sha256"] in {resolved["content_sha256"], resolved.get("translation_source_content_sha256")}
 
 
 def index(job_id, principal):
@@ -243,8 +255,14 @@ def read(job_id, selection, principal):
         suggestions = [row["payload"] for row in repo.list_documents(job_id, SUGGESTION, connection)
                        if row["payload"]["selection"] == selection
                        and row["payload"]["content_sha256"] == resolved["content_sha256"]]
-    reusable = [{key: row[key] for key in ("selection", "revision", "title")} for row in previous
-                if row["selection"] != selection and row["content_sha256"] == resolved["content_sha256"]]
+    reusable = []
+    for row in previous:
+        if row["selection"] == selection or not _reusable(row, resolved):
+            continue
+        entry = {key: row[key] for key in ("selection", "revision", "title")}
+        if row["content_sha256"] != resolved["content_sha256"]:
+            entry.update(language=row["language"], translated_subtitles=True)
+        reusable.append(entry)
     suggestion = max(suggestions, key=lambda row: (row["created_at"], row["id"])) if suggestions else None
     return {"selection": selection, "target": resolved["target"], "content_sha256": resolved["content_sha256"],
             "saved": saved, "suggestion": suggestion, "reusable": reusable, "provider": editorial_selection.config_status()}
@@ -382,10 +400,12 @@ def reuse(job_id, payload, principal):
         resolved = _resolve(connection, job, payload.selection, principal.workspace_id)
         source = saved_for_selection(connection, job_id, payload.source_selection)
         if (not source or payload.source_selection == payload.selection or source["revision"] != payload.source_revision
-                or source["content_sha256"] != resolved["content_sha256"]):
-            raise HTTPException(409, "Los textos sólo se pueden reutilizar en una exportación con el mismo contenido.")
+                or not _reusable(source, resolved)):
+            raise HTTPException(409, "Los textos se pueden reutilizar en una exportación con el mismo contenido o en su traducción vinculada.")
         fields = {key: source[key] for key in ("language", "title", "description", "hashtags")}
         fields["reused_from"] = {key: source[key] for key in ("selection", "revision", "content_sha256")}
+        if source["content_sha256"] != resolved["content_sha256"]:
+            fields["reused_from"]["translated_subtitles"] = True
         return _save(connection, job_id, resolved, payload.revision, fields)
 
 

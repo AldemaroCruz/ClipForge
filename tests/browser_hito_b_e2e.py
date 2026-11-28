@@ -74,6 +74,9 @@ class BrowserHitoBTest(unittest.TestCase):
                       "range_posts": [], "draft_updates": [], "approved": {},
                       "caption": None, "project_caption": None, "caption_updates": [], "deletions": [],
                       "highlight_requests": [], "highlight_available": True,
+                      "translation_sources": [], "translation_source_cues": [], "translation_runs": {},
+                      "translation_previews": [], "translation_requests": [], "translation_writes": [],
+                      "translated_drafts": {},
                       "publications": {}, "publication_writes": [], "publication_previews": [], "publication_requests": [],
                       "saved_style": None, "framing_source": None, "source_reads": 0,
                       "zip_requests": [], "zip_stale": False, "logo": None, "logo_versions": {}}
@@ -97,7 +100,7 @@ class BrowserHitoBTest(unittest.TestCase):
         assets = {"beta.js": "text/javascript", "auth.js": "text/javascript", "logos.js": "text/javascript",
                   "mvp.js": "text/javascript", "editorial.js": "text/javascript", "mvp.css": "text/css",
                   "beta.css": "text/css", "account.css": "text/css", "transcript.js": "text/javascript",
-                  "publication.js": "text/javascript"}
+                  "publication.js": "text/javascript", "translation.js": "text/javascript"}
         if path == "/":
             route.fulfill(status=200, content_type="text/html", headers={"Content-Security-Policy": CSP},
                           body=(STATIC / "beta.html").read_bytes())
@@ -347,6 +350,8 @@ class BrowserHitoBTest(unittest.TestCase):
             return {"saved": []}, 200
         if path.startswith(f"/jobs/{JOB}/publication"):
             return self.publication_api(path.removeprefix(f"/jobs/{JOB}/publication"), request)
+        if path.startswith(f"/jobs/{JOB}/subtitle-translations"):
+            return self.translation_api(path.removeprefix(f"/jobs/{JOB}/subtitle-translations"), request)
         if path == f"/jobs/{JOB}/transcript-selection" and method == "GET":
             return self.state["transcript_timeline"], 200
         if path == f"/jobs/{JOB}/transcript-selection/prepare" and method == "POST":
@@ -444,7 +449,8 @@ class BrowserHitoBTest(unittest.TestCase):
                                         cues=self.cue_fixture()), 201
         if path == f"/jobs/{JOB}/drafts":
             if method == "GET":
-                return {"drafts": [self.state["draft"]] if self.state["draft"] else []}, 200
+                source = [self.state["draft"]] if self.state["draft"] else []
+                return {"drafts": list(self.state["translated_drafts"].values()) + source}, 200
             self.assertTrue(request.headers.get("idempotency-key", "").startswith("manual-draft-"))
             return self.store_draft(**request.post_data_json), 201
         if path == f"/jobs/{JOB}/drafts/{DRAFT}":
@@ -455,6 +461,16 @@ class BrowserHitoBTest(unittest.TestCase):
                 self.state["draft"].update({**updated, "revision": updated["revision"] + 1})
                 self.apply_mock_style(self.state["draft"], updated, "options")
             return self.state["draft"], 200
+        if path.startswith(f"/jobs/{JOB}/drafts/") and path.rsplit("/", 1)[-1] in self.state["translated_drafts"]:
+            draft = self.state["translated_drafts"][path.rsplit("/", 1)[-1]]
+            if method == "PUT":
+                updated = request.post_data_json
+                self.state["draft_updates"].append(updated)
+                self.assertEqual(draft["revision"], updated["revision"])
+                draft.update({**updated, "revision": updated["revision"] + 1})
+                self.apply_mock_style(draft, updated, "options")
+                draft["options"]["subtitle_highlight_enabled"] = False
+            return draft, 200
         if path == f"/jobs/{JOB}/drafts/{DRAFT}/exports" and method == "POST":
             revision = request.post_data_json["revision"]
             self.assertEqual(f"approved-{DRAFT}-{revision}", request.headers.get("idempotency-key"))
@@ -504,6 +520,46 @@ class BrowserHitoBTest(unittest.TestCase):
             return record["saved"], 200
         self.state["unexpected"].append(suffix)
         return {}, 404
+
+    def translation_api(self, suffix, request):
+        runs = self.state["translation_runs"]
+        sources = self.state["translation_sources"]
+        cues = self.state["translation_source_cues"]
+        if request.method == "GET":
+            if suffix:
+                return runs[suffix.removeprefix("/")], 200
+            return {"sources": sources, "runs": list(runs.values()),
+                    "provider": {"configured": True, "provider": "openai"}}, 200
+        body = request.post_data_json
+        if suffix == "/preview":
+            self.state["translation_previews"].append(body)
+            return {"preview_fingerprint": "a" * 64, "provider": "openai", "model": "fixture-model",
+                    "endpoint": "https://example.test/translation", "system_instructions": "Conservá el orden.",
+                    "text_to_send": json.dumps({"cues": [{key: cue[key] for key in ("id", "text")} for cue in cues]},
+                                               ensure_ascii=False)}, 200
+        if suffix == "":
+            self.state["translation_requests"].append(body)
+            key = "8" * 32
+            source = next(source for source in sources if all(source[k] == v for k, v in body["source"].items()))
+            run = runs.setdefault(key, {"id": key, "source": source, "source_cues": cues, "cues": [],
+                                       "source_language": body["source_language"], "target_language": body["target_language"],
+                                       "audio_language": source["audio_language"], "status": "queued", "saved_draft": None})
+            if self.state.get("interrupt_translation") and len(self.state["translation_requests"]) == 1:
+                return {"detail": "Respuesta interrumpida."}, 503
+            return run, 202
+        key = suffix.split("/")[1]
+        run = runs[key]
+        self.state["translation_writes"].append(body)
+        self.assertEqual([cue["id"] for cue in cues], [cue["id"] for cue in body["cues"]])
+        origin = {field: run[field] for field in ("source", "source_language", "target_language", "audio_language")}
+        draft = {"id": key, "title": "Variante guardada", "revision": 1, "start": run["source"]["start"],
+                 "end": run["source"]["end"], "options": {"burn_subtitles": True, "subtitle_highlight_enabled": False},
+                 "cues": [{**{name: cue[name] for name in ("start", "end")}, "text": translated["text"]}
+                          for cue, translated in zip(cues, body["cues"], strict=True)],
+                 "translation_origin": {**origin, "run_id": key, "cue_ids": [cue["id"] for cue in cues]}}
+        runs[key]["saved_draft"] = {"id": key, "revision": 1}
+        self.state["translated_drafts"][key] = draft
+        return draft, 201
 
     def apply_mock_style(self, destination, update, key):
         if "logo" in update:
@@ -867,6 +923,127 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertTrue(self.page.locator("#publication-dialog").evaluate(
             "dialog => dialog.clientWidth >= dialog.scrollWidth && dialog.getBoundingClientRect().right <= innerWidth"))
         self.assertEqual(2, len(self.state["publication_requests"]))
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
+    def test_translation_pins_saved_source_and_keeps_independent_manual_variant(self):
+        cues = [{"start": .2, "end": 2, "text": "Eva no vio tres cajas."},
+                {"start": 2.4, "end": 5.6, "text": "Cada caja pesaba cuatro kilos."}]
+        self.store_draft(title="Fuente guardada", start=20, end=28, cues=cues,
+                         options={"burn_subtitles": True, "subtitle_highlight_enabled": True})
+        descriptor = {"kind": "draft", "id": DRAFT, "revision": 1, "title": "Fuente guardada",
+                      "start": 20, "end": 28, "audio_language": "es", "subtitle_language": "es", "cue_count": 2}
+        self.state.update(status="completed", translation_sources=[descriptor], interrupt_translation=True,
+                          translation_source_cues=[{"id": f"c{i}", **cue} for i, cue in enumerate(cues, 1)])
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        self.page.locator("#editorial-heading").click()
+        source_text = self.page.locator("#editorial-cues textarea").first
+        expect(source_text).to_have_value(cues[0]["text"])
+        source_text.fill("Cambio sin guardar")
+        self.page.locator("#editorial-translate").click()
+        expect(self.page.locator("#translation-source-note")).to_contain_text("cambios sin guardar")
+        expect(self.page.locator("#translation-source-detail")).to_contain_text("Revisión guardada 1")
+        expect(self.page.locator("#translation-audio-language")).to_contain_text("Español")
+        self.assertEqual([], self.state["translation_requests"])
+        self.page.locator("#translation-preview").click()
+        expect(self.page.locator("#translation-payload")).to_contain_text("Eva no vio tres cajas.")
+        expect(self.page.locator("#translation-payload")).not_to_contain_text("Cambio sin guardar")
+        run_button = self.page.locator("#translation-run")
+        expect(run_button).to_be_disabled()
+        consent = self.page.locator("#translation-consent")
+        consent.check()
+        self.page.locator("#translation-target-language").select_option("es")
+        expect(self.page.locator("#translation-consent-panel")).to_be_hidden()
+        expect(self.page.locator("#translation-preview")).to_be_disabled()
+        expect(self.page.locator("#translation-language-note")).to_contain_text("distinto del idioma fuente")
+        self.page.locator("#translation-target-language").select_option("en")
+        self.page.locator("#translation-preview").click()
+        consent.check()
+        run_button.click()
+        expect(self.page.locator("#translation-status")).to_contain_text("Respuesta interrumpida")
+        run_button.click()
+        expect(self.page.locator("#translation-run-summary")).to_contain_text("en cola")
+        first, replay = self.state["translation_requests"]
+        self.assertEqual(first, replay)
+        self.assertEqual({"kind": "draft", "id": DRAFT, "revision": 1}, first["source"])
+        self.assertEqual(("es", "en", True), (first["source_language"], first["target_language"], first["consent"]))
+        self.page.locator("#translation-manual").click()
+        fields = self.page.locator("#translation-cues textarea")
+        fields.nth(0).fill("Eva did not see three boxes.")
+        fields.nth(1).fill("Each box weighed four kilograms.")
+        run = self.state["translation_runs"]["8" * 32]
+        run.update(status="completed", cues=[{**cue, "text": "Sugerencia tardía."} for cue in run["source_cues"]])
+        expect(self.page.locator("#translation-use-result")).to_be_visible(timeout=8000)
+        expect(fields.nth(0)).to_have_value("Eva did not see three boxes.")
+        self.page.locator("#translation-save").click()
+        expect(self.page.locator("#translation-run-summary")).to_contain_text("Variante guardada")
+        expect(self.page.locator("#translation-unapplied")).to_be_visible()
+        expect(self.page.locator("#translation-unapplied-cues")).to_contain_text("Sugerencia tardía.")
+        self.assertEqual([{"cues": [{"id": "c1", "text": "Eva did not see three boxes."},
+                                    {"id": "c2", "text": "Each box weighed four kilograms."}]}],
+                         self.state["translation_writes"])
+        self.page.once("dialog", lambda dialog: dialog.accept())
+        self.page.locator("#translation-open").click()
+        original = self.page.locator("#editorial-translation-origin")
+        expect(original).to_contain_text("Audio original · Español · Subtítulos traducidos · Inglés")
+        expect(self.page.locator("#editorial-highlight-limitation")).to_be_visible()
+        highlight = self.page.locator("#editorial-highlight-enabled")
+        expect(highlight).not_to_be_checked()
+        expect(highlight).to_be_disabled()
+        expect(self.page.locator("#editorial-start")).to_be_disabled()
+        expect(self.page.locator('#editorial-cues [data-field="start"]').first).to_be_disabled()
+        expect(source_text).to_have_value("Eva did not see three boxes.")
+        source_text.fill("Eva did not see three crates.")
+        self.page.locator("#editorial-save").click()
+        expect(self.page.locator("#editorial-draft-status")).to_contain_text("Borrador guardado")
+        self.page.reload()
+        self.page.locator("#editorial-heading").click()
+        expect(source_text).to_have_value("Eva did not see three crates.")
+        expect(highlight).to_be_disabled()
+        self.page.locator("#editorial-translation-source").click()
+        expect(source_text).to_have_value(cues[0]["text"])
+        expect(highlight).to_be_checked()
+        self.assertEqual([], self.state["selection_posts"])
+        self.assertEqual([], self.state["publication_requests"])
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
+    def test_translation_export_source_in_narrow_view_warns_without_truncating(self):
+        export_id = "5" * 32
+        cues = [{"start": 0, "end": 2, "text": "Riley did not order five liters."}]
+        source = {"kind": "export", "id": export_id, "revision": 4, "title": "Saved English export",
+                  "start": 222, "end": 229, "audio_language": "en", "subtitle_language": "en", "cue_count": 1}
+        run_id = "8" * 32
+        annotation = "La persona responsable no solicitó cinco litros para el inventario de esta semana."
+        source_cues = [{"id": "c1", **cues[0]}]
+        self.state.update(status="completed", translation_sources=[source], translation_source_cues=source_cues,
+                          approved={4: {"id": export_id, "title": source["title"], "draft_id": DRAFT,
+                                        "draft_revision": 1, "status": "completed", "options": {}, "cues": cues,
+                                        "archive_selection": f"export:{export_id}:4", "archive_files": ["mp4", "srt", "vtt"]}},
+                          translation_runs={run_id: {"id": run_id, "source": source, "status": "completed",
+                                                     "source_language": "en", "target_language": "es",
+                                                     "audio_language": "en", "saved_draft": None,
+                                                     "source_cues": source_cues,
+                                                     "cues": [{**source_cues[0], "text": annotation, "overflow": True}]}})
+        self.page.set_viewport_size({"width": 375, "height": 760})
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        self.page.locator("#editorial-heading").click()
+        card = self.page.locator(f'[data-export-id="{export_id}"]')
+        card.get_by_role("button", name="Traducir subtítulos", exact=True).click()
+        expect(self.page.locator("#translation-source-detail")).to_contain_text("Revisión guardada 4")
+        expect(self.page.locator("#translation-audio-language")).to_contain_text("Inglés")
+        expect(self.page.locator("#translation-target-language")).to_have_value("es")
+        cue = self.page.locator('[data-translation-cue="c1"]')
+        expect(cue).to_have_value(annotation)
+        warning = self.page.locator(".translation-warning")
+        expect(warning).to_be_visible()
+        self.assertTrue(self.page.locator("#translation-dialog").evaluate(
+            "panel => panel.getBoundingClientRect().right <= innerWidth && panel.scrollWidth <= panel.clientWidth + 1"))
+        cue.fill("Riley no pidió cinco litros.")
+        expect(warning).to_be_hidden()
+        self.page.locator("#translation-save").click()
+        expect(self.page.locator("#translation-open")).to_be_visible()
+        self.assertEqual([], self.state["translation_requests"])
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])
 

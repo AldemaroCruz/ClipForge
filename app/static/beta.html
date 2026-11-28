@@ -14,6 +14,7 @@
   <script src="/static/editorial.js" defer></script>
   <script src="/static/transcript.js" defer></script>
   <script src="/static/publication.js" defer></script>
+  <script src="/static/translation.js" defer></script>
   <script src="/static/beta.js" defer></script>
 </head>
 <body class="beta">
@@ -238,6 +239,7 @@
               <fieldset id="editorial-draft-fields">
                 <legend>Editar borrador</legend>
                 <p id="editorial-transcript-origin" class="muted" hidden></p>
+                <p id="editorial-translation-origin" class="muted" hidden></p>
                 <label for="editorial-title">Título del clip</label>
                 <input type="text" id="editorial-title" maxlength="120" required>
                 <div class="mvp-range">
@@ -320,6 +322,7 @@
                   <div><label for="editorial-edge">Grosor del contorno</label><input type="number" id="editorial-edge" min="0" max="12" step="1" value="3" required></div>
                 </div>
                 <label class="editorial-check"><input type="checkbox" id="editorial-highlight-enabled">Resaltar palabra actual</label>
+                <p id="editorial-highlight-limitation" class="muted" hidden>El resaltado por palabra usa las marcas del audio original. Los subtítulos traducidos se exportan estáticos.</p>
                 <div id="editorial-highlight-colors" class="caption-highlight-colors" hidden>
                   <div class="caption-color-inputs">
                     <div><label for="editorial-highlight-color">Color de la palabra resaltada</label><input type="color" id="editorial-highlight-color" value="#ffff00" disabled></div>
@@ -347,6 +350,8 @@
                 <p id="editorial-revision" class="muted"></p>
                 <div class="actions">
                   <button type="submit" id="editorial-save" class="secondary">Guardar borrador</button>
+                  <button type="button" id="editorial-translate" class="secondary">Traducir subtítulos</button>
+                  <button type="button" id="editorial-translation-source" class="secondary" hidden>Volver a la versión original</button>
                   <button type="button" id="editorial-export">Aprobar y exportar</button>
                 </div>
               </fieldset>
@@ -439,6 +444,63 @@
     </div>
     <p class="status beta-message" role="status" data-style-field="status"></p>
   </template>
+  <dialog id="translation-dialog" class="panel beta-dialog" aria-labelledby="translation-heading">
+    <div class="beta-panel-heading">
+      <h2 id="translation-heading">Traducir subtítulos</h2>
+      <button id="translation-close" type="button" class="secondary">Cerrar traducción</button>
+    </div>
+    <p id="translation-status" class="status beta-message" role="status"></p>
+    <section id="translation-workspace" hidden>
+      <label for="translation-source">Revisión fuente</label>
+      <select id="translation-source"></select>
+      <p id="translation-source-detail" class="muted"></p>
+      <p id="translation-source-note" class="muted" hidden></p>
+      <p id="translation-audio-language"></p>
+      <div class="mvp-range">
+        <div><label for="translation-source-language">Idioma de los subtítulos fuente</label>
+          <select id="translation-source-language"><option value="">Elegí el idioma</option><option value="es">Español</option><option value="en">Inglés</option></select>
+        </div>
+        <div><label for="translation-target-language">Idioma de los subtítulos traducidos</label>
+          <select id="translation-target-language"><option value="">Elegí el idioma</option><option value="es">Español</option><option value="en">Inglés</option></select>
+        </div>
+      </div>
+      <p id="translation-language-note" class="status beta-message" role="status"></p>
+      <p class="muted">El audio y los tiempos se conservan. La variante usa subtítulos estáticos. Podés preparar los textos de publicación por separado.</p>
+      <div class="actions">
+        <button id="translation-preview" type="button" class="secondary">Revisar texto y destino</button>
+        <button id="translation-refresh" type="button" class="secondary">Actualizar traducciones</button>
+      </div>
+      <section id="translation-consent-panel" class="editorial-review" aria-labelledby="translation-consent-heading" hidden>
+        <h3 id="translation-consent-heading">Autorizar esta traducción</h3>
+        <p id="translation-destination"></p>
+        <p>El proveedor recibe los subtítulos de esta revisión con sus identificadores. El video y el audio permanecen en ClipForge.</p>
+        <details><summary>Ver texto que se enviará</summary><pre id="translation-payload"></pre></details>
+        <details><summary>Ver instrucciones del proveedor</summary><pre id="translation-system-instructions"></pre></details>
+        <label class="beta-check"><input type="checkbox" id="translation-consent">Revisé el texto y el destino y autorizo esta traducción.</label>
+        <button id="translation-run" type="button" disabled>Solicitar traducción</button>
+      </section>
+      <div id="translation-history" hidden>
+        <label for="translation-runs">Traducciones guardadas</label>
+        <select id="translation-runs"></select>
+      </div>
+      <section id="translation-result" aria-labelledby="translation-result-heading" hidden>
+        <h3 id="translation-result-heading">Subtítulos de la variante</h3>
+        <p id="translation-run-summary" class="muted"></p>
+        <div id="translation-cues"></div>
+        <div class="actions">
+          <button id="translation-manual" type="button" class="secondary" hidden>Empezar una traducción manual</button>
+          <button id="translation-use-result" type="button" class="secondary" hidden>Usar la sugerencia recibida</button>
+          <button id="translation-save" type="button" hidden>Guardar como variante</button>
+          <button id="translation-open" type="button" hidden>Abrir variante guardada</button>
+        </div>
+        <details id="translation-unapplied" hidden>
+          <summary>Ver sugerencia recibida</summary>
+          <p>Esta sugerencia se conserva junto a la versión que guardaste.</p>
+          <ol id="translation-unapplied-cues"></ol>
+        </details>
+      </section>
+    </section>
+  </dialog>
   <dialog id="publication-dialog" class="panel beta-dialog" aria-labelledby="publication-heading">
     <div class="beta-panel-heading">
       <h2 id="publication-heading">Preparar textos para publicar</h2>

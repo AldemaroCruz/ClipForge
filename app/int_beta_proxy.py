@@ -24,7 +24,7 @@ REQUEST_SIZE = 32 * 1024
 LOGO_REQUEST_SIZE = 5 * 1024 * 1024
 ASSETS = frozenset({
     "account.css", "account.js", "auth.js", "recover.js", "beta.css", "beta.js", "mvp.css", "mvp.js", "editorial.js",
-    "caption-font.ttf", "caption-font-license.txt", "logos.js", "transcript.js", "publication.js",
+    "caption-font.ttf", "caption-font-license.txt", "logos.js", "transcript.js", "publication.js", "translation.js",
 })
 STATIC = Path(__file__).with_name("static")
 JOB = r"[a-f0-9]{32}"
@@ -45,6 +45,7 @@ ROUTES = {
         rf"/jobs/{JOB}/(?:selections(?:/context|/{JOB})?|drafts(?:/{JOB})?|deletion)",
         rf"/jobs/{JOB}/transcript-selection",
         rf"/jobs/{JOB}/publication(?:/file)?",
+        rf"/jobs/{JOB}/subtitle-translations(?:/{JOB})?",
         rf"/jobs/{JOB}/clips/{CLIP}/(?:captions|subtitles/(?:srt|vtt))",
     ),
     "POST": (
@@ -57,6 +58,7 @@ ROUTES = {
         rf"/jobs/{JOB}/transcript-selection/(?:prepare|drafts)",
         rf"/jobs/{JOB}/caption-highlight",
         rf"/jobs/{JOB}/publication/(?:preview|suggestions|reuse)",
+        rf"/jobs/{JOB}/subtitle-translations(?:/preview|/{JOB}/draft)?",
         rf"/jobs/{JOB}/exports/{JOB}/retry",
         rf"/jobs/{JOB}/(?:selections(?:/preview|/{JOB}/candidates/[1-5]/draft)?|drafts(?:/{JOB}/exports)?|deletion)",
         rf"/jobs/{JOB}/clips/{CLIP}/captions/retry",
