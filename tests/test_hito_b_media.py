@@ -219,14 +219,14 @@ class PilotMediaTests(TestCase):
 
     def test_transcription_input_is_bounded_pcm_and_temp_file_is_removed(self):
         with TemporaryDirectory() as temporary, patch.dict(os.environ, {"CLIPFORGE_DATA_DIR": temporary}):
-            from app import main
+            from app import transcribe
 
             def decode(*args):
                 args[-1].write_bytes(bytes.fromhex("008000000040"))
 
-            with patch.object(main, "run_ffmpeg", side_effect=decode) as run:
+            with patch.object(transcribe, "run_ffmpeg", side_effect=decode) as run:
                 source = Path(temporary) / "input.mp4"
-                samples = main._beta_audio(source)
+                samples = transcribe.beta_audio(source)
                 self.assertEqual(samples.dtype.name, "float32")
                 self.assertEqual(samples.tolist(), [-1.0, 0.0, 0.5])
                 command = run.call_args.args
@@ -239,20 +239,20 @@ class PilotMediaTests(TestCase):
 
     def test_audio_budget_exhaustion_fails_before_passing_truncated_pcm_to_asr(self):
         with TemporaryDirectory() as temporary, patch.dict(os.environ, {"CLIPFORGE_DATA_DIR": temporary}):
-            from app import main
+            from app import transcribe
             from app.cloud import config
 
             def decode(*args):
                 args[-1].write_bytes(bytes(args[args.index("-fs") + 1]))
 
             with (patch.object(config, "BETA_MAX_SECONDS", 1),
-                  patch.object(main, "run_ffmpeg", side_effect=decode),
+                  patch.object(transcribe, "run_ffmpeg", side_effect=decode),
                   self.assertRaises(media.MediaValidationError) as rejected):
-                main._beta_audio(Path(temporary) / "input.mp4")
+                transcribe.beta_audio(Path(temporary) / "input.mp4")
             self.assertEqual(rejected.exception.code, "VIDEO_OUTSIDE_LIMITS")
 
     def test_beta_transcript_and_clip_use_the_original_timeline(self):
-        from app import main
+        from app import main, transcribe
 
         job = {"id": JOB}
         source = {"duration_seconds": 1200, "video_streams": 1, "audio_streams": 1, "video_stream_index": 0}
@@ -268,10 +268,10 @@ class PilotMediaTests(TestCase):
             TemporaryDirectory() as temporary,
             patch.dict("sys.modules", {"faster_whisper": whisper}),
             patch.object(main, "ROOT", Path(temporary)),
-            patch.object(main, "resolve_model", return_value="test-model"),
+            patch.object(transcribe, "resolve_model", return_value="test-model"),
             patch.object(main, "load_job", return_value=job),
             patch.object(main, "persist"),
-            patch.object(main, "_beta_audio", return_value=range(1200 * 16000)),
+            patch.object(transcribe, "beta_audio", return_value=range(1200 * 16000)),
             patch.object(main, "write_json_atomic") as write,
             patch.object(main, "render_clip") as render,
         ):
@@ -279,6 +279,7 @@ class PilotMediaTests(TestCase):
 
         self.assertEqual((job["status"], job["analysis_seconds"], job["speech_until_seconds"]),
                          ("completed", 1200.0, 1200.0))
+        self.assertTrue(model.transcribe.call_args.kwargs["word_timestamps"])
         self.assertEqual(write.call_args.args[1], [
             {"start": 1174.0, "end": 1185.0, "text": "comienza el último fragmento"},
             {"start": 1185.0, "end": 1200.0, "text": "llega al final del video"},

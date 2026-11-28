@@ -807,7 +807,7 @@ jobs:
               app/cloud/dispatch.py|app/cloud/migrate_beta.py|app/cloud/migrate_transcript_alignment.py|app/cloud/repository.py|app/cloud/router.py|app/cloud/transcript_selection.py|app/cloud/worker.py|app/cloud/worker_measurements.py) ;;
               app/static/beta.html|app/static/beta.js|app/static/beta.css|app/static/editorial.js|app/static/mvp.css|app/static/transcript.js) ;;
               scripts/deploy_int_beta.sh|scripts/int_hito_b_browser.py|scripts/int_hito_c_styles_evidence.py|scripts/int_hito_d02_browser.py) ;;
-              tests/browser_hito_b_e2e.py|tests/test_hito_b_proxy.py|tests/test_transcript_selection.py|tests/test_transcript_processing.py) ;;
+              tests/browser_hito_b_e2e.py|tests/test_hito_b_media.py|tests/test_hito_b_proxy.py|tests/test_transcript_selection.py|tests/test_transcript_processing.py) ;;
               *) printf 'Outside the D00/D02 release scope: %s\n' "$path" >&2; exit 1 ;;
             esac
           done
