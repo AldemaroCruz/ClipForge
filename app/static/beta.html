@@ -94,6 +94,7 @@
             <section id="clip-caption-sample" class="caption-sample" aria-labelledby="clip-caption-sample-heading" hidden>
               <h4 id="clip-caption-sample-heading">Vista previa del subtítulo</h4>
               <div class="caption-frame"><span></span></div>
+              <p class="muted caption-export-note" hidden>Activa «Incrustar subtítulos en el MP4» para incluir este estilo en el video.</p>
             </section>
             <fieldset id="clip-caption-fields" class="beta-caption-fields">
               <legend id="clip-caption-legend">Estilo y sincronización</legend>
@@ -101,10 +102,17 @@
                 <label class="beta-check"><input type="checkbox" id="clip-caption-burn">Incrustar subtítulos en el MP4</label>
                 <div class="mvp-range">
                   <div><label for="clip-caption-size">Tamaño del texto</label><input type="number" id="clip-caption-size" min="24" max="120" step="1" value="52" required></div>
-                  <div><label for="clip-caption-color">Color del texto</label><input type="color" id="clip-caption-color" value="#ffffff"></div>
+                  <div class="caption-color">
+                    <div class="caption-color-inputs">
+                      <div><label for="clip-caption-color">Color del texto</label><input type="color" id="clip-caption-color" value="#ffffff"></div>
+                      <div><label for="clip-caption-color-hex">Color HEX</label><input type="text" id="clip-caption-color-hex" value="#FFFFFF" spellcheck="false" required aria-describedby="clip-caption-color-error"></div>
+                    </div>
+                    <p id="clip-caption-color-error" class="status beta-message caption-color-error" role="status" hidden>Escribe # seguido de seis dígitos hexadecimales, por ejemplo #FF0000.</p>
+                  </div>
                   <div><label for="clip-caption-position">Posición</label><select id="clip-caption-position"><option value="bottom">Abajo</option><option value="center">Centro</option><option value="top">Arriba</option></select></div>
                   <div><label for="clip-caption-edge">Grosor del contorno</label><input type="number" id="clip-caption-edge" min="0" max="12" step="1" value="3" required></div>
                 </div>
+                <button id="clip-caption-save-style" class="secondary caption-save-style" type="button" aria-controls="clip-caption-styles">Guardar como estilo</button>
               </div>
               <details id="clip-caption-styles" class="caption-styles">
                 <summary>Estilos guardados</summary>
@@ -234,13 +242,21 @@
                 <label class="editorial-check"><input type="checkbox" id="editorial-burn">Incrustar subtítulos en el MP4</label>
                 <div class="mvp-range">
                   <div><label for="editorial-size">Tamaño del texto</label><input type="number" id="editorial-size" min="24" max="120" step="1" value="52" required></div>
-                  <div><label for="editorial-color">Color del texto</label><input type="color" id="editorial-color" value="#ffffff"></div>
+                  <div class="caption-color">
+                    <div class="caption-color-inputs">
+                      <div><label for="editorial-color">Color del texto</label><input type="color" id="editorial-color" value="#ffffff"></div>
+                      <div><label for="editorial-color-hex">Color HEX</label><input type="text" id="editorial-color-hex" value="#FFFFFF" spellcheck="false" required aria-describedby="editorial-color-error"></div>
+                    </div>
+                    <p id="editorial-color-error" class="status beta-message caption-color-error" role="status" hidden>Escribe # seguido de seis dígitos hexadecimales, por ejemplo #FF0000.</p>
+                  </div>
                   <div><label for="editorial-position">Posición</label><select id="editorial-position"><option value="bottom">Abajo</option><option value="center">Centro</option><option value="top">Arriba</option></select></div>
                   <div><label for="editorial-edge">Grosor del contorno</label><input type="number" id="editorial-edge" min="0" max="12" step="1" value="3" required></div>
                 </div>
+                <button id="editorial-save-style" class="secondary caption-save-style" type="button" aria-controls="editorial-styles">Guardar como estilo</button>
                 <section id="editorial-sample" class="caption-sample" aria-labelledby="editorial-sample-heading" hidden>
                   <h4 id="editorial-sample-heading">Vista previa del subtítulo</h4>
                   <div class="caption-frame"><span></span></div>
+                  <p class="muted caption-export-note" hidden>Activa «Incrustar subtítulos en el MP4» para incluir este estilo en el video.</p>
                 </section>
                 <details id="editorial-styles" class="caption-styles">
                   <summary>Estilos guardados</summary>

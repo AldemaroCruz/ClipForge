@@ -252,6 +252,7 @@ async function initBeta() {
     ? new BroadcastChannel("clipforge-beta-projects:" + user.id) : null;
   const clipLogos = logos.mount("clip-caption-logos", updateCaptionSample);
   const savedStyles = captionFields?.mountCaptionStyles("clip-caption-styles", {
+    createButton: caption("save-style"),
     style: () => captionFields.editorStyle(caption, captionView?.data?.style),
     snapshot: () => captionView?.data?.style_template,
     validateLogo: clipLogos.reportValidity,
@@ -533,7 +534,7 @@ async function initBeta() {
     if (!captionView?.data) return;
     const style = captionView.quick ? captionView.data.style : captionStyle(captionView);
     const logo = captionView.quick ? captionView.data.logo : clipLogos.read();
-    captionFields.showCaptionSample(caption("sample"), caption("cues"), style, logo);
+    captionFields.showCaptionSample(caption("sample"), caption("cues"), style, logo, !captionView.quick);
   }
 
   function quickCueRow(cue, index) {
@@ -984,12 +985,18 @@ async function initBeta() {
     event.preventDefault();
     void saveCaptions();
   });
+  function markCaptionEdited() {
+    if (!captionView) return;
+    captionView.dirty = true;
+    caption("downloads").hidden = true;
+  }
+  captionFields?.mountColorControls(caption, () => {
+    markCaptionEdited();
+    updateCaptionSample();
+  });
   caption("form").addEventListener("input", event => {
     if (event.target.closest("#clip-caption-styles")) return;
-    if (captionView) {
-      captionView.dirty = true;
-      caption("downloads").hidden = true;
-    }
+    markCaptionEdited();
     if (!event.target.closest(".creator-logo-controls")) updateCaptionSample();
   });
   captionFields?.trackCaptionCue(caption("cues"), updateCaptionSample);

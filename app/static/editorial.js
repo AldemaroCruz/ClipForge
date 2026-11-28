@@ -484,6 +484,7 @@
     let loaded = false;
     let busy = false;
     let pendingRefresh = false;
+    let creatingFromAppearance = false;
 
     const selected = () => styles.find(item => item.id === fields.select.value);
     const show = text => { fields.status.textContent = text; };
@@ -491,6 +492,7 @@
     function updateControls() {
       const item = selected();
       const enabled = loaded && !busy;
+      scope.createButton.disabled = busy;
       for (const name of ["select", "name", "font"]) fields[name].disabled = !enabled;
       for (const [name, button] of Object.entries(actions)) {
         button.disabled = !enabled || (name !== "create" && !item);
@@ -504,6 +506,12 @@
       fields.name.value = item?.name ?? "";
       if (item) fields.font.value = item.font;
       updateControls();
+    }
+
+    function focusNewStyle() {
+      fields.select.value = "";
+      selectStyle();
+      fields.name.focus();
     }
 
     async function refresh(expectedVersion, preferred = null, preserveDraft = false) {
@@ -578,12 +586,18 @@
         return;
       }
       const expectedVersion = version;
+      let focusName = false;
       busy = true;
       if (!background) show("");
       updateControls();
       try {
         if (action === "load") {
-          await refresh(expectedVersion, item?.id ?? null, background);
+          const creating = creatingFromAppearance;
+          await refresh(expectedVersion, creating ? "" : item?.id ?? null, background);
+          if (creating && expectedVersion === version && panel.open) {
+            creatingFromAppearance = false;
+            focusName = true;
+          }
         } else if (action === "apply" || action === "apply-all") {
           const applied = await (action === "apply" ? scope.apply(item) : scope.applyAll(item));
           if (applied && expectedVersion === version) show("Estilo aplicado.");
@@ -596,6 +610,7 @@
         if (expectedVersion === version) {
           busy = false;
           updateControls();
+          if (focusName) focusNewStyle();
           if (pendingRefresh) {
             pendingRefresh = false;
             if (panel.open) void run("load", true);
@@ -606,6 +621,15 @@
 
     panel.addEventListener("toggle", () => {
       if (panel.open) void run("load");
+    });
+    scope.createButton.addEventListener("click", () => {
+      if (panel.open && loaded) {
+        focusNewStyle();
+        return;
+      }
+      creatingFromAppearance = true;
+      if (panel.open) void run("load");
+      else panel.open = true;
     });
     document.addEventListener("clipforge-logo-retired", () => {
       if (!panel.open) return;
@@ -626,6 +650,7 @@
         loaded = false;
         busy = false;
         pendingRefresh = false;
+        creatingFromAppearance = false;
         fields.select.replaceChildren();
         fields.font.replaceChildren();
         fields.name.value = "";
@@ -633,6 +658,55 @@
         updateControls();
       },
     };
+  }
+
+  const hexColorPattern = /^#[0-9a-f]{6}$/i;
+
+  function showColorValidation(field) {
+    const hex = field("color-hex");
+    const error = field("color-error");
+    const valid = hexColorPattern.test(hex.value);
+    hex.setCustomValidity(valid ? "" : error.textContent);
+    if (valid) hex.removeAttribute("aria-invalid");
+    else hex.setAttribute("aria-invalid", "true");
+    error.hidden = valid;
+    return valid;
+  }
+
+  function mountColorControls(field, onChange) {
+    const picker = field("color");
+    const hex = field("color-hex");
+    const fromPicker = () => {
+      const color = picker.value.toUpperCase();
+      const changed = color !== hex.value;
+      hex.value = color;
+      showColorValidation(field);
+      return changed;
+    };
+    const fromHex = () => {
+      if (!showColorValidation(field)) return false;
+      const color = hex.value.toLowerCase();
+      const changed = color !== picker.value;
+      picker.value = color;
+      return changed;
+    };
+    // Field listeners run before the form's input listener redraws. Some
+    // native pickers commit a new value with only a change event.
+    picker.addEventListener("input", fromPicker);
+    picker.addEventListener("change", () => { if (fromPicker()) onChange(); });
+    hex.addEventListener("input", fromHex);
+    function commitHex() {
+      const changed = fromHex();
+      if (hex.validity.valid) hex.value = picker.value.toUpperCase();
+      if (changed) onChange();
+    }
+    hex.addEventListener("change", commitHex);
+    hex.addEventListener("keydown", event => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      commitHex();
+      hex.reportValidity();
+    });
   }
 
   function styleControls(field, options) {
@@ -644,23 +718,27 @@
   function fillStyleControls(field, style) {
     field("burn").checked = style.burn_subtitles === true;
     field("size").value = style.subtitle_font_size ?? 52;
-    field("color").value = style.subtitle_color ?? "#ffffff";
+    const color = style.subtitle_color ?? "#ffffff";
+    field("color").value = color.toLowerCase();
+    field("color-hex").value = field("color").value.toUpperCase();
+    showColorValidation(field);
     field("position").value = style.subtitle_position ?? "bottom";
     field("edge").value = style.subtitle_outline ?? 3;
   }
 
   function editorStyle(field, options) {
-    if (!["size", "edge"].every(name => field(name).reportValidity())) return null;
+    if (!["size", "edge", "color-hex"].every(name => field(name).reportValidity())) return null;
     return styleControls(field, options);
   }
 
-  function showCaptionSample(sample, container, style, logo = null) {
+  function showCaptionSample(sample, container, style, logo = null, showUnburned = true) {
     const row = container.querySelector("[data-preview]") ?? container.firstElementChild;
     const frame = sample.querySelector(".caption-frame");
     const span = frame.firstElementChild;
-    const showText = Boolean(style.burn_subtitles && row);
+    const showText = Boolean(row && (style.burn_subtitles || showUnburned));
     sample.hidden = !showText && !logo;
     span.hidden = !showText;
+    sample.querySelector(".caption-export-note").hidden = !showText || style.burn_subtitles;
     sample.querySelector("h4").textContent = logo ? (showText ? "Vista previa del subtítulo y logo" : "Vista previa del logo")
       : "Vista previa del subtítulo";
     logos.show(frame, logo);
@@ -921,7 +999,8 @@
 
   function formMatches(item) {
     const value = draftPayload(item, rangeFields());
-    return value.title === item.title && value.start === item.start && value.end === item.end
+    return el("color-hex").validity.valid
+      && value.title === item.title && value.start === item.start && value.end === item.end
       && logos.matches(value.logo, item.logo)
       && value.options.burn_subtitles === (item.options.burn_subtitles === true)
       && value.options.subtitle_font_size === (item.options.subtitle_font_size ?? 52)
@@ -1126,12 +1205,14 @@
   });
   const draftLogos = logos.mount("editorial-logos", updateSample);
   const draftStyles = mountCaptionStyles("editorial-styles", {
+    createButton: el("save-style"),
     style: () => editorStyle(el, view?.draft?.options),
     snapshot: () => view?.draft?.style_template,
     validateLogo: draftLogos.reportValidity,
     logo: draftLogos.read,
     apply: applyDraftStyle,
   });
+  mountColorControls(el, updateSample);
   el("draft-form").addEventListener("submit", event => { event.preventDefault(); void draftAction("save"); });
   el("draft-form").addEventListener("input", event => {
     if (!event.target.closest(".caption-styles")) updateSample();
@@ -1166,5 +1247,5 @@
 
   window.ClipForgeEditorial = {selectJob, createManualDraft};
   window.ClipForgeCaptionFields = {cueInput, cueRow, readCues, addCue, replaceCueRows, trackCaptionCue,
-    showCaptionSample, styleControls, fillStyleControls, editorStyle, mountCaptionStyles};
+    showCaptionSample, styleControls, fillStyleControls, editorStyle, mountCaptionStyles, mountColorControls};
 })();

@@ -147,6 +147,24 @@
   width: 100%;
   margin-top: 6px;
 }
+.caption-color-inputs {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  align-items: end;
+  gap: 8px;
+}
+.caption-color-inputs label {
+  min-width: 0;
+}
+.caption-color-inputs input {
+  min-height: 46px;
+}
+.caption-color-error, .caption-export-note {
+  margin: 8px 0 0;
+}
+.caption-save-style {
+  margin-top: 12px;
+}
 .creator-logo-fields {
   min-width: 0;
   margin: 8px 0 12px;

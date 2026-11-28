@@ -118,6 +118,34 @@ def verify_logos_baseline(root, profile, commit, model):
     }
 
 
+def verify_caption_color_baseline(root, commit, model):
+    accepted = "fb83fd49e077dc95f4720ad9f4922cd9c5340bc9"
+    if not re.fullmatch(r"[a-f0-9]{40}", commit) or commit == accepted:
+        raise ValueError("Se requiere una candidata distinta de la base de color")
+    hashes = {
+        "after-rollout.json": "6151e4bab57b3e125ff3294b010bbd5b55e53786ac24c010e8448c6bb5ca95e7",
+        "browser-logos.json": "49e8c41e7fa2ddc53d2545258ef3fd3bf4671d936599c47a658064fac54cf2ce",
+    }
+    rollout, browser = (native_report(root, name, digest) for name, digest in hashes.items())
+    worker = rollout["worker_configuration"]
+    revisions = {"frontend": rollout["frontend_revision"], "api": rollout["api_revision"]}
+    approved = {entry["name"] for entry in browser["checks"] if entry["status"] == "passed"}
+    required = {"automatic_logo_preview_export_and_zip_use_the_same_variant_and_sidecars",
+                "range_word_style_logo_crop_preview_and_edited_download",
+                "retired_logo_and_deleted_template_preserve_drafts_and_mp4_after_relogin"}
+    if (rollout["commit"] != accepted or browser["commit"] != accepted or browser["revisions"] != revisions
+            or browser["phase"] != "logos" or browser["status"] != "passed" or not required <= approved
+            or rollout["editorial"]["model"] != model or rollout["editorial"]["daily_limit"] != 100
+            or worker["cpu"] != "4" or worker["memory"] != "4Gi"):
+        raise ValueError("La base no coincide con la entrega aceptada de logos")
+    return {
+        "schema": "clipforge-int-caption-color-baseline-1", "status": "passed", "target_commit": commit,
+        "baseline": {**rollout, "worker_source": accepted, "worker_cpu": worker["cpu"],
+                     "worker_memory": worker["memory"]},
+        "evidence": {"run_id": "46098994059", "artifact_id": "15245332058", "sha256": hashes},
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, type=Path)
@@ -129,6 +157,7 @@ def main():
         group.add_argument("--accepted-" + phase, nargs=5,
                            metavar=("SHA", "RUN", "ARTIFACT", "ROLLOUT_HASH", "BROWSER_HASH"))
     group.add_argument("--accepted-logo-profile", type=Path, metavar="PROFILE_RECEIPT_DIR")
+    group.add_argument("--accepted-caption-color-base", action="store_true")
     args = parser.parse_args()
     if args.accepted_styles:
         receipt = verify_product_release(args.source, args.commit, args.model, "styles", *args.accepted_styles)
@@ -136,6 +165,8 @@ def main():
         receipt = verify_product_release(args.source, args.commit, args.model, "framing", *args.accepted_framing)
     elif args.accepted_logo_profile:
         receipt = verify_logos_baseline(args.source, args.accepted_logo_profile, args.commit, args.model)
+    elif args.accepted_caption_color_base:
+        receipt = verify_caption_color_baseline(args.source, args.commit, args.model)
     else:
         receipt = verify(args.source, args.commit, args.model)
     with args.receipt.open("x", encoding="utf-8") as output:

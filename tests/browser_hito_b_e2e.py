@@ -647,7 +647,8 @@ class BrowserHitoBTest(unittest.TestCase):
                                small_frame["stroke"] / small_frame["height"], places=4)
 
         editor.get_by_label("Incrustar subtítulos en el MP4").uncheck()
-        expect(preview).to_be_hidden()
+        expect(preview).to_be_visible()
+        expect(preview.locator(".caption-export-note")).to_be_visible()
         editor.get_by_label("Incrustar subtítulos en el MP4").check()
         expect(sample).to_have_text("Frase posterior editada.")
         editor.get_by_role("button", name="Guardar y generar clip").click()
@@ -688,10 +689,14 @@ class BrowserHitoBTest(unittest.TestCase):
         self.page.goto(ORIGIN + "/?job=" + JOB)
         self.page.locator(f'[data-clip-file="{CLIP}"]').get_by_role("button", name="Editar subtítulos").click()
         panel = self.page.locator("#clip-caption-styles")
-        panel.locator("summary").click()
+        expect(panel).to_have_js_property("open", False)
+        save_style = self.page.get_by_role("button", name="Guardar como estilo", exact=True)
+        expect(save_style).to_be_visible()
+        save_style.click()
         select = panel.get_by_label("Estilo guardado")
         expect(select).to_be_enabled()
         name = panel.get_by_label("Nombre del estilo")
+        expect(name).to_be_focused()
         expect(panel.get_by_label("Fuente")).to_have_value(FONT)
         self.page.locator("#clip-caption-size").fill("76")
         self.page.locator("#clip-caption-color").fill("#b8273d")
@@ -701,6 +706,8 @@ class BrowserHitoBTest(unittest.TestCase):
         panel.get_by_role("button", name="Guardar como estilo nuevo").click()
         expect(panel.get_by_role("status")).to_have_text("Estilo guardado.")
         expect(select).to_have_value(STYLE)
+        expect(select.locator("option:checked")).to_have_text("Estilo del portal")
+        self.assertEqual("#B8273D", self.state["saved_style"]["style"]["subtitle_color"])
         self.assertEqual([], self.state["caption_updates"])
         panel.get_by_role("button", name="Usar en trabajos nuevos").click()
         expect(panel.get_by_role("status")).to_have_text("Estilo predeterminado para trabajos nuevos.")
@@ -754,6 +761,85 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertIsNone(self.state["saved_style"])
         self.assertEqual(2, len(self.state["caption_updates"]))
         self.assertEqual([], self.state["selection_posts"])
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
+    def test_native_color_commit_and_hex_sync_in_both_caption_editors(self):
+        cues = [{"start": 1.2, "end": 3.25, "text": "Primera frase."},
+                {"start": 8.25, "end": 10.5, "text": "Frase posterior."}]
+        style = {"burn_subtitles": True, "subtitle_font_size": 52, "subtitle_color": "#FFFFFF",
+                 "subtitle_position": "bottom", "subtitle_outline": 3}
+        self.state.update(status="completed", caption={
+            "start": 392, "end": 421.5, "duration": 29.5, "cues": cues, "style": style,
+            "revision": 1, "status": "completed", "output": None,
+        })
+        self.store_draft(title="Recorte para color", start=392, end=421.5, cues=cues,
+                         options={**style, "burn_subtitles": False})
+
+        def exercise(prefix):
+            form = self.page.locator(f"#{prefix}-form" if prefix == "clip-caption" else "#editorial-draft-form")
+            picker = self.page.locator(f"#{prefix}-color")
+            hex_field = self.page.locator(f"#{prefix}-color-hex")
+            sample = self.page.locator(f"#{prefix}-sample span")
+            visible_save = self.page.locator(f"#{prefix}-save-style")
+            panel = self.page.locator(f"#{prefix}-styles")
+            expect(visible_save).to_be_visible()
+            expect(panel).to_have_js_property("open", False)
+            visible_save.click()
+            expect(panel.get_by_label("Nombre del estilo")).to_be_focused()
+            expect(panel.get_by_label("Estilo guardado")).to_have_value("")
+            expect(panel.get_by_role("button", name="Actualizar con los ajustes del editor")).to_be_disabled()
+            panel.locator("summary").click()
+            expect(hex_field).to_have_value("#FFFFFF")
+            picker.evaluate("""node => {
+                node.value = "#ff0000";
+                node.dispatchEvent(new Event("change", {bubbles: true}));
+            }""")
+            expect(hex_field).to_have_value("#FF0000")
+            expect(sample).to_have_css("color", "rgb(255, 0, 0)")
+            hex_field.fill("0000FF")
+            expect(hex_field).to_have_attribute("aria-invalid", "true")
+            expect(self.page.locator(f"#{prefix}-color-error")).to_be_visible()
+            expect(picker).to_have_value("#ff0000")
+            form.locator(f"#{prefix}-save").click()
+            self.assertEqual([], self.state["caption_updates"])
+            self.assertEqual([], self.state["draft_updates"])
+            hex_field.fill("#0000ff")
+            expect(picker).to_have_value("#0000ff")
+            expect(sample).to_have_css("color", "rgb(0, 0, 255)")
+            hex_field.press("Enter")
+            self.assertEqual([], self.state["caption_updates"])
+            self.assertEqual([], self.state["draft_updates"])
+            form.get_by_role("textbox", name="Texto del subtítulo", exact=True).nth(1).focus()
+            expect(hex_field).to_have_value("#0000FF")
+            expect(sample).to_have_text("Frase posterior.")
+            expect(sample).to_have_css("color", "rgb(0, 0, 255)")
+            expect(self.page.locator(f"#{prefix}-color-error")).to_be_hidden()
+
+        self.page.set_viewport_size({"width": 1280, "height": 900})
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        self.page.get_by_role("button", name="Editar subtítulos", exact=True).click()
+        exercise("clip-caption")
+        self.page.locator("#clip-caption-close").click()
+
+        self.page.set_viewport_size({"width": 390, "height": 844})
+        self.page.get_by_text("Propuestas por IA y edición", exact=True).click()
+        exercise("editorial")
+        expect(self.page.locator("#editorial-sample .caption-export-note")).to_be_visible()
+        self.page.locator("#editorial-save").click()
+        expect(self.page.locator("#editorial-draft-status")).to_have_text("Borrador guardado.")
+        updated = self.state["draft_updates"][-1]
+        self.assertEqual("#0000FF", updated["options"]["subtitle_color"])
+        self.assertEqual(cues, updated["cues"])
+        self.assertFalse(updated["options"]["burn_subtitles"])
+
+        self.page.reload()
+        self.page.get_by_text("Propuestas por IA y edición", exact=True).click()
+        expect(self.page.locator("#editorial-color-hex")).to_have_value("#0000FF")
+        expect(self.page.locator("#editorial-color")).to_have_value("#0000ff")
+        expect(self.page.locator("#editorial-sample span")).to_have_css("color", "rgb(0, 0, 255)")
+        self.assertEqual([], self.state["selection_posts"])
+        self.assertEqual({}, self.state["approved"])
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])
 

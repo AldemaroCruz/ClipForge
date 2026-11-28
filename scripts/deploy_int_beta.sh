@@ -338,15 +338,60 @@ browser_acceptance() {
     shift
     env -u CLOUDSDK_AUTH_ACCESS_TOKEN -u GOOGLE_OAUTH_ACCESS_TOKEN \
         -u GOOGLE_APPLICATION_CREDENTIALS -u CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE \
-        python -m scripts.int_hito_b_browser "$phase" --commit "$GITHUB_SHA" \
-        --frontend-revision "$FRONTEND_REVISION" --api-revision "$API_REVISION" \
+        python -m scripts.int_hito_b_browser "$phase" --commit "${BROWSER_EXPECTED_COMMIT:-$GITHUB_SHA}" \
+        --frontend-revision "${BROWSER_EXPECTED_FRONTEND:-$FRONTEND_REVISION}" \
+        --api-revision "${BROWSER_EXPECTED_API:-$API_REVISION}" \
         --editorial-model "$editorial_model" --state "$DELIVERY_DIR/browser-private.json" \
         --report "$reports/browser-$phase.json" "$@"
 }
 
+browser_on_rollout() {
+    local receipt="$1"
+    shift
+    BROWSER_EXPECTED_COMMIT="$(jq -er '.commit' "$receipt")" \
+    BROWSER_EXPECTED_FRONTEND="$(jq -er '.frontend_revision' "$receipt")" \
+    BROWSER_EXPECTED_API="$(jq -er '.api_revision' "$receipt")" browser_acceptance "$@"
+}
+
+caption_color_acceptance() {
+    local previous="$reports/previous-live.json" state="$DELIVERY_DIR/browser-private.json" owner job source_sha
+    verify_focused_baseline caption-color "$INT_CAPTION_COLOR_ACCEPTANCE"
+    create_framing_fixture
+    browser_on_rollout "$previous" caption-color-prepare --video "$DELIVERY_DIR/framing.mp4"
+    owner="$(jq -er '.owner_id | select(test("^[a-f0-9]{32}$"))' "$state")"
+    job="$(jq -er '.job_id | select(test("^[a-f0-9]{32}$"))' "$state")"
+    source_sha="$(sha256sum "$DELIVERY_DIR/framing.mp4" | cut -d ' ' -f 1)"
+    [[ "$source_sha" =~ ^[a-f0-9]{64}$ ]]
+    : > "$DELIVERY_DIR/focused-promoting"
+    # The accepted HTTP revisions keep serving the same tenant-isolated API.
+    # The new image adds the private seed command to the existing worker.
+    run jobs update clipforge-int-worker --image "$TF_VAR_worker_image" \
+        --update-env-vars "CLIPFORGE_REVISION=$GITHUB_SHA"
+    run jobs execute clipforge-int-worker --wait --tasks=1 \
+        --args="-m,app.cloud.caption_color_fixture,$owner,$job,$source_sha"
+    browser_on_rollout "$previous" caption-color-baseline
+    apply_beta true "run-$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT" replacement
+    capture_rollout after
+    browser_acceptance caption-color
+}
+
+caption_color_cleanup() {
+    local state="$DELIVERY_DIR/browser-private.json" revision receipt
+    if [[ ! -f "$state" ]]; then
+        return 0
+    fi
+    revision="$(curl --silent --fail --max-time 15 "$public/environment" | jq -er '.revision')"
+    receipt="$reports/previous-live.json"
+    if [[ "$revision" == "$GITHUB_SHA" ]]; then
+        receipt="$reports/after-rollout.json"
+    fi
+    [[ "$(jq -er '.commit' "$receipt")" == "$revision" ]]
+    browser_on_rollout "$receipt" caption-color-cleanup
+}
+
 verify_focused_baseline() {
     local increment="$1" receipt="$2"
-    [[ "$increment" == c04 || "$increment" == c05 || "$increment" == c06 || "$increment" == logos ]]
+    [[ "$increment" == c04 || "$increment" == c05 || "$increment" == c06 || "$increment" == logos || "$increment" == caption-color ]]
     [[ "$receipt" == "$reports/$increment-baseline.json" && -f "$receipt" && ! -L "$receipt" ]]
     jq -e --arg schema "clipforge-int-$increment-baseline-1" --arg increment "$increment" --arg commit "$GITHUB_SHA" \
         --slurpfile previous "$reports/previous-live.json" '
@@ -356,7 +401,7 @@ verify_focused_baseline() {
             commit, frontend_revision, api_revision, worker_image, migrator_image,
             editorial: (.editorial | del(.api_daily_limit))
         }) == ($live | {commit,frontend_revision,api_revision,worker_image,migrator_image,editorial}) and
-        ($increment != "logos" or
+        (($increment != "logos" and $increment != "caption-color") or
            (($expected | {worker_source,worker_cpu,worker_memory}) == ($live | {worker_source,worker_cpu,worker_memory})
             and $live.migrator_source == $expected.commit)))
     ' "$receipt" > /dev/null
@@ -440,6 +485,8 @@ case "${1:-}" in
             verify_focused_baseline c05 "$INT_C05_ACCEPTANCE"
         elif [[ -n "${INT_C06_ACCEPTANCE:-}" ]]; then
             verify_focused_baseline c06 "$INT_C06_ACCEPTANCE"
+        elif [[ -n "${INT_CAPTION_COLOR_ACCEPTANCE:-}" ]]; then
+            verify_focused_baseline caption-color "$INT_CAPTION_COLOR_ACCEPTANCE"
         else
             trap rollback_delivery EXIT
             apply_beta false "run-$GITHUB_RUN_ID-b$GITHUB_RUN_ATTEMPT" private
@@ -487,6 +534,8 @@ case "${1:-}" in
             apply_beta true "run-$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT" replacement
             capture_rollout after
             browser_acceptance logos --video "$DELIVERY_DIR/framing.mp4"
+        elif [[ -n "${INT_CAPTION_COLOR_ACCEPTANCE:-}" ]]; then
+            caption_color_acceptance
         elif [[ -n "${INT_DELETION_REPLAY_REPORT:-}" ]]; then
             [[ "$INT_DELETION_REPLAY_REPORT" == "$reports/deletion-replay.json" && ! -L "$INT_DELETION_REPLAY_REPORT" ]]
             jq -e '.schema == "clipforge-int-hito-b-delete-evidence-1" and .status == "passed"
@@ -516,11 +565,15 @@ case "${1:-}" in
         run_worker_benchmark "$@"
         ;;
     rollback)
-        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_C05_ACCEPTANCE:-}${INT_C06_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}" && ! -f "$DELIVERY_DIR/focused-promoting" ]]; then
+        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_C05_ACCEPTANCE:-}${INT_C06_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}${INT_CAPTION_COLOR_ACCEPTANCE:-}" && ! -f "$DELIVERY_DIR/focused-promoting" ]]; then
             restore_migrator_pin
         else
             restore_failed_delivery
         fi
+        ;;
+    caption-color-cleanup)
+        [[ -n "${INT_CAPTION_COLOR_ACCEPTANCE:-}" ]]
+        caption_color_cleanup
         ;;
     *)
         exit 2
