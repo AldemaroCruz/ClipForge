@@ -19,6 +19,7 @@ from .cloud.migrate_beta import (
     publication_schema_ready, styles_schema_ready,
 )
 from .cloud.migrate_project_deletions import project_deletion_schema_ready
+from .cloud.migrate_word_highlight import caption_highlight_schema_ready
 from .cloud.pilot import router as pilot_router
 from .cloud.router import reconcile_project_cleanups, router as media_router
 from .environment import identity
@@ -144,7 +145,8 @@ def health():
             if (revisions == [REVISION] and beta_schema_ready(connection)
                     and editorial_schema_ready(connection) and project_deletion_schema_ready(connection)
                     and styles_schema_ready(connection) and logos_schema_ready(connection)
-                    and alignment_schema_ready(connection) and publication_schema_ready(connection) and database_ready()):
+                    and alignment_schema_ready(connection) and publication_schema_ready(connection)
+                    and caption_highlight_schema_ready(connection) and database_ready()):
                 return {"status": "ok", "profile": "int-beta"}
     except (SQLAlchemyError, AuthConfigurationError):
         raise HTTPException(503, "El almacenamiento persistente todavía no está disponible.") from None

@@ -11,6 +11,7 @@ from sqlalchemy import Text, bindparam, cast, column, func, table, text, update
 from sqlalchemy.dialects.postgresql import JSONB
 from fastapi import HTTPException
 from ..auth_db import get_engine
+from ..presentation import HIGHLIGHT_DEFAULTS, separate_highlight
 from .config import BETA_MAX_ACTIVE, BETA_RETRIES, BETA_RETRYABLE
 
 GLOBAL_LOCK = 1837086403
@@ -24,6 +25,44 @@ _DOCUMENTS = table("cloud_documents", *(column(name) for name in (
 
 def packed(value):
     return json.dumps(value, allow_nan=False, separators=(",", ":"))
+
+
+def _presentation_metadata(kind, item, *, read=False):
+    def convert(container, field):
+        if field not in container:
+            return
+        sibling = field + "_highlight"
+        if read:
+            extension = container.pop(sibling, None)
+            for key, default in HIGHLIGHT_DEFAULTS.items():
+                container[field].setdefault(key, default)
+            if extension:
+                container[field].update(extension)
+        else:
+            container[field], extension = separate_highlight(container[field])
+            if extension:
+                container[sibling] = extension
+            else:
+                container.pop(sibling, None)
+
+    if kind not in {"job", "draft", "export"}:
+        return item
+    if not read:
+        item = copy.deepcopy(item)
+    convert(item, "options")
+    if kind == "job":
+        convert(item, "caption_style")
+        for clip in item.get("clips", []):
+            convert(clip, "options")
+        for settings in item.get("clip_caption_settings", {}).values():
+            convert(settings, "style")
+    return item
+
+
+def _read_document(row, kind):
+    result = copy.deepcopy(dict(row))
+    _presentation_metadata(kind, result["payload"], read=True)
+    return result
 
 
 def document(job_id, kind="job", item_id=None, connection=None, *, required=True, live=False):
@@ -40,7 +79,7 @@ def document(job_id, kind="job", item_id=None, connection=None, *, required=True
             if required:
                 raise HTTPException(404, "Proyecto o documento no encontrado")
             return None
-        return copy.deepcopy(dict(row))
+        return _read_document(row, kind)
     if connection is not None:
         return read(connection)
     with get_engine().connect() as c:
@@ -49,7 +88,8 @@ def document(job_id, kind="job", item_id=None, connection=None, *, required=True
 
 def list_documents(job_id, kind, connection=None):
     def read(c):
-        return [copy.deepcopy(dict(r)) for r in c.execute(text("SELECT payload,manifest,revision FROM cloud_documents WHERE job_id=:j AND kind=:k ORDER BY updated_at DESC,id DESC"), {"j": job_id, "k": kind}).mappings()]
+        rows = c.execute(text("SELECT payload,manifest,revision FROM cloud_documents WHERE job_id=:j AND kind=:k ORDER BY updated_at DESC,id DESC"), {"j": job_id, "k": kind}).mappings()
+        return [_read_document(row, kind) for row in rows]
     if connection is not None:
         return read(connection)
     with get_engine().connect() as c:
@@ -58,11 +98,11 @@ def list_documents(job_id, kind, connection=None):
 
 def insert_document(c, job_id, kind, item, manifest=None):
     c.execute(text("INSERT INTO cloud_documents(job_id,kind,id,payload,manifest) VALUES (:j,:k,:i,CAST(:p AS jsonb),CAST(:m AS jsonb))"),
-              {"j": job_id, "k": kind, "i": item["id"], "p": packed(item), "m": packed(manifest or {})})
+              {"j": job_id, "k": kind, "i": item["id"], "p": packed(_presentation_metadata(kind, item)), "m": packed(manifest or {})})
 
 
 def update_document(c, job_id, kind, item, revision=None, manifest=None):
-    values = {"j": job_id, "k": kind, "i": item["id"], "p": packed(item)}
+    values = {"j": job_id, "k": kind, "i": item["id"], "p": packed(_presentation_metadata(kind, item))}
     doc = _DOCUMENTS.c
     statement = update(_DOCUMENTS).where(
         doc.job_id == bindparam("j"), doc.kind == bindparam("k"), doc.id == bindparam("i"),

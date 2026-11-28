@@ -124,7 +124,7 @@ def _highlight_receipt(item):
     options = item["options"]
     if not options.get("subtitle_highlight_enabled"):
         return {}
-    plan = item.get("word_highlight", {})
+    plan = item.get("word_highlight", {}) if item.get("word_highlight_rendered") is True else {}
     return {"highlight": {"enabled": True, "base_color": options["subtitle_color"],
                           "active_color": options["subtitle_highlight_color"], "version": plan.get("version"),
                           "status": plan.get("status", "unavailable")}}

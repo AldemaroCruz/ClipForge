@@ -1140,6 +1140,9 @@ class BrowserHitoBTest(unittest.TestCase):
         toggle.uncheck()
         expect(active).to_have_count(0)
         expect(picker).to_be_hidden()
+        editor.focus()
+        expect(sample).to_have_text("Otra voz voz")
+        self.assertTrue(sample.evaluate("node => node.getBoundingClientRect().height > 0 && node.offsetParent !== null"))
         self.assertEqual([], self.state["selection_posts"])
         self.assertEqual([], self.state["transcript_prepare_posts"])
         self.assertEqual([], self.errors)
@@ -1181,11 +1184,25 @@ class BrowserHitoBTest(unittest.TestCase):
                          (template["subtitle_highlight_enabled"], template["subtitle_highlight_color"]))
         styles.get_by_role("button", name="Aplicar estilo", exact=True).click()
         expect(styles.get_by_role("status")).to_have_text("Estilo aplicado.")
+        draft = self.state["draft"]
+        export = {**draft, "draft_id": DRAFT, "draft_revision": draft["revision"], "status": "completed",
+                  "word_highlight": {"version": "b" * 64, "status": "partial"}}
+        self.state["approved"] = {
+            1: {**export, "id": "1" * 32, "word_highlight_rendered": True},
+            2: {**export, "id": "2" * 32},
+        }
         self.page.reload()
         self.page.locator("#editorial-heading").click()
         expect(toggle).to_be_checked()
         expect(color).to_have_value("#123ABC")
         expect(self.page.locator("#editorial-highlight-color")).to_have_value("#123abc")
+        cards = self.page.locator("#editorial-exports")
+        rendered = cards.locator(f'[data-export-id="{"1" * 32}"] .caption-highlight-version')
+        expect(rendered).to_contain_text("Resaltado #FFFFFF / #123ABC · parcial")
+        expect(rendered).to_have_attribute("data-version", "b" * 64)
+        static = cards.locator(f'[data-export-id="{"2" * 32}"] .caption-highlight-version')
+        expect(static).to_have_text("Subtítulos estáticos · color base #FFFFFF")
+        expect(static).not_to_have_attribute("data-version", "b" * 64)
         self.assertEqual([], self.state["selection_posts"])
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])

@@ -1,4 +1,5 @@
 """Creator-owned style persistence and render identity on disposable PostgreSQL."""
+import hashlib
 import os
 import re
 import secrets
@@ -7,15 +8,21 @@ import unittest
 from unittest.mock import patch
 
 from fastapi import HTTPException
-from pydantic import ValidationError
+from pydantic import ConfigDict, ValidationError, create_model
 from sqlalchemy import text
 from sqlalchemy.schema import DropSchema
 
 from app import auth_db
 from app.cloud import caption_styles as styles, clip_captions as captions, migrate_beta, pilot, repository, router
 from app.editorial import RevisionRequest
-from app.presentation import Presentation
+from app.presentation import HIGHLIGHT_DEFAULTS, Presentation
 from auth_support import auth_environment, fixture_user, prepare_database
+
+
+LegacyPresentation = create_model(
+    "LegacyPresentation", __config__=ConfigDict(extra="forbid"),
+    **{key: (field.annotation, field) for key, field in Presentation.model_fields.items() if key not in HIGHLIGHT_DEFAULTS},
+)
 
 
 class SavedStylesTest(unittest.TestCase):
@@ -28,8 +35,9 @@ class SavedStylesTest(unittest.TestCase):
         self.addCleanup(auth_db.reset_engine)
         self.engine = prepare_database()
         self.addCleanup(self.remove_schema)
-        self.assertEqual(migrate_beta.upgrade_beta(self.engine)["styles_status"], "applied")
-        self.assertEqual(migrate_beta.upgrade_beta(self.engine)["styles_status"], "current")
+        for expected in ("applied", "current"):
+            result = migrate_beta.upgrade_beta(self.engine)
+            self.assertEqual((result["styles_status"], result["caption_highlight_status"]), (expected, expected))
         self.creator = self.request("owner")
         self.other = self.request("neighbor")
 
@@ -60,6 +68,81 @@ class SavedStylesTest(unittest.TestCase):
             manifest[clip["file"]] = {"generation": "456"}
         with self.engine.begin() as connection:
             repository.update_document(connection, item["id"], "job", job, manifest=manifest)
+
+    def test_highlight_catalog_preserves_legacy_style_and_reopens_with_exact_options(self):
+        highlight = {"subtitle_highlight_enabled": True, "subtitle_highlight_color": "#118833"}
+        active = styles.create_style(styles.StyleInput(name="Resaltado", font=styles.FONT, style=highlight), self.creator)
+        static = self.new_style()
+        with self.engine.connect() as connection:
+            for style_id, expected in ((active["id"], highlight), (static["id"], None)):
+                base, extension = connection.execute(text("""
+                    SELECT style,style_highlight FROM cloud_caption_styles WHERE id=:i
+                    """), {"i": style_id}).one()
+                LegacyPresentation.model_validate(base)
+                self.assertEqual(extension, expected)
+        self.assertEqual({key: active["style"][key] for key in highlight}, highlight)
+        self.assertEqual(styles.get_style(active["id"], self.creator)["style"], active["style"])
+        self.assertIn(active["style"], [item["style"] for item in styles.list_styles(self.creator)["styles"]])
+        styles.choose_default(styles.DefaultStyle(id=active["id"], revision=1), self.creator)
+        pending = pilot._reserve(self.creator.state.principal, "e01-style", "style.mp4", 1024)
+        self.assertEqual({key: pending["options"][key] for key in highlight}, highlight)
+        styles.update_style(active["id"], styles.StyleUpdate(
+            revision=1, name="Resaltado", font=styles.FONT, style={},
+        ), self.creator)
+        with self.engine.connect() as connection:
+            self.assertIsNone(connection.execute(text(
+                "SELECT style_highlight FROM cloud_caption_styles WHERE id=:i",
+            ), {"i": active["id"]}).scalar_one())
+
+    def test_postgresql_documents_keep_legacy_valid_presentation_with_active_metadata(self):
+        job = pilot._reserve(self.creator.state.principal, "e01-options", "options.mp4", 1024)
+        job_id = job["id"]
+        active = Presentation(subtitle_highlight_enabled=True, subtitle_highlight_color="#117799").model_dump()
+        static = Presentation().model_dump()
+        job.update(options=static, caption_style=active, clips=[{"options": active}],
+                   clip_caption_settings={"clip_01.mp4": {"style": active}})
+        draft = {"id": "d" * 32, "options": Presentation(subtitle_highlight_enabled=True).model_dump()}
+        export = {"id": "e" * 32, "options": active, "word_highlight": {"status": "ready"}}
+        with self.engine.begin() as connection:
+            repository.update_document(connection, job_id, "job", job)
+            for kind, item in (("draft", draft), ("export", export)):
+                repository.insert_document(connection, job_id, kind, item)
+                self.assertEqual(repository.document(job_id, kind, item["id"], connection)["payload"], item)
+                self.assertEqual(repository.list_documents(job_id, kind, connection)[0]["payload"], item)
+            stored_job = repository.document(job_id, connection=connection)["payload"]
+            self.assertEqual(stored_job["options"], static)
+            self.assertEqual(stored_job["caption_style"], active)
+            self.assertEqual(stored_job["clips"][0]["options"], active)
+            self.assertEqual(stored_job["clip_caption_settings"]["clip_01.mp4"]["style"], active)
+            raw = dict(connection.execute(text(
+                "SELECT kind,payload FROM cloud_documents WHERE job_id=:j",
+            ), {"j": job_id}).all())
+            self.assertNotIn("options_highlight", raw["job"])
+            for shape in (raw["job"]["options"], raw["job"]["caption_style"], raw["job"]["clips"][0]["options"],
+                          raw["job"]["clip_caption_settings"]["clip_01.mp4"]["style"], raw["draft"]["options"],
+                          raw["export"]["options"]):
+                LegacyPresentation.model_validate(shape)
+            self.assertEqual(raw["draft"]["options_highlight"], {"subtitle_highlight_enabled": True})
+            self.assertEqual(raw["export"]["options_highlight"], {key: active[key] for key in HIGHLIGHT_DEFAULTS})
+            self.assertIn("subtitle_highlight_enabled", job["options"])
+
+    def test_default_off_export_replays_original_request_identity(self):
+        principal = self.creator.state.principal
+        job = pilot._reserve(principal, "e01-export", "export.mp4", 1024)
+        job_id, export_id = job["id"], "f" * 32
+        key = "e01-legacy-export"
+        request = SimpleNamespace(state=self.creator.state, headers={})
+        legacy_options = LegacyPresentation().model_dump()
+        previous = {"job_id": job_id, "status": "queued", "options": legacy_options, "cues": []}
+        fingerprint = hashlib.sha256(repository.packed(previous).encode()).hexdigest()
+        with self.engine.begin() as connection:
+            repository.insert_document(connection, job_id, "export", {"id": export_id, **previous})
+            repository.remember_request(connection, principal.id, key, fingerprint, job_id, "export", export_id)
+        current = {**previous, "id": "a" * 32, "options": Presentation().model_dump()}
+        with patch.object(router, "_dispatch", side_effect=lambda item: item):
+            result = router._submit_export(job_id, current, request, pilot=True, request_key=key)
+        self.assertEqual(result["id"], export_id)
+        self.assertEqual(result["options"], current["options"])
 
     def test_default_snapshots_only_new_jobs_and_keeps_explicit_burn_opt_out(self):
         principal = self.creator.state.principal

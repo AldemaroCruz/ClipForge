@@ -119,9 +119,14 @@ class HighlightRenderTests(unittest.TestCase):
             enabled = folder / "enabled.mp4"
             disabled = folder / "disabled.mp4"
             options = Presentation(burn_subtitles=True, subtitle_highlight_enabled=True, subtitle_highlight_color="#00FF00")
-            render_clip(source, enabled, start=0, end=2.4, cues=cues, options=options, word_highlight=plan)
-            render_clip(source, disabled, start=0, end=2.4, cues=cues,
-                        options=options.model_copy(update={"subtitle_highlight_enabled": False}), word_highlight=plan)
+            self.assertTrue(render_clip(source, enabled, start=0, end=2.4, cues=cues, options=options, word_highlight=plan))
+            self.assertFalse(render_clip(source, disabled, start=0, end=2.4, cues=cues,
+                                         options=options.model_copy(update={"subtitle_highlight_enabled": False}),
+                                         word_highlight=plan))
+            stored = {"options": options.model_dump(), "word_highlight": plan}
+            self.assertEqual(clip_captions._highlight_receipt(stored)["highlight"]["status"], "unavailable")
+            completed = clip_captions._highlight_receipt({**stored, "word_highlight_rendered": True})
+            self.assertEqual(completed["highlight"]["status"], "ready")
             for suffix in (".srt", ".vtt"):
                 self.assertEqual(enabled.with_suffix(suffix).read_bytes(), disabled.with_suffix(suffix).read_bytes())
             frames = []

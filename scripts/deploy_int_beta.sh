@@ -631,11 +631,11 @@ case "${1:-}" in
             -backend-config=bucket=clipforgebeta2-tfstate-int -backend-config=prefix=terraform/int-beta
         tf validate -no-color
         capture_previous
-        if [[ -n "${INT_E01_ACCEPTANCE:-}" ]]; then
-            verify_focused_baseline e01 "$INT_E01_ACCEPTANCE"
-            capture_prior_worker "$reports/e01-prior-worker.json"
-        elif [[ -n "${INT_C04_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}${INT_D02_ACCEPTANCE:-}${INT_D03_ACCEPTANCE:-}" ]]; then
-            if [[ -n "${INT_D03_ACCEPTANCE:-}" ]]; then
+        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}${INT_D02_ACCEPTANCE:-}${INT_D03_ACCEPTANCE:-}${INT_E01_ACCEPTANCE:-}" ]]; then
+            if [[ -n "${INT_E01_ACCEPTANCE:-}" ]]; then
+                verify_focused_baseline e01 "$INT_E01_ACCEPTANCE"
+                capture_prior_worker "$reports/e01-prior-worker.json"
+            elif [[ -n "${INT_D03_ACCEPTANCE:-}" ]]; then
                 verify_focused_baseline d03 "$INT_D03_ACCEPTANCE"
                 capture_prior_worker "$reports/d03-prior-worker.json"
             elif [[ -n "${INT_D02_ACCEPTANCE:-}" ]]; then
@@ -669,7 +669,7 @@ case "${1:-}" in
         fi
         ;;
     migrate)
-        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}${INT_D02_ACCEPTANCE:-}${INT_D03_ACCEPTANCE:-}" ]]; then
+        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}${INT_D02_ACCEPTANCE:-}${INT_D03_ACCEPTANCE:-}${INT_E01_ACCEPTANCE:-}" ]]; then
             if ! run_migration; then
                 restore_migrator_pin
                 exit 1

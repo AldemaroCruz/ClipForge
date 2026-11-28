@@ -19,7 +19,7 @@ from starlette.concurrency import run_in_threadpool
 from ..auth_db import get_engine
 from ..editorial import EditorialContent, DraftUpdate, ProjectName, RangeChange, RevisionRequest, retime_cues, validate_range
 from ..logo_placement import LogoPlacement
-from ..presentation import Presentation, ExportRequest
+from ..presentation import Presentation, ExportRequest, separate_highlight
 from ..subtitles import SubtitleError, cues_from_segments, to_srt, to_vtt, validate_cues
 from . import caption_styles, clip_captions, clip_package, creator_logos, project_deletion, publication, transcript_selection
 from . import word_highlight
@@ -714,7 +714,12 @@ def update_draft(job_id: str, draft_id: str, payload: CloudDraftUpdate, request:
 
 def _submit_export(job_id, item, request, *, pilot=False, request_key=None):
     owner = request.state.principal.id
-    fingerprint = hashlib.sha256(repo.packed({k: v for k, v in item.items() if k not in {"id", "created_at"}}).encode()).hexdigest()
+    intent = {k: v for k, v in item.items() if k not in {"id", "created_at"}}
+    if "options" in intent:
+        base_options, highlight = separate_highlight(intent["options"])
+        if not highlight:
+            intent["options"] = base_options
+    fingerprint = hashlib.sha256(repo.packed(intent).encode()).hexdigest()
     idempotency_key = request_key or request.headers.get("Idempotency-Key")
     with repo.request_transaction(owner, idempotency_key, fingerprint) as (c, previous, key):
         if pilot:

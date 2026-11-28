@@ -309,7 +309,10 @@ def render(page, job, draft, enabled, plan, scratch, evidence, label, report):
                    and item["options"][HIGHLIGHT] is enabled and item["logo"] == draft["logo"]
                    and item["selection_origin"] == draft["selection_origin"], "e01_export_pins_style_and_source")
     if enabled:
-        portal.require(item["word_highlight"] == plan, "e01_mp4_render_uses_exact_measured_word_plan")
+        portal.require(item.get("word_highlight_rendered") is True and item["word_highlight"] == plan,
+                       "e01_mp4_render_uses_exact_measured_word_plan")
+    else:
+        portal.require(item.get("word_highlight_rendered") is not True, "e01_static_mp4_has_no_rendered_highlight")
     path = scratch / (clip["stem"] + ".mp4")
     if label in MEDIA_ALIASES:
         shutil.copyfile(path, evidence / MEDIA_ALIASES[label])

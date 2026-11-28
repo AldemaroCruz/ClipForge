@@ -871,8 +871,16 @@
     const row = timing?.index != null ? container.children[timing.index]
       : container.querySelector("[data-preview]") ?? container.firstElementChild;
     const frame = sample.querySelector(".caption-frame");
-    const span = frame.firstElementChild;
     const showText = Boolean(row && (style.burn_subtitles || showUnburned));
+    const index = showText ? [...container.children].indexOf(row) : -1;
+    const cue = timing?.rows[index] || null;
+    let span = frame.firstElementChild;
+    if (Boolean(span.highlightCue?.words.length) !== Boolean(cue?.words.length)) {
+      // Chromium can retain an empty layout box after replacing inline word spans with plain text.
+      const replacement = node("span");
+      span.replaceWith(replacement);
+      span = replacement;
+    }
     sample.hidden = !showText && !logo;
     span.hidden = !showText;
     sample.querySelector(".caption-export-note").hidden = !showText || style.burn_subtitles;
@@ -885,8 +893,6 @@
     }
     const units = value => `calc(${value} / 1080 * 100cqw)`;
     frame.dataset.position = style.subtitle_position;
-    const index = [...container.children].indexOf(row);
-    const cue = timing?.rows[index] || null;
     renderCaptionWords(span, cue?.text ?? row.querySelector(".caption-text").value, cue, timing?.time ?? null);
     span.style.color = style.subtitle_color;
     span.style.setProperty("--caption-highlight", style.subtitle_highlight_color ?? defaultHighlightColor);
@@ -1057,10 +1063,10 @@
   function highlightExportText(summary) {
     if (!summary?.enabled) return "";
     const base = summary.base_color ?? "#FFFFFF";
+    if (!["ready", "partial"].includes(summary.status)) return "Subtítulos estáticos · color base " + base;
     const highlight = summary.active_color ?? defaultHighlightColor;
     const version = summary.version;
-    const coverage = summary.status === "ready" ? "" : summary.status === "partial"
-      ? " · parcial" : " · subtítulos estáticos";
+    const coverage = summary.status === "partial" ? " · parcial" : "";
     return "Resaltado " + base + " / " + highlight + coverage + (version ? " · marcas " + version.slice(0, 12) : "");
   }
 
@@ -1459,7 +1465,7 @@
       + (item.logo ? " · Con logo" : "")
       + (item.status === "completed" && hasCues && item.options?.burn_subtitles ? " · Subtítulos incrustados" : ""), "muted"));
     if (item.status === "completed") {
-      const timeline = item.word_highlight;
+      const timeline = item.word_highlight_rendered === true ? item.word_highlight : null;
       const highlight = highlightExportText({enabled: item.options?.burn_subtitles && item.options?.subtitle_highlight_enabled,
         base_color: item.options?.subtitle_color, active_color: item.options?.subtitle_highlight_color,
         version: timeline?.version, status: timeline?.status});

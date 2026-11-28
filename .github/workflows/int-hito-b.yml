@@ -911,7 +911,7 @@ jobs:
             case "$path" in
               .github/workflows/int-hito-b.yml|Dockerfile.int-beta|config/int-hito-b-bandit-review.json|docs/BACKLOG.md|docs/INT-FOCUS-GROUP.md) ;;
               app/int_beta.py|app/int_beta_proxy.py|app/main.py|app/presentation.py|app/subtitles.py|app/render.py) ;;
-              app/cloud/caption_styles.py|app/cloud/clip_captions.py|app/cloud/dispatch.py|app/cloud/router.py|app/cloud/transcript_selection.py|app/cloud/word_highlight.py|app/cloud/worker.py|app/cloud/worker_measurements.py) ;;
+              app/cloud/caption_styles.py|app/cloud/clip_captions.py|app/cloud/dispatch.py|app/cloud/migrate_beta.py|app/cloud/migrate_word_highlight.py|app/cloud/repository.py|app/cloud/router.py|app/cloud/transcript_selection.py|app/cloud/word_highlight.py|app/cloud/worker.py|app/cloud/worker_measurements.py) ;;
               app/static/beta.html|app/static/beta.js|app/static/beta.css|app/static/editorial.js|app/static/mvp.css) ;;
               scripts/deploy_int_beta.sh|scripts/int_hito_b_browser.py|scripts/int_hito_c_styles_evidence.py|scripts/int_hito_c_worker_benchmark_receipt.py|scripts/int_hito_e01_browser.py|scripts/int_hito_e01_media.py|scripts/int_hito_e01_timing.py) ;;
               tests/browser_hito_b_e2e.py|tests/test_caption_styles.py|tests/test_clip_captions.py|tests/test_cloud_worker_scratch.py|tests/test_word_highlight.py|tests/test_e01_*.py) ;;
@@ -1124,7 +1124,7 @@ jobs:
         run: bash scripts/deploy_int_beta.sh prepare
 
       - name: Run the additive PostgreSQL migration from INT
-        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_caption_color && !inputs.focused_mixed_zip && !inputs.focused_d01 && !inputs.focused_e01 }}
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_caption_color && !inputs.focused_mixed_zip && !inputs.focused_d01 }}
         env:
           CLIPFORGE_GCP_DEPLOY_TOKEN: ${{ steps.publishing.outputs.access_token }}
           GOOGLE_OAUTH_ACCESS_TOKEN: ${{ steps.terraform_identity.outputs.access_token }}

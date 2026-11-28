@@ -278,13 +278,15 @@ def _process(job_id: str, recorder: Recorder | None = None, *,
                 highlight_options["word_highlight"] = highlights
             LOGGER.info("Job %s: renderizando clip %s/%s (%s)", job_id, index, len(chosen), options.framing)
             render_started = time.monotonic()
-            render_clip(
+            highlighted = render_clip(
                 folder / "input.mp4", output, start=clip["start"], end=clip["end"],
                 options=render_options, cues=cues, video_index=job["media"]["video_stream_index"],
                 threads=FFMPEG_THREADS, runner=ffmpeg, pilot=validated_media is not None,
                 logo=logo, logo_path=logo_path, **highlight_options,
             )
             recorder.clip_rendered(render_started)
+            if highlighted is True:
+                clip["word_highlight_rendered"] = True
             clip["cues"] = cues
             clip["options"] = render_options.model_dump()
             clip["file"] = filename
@@ -583,6 +585,7 @@ def process_export(job_id: str, export_id: str, *, pilot: bool = False,
         with PROCESS_LOCK:
             item = read_export(job_id, export_id)
             item["status"] = "rendering"
+            item.pop("word_highlight_rendered", None)
             persist_export(job_id, item)
             source = ROOT / job_id / "input.mp4"
             recorder.phase("validation")
@@ -598,11 +601,13 @@ def process_export(job_id: str, export_id: str, *, pilot: bool = False,
             recorder.phase("render")
             render_started = time.monotonic()
             highlights = {"word_highlight": item["word_highlight"]} if pilot and item.get("word_highlight") else {}
-            render_clip(source, target, start=item["start"], end=item["end"],
-                        options=options, cues=item["cues"], video_index=media["video_stream_index"],
-                        threads=FFMPEG_THREADS, pilot=pilot, logo=logo, logo_path=logo_path, **highlights)
+            highlighted = render_clip(source, target, start=item["start"], end=item["end"],
+                                      options=options, cues=item["cues"], video_index=media["video_stream_index"],
+                                      threads=FFMPEG_THREADS, pilot=pilot, logo=logo, logo_path=logo_path, **highlights)
             recorder.clip_rendered(render_started)
             item.update(status="completed", completed_at=time.time())
+            if highlighted is True:
+                item["word_highlight_rendered"] = True
             persist_export(job_id, item)
     except Exception as exc:
         if pilot:

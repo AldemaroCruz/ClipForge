@@ -33,6 +33,18 @@ class Presentation(BaseModel):
         return value.upper()
 
 
+HIGHLIGHT_DEFAULTS = {key: field.default for key, field in Presentation.model_fields.items()
+                      if key.startswith("subtitle_highlight_")}
+
+
+def separate_highlight(values):
+    """Keep legacy readers' strict presentation dictionaries valid on rollback."""
+    base = {key: value for key, value in values.items() if key not in HIGHLIGHT_DEFAULTS}
+    highlight = {key: values[key] for key, default in HIGHLIGHT_DEFAULTS.items()
+                 if key in values and values[key] != default}
+    return base, highlight
+
+
 class Cue(BaseModel):
     model_config = ConfigDict(extra="forbid")
     start: float = Field(ge=0, le=60, allow_inf_nan=False)

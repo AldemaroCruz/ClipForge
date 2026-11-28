@@ -9,7 +9,7 @@ from sqlalchemy import text
 
 from ..auth_db import get_engine
 from ..logo_placement import LogoPlacement
-from ..presentation import Presentation
+from ..presentation import Presentation, separate_highlight
 from ..subtitles import plain_text
 from . import creator_logos
 from . import repository as repo
@@ -23,6 +23,13 @@ router = APIRouter(prefix="/caption-styles")
 
 def style_values(options):
     return Presentation.model_validate(options).model_dump(include=STYLE_FIELDS)
+
+
+def _style_row(row):
+    item = dict(row)
+    extension = item.pop("style_highlight") or {}
+    item["style"] = style_values({**item["style"], **extension})
+    return item
 
 
 class SavedStyle(RootModel[dict]):
@@ -84,13 +91,14 @@ def owner_transaction(principal, *, mutate=False):
 
 def owned_style(connection, owner, style_id, revision=None):
     item = connection.execute(text("""
-        SELECT id,name,font,style,logo,revision,is_default FROM cloud_caption_styles WHERE owner_id=:o AND id=:i
+        SELECT id,name,font,style,style_highlight,logo,revision,is_default
+        FROM cloud_caption_styles WHERE owner_id=:o AND id=:i
         """), {"o": owner, "i": style_id}).mappings().first()
     if item is None:
         raise HTTPException(404, "Estilo no encontrado.")
     if revision is not None and item["revision"] != revision:
         raise HTTPException(409, "El estilo cambió. Volvé a abrir la lista de estilos.")
-    return {**item, "style": style_values(item["style"])}
+    return _style_row(item)
 
 
 def snapshot(item):
@@ -111,9 +119,10 @@ def resolve(connection, principal, payload, options, previous_options, previous_
 
 
 def default_for(connection, owner):
-    return connection.execute(text("""
-        SELECT id,font,style,logo,revision FROM cloud_caption_styles WHERE owner_id=:o AND is_default
+    row = connection.execute(text("""
+        SELECT id,font,style,style_highlight,logo,revision FROM cloud_caption_styles WHERE owner_id=:o AND is_default
         """), {"o": owner}).mappings().first()
+    return _style_row(row) if row else None
 
 
 def _check_name(connection, owner, name, style_id=""):
@@ -129,16 +138,17 @@ def list_styles(request: Request):
     principal = request.state.principal
     with owner_transaction(principal) as connection:
         rows = connection.execute(text("""
-            SELECT id,name,font,style,logo,revision,is_default
+            SELECT id,name,font,style,style_highlight,logo,revision,is_default
             FROM cloud_caption_styles WHERE owner_id=:o ORDER BY name_key,id
             """), {"o": principal.id}).mappings().all()
-    return {"styles": [{**row, "style": style_values(row["style"])} for row in rows],
+    return {"styles": [_style_row(row) for row in rows],
             "fonts": [{"id": FONT, "label": FONT}]}
 
 
 @router.post("", status_code=201)
 def create_style(payload: StyleInput, request: Request):
     principal = request.state.principal
+    style, highlight = separate_highlight(payload.style.root)
     with owner_transaction(principal, mutate=True) as connection:
         _check_name(connection, principal.id, payload.name)
         count = connection.execute(text("SELECT count(*) FROM cloud_caption_styles WHERE owner_id=:o"),
@@ -146,12 +156,12 @@ def create_style(payload: StyleInput, request: Request):
         if count >= STYLE_LIMIT:
             raise HTTPException(409, "Alcanzaste el máximo de estilos guardados.")
         logo = creator_logos.resolve(connection, principal, payload)
-        return dict(connection.execute(text("""
-            INSERT INTO cloud_caption_styles(id,owner_id,name,name_key,font,style,logo)
-            VALUES (:i,:o,:n,:k,:f,CAST(:s AS jsonb),CAST(:l AS jsonb))
-            RETURNING id,name,font,style,logo,revision,is_default
+        return _style_row(connection.execute(text("""
+            INSERT INTO cloud_caption_styles(id,owner_id,name,name_key,font,style,style_highlight,logo)
+            VALUES (:i,:o,:n,:k,:f,CAST(:s AS jsonb),CAST(:h AS jsonb),CAST(:l AS jsonb))
+            RETURNING id,name,font,style,style_highlight,logo,revision,is_default
             """), {"i": uuid.uuid4().hex, "o": principal.id, "n": payload.name, "k": payload.name.casefold(),
-                   "f": payload.font, "s": repo.packed(payload.style.root),
+                   "f": payload.font, "s": repo.packed(style), "h": repo.packed(highlight) if highlight else None,
                    "l": repo.packed(logo) if logo is not None else None}).mappings().one())
 
 
@@ -179,6 +189,7 @@ def get_style(style_id: str, request: Request):
 @router.put("/{style_id}")
 def update_style(style_id: str, payload: StyleUpdate, request: Request):
     principal = request.state.principal
+    style, highlight = separate_highlight(payload.style.root)
     with owner_transaction(principal, mutate=True) as connection:
         previous = owned_style(connection, principal.id, style_id, payload.revision)
         logo = creator_logos.resolve(connection, principal, payload, previous["logo"])
@@ -186,12 +197,12 @@ def update_style(style_id: str, payload: StyleUpdate, request: Request):
                 and all(previous[key] == value for key, value in payload.model_dump(exclude={"revision", "logo"}).items())):
             return previous
         _check_name(connection, principal.id, payload.name, style_id)
-        return dict(connection.execute(text("""
-            UPDATE cloud_caption_styles SET name=:n,name_key=:k,font=:f,style=CAST(:s AS jsonb),
+        return _style_row(connection.execute(text("""
+            UPDATE cloud_caption_styles SET name=:n,name_key=:k,font=:f,style=CAST(:s AS jsonb),style_highlight=CAST(:h AS jsonb),
                 logo=CAST(:l AS jsonb),revision=revision+1
-            WHERE owner_id=:o AND id=:i RETURNING id,name,font,style,logo,revision,is_default
+            WHERE owner_id=:o AND id=:i RETURNING id,name,font,style,style_highlight,logo,revision,is_default
             """), {"i": style_id, "o": principal.id, "n": payload.name, "k": payload.name.casefold(),
-                   "f": payload.font, "s": repo.packed(payload.style.root),
+                   "f": payload.font, "s": repo.packed(style), "h": repo.packed(highlight) if highlight else None,
                    "l": repo.packed(logo) if logo is not None else None}).mappings().one())
 
 
