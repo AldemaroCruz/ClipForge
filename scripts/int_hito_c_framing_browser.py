@@ -83,9 +83,13 @@ def framing_flow(browser, args, owner, jobs, report):
         job = portal.upload_video(page, args.video, report, transfer, track_reservation=jobs.append)
         job_id = job["id"]
         portal.open_saved_job(page, job_id)
-        portal.open_late_draft(page, job_id, 5, 21, generated=False)
-        draft_id = page.locator("#editorial-drafts").input_value()
+        with page.expect_response(lambda response: response.request.method == "POST" and response.status == 201
+                                  and response.url == f"{portal.PUBLIC}/jobs/{job_id}/drafts") as created:
+            portal.open_late_draft(page, job_id, 5, 21, generated=False)
+        draft_id = created.value.json()["id"]
         portal.require(portal.ID.fullmatch(draft_id), "crop_draft_identity")
+        page.wait_for_function("""id => document.querySelector('#editorial-drafts')?.value === id
+            && document.querySelector('#editorial-save')?.disabled === false""", arg=draft_id)
         path = f"/jobs/{job_id}/drafts/{draft_id}"
         draft = portal.browser_get(page, path)["body"]
         portal.require(draft["options"]["framing"] == "contain" and draft["cues"], "crop_initial_draft")
@@ -109,7 +113,9 @@ def framing_flow(browser, args, owner, jobs, report):
         portal.open_saved_job(page, job_id)
         portal.open_editorial(page)
         page.locator("#editorial-drafts").select_option(draft_id)
-        page.locator("#editorial-crop-zoom").wait_for()
+        page.wait_for_function("""zoom => document.querySelector('#editorial-framing')?.value === 'crop'
+            && Number(document.querySelector('#editorial-crop-zoom')?.value) === zoom
+            && document.querySelector('#editorial-save')?.disabled === false""", arg=ZOOM)
         portal.require(page.locator("#editorial-framing").input_value() == "crop"
                        and all(float(page.locator("#editorial-crop-" + key).input_value()) == value
                                for key, value in (("x", 100), ("y", 100), ("zoom", ZOOM)))
