@@ -215,8 +215,10 @@ def _recover_upload(name, size, content_type, md5):
 
 
 def _publish_upload(url, name, source, size, content_type):
+    # requests treats an empty file stream as chunked even with Content-Length: 0.
+    body = source if size else b""
     response = request("POST", url, params={"uploadType": "media", "name": name, "ifGenerationMatch": "0"},
-                       data=source, headers={"Content-Type": content_type, "Content-Length": str(size)})
+                       data=body, headers={"Content-Type": content_type, "Content-Length": str(size)})
     try:
         item = response.json()
         generation = str(item["generation"])

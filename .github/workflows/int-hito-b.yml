@@ -669,7 +669,7 @@ jobs:
           git merge-base --is-ancestor "$base" HEAD
           git diff --name-only --no-renames -z "$base" HEAD | while IFS= read -r -d '' path; do
             case "$path" in
-              .github/workflows/int-hito-b.yml|app/cloud/clip_package.py|app/cloud/router.py) ;;
+              .github/workflows/int-hito-b.yml|app/cloud/clip_package.py|app/cloud/router.py|app/cloud/storage.py) ;;
               app/static/beta.html|app/static/beta.js|app/static/editorial.js|app/static/mvp.js|docs/INT-FOCUS-GROUP.md) ;;
               scripts/deploy_int_beta.sh|scripts/int_hito_b_browser.py|scripts/int_hito_c_mixed_zip_browser.py|scripts/int_hito_c_styles_evidence.py) ;;
               tests/browser_hito_b_e2e.py|tests/test_clip_package.py) ;;

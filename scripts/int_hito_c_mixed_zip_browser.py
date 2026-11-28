@@ -104,12 +104,20 @@ def exported(page, job_id, identity, kind, scratch, expected_range, cues=None):
     section = "mvp-results" if kind == "manual" else "editorial-exports"
     card = page.locator(f'#{section} article[data-export-id="{identity}"]')
     checkbox = card.locator(f'input[type=checkbox][data-archive-id="{identity}"]')
-    checkbox.wait_for(timeout=480_000)
-    listed = portal.browser_get(page, f"/jobs/{job_id}/exports")
-    portal.require(listed["status"] == 200, "mixed_zip_export_list_readback")
-    owned = [item for item in listed["body"]["exports"] if item["id"] == identity]
-    portal.require(len(owned) == 1, "mixed_zip_export_identity")
-    item = owned[0]
+    path = f"/jobs/{job_id}/exports"
+    for _ in range(160):
+        listed = portal.browser_get(page, path)
+        if listed["status"] == 200:
+            item = next((row for row in listed["body"]["exports"] if row["id"] == identity), None)
+            if item and item["status"] == "completed":
+                break
+            portal.require(not item or item["status"] != "failed", f"mixed_zip_{kind}_export_failed")
+        page.wait_for_timeout(3000)
+    else:
+        portal.require(False, f"mixed_zip_{kind}_export_timed_out")
+    portal.require(bool(item.get("archive_selection") and item.get("archive_files")),
+                   f"mixed_zip_{kind}_completed_without_pinned_files")
+    checkbox.wait_for(timeout=30_000)
     token = EXPORT_TOKEN.fullmatch(item["archive_selection"])
     kinds = item["archive_files"]
     portal.require(token is not None and token.group(1) == identity and item["status"] == "completed"

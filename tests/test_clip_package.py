@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 from zipfile import BadZipFile, ZIP_STORED, ZipFile
 
 from fastapi.testclient import TestClient
+from requests import Request
 from requests.structures import CaseInsensitiveDict
 from sqlalchemy import text
 from sqlalchemy.schema import DropSchema
@@ -280,6 +281,21 @@ class ClipPackageDatabaseTests(unittest.TestCase):
 
 
 class ClipPackageStreamTests(unittest.TestCase):
+    def test_empty_generated_sidecar_uses_unambiguous_storage_http_framing(self):
+        name = "fixtures/clip.srt"
+        response = Mock()
+        response.json.return_value = {"name": name, "size": "0", "generation": "11"}
+
+        def receive(method, url, **options):
+            request = Request(method, url, **options).prepare()
+            self.assertEqual(request.headers.get("Content-Length"), "0")
+            self.assertNotIn("Transfer-Encoding", request.headers)
+            return response
+
+        with patch.object(storage, "request", side_effect=receive), patch.object(storage, "close"):
+            self.assertEqual(storage._publish_upload("https://storage.invalid/upload", name, BytesIO(),
+                                                    0, "application/x-subrip"), "11")
+
     def source(self, chunk, count=1):
         result = Mock()
         result.iter_content.return_value = (chunk for _ in range(count))
