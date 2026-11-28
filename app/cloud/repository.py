@@ -259,6 +259,7 @@ _BETA_ERRORS = {
     "UNSUPPORTED_MEDIA": "El piloto admite MP4 con video H.264 y audio AAC.",
     "UPLOAD_MISMATCH": "El archivo recibido no coincide con la carga autorizada. Sube otro video.",
     "SOURCE_UNAVAILABLE": "El original privado no está disponible en este momento.",
+    "LOGO_UNAVAILABLE": "El logo guardado no está disponible. Conservamos el original y las exportaciones anteriores.",
     "WORKER_INTERRUPTED": "El procesamiento se interrumpió. El original se conserva.",
     "PROCESSING_FAILED": "No se pudo generar los clips. El original se conserva.",
 }

@@ -52,6 +52,12 @@
   overflow: hidden;
   border-radius: 8px;
 }
+.framing-composition {
+  position: relative;
+  container-type: inline-size;
+  overflow: hidden;
+  border-radius: 8px;
+}
 .framing-result canvas {
   display: block;
   width: 100%;
@@ -141,6 +147,27 @@
   width: 100%;
   margin-top: 6px;
 }
+.creator-logo-fields {
+  min-width: 0;
+  margin: 8px 0 12px;
+  padding: 0;
+  border: 0;
+}
+.creator-logo-fields .mvp-range {
+  margin-top: 8px;
+}
+.creator-logo-fields:disabled {
+  display: none;
+}
+.creator-logo-preview {
+  position: absolute;
+  max-width: none;
+  pointer-events: none;
+}
+#clip-zip-scope, #clip-zip-status {
+  flex-basis: 100%;
+  margin: 0;
+}
 .caption-text {
   margin-top: 6px;
   min-height: 4.375rem;
@@ -175,6 +202,7 @@
 }
 .caption-frame > span {
   position: absolute;
+  z-index: 1;
   inset-inline: calc(95 / 1080 * 100cqw);
   bottom: var(--caption-margin);
   font-family: "ClipForge Caption", "DejaVu Sans", sans-serif;

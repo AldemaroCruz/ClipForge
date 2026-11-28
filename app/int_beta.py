@@ -11,9 +11,10 @@ from starlette.concurrency import run_in_threadpool
 from .auth import AuthenticationBoundary, require_access, router as auth_router, settings
 from .auth_db import AuthConfigurationError, database_ready, get_engine
 from .cloud.caption_styles import router as styles_router
+from .cloud.creator_logos import router as logos_router
 from .cloud.config import beta_enabled, settings as cloud_settings
 from .cloud.migrate import REVISION
-from .cloud.migrate_beta import beta_schema_ready, editorial_schema_ready, styles_schema_ready
+from .cloud.migrate_beta import beta_schema_ready, editorial_schema_ready, logos_schema_ready, styles_schema_ready
 from .cloud.migrate_project_deletions import project_deletion_schema_ready
 from .cloud.pilot import router as pilot_router
 from .cloud.router import reconcile_project_cleanups, router as media_router
@@ -96,6 +97,7 @@ media_routes = APIRouter(routes=[
 app.include_router(media_routes, dependencies=[Depends(require_access)])
 app.include_router(pilot_router, dependencies=[Depends(require_access)])
 app.include_router(styles_router, dependencies=[Depends(require_access)])
+app.include_router(logos_router, dependencies=[Depends(require_access)])
 
 
 @app.get("/", dependencies=[Depends(require_access)])
@@ -132,7 +134,7 @@ def health():
             )).scalars().all()
             if (revisions == [REVISION] and beta_schema_ready(connection)
                     and editorial_schema_ready(connection) and project_deletion_schema_ready(connection)
-                    and styles_schema_ready(connection) and database_ready()):
+                    and styles_schema_ready(connection) and logos_schema_ready(connection) and database_ready()):
                 return {"status": "ok", "profile": "int-beta"}
     except (SQLAlchemyError, AuthConfigurationError):
         raise HTTPException(503, "El almacenamiento persistente todavía no está disponible.") from None

@@ -28,6 +28,11 @@ on:
         required: false
         type: boolean
         default: false
+      focused_creator_logos:
+        description: Verify creator logos against the accepted portal and four-CPU worker
+        required: false
+        type: boolean
+        default: false
       worker_benchmark_base:
         description: Accepted INT commit to keep serving during an INT worker-only comparison
         required: false
@@ -76,6 +81,7 @@ jobs:
           node --check app/static/beta.js
           node --check app/static/mvp.js
           node --check app/static/editorial.js
+          node --check app/static/logos.js
           node --check app/static/auth.js
           node --check app/static/account.js
           node --check app/static/recover.js
@@ -201,8 +207,8 @@ jobs:
           cp "$CI_CONTEXT"/{Dockerfile.int-beta,requirements-int-demo-apt.tsv,requirements-int-beta-apt.tsv} "$runtime/"
           cp "$CI_CONTEXT"/scripts/{build_int_beta_ffmpeg.sh,libass-d570c2f.patch} "$runtime/scripts/"
           cp "$CI_CONTEXT/requirements-int-demo.lock" "$runtime/web.lock"
-          grep -E '^(requests|certifi|charset-normalizer|urllib3|python-multipart)==' "$CI_CONTEXT/requirements-int.lock" >> "$runtime/web.lock"
-          grep -v '^psycopg-binary==' "$CI_CONTEXT/requirements-int.lock" > "$runtime/worker.lock"
+          grep -E '^(requests|certifi|charset-normalizer|urllib3|python-multipart|pillow)==' "$CI_CONTEXT/requirements-int.lock" >> "$runtime/web.lock"
+          grep -Ev '^(psycopg-binary|pillow)==' "$CI_CONTEXT/requirements-int.lock" > "$runtime/worker.lock"
           cat "$runtime"/requirements-int-{demo,beta}-apt.tsv |
             while IFS=$'\t' read -r package version arch digest url; do
               [[ -n "$package" && -n "$version" && -n "$arch" && "$digest" =~ ^[a-f0-9]{64}$ ]]
@@ -350,7 +356,7 @@ jobs:
         if: inputs.adopt_worker_profile
         shell: bash
         env:
-          OTHER_ACCEPTANCE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c04_styles || inputs.focused_c05_framing || inputs.focused_c06_zip || inputs.worker_benchmark_base != '' }}
+          OTHER_ACCEPTANCE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c04_styles || inputs.focused_c05_framing || inputs.focused_c06_zip || inputs.focused_creator_logos || inputs.worker_benchmark_base != '' }}
         run: |
           set -euo pipefail
           test "$OTHER_ACCEPTANCE" = false
@@ -546,6 +552,59 @@ jobs:
             8d3028e3149e9d65f28bfe1e30168da7efcc92009b86e574988cb554031bb960 \
             1670b05739c6a5739c44823958bd54ccc466ce0ae7478ceffb741622fd7e62d9
           printf 'INT_C06_ACCEPTANCE=%s\n' "$receipt" >> "$GITHUB_ENV"
+
+      - name: Constrain focused acceptance to creator logos
+        if: inputs.focused_creator_logos
+        shell: bash
+        env:
+          REUSE_OTHER_EVIDENCE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c04_styles || inputs.focused_c05_framing || inputs.focused_c06_zip || inputs.worker_benchmark_base != '' || inputs.adopt_worker_profile }}
+        run: |
+          set -euo pipefail
+          test "$REUSE_OTHER_EVIDENCE" = false
+          base=fb0cd729d79fc049994f0f9c223f520f498af24e
+          git merge-base --is-ancestor "$base" HEAD
+          git diff --name-only --no-renames -z "$base" HEAD | while IFS= read -r -d '' path; do
+            case "$path" in
+              .github/workflows/int-hito-b.yml|Dockerfile.int-beta|requirements-ci.lock|requirements-int.lock|config/int-hito-b-bandit-review.json) ;;
+              app/cloud/caption_styles.py|app/cloud/clip_captions.py|app/cloud/creator_logos.py|app/cloud/config.py|app/cloud/migrate_beta.py|app/cloud/pilot.py|app/cloud/repository.py|app/cloud/router.py|app/cloud/storage.py|app/cloud/worker.py) ;;
+              app/int_beta.py|app/int_beta_proxy.py|app/logo_placement.py|app/main.py|app/render.py) ;;
+              app/static/beta.html|app/static/beta.css|app/static/beta.js|app/static/editorial.js|app/static/logos.js|app/static/mvp.css) ;;
+              scripts/build_int_beta_ffmpeg.sh|scripts/deploy_int_beta.sh|scripts/int_hito_b_browser.py|scripts/int_hito_c_logos_browser.py|scripts/int_hito_c_styles_evidence.py) ;;
+              docs/INT-FOCUS-GROUP.md|tests/browser_hito_b_e2e.py|tests/test_creator_logos.py|tests/test_logo_render.py|tests/test_hito_b_proxy.py) ;;
+              *) printf 'Outside the verified creator logo scope: %s\n' "$path" >&2; exit 1 ;;
+            esac
+          done
+
+      - name: Download the accepted C06 evidence
+        if: inputs.focused_creator_logos
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          github-token: ${{ github.token }}
+          run-id: 46088385849
+          artifact-ids: 15241015222
+          path: ${{ env.DELIVERY_DIR }}/logos-portal-baseline
+          merge-multiple: true
+
+      - name: Download the adopted INT worker profile
+        if: inputs.focused_creator_logos
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          github-token: ${{ github.token }}
+          run-id: 46092661387
+          artifact-ids: 15241319365
+          path: ${{ env.DELIVERY_DIR }}/logos-worker-baseline
+          merge-multiple: true
+
+      - name: Verify accepted portal and worker receipts before OIDC
+        if: inputs.focused_creator_logos
+        shell: bash
+        run: |
+          set -euo pipefail
+          receipt="$DELIVERY_DIR/reports/logos-baseline.json"
+          python -m scripts.int_hito_c_styles_evidence --source "$DELIVERY_DIR/logos-portal-baseline" \
+            --commit "$GITHUB_SHA" --model "$INT_EDITORIAL_OPENAI_MODEL" --receipt "$receipt" \
+            --accepted-logo-profile "$DELIVERY_DIR/logos-worker-baseline"
+          printf 'INT_CREATOR_LOGOS_ACCEPTANCE=%s\n' "$receipt" >> "$GITHUB_ENV"
 
       - name: Check the exact source scope of the reused evidence
         id: reuse_scope
@@ -753,11 +812,17 @@ jobs:
             ${{ env.DELIVERY_DIR }}/reports/framing-desktop.png
             ${{ env.DELIVERY_DIR }}/reports/framing-mobile.png
             ${{ env.DELIVERY_DIR }}/reports/browser-zip.json
+            ${{ env.DELIVERY_DIR }}/reports/browser-logos.json
+            ${{ env.DELIVERY_DIR }}/reports/logos-desktop.png
+            ${{ env.DELIVERY_DIR }}/reports/logos-mobile.png
+            ${{ env.DELIVERY_DIR }}/reports/logos-caption-export.png
+            ${{ env.DELIVERY_DIR }}/reports/logos-editorial-export.png
+            ${{ env.DELIVERY_DIR }}/reports/logos-editorial-preview.png
           if-no-files-found: error
 
       - name: Replace the public revision and verify persistence
         id: acceptance_verify
-        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && steps.reuse_scope.outputs.mode != 'deletion' }}
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
         run: bash scripts/deploy_int_beta.sh acceptance-verify
@@ -776,7 +841,7 @@ jobs:
 
       - name: Create the three synthetic capacity accounts
         id: capacity_setup
-        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && steps.reuse_scope.outputs.mode != 'deletion' }}
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
         run: bash scripts/deploy_int_beta.sh capacity-setup
@@ -793,7 +858,7 @@ jobs:
 
       - name: Check three near-limit uploads and concurrent processing
         id: capacity_load
-        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && steps.reuse_scope.outputs.mode != 'deletion' }}
         run: bash scripts/deploy_int_beta.sh capacity-load
 
       - name: Publish the capacity evidence
@@ -808,7 +873,7 @@ jobs:
 
       - name: Export and measure both precise cuts
         id: capacity_cuts
-        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && steps.reuse_scope.outputs.mode != 'deletion' }}
         run: bash scripts/deploy_int_beta.sh capacity-cuts
 
       - name: Publish the precise-cut evidence
@@ -823,7 +888,7 @@ jobs:
 
       - name: Check three-account editorial acceptance and finish cleanup
         id: capacity_editorial
-        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && steps.reuse_scope.outputs.mode != 'deletion' }}
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
         run: bash scripts/deploy_int_beta.sh capacity-editorial
@@ -845,7 +910,7 @@ jobs:
         run: bash scripts/deploy_int_beta.sh capacity-cleanup
 
       - name: Restore the previous INT components after a failed acceptance
-        if: ${{ always() && !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && (failure() || cancelled()) && (steps.acceptance_open.outcome == 'success' || steps.acceptance_open.outcome == 'failure' || steps.acceptance_open.outcome == 'cancelled' || ((inputs.focused_c04_styles || inputs.focused_c05_framing || inputs.focused_c06_zip) && steps.deploy_prepare.outcome == 'success')) }}
+        if: ${{ always() && !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && (failure() || cancelled()) && (steps.acceptance_open.outcome == 'success' || steps.acceptance_open.outcome == 'failure' || steps.acceptance_open.outcome == 'cancelled' || ((inputs.focused_c04_styles || inputs.focused_c05_framing || inputs.focused_c06_zip || inputs.focused_creator_logos) && steps.deploy_prepare.outcome == 'success')) }}
         run: bash scripts/deploy_int_beta.sh rollback
 
       - name: Record the accepted services, worker, and matched fixture

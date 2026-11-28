@@ -229,7 +229,7 @@ def _publish_upload(url, name, source, size, content_type):
         close(response)
 
 
-def upload(name, source, content_type):
+def upload(name, source, content_type, *, reuse_identical=False):
     cfg = settings()
     source.seek(0)
     digest = hashlib.sha256()
@@ -245,7 +245,7 @@ def upload(name, source, content_type):
         try:
             generation = _publish_upload(url, name, source, size, content_type)
         except (TransportError, PreconditionFailed) as error:
-            if attempt == 0 and isinstance(error, PreconditionFailed):
+            if attempt == 0 and isinstance(error, PreconditionFailed) and not reuse_identical:
                 raise
             generation = _recover_upload(name, size, content_type, checksum.digest())
             if generation is None:

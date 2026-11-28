@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 
 from ..auth_db import get_engine
+from ..logo_placement import LogoPlacement
 from ..presentation import Cue, Presentation
 from ..subtitles import cues_from_segments, validate_cues
 from . import caption_styles, editorial_selection, repository as repo
@@ -38,6 +39,7 @@ class ClipCaptionUpdate(BaseModel):
     cues: list[Cue] = Field(max_length=400)
     revision: int = Field(ge=1, strict=True)
     style_template: caption_styles.StyleRevision | None = None
+    logo: LogoPlacement | None = None
     render: bool = Field(default=True, strict=True)
 
 
@@ -47,6 +49,7 @@ class ProjectCaptionUpdate(BaseModel):
     apply_to_all: Literal[True]
     revision: int = Field(ge=1, strict=True)
     style_template: caption_styles.StyleRevision | None = None
+    logo: LogoPlacement | None = None
     render: bool = Field(default=True, strict=True)
 
 
@@ -88,14 +91,17 @@ def _options(job, item, style, cues):
     return options if cues else options.model_copy(update={"burn_subtitles": False})
 
 
-def render_fingerprint(original, start, end, options, cues):
+def render_fingerprint(original, start, end, options, cues, logo=None):
     """Bind the artifact to the original generation, source interval and render inputs."""
     source = {key: original.get(key) for key in ("generation", "bytes", "md5", "sha256")}
     # Validate defaults and stored JSON the same way so integral JSON numbers
     # cannot turn a saved render into a different variant.
     normalized_options = Presentation.model_validate(options).model_dump()
     normalized_cues = [{**cue, "start": float(cue["start"]), "end": float(cue["end"])} for cue in cues]
-    data = json.dumps([source, float(start), float(end), normalized_options, normalized_cues],
+    values = [source, float(start), float(end), normalized_options, normalized_cues]
+    if logo is not None:
+        values.append(LogoPlacement.model_validate(logo).model_dump())
+    data = json.dumps(values,
                       ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(data.encode()).hexdigest()
 
@@ -113,13 +119,15 @@ def _base_output(doc, item, template):
     manifest = doc["manifest"]
     options = item["options"]
     cues = item.get("cues", [])
-    fingerprint = render_fingerprint(manifest["input.mp4"], item["start"], item["end"], options, cues)
+    logo = item.get("logo")
+    fingerprint = render_fingerprint(manifest["input.mp4"], item["start"], item["end"], options, cues, logo)
     return {
         "id": _render_identity(fingerprint, template),
         "mp4": root,
         "srt": f"{root}/subtitles/srt" if cues and PurePosixPath(filename).with_suffix(".srt").name in manifest else None,
         "vtt": f"{root}/subtitles/vtt" if cues and PurePosixPath(filename).with_suffix(".vtt").name in manifest else None,
         "burn_subtitles": options["burn_subtitles"],
+        **({"logo": logo} if logo else {}),
     }
 
 
@@ -134,6 +142,7 @@ def _variant_output(job_id, variant):
         "srt": f"{root}/clip.srt" if item["cues"] and "clip.srt" in manifest else None,
         "vtt": f"{root}/clip.vtt" if item["cues"] and "clip.vtt" in manifest else None,
         "burn_subtitles": item["options"]["burn_subtitles"],
+        **({"logo": item["logo"]} if item.get("logo") else {}),
     }
 
 
@@ -172,6 +181,8 @@ def _project_state(job):
     state = {"style": style_from(project_presentation(job)), "revision": job.get("caption_style_revision", 1)}
     if job.get("caption_style_template"):
         state["style_template"] = job["caption_style_template"]
+    if job.get("caption_logo"):
+        state["logo"] = job["caption_logo"]
     return state
 
 
@@ -180,6 +191,10 @@ def _clip_style(job, settings):
         return settings["style"], settings.get("style_template")
     project = _project_state(job)
     return project["style"], project.get("style_template")
+
+
+def _clip_logo(job, settings):
+    return settings.get("logo", job.get("caption_logo"))
 
 
 def enrich_job(doc):
@@ -191,7 +206,7 @@ def enrich_job(doc):
         with get_engine().connect() as connection:
             clips = [{**item, "captions": _caption_state(doc, item, connection)} for item in clips]
     result = {key: value for key, value in job.items()
-              if key not in {"clip_caption_settings", "caption_style_revision", "caption_style_template"}}
+              if key not in {"clip_caption_settings", "caption_style_revision", "caption_style_template", "caption_logo"}}
     return {**result, "clips": clips, "caption_style": _project_state(job)}
 
 
@@ -206,6 +221,9 @@ def clip_context(doc, filename, *, connection=None):
         "cues": _cues(doc, item, settings), "style": style,
         "source_url": f"/jobs/{job['id']}/source",
     }
+    logo = _clip_logo(job, settings)
+    if logo is not None:
+        context["logo"] = logo
     if template:
         context["style_template"] = template
     return context
@@ -229,7 +247,7 @@ def selected_output(doc, filename, revision, output_id, connection):
     return {kind: manifest[f"{stem}.{kind}"] for kind in ("mp4", "srt", "vtt") if output[kind]}
 
 
-def _plan(connection, doc, item, style, cues, *, inherited=False, render=True, template=None):
+def _plan(connection, doc, item, style, cues, *, inherited=False, render=True, template=None, logo=None):
     job, source = doc["payload"], doc["manifest"].get("input.mp4")
     if source is None:
         raise HTTPException(409, "Original no disponible")
@@ -238,11 +256,13 @@ def _plan(connection, doc, item, style, cues, *, inherited=False, render=True, t
     except ValueError as error:
         raise HTTPException(422, str(error)) from None
     options = _options(job, item, style, cues).model_dump()
-    fingerprint = render_fingerprint(source, item["start"], item["end"], options, cues)
+    fingerprint = render_fingerprint(source, item["start"], item["end"], options, cues, logo)
     settings = _settings(job, item)
     current_render = (
         item.get("caption_rendered") is True
-        and fingerprint == render_fingerprint(source, item["start"], item["end"], item["options"], item["cues"])
+        and fingerprint == render_fingerprint(
+            source, item["start"], item["end"], item["options"], item["cues"], item.get("logo")
+        )
     )
     render_identity = _render_identity(fingerprint, template)
     export_id = None if current_render else uuid.uuid5(
@@ -255,6 +275,8 @@ def _plan(connection, doc, item, style, cues, *, inherited=False, render=True, t
         desired.update(export_id=None, draft=True)
     if not inherited:
         desired["style"] = style
+        if logo is not None or job.get("caption_logo") is not None:
+            desired["logo"] = logo
     if template:
         desired["style_template"] = template
     if desired != settings:
@@ -270,6 +292,8 @@ def _plan(connection, doc, item, style, cues, *, inherited=False, render=True, t
     }
     if template:
         variant.update(style_template=template, caption_revision=desired["revision"])
+    if logo is not None:
+        variant["logo"] = logo
     return desired, variant
 
 
@@ -296,10 +320,12 @@ def save_clip(job_id, filename, payload: ClipCaptionUpdate, principal):
         if payload.revision != settings["revision"]:
             raise HTTPException(409, "Los subtítulos cambiaron. Volvé a abrir el clip.")
         previous_style, previous_template = _clip_style(job, settings)
-        style, template = caption_styles.resolve(connection, principal.id, payload.style_template,
-                                                 payload.style.root, previous_style, previous_template)
+        style, template, logo = caption_styles.resolve(
+            connection, principal, payload, payload.style.root, previous_style,
+            previous_template, _clip_logo(job, settings),
+        )
         desired, variant = _plan(connection, doc, item, style, [cue.model_dump() for cue in payload.cues],
-                                 render=payload.render, template=template)
+                                 render=payload.render, template=template, logo=logo)
         _publish(connection, principal, doc, [(filename, desired, variant)])
         return clip_context(doc, filename, connection=connection)
 
@@ -313,15 +339,21 @@ def save_project(job_id, payload: ProjectCaptionUpdate, principal):
             raise HTTPException(409, "El estilo cambió. Volvé a abrir el proyecto.")
         if job["status"] != "completed":
             raise HTTPException(409, "Esperá a que termine el procesamiento.")
-        style, template = caption_styles.resolve(connection, principal.id, payload.style_template,
-                                                 payload.style.root, current["style"], current.get("style_template"))
+        style, template, logo = caption_styles.resolve(
+            connection, principal, payload, payload.style.root, current["style"],
+            current.get("style_template"), current.get("logo"),
+        )
         planned = []
         for item in job["clips"]:
             desired, variant = _plan(connection, doc, item, style, _cues(doc, item, _settings(job, item)),
-                                     inherited=True, render=payload.render, template=template)
+                                     inherited=True, render=payload.render, template=template, logo=logo)
             planned.append((item["file"], desired, variant))
         job.update(caption_style=style, caption_style_revision=payload.revision + 1)
         job["caption_style_template"] = template
+        if logo is None:
+            job.pop("caption_logo", None)
+        else:
+            job["caption_logo"] = logo
         _publish(connection, principal, doc, planned)
         return _project_state(job)
 

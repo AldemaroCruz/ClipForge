@@ -21,15 +21,17 @@ METADATA_IDENTITY = (
     "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity"
 )
 REQUEST_SIZE = 32 * 1024
+LOGO_REQUEST_SIZE = 5 * 1024 * 1024
 ASSETS = frozenset({
     "account.css", "account.js", "auth.js", "recover.js", "beta.css", "beta.js", "mvp.css", "mvp.js", "editorial.js",
-    "caption-font.ttf", "caption-font-license.txt",
+    "caption-font.ttf", "caption-font-license.txt", "logos.js",
 })
 STATIC = Path(__file__).with_name("static")
 JOB = r"[a-f0-9]{32}"
 CLIP = r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.mp4"
 EXPORT_FILE = r"clip\.(?:mp4|srt|vtt)"
 MEDIA_ROUTE = rf"/jobs/{JOB}/(?:clips/{CLIP}|source|exports/{JOB}/files/clip\.mp4)"
+LOGO_UPLOAD_ROUTE = rf"/creator-logos(?:/{JOB})?"
 ROUTES = {
     "GET": (
         r"/(?:|login|recover|account|health|environment)",
@@ -39,12 +41,14 @@ ROUTES = {
         r"/beta/limits",
         r"/ai/config",
         rf"/caption-styles(?:/{JOB})?",
+        rf"/creator-logos(?:/{JOB}/[1-9][0-9]{{0,9}})?",
         rf"/jobs/{JOB}/(?:selections(?:/context|/{JOB})?|drafts(?:/{JOB})?|deletion)",
         rf"/jobs/{JOB}/clips/{CLIP}/(?:captions|subtitles/(?:srt|vtt))",
     ),
     "POST": (
         r"/auth/(?:login|logout|password|recover|users)",
         r"/caption-styles",
+        r"/creator-logos",
         rf"/auth/(?:users/{JOB}/deactivate|admin/users/{JOB}/recovery)",
         rf"/beta/(?:uploads|uploads/{JOB}/start|jobs/{JOB}/retry)",
         rf"/jobs/{JOB}/editor/(?:range|exports)",
@@ -52,8 +56,9 @@ ROUTES = {
         rf"/jobs/{JOB}/(?:selections(?:/preview|/{JOB}/candidates/[1-5]/draft)?|drafts(?:/{JOB}/exports)?|deletion)",
         rf"/jobs/{JOB}/clips/{CLIP}/captions/retry",
     ),
-    "PUT": (rf"/jobs/{JOB}/(?:drafts/{JOB}|clips/{CLIP}/captions|captions)", rf"/caption-styles/(?:{JOB}|default)"),
-    "DELETE": (rf"/caption-styles/{JOB}",),
+    "PUT": (rf"/jobs/{JOB}/(?:drafts/{JOB}|clips/{CLIP}/captions|captions)",
+            rf"/caption-styles/(?:{JOB}|default)", rf"/creator-logos/{JOB}"),
+    "DELETE": (rf"/caption-styles/{JOB}", rf"/creator-logos/{JOB}"),
 }
 INBOUND = {
     "accept", "content-type", "cookie", "idempotency-key", "origin",
@@ -139,14 +144,16 @@ def upstream(request, path, body):
         raise
 
 
-async def bounded_body(request):
+async def bounded_body(request, limit=REQUEST_SIZE):
+    too_large = ("El logo supera el límite de 5 MiB." if limit == LOGO_REQUEST_SIZE
+                 else "La solicitud supera el límite. Sube el video por la carga directa.")
     length = request.headers.get("content-length")
-    if length is not None and (not length.isdecimal() or len(length) > 10 or int(length) > REQUEST_SIZE):
-        raise HTTPException(413, "La solicitud supera el límite. Sube el video por la carga directa.")
+    if length is not None and (not length.isdecimal() or len(length) > 10 or int(length) > limit):
+        raise HTTPException(413, too_large)
     collected = bytearray()
     async for chunk in request.stream():
-        if len(collected) + len(chunk) > REQUEST_SIZE:
-            raise HTTPException(413, "La solicitud supera el límite. Sube el video por la carga directa.")
+        if len(collected) + len(chunk) > limit:
+            raise HTTPException(413, too_large)
         collected.extend(chunk)
     if request.method in READ_METHODS and collected:
         raise HTTPException(400, "Este método no acepta un cuerpo de solicitud.")
@@ -199,7 +206,10 @@ async def forward(request: Request, path: str):
             raise HTTPException(416, "Rango de reproducción no válido.")
     if len(request.scope.get("query_string", b"")) > 4096:
         raise HTTPException(414, "La consulta supera el límite.")
-    body = await bounded_body(request)
+    logo_upload = request.method in {"POST", "PUT"} and re.fullmatch(LOGO_UPLOAD_ROUTE, path)
+    if logo_upload and request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "image/png":
+        raise HTTPException(415, "Elegí un PNG estático.")
+    body = await bounded_body(request, LOGO_REQUEST_SIZE if logo_upload else REQUEST_SIZE)
     try:
         client, response = await run_in_threadpool(upstream, request, path, body)
     except (requests.RequestException, RuntimeError, ValueError):

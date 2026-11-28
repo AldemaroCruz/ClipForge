@@ -23,6 +23,11 @@ EXPORT = "c" * 32
 DRAFT = "d" * 32
 CAPTION = "f" * 32
 STYLE = "9" * 32
+LOGO = "7" * 32
+# A 4×2 transparent PNG with solid, translucent, and transparent columns.
+LOGO_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAYAAAB/qH1jAAAAFUlEQVR4nGP4qiv5H4obgJiBAV0AAA6HDtXs/EdoAAAAAElFTkSuQmCC"
+)
 FONT = "DejaVu Sans Bold"
 CHUNK = 8 * 1024 * 1024
 MAX_SIZE = 2 * CHUNK
@@ -67,7 +72,7 @@ class BrowserHitoBTest(unittest.TestCase):
                       "range_posts": [], "draft_updates": [], "approved": {},
                       "caption": None, "project_caption": None, "caption_updates": [], "deletions": [],
                       "saved_style": None, "framing_source": None, "source_reads": 0,
-                      "zip_requests": [], "zip_stale": False}
+                      "zip_requests": [], "zip_stale": False, "logo": None, "logo_versions": {}}
         self.context = self.browser.new_context(service_workers="block")
         self.addCleanup(self.context.close)
         self.context.route("**/*", self.handle)
@@ -85,7 +90,7 @@ class BrowserHitoBTest(unittest.TestCase):
             return
         self.assertEqual(ORIGIN, f"{parsed.scheme}://{parsed.netloc}")
         path = parsed.path
-        assets = {"beta.js": "text/javascript", "auth.js": "text/javascript",
+        assets = {"beta.js": "text/javascript", "auth.js": "text/javascript", "logos.js": "text/javascript",
                   "mvp.js": "text/javascript", "editorial.js": "text/javascript", "mvp.css": "text/css",
                   "beta.css": "text/css", "account.css": "text/css"}
         if path == "/":
@@ -100,6 +105,14 @@ class BrowserHitoBTest(unittest.TestCase):
             font = STATIC / "caption-font.ttf"
             if font.is_file():
                 route.fulfill(status=200, content_type="font/ttf", body=font.read_bytes())
+            else:
+                route.fulfill(status=404)
+            return
+        if path.startswith(f"/creator-logos/{LOGO}/"):
+            revision = int(path.rsplit("/", 1)[1])
+            asset = self.state["logo_versions"].get(revision)
+            if asset:
+                route.fulfill(status=200, content_type="image/png", body=asset)
             else:
                 route.fulfill(status=404)
             return
@@ -154,6 +167,27 @@ class BrowserHitoBTest(unittest.TestCase):
             return {"user": {"id": "2" * 32, "username": "fixture", "is_admin": self.state["admin"],
                              "permissions": ["users:manage"] if self.state["admin"] else []},
                     "csrf_token": self.csrf}, 200
+        if path == "/creator-logos" and method == "GET":
+            item = self.state["logo"]
+            return {"logos": [item] if item else []}, 200
+        if path in {"/creator-logos", f"/creator-logos/{LOGO}"}:
+            item = self.state["logo"]
+            params = parse_qs(urlsplit(request.url).query)
+            if item and method in {"PUT", "DELETE"}:
+                self.assertEqual(params["revision"], [str(item["revision"])])
+            if method == "DELETE":
+                self.state["logo"] = None
+                saved = self.state["saved_style"]
+                if saved and (saved.get("logo") or {}).get("id") == LOGO:
+                    saved.update(logo=None, revision=saved["revision"] + 1)
+                return {"retired": True}, 200
+            self.assertEqual("image/png", request.headers.get("content-type"))
+            self.assertEqual(LOGO_PNG, request.post_data_buffer)
+            revision = item["revision"] + 1 if item else 1
+            self.state["logo_versions"][revision] = request.post_data_buffer
+            self.state["logo"] = {"id": LOGO, "revision": revision, "name": params["name"][0],
+                                  "width": 4, "height": 2, "url": f"/creator-logos/{LOGO}/{revision}"}
+            return self.state["logo"], 200 if method == "PUT" else 201
         if path == "/caption-styles":
             item = self.state["saved_style"]
             if method == "GET":
@@ -331,11 +365,14 @@ class BrowserHitoBTest(unittest.TestCase):
         return {}, 404
 
     def apply_mock_style(self, destination, update, key):
+        if "logo" in update:
+            destination["logo"] = update["logo"]
         if reference := update.get("style_template"):
             item = self.state["saved_style"]
             self.assertEqual({"id": item["id"], "revision": item["revision"]}, reference)
             destination[key] = {**destination[key], **item["style"]}
             destination["style_template"] = {**reference, "font": item["font"]}
+            destination["logo"] = item.get("logo")
 
     @staticmethod
     def cue_fixture():
@@ -753,6 +790,96 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])
 
+    def test_logo_template_pins_private_png_and_automatic_variant_download(self):
+        base = f"/jobs/{JOB}/clips/{CLIP}"
+        variant = f"/jobs/{JOB}/exports/{CAPTION}/files/clip"
+        style = {"burn_subtitles": True, "subtitle_font_size": 52, "subtitle_color": "#FFFFFF",
+                 "subtitle_position": "bottom", "subtitle_outline": 3}
+        self.state.update(status="completed", caption={
+            "start": 392, "end": 421.5, "duration": 29.5, "cues": self.cue_fixture(), "style": style,
+            "revision": 1, "status": "completed", "output": {"id": "9" * 64, "mp4": base},
+        })
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        library = self.page.locator("#creator-logo-library")
+        library.locator("summary").click()
+        file = {"name": "logo.png", "mimeType": "image/png", "buffer": LOGO_PNG}
+        library.get_by_label("Nombre del logo").fill("Marca del canal")
+        library.get_by_label("Archivo PNG").set_input_files(file)
+        library.get_by_role("button", name="Cargar logo").click()
+        expect(library.get_by_role("status")).to_have_text("Logo guardado.")
+        library.locator("summary").click()
+
+        card = self.page.locator(f'[data-clip-file="{CLIP}"]')
+        card.get_by_role("button", name="Editar subtítulos").click()
+        panel = self.page.locator("#clip-caption-logos")
+        panel.locator("summary").click()
+        panel.get_by_label("Incluir logo en el MP4").check()
+        panel.get_by_label("Logo guardado").select_option(LOGO + ":1")
+        panel.get_by_label("Esquina").select_option("bottom-left")
+        panel.get_by_label("Tamaño (%)").fill("25")
+        panel.get_by_label("Opacidad (%)").fill("60")
+        panel.get_by_label("Margen (%)").fill("11")
+        image = self.page.locator("#clip-caption-sample .creator-logo-preview")
+        expect(image).to_be_visible()
+        expect(image).to_have_attribute("src", f"/creator-logos/{LOGO}/1")
+        expect(image).to_have_css("opacity", "0.6")
+        geometry = image.evaluate("""image => {
+            const box = image.getBoundingClientRect(), frame = image.parentElement.getBoundingClientRect();
+            return [box.width / frame.width, (box.left - frame.left) / frame.width,
+                    (frame.bottom - box.bottom) / frame.width, box.height / box.width];
+        }""")
+        for actual, wanted in zip(geometry, (0.25, 119 / 1080, 119 / 1080, 0.5)):
+            self.assertAlmostEqual(actual, wanted, places=3)
+
+        styles = self.page.locator("#clip-caption-styles")
+        styles.locator("summary").click()
+        styles.get_by_label("Nombre del estilo").fill("Mi canal")
+        styles.get_by_role("button", name="Guardar como estilo nuevo").click()
+        expect(styles.get_by_role("status")).to_have_text("Estilo guardado.")
+        settings = {"id": LOGO, "revision": 1, "position": "bottom-left", "size": 25, "opacity": 60, "margin": 11}
+        self.assertEqual(settings, self.state["saved_style"]["logo"])
+        self.assertEqual([], self.state["caption_updates"])
+        styles.get_by_role("button", name="Aplicar estilo", exact=True).click()
+        expect(styles.get_by_role("status")).to_have_text("Estilo aplicado.")
+        self.assertFalse(self.state["caption_updates"][-1]["render"])
+        self.page.get_by_role("button", name="Guardar y generar clip").click()
+        self.until_text("#clip-caption-status", "Subtítulos guardados")
+        self.state["caption"].update(status="completed", output={
+            "id": CAPTION, "mp4": variant + ".mp4", "srt": variant + ".srt", "vtt": variant + ".vtt",
+            "logo": settings, "burn_subtitles": True,
+        })
+        link = self.page.locator("#clip-caption-downloads").get_by_role("link", name="Descargar MP4 con logo")
+        expect(link).to_have_attribute("href", variant + ".mp4", timeout=15_000)
+        expect(self.page.locator("#clip-zip-scope")).to_contain_text("clip automático seleccionado")
+
+        self.page.set_viewport_size({"width": 390, "height": 844})
+        library.locator("summary").click()
+        library.get_by_label("Logo guardado").select_option(LOGO)
+        library.get_by_label("Archivo PNG").set_input_files(file)
+        self.page.once("dialog", lambda dialog: dialog.accept())
+        library.get_by_role("button", name="Reemplazar seleccionado").click()
+        expect(library.get_by_role("status")).to_contain_text("nueva revisión")
+        expect(image).to_have_attribute("src", f"/creator-logos/{LOGO}/1")
+        self.page.once("dialog", lambda dialog: dialog.accept())
+        library.get_by_role("button", name="Retirar seleccionado").click()
+        expect(library.get_by_role("status")).to_contain_text("Los usos anteriores se conservan")
+        self.assertEqual(settings, self.state["caption"]["logo"])
+        self.assertIsNone(self.state["saved_style"]["logo"])
+        self.assertEqual(2, self.state["saved_style"]["revision"])
+        styles.get_by_role("button", name="Usar en trabajos nuevos").click()
+        expect(styles.get_by_role("status")).to_have_text("Estilo predeterminado para trabajos nuevos.")
+        expect(link).to_have_attribute("href", variant + ".mp4")
+
+        self.page.reload()
+        card.get_by_role("button", name="Editar subtítulos").click()
+        panel.locator("summary").click()
+        expect(panel.get_by_label("Logo guardado").locator("option:checked")).to_have_text("Logo de este clip · revisión 1 guardada")
+        expect(image).to_be_visible()
+        expect(link).to_have_attribute("href", variant + ".mp4")
+        self.assertEqual([], self.state["selection_posts"])
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
     def test_manual_framing_previews_a_real_frame_and_versions_a_crop_only_edit(self):
         cues = [{"start": 0, "end": 1, "text": "Texto que se conserva."},
                 {"start": 2, "end": 3, "text": "Segmento posterior."}]
@@ -821,6 +948,34 @@ class BrowserHitoBTest(unittest.TestCase):
         expect(self.page.locator("#editorial-crop-zoom")).to_have_value("2.2")
         expect(result).to_be_hidden()
         self.assertEqual(reads, self.state["source_reads"])
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
+    def test_editorial_logo_overlays_the_vertical_crop_without_subtitles(self):
+        logo = {"id": LOGO, "revision": 1, "position": "top-right", "size": 18, "opacity": 80, "margin": 4}
+        self.state.update(status="completed", framing_source=FRAMING_WEBM, logo_versions={1: LOGO_PNG})
+        self.store_draft(title="Recorte con logo", start=0, end=12, cues=[], logo=logo,
+                         options={"burn_subtitles": False, "framing": "crop", "crop_zoom": 2})
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        self.page.get_by_text("Propuestas por IA y edición", exact=True).click()
+        preview = self.page.locator("#editorial-sample")
+        expect(preview.get_by_role("heading")).to_have_text("Vista previa del logo")
+        expect(preview.locator(".creator-logo-preview")).to_be_visible()
+        self.page.locator("#editorial-framing-preview").click()
+        composite = self.page.locator("#editorial-framing-composition")
+        image = composite.locator(".creator-logo-preview")
+        expect(image).to_be_visible()
+        expect(image).to_have_css("opacity", "0.8")
+        margin = image.evaluate("""image => {
+            const imageBox = image.getBoundingClientRect(), frame = image.parentElement.getBoundingClientRect();
+            return (frame.right - imageBox.right) / frame.width;
+        }""")
+        self.assertAlmostEqual(margin, 43 / 1080, places=3)
+        self.page.locator("#editorial-export").click()
+        link = self.page.locator("#editorial-exports").get_by_role("link", name="Descargar MP4 con logo")
+        expect(link).to_have_attribute("href", f"/jobs/{JOB}/exports/{'1' * 32}/files/clip.mp4")
+        self.assertEqual([], self.state["draft_updates"])
+        self.assertEqual([], self.state["selection_posts"])
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])
 

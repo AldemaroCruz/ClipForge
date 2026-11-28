@@ -12,7 +12,7 @@ from ..auth import settings as auth_settings
 from ..auth_db import get_engine
 from ..environment import identity
 from ..presentation import Presentation
-from . import caption_styles, repository as repo
+from . import caption_styles, creator_logos, repository as repo
 from . import storage
 from .config import (
     BETA_MAX_ACTIVE, BETA_MAX_BYTES, BETA_MAX_DIMENSION, BETA_MAX_SECONDS,
@@ -74,6 +74,9 @@ def _reserve(principal, key, filename, size, burn_subtitles=True):
         }
         if template:
             item["caption_style_template"] = caption_styles.snapshot(template)
+            logo = creator_logos.template_logo(connection, principal, template["logo"])
+            if logo is not None:
+                item["caption_logo"] = logo
         repo.insert_document(connection, job_id, "job", item)
         repo.remember_request(connection, principal.id, key, fingerprint, job_id, "beta_upload", job_id)
         return item

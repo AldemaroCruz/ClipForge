@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/static/beta.css">
   <link rel="stylesheet" href="/static/mvp.css">
   <script src="/static/auth.js" defer></script>
+  <script src="/static/logos.js" defer></script>
   <script src="/static/mvp.js" defer></script>
   <script src="/static/editorial.js" defer></script>
   <script src="/static/beta.js" defer></script>
@@ -46,6 +47,24 @@
           <ul id="project-list" class="beta-list"></ul>
           <button id="more-projects" type="button" class="secondary" hidden>Ver más trabajos</button>
         </section>
+        <details id="creator-logo-library" class="panel caption-styles">
+          <summary>Mis logos</summary>
+          <form id="creator-logo-form" aria-describedby="creator-logo-format">
+            <label for="creator-logo-library-select">Logo guardado</label>
+            <select id="creator-logo-library-select"></select>
+            <label for="creator-logo-name">Nombre del logo</label>
+            <input id="creator-logo-name" type="text" maxlength="80" required>
+            <label for="creator-logo-file">Archivo PNG</label>
+            <input id="creator-logo-file" type="file" accept="image/png,.png" required>
+            <p id="creator-logo-format" class="muted">PNG estático de hasta 5 MiB y 2048 píxeles por lado. Puede tener transparencia.</p>
+            <div class="actions">
+              <button type="submit">Cargar logo</button>
+              <button id="creator-logo-replace" class="secondary" type="button" disabled>Reemplazar seleccionado</button>
+              <button id="creator-logo-retire" class="secondary beta-danger" type="button" disabled>Retirar seleccionado</button>
+            </div>
+            <p id="creator-logo-status" class="status beta-message" role="status"></p>
+          </form>
+        </details>
       </aside>
       <section class="panel beta-detail" aria-labelledby="job-title">
         <h2 id="job-title">Revisar clips</h2>
@@ -59,6 +78,7 @@
         <h3 id="heuristic-heading" hidden>Clips automáticos por heurística</h3>
         <div id="clip-zip-actions" class="actions" hidden>
           <button id="clip-zip-download" type="button" class="secondary" disabled>Descargar ZIP de clips seleccionados</button>
+          <p id="clip-zip-scope" class="muted">El ZIP incluye la versión disponible de cada clip automático seleccionado, con logo si esa versión lo tiene. Descarga las exportaciones de borradores y los clips manuales desde sus propias tarjetas.</p>
           <p id="clip-zip-status" class="status beta-message" role="status"></p>
         </div>
         <div id="clip-list" class="beta-clips"></div>
@@ -88,6 +108,9 @@
               </div>
               <details id="clip-caption-styles" class="caption-styles">
                 <summary>Estilos guardados</summary>
+              </details>
+              <details id="clip-caption-logos" class="caption-styles creator-logo-controls">
+                <summary>Logo del clip</summary>
               </details>
               <p id="clip-caption-empty" class="muted" hidden>Este clip no tiene subtítulos. Puedes añadirlos con «Editar subtítulos».</p>
               <div id="clip-caption-cues"></div>
@@ -201,7 +224,9 @@
                     </figure>
                     <figure>
                       <figcaption>Encuadre 9:16</figcaption>
-                      <canvas id="editorial-framing-canvas" width="270" height="480" aria-label="Resultado del encuadre vertical"></canvas>
+                      <div id="editorial-framing-composition" class="framing-composition">
+                        <canvas id="editorial-framing-canvas" width="270" height="480" aria-label="Resultado del encuadre vertical"></canvas>
+                      </div>
                     </figure>
                   </div>
                 </section>
@@ -219,6 +244,9 @@
                 </section>
                 <details id="editorial-styles" class="caption-styles">
                   <summary>Estilos guardados</summary>
+                </details>
+                <details id="editorial-logos" class="caption-styles creator-logo-controls">
+                  <summary>Logo del clip</summary>
                 </details>
                 <div id="editorial-cues"></div>
                 <button type="button" id="editorial-add-cue" class="secondary">Añadir subtítulo</button>
@@ -276,6 +304,27 @@
       </ol>
     </section>
   </main>
+  <template id="creator-logo-controls">
+    <label class="beta-check"><input type="checkbox" data-logo-field="enabled">Incluir logo en el MP4</label>
+    <fieldset class="creator-logo-fields" data-logo-field="controls">
+      <legend class="muted">Composición del logo</legend>
+      <label>Logo guardado<select data-logo-field="select" required></select></label>
+      <div class="mvp-range">
+        <label>Esquina<select data-logo-field="position">
+          <option value="top-right">Superior derecha</option>
+          <option value="top-left">Superior izquierda</option>
+          <option value="bottom-right">Inferior derecha</option>
+          <option value="bottom-left">Inferior izquierda</option>
+        </select></label>
+        <label>Tamaño (%)<input type="number" data-logo-field="size" min="5" max="40" step="1" required></label>
+        <label>Opacidad (%)<input type="number" data-logo-field="opacity" min="0" max="100" step="1" required></label>
+        <label>Margen (%)<input type="number" data-logo-field="margin" min="0" max="20" step="1" required></label>
+      </div>
+      <p class="muted">El tamaño y el margen se expresan como proporción del ancho del encuadre.</p>
+    </fieldset>
+    <button type="button" class="secondary" data-logo-action="library">Administrar mis logos</button>
+    <p class="status beta-message" role="status" data-logo-field="status"></p>
+  </template>
   <template id="caption-styles-controls">
     <label>Estilo guardado<select data-style-field="select"></select></label>
     <div class="actions">

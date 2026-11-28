@@ -7,6 +7,7 @@
 
   const details = el("details");
   const auth = window.ClipForgeAuth;
+  const logos = window.ClipForgeLogos;
   const source = el("source");
   const observesFrames = typeof source.requestVideoFrameCallback === "function";
   const idPattern = /^[a-f0-9]{32}$/;
@@ -101,6 +102,8 @@
     el("selection").reset();
     el("draft-form").reset();
     draftStyles.reset();
+    draftLogos.reset();
+    logos.show(el("sample").querySelector(".caption-frame"), null);
     for (const name of ["config", "status", "draft-status", "summary", "candidates", "exports", "drafts", "runs", "cues"]) {
       el(name).replaceChildren();
     }
@@ -480,6 +483,7 @@
     let version = 0;
     let loaded = false;
     let busy = false;
+    let pendingRefresh = false;
 
     const selected = () => styles.find(item => item.id === fields.select.value);
     const show = text => { fields.status.textContent = text; };
@@ -502,12 +506,13 @@
       updateControls();
     }
 
-    async function refresh(expectedVersion, preferred = null) {
+    async function refresh(expectedVersion, preferred = null, preserveDraft = false) {
       const data = await auth.json(path);
       if (expectedVersion !== version) return;
       if (!Array.isArray(data.styles) || !Array.isArray(data.fonts) || !data.fonts.length) {
         throw new Error("No se pudieron comprobar los estilos disponibles.");
       }
+      const font = fields.font.value;
       styles = data.styles;
       fields.font.replaceChildren(...data.fonts.map(font => new Option(font.label, font.id)));
       fields.select.replaceChildren(new Option("Elegir un estilo", ""), ...styles.map(item =>
@@ -516,7 +521,10 @@
       fields.select.value = preferred ?? (styles.find(item =>
         item.id === snapshot?.id && item.revision === snapshot.revision)?.id ?? "");
       loaded = true;
-      selectStyle();
+      if (preserveDraft && selected()?.id === preferred) {
+        if (data.fonts.some(item => item.id === font)) fields.font.value = font;
+        updateControls();
+      } else selectStyle();
     }
 
     function stylePayload(value) {
@@ -548,9 +556,11 @@
         return;
       }
       const name = fields.name.value.trim();
+      if (action !== "rename" && !scope.validateLogo()) return;
       const style = action === "rename" ? item.style : scope.style();
       if (!style) return;
-      const body = {name, font: action === "rename" ? item.font : fields.font.value, style: stylePayload(style)};
+      const body = {name, font: action === "rename" ? item.font : fields.font.value, style: stylePayload(style),
+        logo: action === "rename" ? item.logo ?? null : scope.logo()};
       const creating = action === "create";
       const result = creating ? await write(path, "POST", body)
         : await write(itemPath, "PUT", {...body, revision: item.revision});
@@ -558,7 +568,7 @@
       if (expectedVersion === version) show(creating ? "Estilo guardado." : "Estilo actualizado.");
     }
 
-    async function run(action) {
+    async function run(action, background = false) {
       if (busy || (!loaded && action !== "load")) return;
       const item = selected();
       if (!item && !["load", "create"].includes(action)) return;
@@ -569,11 +579,11 @@
       }
       const expectedVersion = version;
       busy = true;
-      show("");
+      if (!background) show("");
       updateControls();
       try {
         if (action === "load") {
-          await refresh(expectedVersion, item?.id ?? null);
+          await refresh(expectedVersion, item?.id ?? null, background);
         } else if (action === "apply" || action === "apply-all") {
           const applied = await (action === "apply" ? scope.apply(item) : scope.applyAll(item));
           if (applied && expectedVersion === version) show("Estilo aplicado.");
@@ -581,17 +591,26 @@
           await changeCatalog(action, item, expectedVersion);
         }
       } catch (error) {
-        if (expectedVersion === version) show(error.message);
+        if (expectedVersion === version && (!background || !fields.status.textContent)) show(error.message);
       } finally {
         if (expectedVersion === version) {
           busy = false;
           updateControls();
+          if (pendingRefresh) {
+            pendingRefresh = false;
+            if (panel.open) void run("load", true);
+          }
         }
       }
     }
 
     panel.addEventListener("toggle", () => {
       if (panel.open) void run("load");
+    });
+    document.addEventListener("clipforge-logo-retired", () => {
+      if (!panel.open) return;
+      if (busy) pendingRefresh = true;
+      else void run("load", true);
     });
     fields.select.addEventListener("change", selectStyle);
     fields.name.addEventListener("keydown", event => {
@@ -606,6 +625,7 @@
         styles = [];
         loaded = false;
         busy = false;
+        pendingRefresh = false;
         fields.select.replaceChildren();
         fields.font.replaceChildren();
         fields.name.value = "";
@@ -634,12 +654,17 @@
     return styleControls(field, options);
   }
 
-  function showCaptionSample(sample, container, style) {
+  function showCaptionSample(sample, container, style, logo = null) {
     const row = container.querySelector("[data-preview]") ?? container.firstElementChild;
-    sample.hidden = !style.burn_subtitles || !row;
-    if (sample.hidden) return;
     const frame = sample.querySelector(".caption-frame");
     const span = frame.firstElementChild;
+    const showText = Boolean(style.burn_subtitles && row);
+    sample.hidden = !showText && !logo;
+    span.hidden = !showText;
+    sample.querySelector("h4").textContent = logo ? (showText ? "Vista previa del subtítulo y logo" : "Vista previa del logo")
+      : "Vista previa del subtítulo";
+    logos.show(frame, logo);
+    if (!showText) return;
     const units = value => `calc(${value} / 1080 * 100cqw)`;
     frame.dataset.position = style.subtitle_position;
     span.textContent = row.querySelector(".caption-text").value;
@@ -658,7 +683,9 @@
   }
 
   function updateSample() {
-    showCaptionSample(el("sample"), el("cues"), captionStyle(view?.draft?.options));
+    const logo = draftLogos.read();
+    showCaptionSample(el("sample"), el("cues"), captionStyle(view?.draft?.options), logo);
+    if (!el("framing-result").hidden) logos.show(el("framing-composition"), logo);
   }
 
   function setCues(cues, start, end, keepSelection) {
@@ -700,6 +727,7 @@
     el("crop-zoom-value").value = options.crop_zoom.toFixed(2) + "×";
     const result = el("framing-result");
     if (result.hidden) return;
+    logos.show(el("framing-composition"), draftLogos.read());
 
     const original = el("framing-original");
     const canvas = el("framing-canvas");
@@ -739,6 +767,7 @@
     framingCapture = null;
     const result = el("framing-result");
     result.hidden = true;
+    logos.show(el("framing-composition"), null);
     delete result.dataset.time;
     delete result.dataset.mode;
     el("framing-original").width = 0;
@@ -827,6 +856,7 @@
     const keepSelection = state.draft?.id === item.id;
     if (!keepSelection) {
       draftStyles.reset();
+      draftLogos.reset();
       resetFramingPreview();
     }
     state.draft = item;
@@ -840,6 +870,7 @@
     el("end").value = item.end;
     fillStyleControls(el, item.options);
     fillFramingControls(item.options);
+    draftLogos.fill(item.logo);
     setCues(item.cues, item.start, item.end, keepSelection);
     el("revision").textContent = "Revisión guardada " + item.revision;
     updateSample();
@@ -884,12 +915,14 @@
       ...range,
       options: {...captionStyle(item.options), ...framingOptions()},
       cues: readCues(),
+      logo: draftLogos.read(),
     };
   }
 
   function formMatches(item) {
     const value = draftPayload(item, rangeFields());
     return value.title === item.title && value.start === item.start && value.end === item.end
+      && logos.matches(value.logo, item.logo)
       && value.options.burn_subtitles === (item.options.burn_subtitles === true)
       && value.options.subtitle_font_size === (item.options.subtitle_font_size ?? 52)
       && value.options.subtitle_color === (item.options.subtitle_color ?? "#FFFFFF").toUpperCase()
@@ -924,7 +957,7 @@
 
   async function draftAction(action) {
     const state = view;
-    if (!state?.draft || state.draftBusy || !el("draft-form").reportValidity()) return;
+    if (!state?.draft || state.draftBusy || !draftLogos.reportValidity() || !el("draft-form").reportValidity()) return;
     setDraftBusy(state, true);
     status(state, "", "draft-status");
     try {
@@ -975,12 +1008,13 @@
     try {
       const {title, clip_file, start, end, options, cues, revision} = item;
       const body = auth.payload({title, clip_file: clip_file ?? null, start, end, cues, revision, options,
-        style_template: {id: template.id, revision: template.revision}});
+        logo: template.logo ?? null, style_template: {id: template.id, revision: template.revision}});
       body.method = "PUT";
       const result = await request(state, "/drafts/" + item.id, body);
       if (!visible(state)) return false;
       state.draft = result;
       fillStyleControls(el, result.options);
+      draftLogos.fill(result.logo);
       el("burn").checked = burn;
       el("revision").textContent = "Revisión guardada " + result.revision;
       updateSample();
@@ -997,6 +1031,7 @@
     card.dataset.exportId = item.id;
     const hasCues = Array.isArray(item.cues) ? item.cues.length > 0 : true;
     card.append(node("h3", title), node("p", "Revisión " + item.draft_revision
+      + (item.logo ? " · Con logo" : "")
       + (item.status === "completed" && hasCues && item.options?.burn_subtitles ? " · Subtítulos incrustados" : ""), "muted"));
     if (item.status === "completed") {
       const files = "/jobs/" + state.id + "/exports/" + item.id + "/files/";
@@ -1007,7 +1042,8 @@
       player.preload = "none";
       player.setAttribute("aria-label", title);
       const links = node("div", undefined, "actions");
-      for (const [name, label] of [["clip.mp4", "Descargar MP4 editado"], ["clip.srt", "Descargar SRT"], ["clip.vtt", "Descargar VTT"]]) {
+      for (const [name, label] of [["clip.mp4", item.logo ? "Descargar MP4 con logo" : "Descargar MP4 editado"],
+        ["clip.srt", "Descargar SRT"], ["clip.vtt", "Descargar VTT"]]) {
         if (!hasCues && name !== "clip.mp4") continue;
         const link = node("a", label);
         link.href = files + name;
@@ -1088,13 +1124,18 @@
   el("drafts").addEventListener("change", event => {
     if (view) void openDraft(view, event.target.value);
   });
+  const draftLogos = logos.mount("editorial-logos", updateSample);
   const draftStyles = mountCaptionStyles("editorial-styles", {
     style: () => editorStyle(el, view?.draft?.options),
     snapshot: () => view?.draft?.style_template,
+    validateLogo: draftLogos.reportValidity,
+    logo: draftLogos.read,
     apply: applyDraftStyle,
   });
   el("draft-form").addEventListener("submit", event => { event.preventDefault(); void draftAction("save"); });
-  el("draft-form").addEventListener("input", updateSample);
+  el("draft-form").addEventListener("input", event => {
+    if (!event.target.closest(".caption-styles")) updateSample();
+  });
   trackCaptionCue(el("cues"), updateSample);
   el("apply-range").addEventListener("click", () => draftAction("range"));
   el("range-preview").addEventListener("click", () => draftAction("preview"));

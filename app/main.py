@@ -28,6 +28,7 @@ from .state import write_json_atomic
 from .lease import data_lease
 from .telemetry import Recorder
 from .model_source import resolve_model
+from .logo_placement import LogoPlacement
 from .presentation import Presentation, ExportRequest
 from .render import render_clip, run_ffmpeg
 from .subtitles import SubtitleError, cues_from_segments, validate_cues, to_srt, to_vtt
@@ -228,7 +229,8 @@ def _beta_audio(source: Path) -> Any:
 
 
 def _process(job_id: str, recorder: Recorder | None = None, *,
-             validated_media: dict[str, Any] | None = None) -> None:
+             validated_media: dict[str, Any] | None = None,
+             logo: LogoPlacement | None = None, logo_path: Path | None = None) -> None:
     recorder = recorder or Recorder(ROOT, job_id, "process", job_id)
     folder = ROOT / job_id
     job: dict[str, Any] | None = None
@@ -307,11 +309,14 @@ def _process(job_id: str, recorder: Recorder | None = None, *,
                 folder / "input.mp4", output, start=clip["start"], end=clip["end"],
                 options=render_options, cues=cues, video_index=job["media"]["video_stream_index"],
                 threads=FFMPEG_THREADS, runner=ffmpeg, pilot=validated_media is not None,
+                logo=logo, logo_path=logo_path,
             )
             recorder.clip_rendered(render_started)
             clip["cues"] = cues
             clip["options"] = render_options.model_dump()
             clip["file"] = filename
+            if logo is not None:
+                clip["logo"] = logo.model_dump()
             if validated_media is not None:
                 clip["caption_rendered"] = True
             # Only publish links after FFmpeg has successfully closed the file.
@@ -596,7 +601,8 @@ def mark_interrupted_exports() -> None:
             LOGGER.warning("No se modificó la variante ilegible %s", path)
 
 
-def process_export(job_id: str, export_id: str, *, pilot: bool = False) -> None:
+def process_export(job_id: str, export_id: str, *, pilot: bool = False,
+                   logo: LogoPlacement | None = None, logo_path: Path | None = None) -> None:
     recorder = Recorder(ROOT, job_id, "export", export_id)
     recorder.phase("queue")
     item = None
@@ -620,7 +626,7 @@ def process_export(job_id: str, export_id: str, *, pilot: bool = False) -> None:
             render_started = time.monotonic()
             render_clip(source, target, start=item["start"], end=item["end"],
                         options=options, cues=item["cues"], video_index=media["video_stream_index"],
-                        threads=FFMPEG_THREADS, pilot=pilot)
+                        threads=FFMPEG_THREADS, pilot=pilot, logo=logo, logo_path=logo_path)
             recorder.clip_rendered(render_started)
             item.update(status="completed", completed_at=time.time())
             persist_export(job_id, item)

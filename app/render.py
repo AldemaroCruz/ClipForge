@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from .logo_placement import LogoPlacement
 from .presentation import Presentation
 from .media_binaries import resolve_media_binary
 from .subtitles import to_ass, to_srt, to_vtt, validate_cues
@@ -82,7 +83,8 @@ def _filter_path(path: Path) -> str:
 
 
 def build_filter(options: Presentation, *, video_index: int = 0,
-                 ass_path: Path | None = None, source_clock: bool = False) -> str:
+                 ass_path: Path | None = None, source_clock: bool = False,
+                 logo: LogoPlacement | None = None) -> str:
     if isinstance(video_index, bool) or not isinstance(video_index, int) or video_index < 0:
         raise ValueError("Índice de pista de video inválido")
     # Normalize sample aspect ratio before crop/pad. FFmpeg autorotation remains on.
@@ -101,18 +103,39 @@ def build_filter(options: Presentation, *, video_index: int = 0,
                 f"h='trunc(min(ih,iw*16/9)/{z:.6f}/2)*2':"
                 f"x='trunc((iw-ow)*{x:.6f}/2)*2':y='trunc((ih-oh)*{y:.6f}/2)*2'")
         graph = f"{prefix},{crop},scale=1080:1920[framed]"
+    framed = "framed"
+    if logo is not None:
+        box = round(1080 * logo.size / 100)
+        margin = round(1080 * logo.margin / 100)
+        vertical, horizontal = logo.position.split("-")
+        x = f"W-w-{margin}" if horizontal == "right" else str(margin)
+        y = f"H-h-{margin}" if vertical == "bottom" else str(margin)
+        width = f"'max(1,floor(iw*{box}/max(iw,ih)+0.5))'"
+        height = f"'max(1,floor(ih*{box}/max(iw,ih)+0.5))'"
+        graph += (
+            f";[1:v]format=rgba,scale={width}:{height},setsar=1,"
+            f"colorchannelmixer=aa={logo.opacity / 100:.2f}[logo];"
+            f"[framed][logo]overlay=x={x}:y={y}:format=auto:eof_action=repeat[branded]"
+        )
+        framed = "branded"
     tail = "setsar=1"
     if options.burn_subtitles and ass_path is not None:
         tail += f",ass=filename={_filter_path(ass_path)}"
-    return f"{graph};[framed]{tail}[outv]"
+    return f"{graph};[{framed}]{tail}[outv]"
 
 
 def render_clip(source: Path, output: Path, *, start: float, end: float,
                 options: Presentation, cues: list[dict[str, Any]], video_index: int = 0,
                 threads: int = 2, runner: Callable[..., None] = run_ffmpeg,
-                pilot: bool = False) -> None:
+                pilot: bool = False, logo: LogoPlacement | None = None,
+                logo_path: Path | None = None) -> None:
     if not 0 < end - start <= 60.001:
         raise ValueError("La duración de exportación debe ser mayor que 0 y no superar 60 segundos.")
+    if (logo is None) != (logo_path is None):
+        raise ValueError("La composición del logo requiere su imagen y sus ajustes.")
+    logo_input = []
+    if logo_path is not None:
+        logo_input = ["-protocol_whitelist", "file,pipe", "-f", "png_pipe", "-i", logo_path.resolve()]
     duration = round(end - start, 3)
     encoding_limits = []
     video_clock = []
@@ -142,8 +165,10 @@ def render_clip(source: Path, output: Path, *, start: float, end: float,
         target = folder / "clip.mp4"
         runner(
             "-filter_complex_threads", max(1, threads),
-            "-ss", f"{start:.3f}", "-protocol_whitelist", "file,pipe", "-i", source.resolve(), "-t", f"{duration:.3f}",
-            "-filter_complex", build_filter(options, video_index=video_index, ass_path=ass, source_clock=pilot),
+            "-ss", f"{start:.3f}", "-protocol_whitelist", "file,pipe", "-i", source.resolve(),
+            *logo_input, "-t", f"{duration:.3f}",
+            "-filter_complex", build_filter(options, video_index=video_index, ass_path=ass,
+                                            source_clock=pilot, logo=logo),
             "-map", "[outv]", "-map", "0:a:0", "-af", audio_clock, *video_clock,
             "-c:v", "libx264", "-threads", max(1, threads), "-preset", "veryfast",
             "-crf", "26", "-pix_fmt", "yuv420p", "-c:a", "aac", *encoding_limits,

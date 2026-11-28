@@ -85,6 +85,39 @@ def verify_product_release(root, commit, model, phase, accepted_commit, run, art
     }
 
 
+def verify_logos_baseline(root, profile, commit, model):
+    accepted = "cbfb913190f5893df371e8ba156ebc7976a2058a"
+    if not re.fullmatch(r"[a-f0-9]{40}", commit) or commit == accepted:
+        raise ValueError("La candidata de logos debe tener su propio commit")
+    hashes = {
+        "after-rollout.json": "4e86068cc6b39723457471c8361a0ddd879d954e2eaa23fedfb34e38bcf3880b",
+        "browser-zip.json": "fbb048ba2f36b986e217d6703a3bba996c941542bd7a27bc840f7bb7caee747c",
+        "worker-profile-adopted.json": "cb11601d2f7bf2297afe6a82330ae2fdd56517131f89a004674f7f3ef3f5a861",
+    }
+    rollout = native_report(root, "after-rollout.json", hashes["after-rollout.json"])
+    browser = native_report(root, "browser-zip.json", hashes["browser-zip.json"])
+    adoption = native_report(profile, "worker-profile-adopted.json", hashes["worker-profile-adopted.json"])
+    pinned_public = adoption["public"]
+    worker = adoption["adopted_worker"]
+    revisions = {"frontend": rollout["frontend_revision"], "api": rollout["api_revision"]}
+    checks = {entry["name"] for entry in browser["checks"] if entry["status"] == "passed"}
+    if (rollout["commit"] != accepted or browser["commit"] != accepted or browser["revisions"] != revisions
+            or browser["phase"] != "zip" or browser["status"] != "passed"
+            or "zip_stream_over_32_mib_matches_individual_files" not in checks
+            or any(pinned_public[key] != rollout[key] for key in pinned_public)
+            or adoption["status"] != "passed" or worker["generation"] != worker["observed_generation"]
+            or worker["cpu"] != "4" or worker["memory"] != "4Gi"
+            or rollout["editorial"]["model"] != model or rollout["editorial"]["daily_limit"] != 100):
+        raise ValueError("La base no coincide con el portal y worker aceptados")
+    return {
+        "schema": "clipforge-int-logos-baseline-1", "status": "passed", "target_commit": commit,
+        "baseline": {**rollout, "worker_image": worker["image"], "worker_source": worker["source"],
+                     "worker_cpu": worker["cpu"], "worker_memory": worker["memory"]},
+        "evidence": {"c06_run": "46088385849", "c06_artifact": "15241015222",
+                     "profile_run": "46092661387", "profile_artifact": "15241319365", "sha256": hashes},
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, type=Path)
@@ -95,11 +128,14 @@ def main():
     for phase in ("styles", "framing"):
         group.add_argument("--accepted-" + phase, nargs=5,
                            metavar=("SHA", "RUN", "ARTIFACT", "ROLLOUT_HASH", "BROWSER_HASH"))
+    group.add_argument("--accepted-logo-profile", type=Path, metavar="PROFILE_RECEIPT_DIR")
     args = parser.parse_args()
     if args.accepted_styles:
         receipt = verify_product_release(args.source, args.commit, args.model, "styles", *args.accepted_styles)
     elif args.accepted_framing:
         receipt = verify_product_release(args.source, args.commit, args.model, "framing", *args.accepted_framing)
+    elif args.accepted_logo_profile:
+        receipt = verify_logos_baseline(args.source, args.accepted_logo_profile, args.commit, args.model)
     else:
         receipt = verify(args.source, args.commit, args.model)
     with args.receipt.open("x", encoding="utf-8") as output:

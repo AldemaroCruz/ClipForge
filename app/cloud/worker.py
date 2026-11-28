@@ -14,11 +14,14 @@ import subprocess
 import sys
 import tempfile
 import time
+from fastapi import HTTPException
 from sqlalchemy import text
 from ..auth_db import get_engine
+from ..logo_placement import LogoPlacement
 from ..media import MediaValidationError, inspect_beta_media
 from . import enabled
 from .config import BETA_MAX_BYTES, BETA_WORKER_CONCURRENCY, beta_enabled, settings
+from .creator_logos import MAX_STORED_BYTES, storage_item_for_job
 from . import project_deletion
 from . import repository as repo
 from . import storage
@@ -382,6 +385,20 @@ def execute(task_id, fence):
         folder.mkdir()
         job = repo.document(task["job_id"])
         pilot = job["payload"].get("pilot") is True
+        processing = task["kind"] == "process"
+        document = job if processing else repo.document(task["job_id"], "export", task["item_id"])
+        logo, logo_path = None, None
+        snapshot = document["payload"].get("caption_logo" if processing else "logo") if pilot else None
+        if snapshot is not None:
+            try:
+                logo = LogoPlacement.model_validate(snapshot)
+                logo_path = folder / "logo.png"
+                private_logo = storage_item_for_job(task["job_id"], logo)
+                storage.download(private_logo, logo_path, max_bytes=MAX_STORED_BYTES)
+            except (HTTPException, ValueError, storage.StorageError):
+                item = {**document["payload"], "status": "failed", "error_code": "LOGO_UNAVAILABLE"}
+                repo.finish_task(task, item, document["manifest"])
+                return
         execution = os.getenv("CLOUD_RUN_EXECUTION")
         measure = pilot and bool(execution)
         timings = {}
@@ -392,8 +409,7 @@ def execute(task_id, fence):
         except storage.StorageError as exc:
             if not pilot:
                 raise
-            item = (job["payload"] if task["kind"] == "process" else
-                    repo.document(task["job_id"], "export", task["item_id"])["payload"])
+            item = document["payload"]
             code = "UPLOAD_MISMATCH" if isinstance(exc, storage.InvalidUpload) else "SOURCE_UNAVAILABLE"
             item.update(status="failed", error_code=code)
             manifest = job["manifest"] if task["kind"] == "process" else {}
@@ -424,13 +440,13 @@ def execute(task_id, fence):
                     finally:
                         if measure:
                             record_stage(cache, timings, "probe", began)
-                    main._process(task["job_id"], validated_media=media)
+                    main._process(task["job_id"], validated_media=media, logo=logo, logo_path=logo_path)
                 else:
                     main._process(task["job_id"])
                 kind, directory = "job", folder
             else:
                 (folder / "exports" / task["item_id"]).mkdir(parents=True)
-                main.process_export(task["job_id"], task["item_id"], pilot=pilot)
+                main.process_export(task["job_id"], task["item_id"], pilot=pilot, logo=logo, logo_path=logo_path)
                 kind, directory = "export", folder / "exports" / task["item_id"]
             payload = context["staged"]
             if payload is None:

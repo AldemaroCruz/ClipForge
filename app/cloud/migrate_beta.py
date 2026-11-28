@@ -10,6 +10,7 @@ from .migrate_project_deletions import REVISION as DELETION_REVISION, upgrade_pr
 BETA_REVISION = "cloud_beta01_0001"
 EDITORIAL_REVISION = "cloud_editorial01_0001"
 STYLES_REVISION = "cloud_caption_styles_0001"
+LOGOS_REVISION = "cloud_creator_logos_0001"
 BETA_DDL = (
     """CREATE TABLE cloud_feedback (
         id VARCHAR(32) PRIMARY KEY,
@@ -52,6 +53,27 @@ STYLES_DDL = (
     """CREATE UNIQUE INDEX cloud_caption_styles_default_idx
        ON cloud_caption_styles(owner_id) WHERE is_default""",
 )
+LOGOS_DDL = (
+    """CREATE TABLE cloud_creator_logos (
+        id VARCHAR(32) PRIMARY KEY CHECK(id ~ '^[0-9a-f]{32}$'),
+        owner_id VARCHAR(32) NOT NULL REFERENCES auth_users(id),
+        workspace_id VARCHAR(32) NOT NULL REFERENCES auth_workspaces(id),
+        name VARCHAR(80) NOT NULL CHECK(char_length(name) >= 1),
+        latest_revision INTEGER NOT NULL CHECK(latest_revision > 0),
+        retired_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp())""",
+    """CREATE INDEX cloud_creator_logos_active_owner_idx
+       ON cloud_creator_logos(owner_id,workspace_id) WHERE retired_at IS NULL""",
+    """CREATE TABLE cloud_creator_logo_revisions (
+        logo_id VARCHAR(32) NOT NULL REFERENCES cloud_creator_logos(id),
+        revision INTEGER NOT NULL CHECK(revision > 0),
+        width INTEGER NOT NULL CHECK(width BETWEEN 1 AND 2048),
+        height INTEGER NOT NULL CHECK(height BETWEEN 1 AND 2048),
+        object JSONB NOT NULL CHECK(jsonb_typeof(object) = 'object'),
+        PRIMARY KEY(logo_id,revision))""",
+    """ALTER TABLE cloud_caption_styles ADD COLUMN logo JSONB
+       CHECK(logo IS NULL OR jsonb_typeof(logo) = 'object')""",
+)
 
 
 def upgrade_editorial(connection):
@@ -87,6 +109,23 @@ def upgrade_styles(connection):
     return "applied"
 
 
+def upgrade_logos(connection):
+    connection.execute(text("""CREATE TABLE IF NOT EXISTS cloud_creator_logo_schema_migrations (
+        revision VARCHAR(32) PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp())"""))
+    revisions = connection.execute(text(
+        "SELECT revision FROM cloud_creator_logo_schema_migrations ORDER BY revision"
+    )).scalars().all()
+    if revisions == [LOGOS_REVISION]:
+        return "current"
+    if revisions:
+        raise ValueError("Unknown cloud creator logo schema revision")
+    for statement in LOGOS_DDL:
+        connection.execute(text(statement))
+    connection.execute(text("INSERT INTO cloud_creator_logo_schema_migrations(revision) VALUES (:r)"),
+                       {"r": LOGOS_REVISION})
+    return "applied"
+
+
 def upgrade_beta(engine=None):
     engine = engine or get_engine()
     upgrade_base(engine)
@@ -105,10 +144,12 @@ def upgrade_beta(engine=None):
         editorial = upgrade_editorial(connection)
         deletion = upgrade_project_deletions(connection)
         styles = upgrade_styles(connection)
+        logos = upgrade_logos(connection)
     return {"status": "applied" if not revisions else "current", "revision": BETA_REVISION,
             "editorial_status": editorial, "editorial_revision": EDITORIAL_REVISION,
             "deletion_status": deletion, "deletion_revision": DELETION_REVISION,
-            "styles_status": styles, "styles_revision": STYLES_REVISION}
+            "styles_status": styles, "styles_revision": STYLES_REVISION,
+            "logos_status": logos, "logos_revision": LOGOS_REVISION}
 
 
 def beta_schema_ready(connection):
@@ -126,6 +167,13 @@ def styles_schema_ready(connection):
         "SELECT revision FROM cloud_caption_style_schema_migrations ORDER BY revision"
     )).scalars().all()
     return revisions == [STYLES_REVISION]
+
+
+def logos_schema_ready(connection):
+    revisions = connection.execute(text(
+        "SELECT revision FROM cloud_creator_logo_schema_migrations ORDER BY revision"
+    )).scalars().all()
+    return revisions == [LOGOS_REVISION]
 
 
 def main():

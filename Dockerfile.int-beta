@@ -52,13 +52,13 @@ RUN --network=none --mount=type=bind,source=wheels-web,target=/wheels \
  && python -m pip check
 COPY app/__init__.py app/auth.py app/auth_db.py app/auth_models.py app/auth_migrations.py \
      app/ai_provider.py app/ai_selection.py app/media.py app/media_binaries.py app/state.py app/workspace.py \
-     app/editorial.py app/environment.py app/int_beta.py app/int_beta_proxy.py \
+     app/editorial.py app/environment.py app/int_beta.py app/int_beta_proxy.py app/logo_placement.py \
      app/presentation.py app/subtitles.py /app/app/
 COPY app/cloud/ /app/app/cloud/
 COPY app/static/account.css app/static/account.html app/static/account.js app/static/auth.js \
      app/static/login.html app/static/recover.html app/static/recover.js \
      app/static/beta.html app/static/beta.css app/static/beta.js app/static/mvp.css app/static/mvp.js \
-     app/static/editorial.js /app/app/static/
+     app/static/editorial.js app/static/logos.js /app/app/static/
 RUN --network=none --mount=type=bind,source=debs,target=/debs <<'FONT'
 set -eu
 entry="$(awk '$1 == "fonts-dejavu-core" { print $4, $5; found++ } END { if (found != 1) exit 1 }' \

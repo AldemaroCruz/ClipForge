@@ -8,13 +8,14 @@ from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator, m
 from sqlalchemy import text
 
 from ..auth_db import get_engine
+from ..logo_placement import LogoPlacement
 from ..presentation import Presentation
 from ..subtitles import plain_text
+from . import creator_logos
 from . import repository as repo
 
 FONT = "DejaVu Sans Bold"
 STYLE_LIMIT = 200
-OWNER_LOCK_NAMESPACE = 1837086435
 STYLE_ID = r"^[0-9a-f]{32}$"
 STYLE_FIELDS = {key for key in Presentation.model_fields if key.startswith("subtitle_")}
 router = APIRouter(prefix="/caption-styles")
@@ -38,6 +39,7 @@ class StyleInput(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     font: Literal["DejaVu Sans Bold"]
     style: SavedStyle
+    logo: LogoPlacement | None = None
 
     @field_validator("name")
     @classmethod
@@ -76,13 +78,13 @@ def owner_transaction(principal, *, mutate=False):
         repo.check_active_workspace(connection, principal)
         if mutate:
             connection.execute(text("SELECT pg_advisory_xact_lock(:namespace,hashtext(:owner))"),
-                               {"namespace": OWNER_LOCK_NAMESPACE, "owner": principal.id})
+                               {"namespace": creator_logos.OWNER_LOCK, "owner": principal.id})
         yield connection
 
 
 def owned_style(connection, owner, style_id, revision=None):
     item = connection.execute(text("""
-        SELECT id,name,font,style,revision,is_default FROM cloud_caption_styles WHERE owner_id=:o AND id=:i
+        SELECT id,name,font,style,logo,revision,is_default FROM cloud_caption_styles WHERE owner_id=:o AND id=:i
         """), {"o": owner, "i": style_id}).mappings().first()
     if item is None:
         raise HTTPException(404, "Estilo no encontrado.")
@@ -95,19 +97,22 @@ def snapshot(item):
     return {key: item[key] for key in ("id", "revision", "font")}
 
 
-def resolve(connection, owner, reference, options, previous_options, previous_snapshot):
+def resolve(connection, principal, payload, options, previous_options, previous_snapshot, previous_logo=None):
     """Apply exact values from a current preset or keep an unchanged stored copy."""
-    if reference is not None:
-        item = owned_style(connection, owner, reference.id, reference.revision)
-        return {**options, **item["style"]}, snapshot(item)
-    if previous_snapshot and style_values(options) == style_values(previous_options):
-        return options, previous_snapshot
-    return options, None
+    if payload.style_template is not None:
+        reference = payload.style_template
+        item = owned_style(connection, principal.id, reference.id, reference.revision)
+        logo = creator_logos.template_logo(connection, principal, item["logo"], previous_logo)
+        return {**options, **item["style"]}, snapshot(item), logo
+    logo = creator_logos.resolve(connection, principal, payload, previous_logo)
+    if previous_snapshot and style_values(options) == style_values(previous_options) and logo == previous_logo:
+        return options, previous_snapshot, logo
+    return options, None, logo
 
 
 def default_for(connection, owner):
     return connection.execute(text("""
-        SELECT id,font,style,revision FROM cloud_caption_styles WHERE owner_id=:o AND is_default
+        SELECT id,font,style,logo,revision FROM cloud_caption_styles WHERE owner_id=:o AND is_default
         """), {"o": owner}).mappings().first()
 
 
@@ -124,7 +129,7 @@ def list_styles(request: Request):
     principal = request.state.principal
     with owner_transaction(principal) as connection:
         rows = connection.execute(text("""
-            SELECT id,name,font,style,revision,is_default
+            SELECT id,name,font,style,logo,revision,is_default
             FROM cloud_caption_styles WHERE owner_id=:o ORDER BY name_key,id
             """), {"o": principal.id}).mappings().all()
     return {"styles": [dict(row) for row in rows], "fonts": [{"id": FONT, "label": FONT}]}
@@ -139,11 +144,14 @@ def create_style(payload: StyleInput, request: Request):
                                    {"o": principal.id}).scalar_one()
         if count >= STYLE_LIMIT:
             raise HTTPException(409, "Alcanzaste el máximo de estilos guardados.")
+        logo = creator_logos.resolve(connection, principal, payload)
         return dict(connection.execute(text("""
-            INSERT INTO cloud_caption_styles(id,owner_id,name,name_key,font,style)
-            VALUES (:i,:o,:n,:k,:f,CAST(:s AS jsonb)) RETURNING id,name,font,style,revision,is_default
+            INSERT INTO cloud_caption_styles(id,owner_id,name,name_key,font,style,logo)
+            VALUES (:i,:o,:n,:k,:f,CAST(:s AS jsonb),CAST(:l AS jsonb))
+            RETURNING id,name,font,style,logo,revision,is_default
             """), {"i": uuid.uuid4().hex, "o": principal.id, "n": payload.name, "k": payload.name.casefold(),
-                   "f": payload.font, "s": repo.packed(payload.style.root)}).mappings().one())
+                   "f": payload.font, "s": repo.packed(payload.style.root),
+                   "l": repo.packed(logo) if logo is not None else None}).mappings().one())
 
 
 @router.put("/default")
@@ -172,14 +180,18 @@ def update_style(style_id: str, payload: StyleUpdate, request: Request):
     principal = request.state.principal
     with owner_transaction(principal, mutate=True) as connection:
         previous = owned_style(connection, principal.id, style_id, payload.revision)
-        if all(previous[key] == value for key, value in payload.model_dump(exclude={"revision"}).items()):
+        logo = creator_logos.resolve(connection, principal, payload, previous["logo"])
+        if (previous["logo"] == logo
+                and all(previous[key] == value for key, value in payload.model_dump(exclude={"revision", "logo"}).items())):
             return previous
         _check_name(connection, principal.id, payload.name, style_id)
         return dict(connection.execute(text("""
-            UPDATE cloud_caption_styles SET name=:n,name_key=:k,font=:f,style=CAST(:s AS jsonb),revision=revision+1
-            WHERE owner_id=:o AND id=:i RETURNING id,name,font,style,revision,is_default
+            UPDATE cloud_caption_styles SET name=:n,name_key=:k,font=:f,style=CAST(:s AS jsonb),
+                logo=CAST(:l AS jsonb),revision=revision+1
+            WHERE owner_id=:o AND id=:i RETURNING id,name,font,style,logo,revision,is_default
             """), {"i": style_id, "o": principal.id, "n": payload.name, "k": payload.name.casefold(),
-                   "f": payload.font, "s": repo.packed(payload.style.root)}).mappings().one())
+                   "f": payload.font, "s": repo.packed(payload.style.root),
+                   "l": repo.packed(logo) if logo is not None else None}).mappings().one())
 
 
 @router.delete("/{style_id}")

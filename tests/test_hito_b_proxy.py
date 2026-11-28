@@ -130,6 +130,24 @@ class PublicProxyTests(unittest.TestCase):
         result = self.client.head(CLIP_PATH, headers={"Range": "bytes=10-19"})
         self.assertEqual((result.status_code, result.content), (206, b""))
 
+    def test_bounds_png_uploads_separately_without_relaxing_other_routes(self):
+        path = f"/creator-logos/{JOB_ID}"
+        trusted = {"Origin": proxy.PUBLIC_ORIGIN, "X-CSRF-Token": "fixture", "Content-Type": "image/png"}
+        size = proxy.REQUEST_SIZE + 1
+        self.assertEqual(self.client.post("/beta/uploads", content=b"x" * size, headers=trusted).status_code, 413)
+        self.assertEqual(self.client.put(path, content=b"x", headers={
+            **trusted, "Content-Type": "image/svg+xml",
+        }).status_code, 415)
+        self.assertEqual(self.client.put(path, content=b"x" * (proxy.LOGO_REQUEST_SIZE + 1),
+                                         headers=trusted).status_code, 413)
+        self.upstream.request.assert_not_called()
+        result = self.client.put(path + "?name=Logo&revision=1", content=b"x" * size, headers=trusted)
+        self.assertEqual(result.status_code, 200)
+        request = self.upstream.request.call_args
+        self.assertEqual(request.args, ("PUT", proxy.API_ORIGIN + path))
+        self.assertEqual(len(request.kwargs["data"]), size)
+        self.assertEqual(request.kwargs["headers"]["content-type"], "image/png")
+
     def test_blocks_malformed_clip_ranges_and_drops_nonclip_range(self):
         for headers in ({"Range": "bytes=0-1,4-9"}, {"Range": "items=0-1"},
                         [("Range", "bytes=0-1"), ("Range", "bytes=4-9")]):

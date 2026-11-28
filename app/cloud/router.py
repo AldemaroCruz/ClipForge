@@ -19,9 +19,10 @@ from starlette.concurrency import run_in_threadpool
 from ..ai_selection import SelectionCreate, SelectionSpec
 from ..auth_db import get_engine
 from ..editorial import EditorialContent, DraftUpdate, ProjectName, RangeChange, RevisionRequest, retime_cues, validate_range
+from ..logo_placement import LogoPlacement
 from ..presentation import Presentation, ExportRequest
 from ..subtitles import SubtitleError, cues_from_segments, to_srt, to_vtt, validate_cues
-from . import caption_styles, clip_captions, clip_package, project_deletion
+from . import caption_styles, clip_captions, clip_package, creator_logos, project_deletion
 from . import editorial_selection as selection
 from . import repository as repo
 from .config import beta_enabled
@@ -33,8 +34,14 @@ VERSION = "0.4.2"
 SOURCE_PREVIEW_RANGE_BYTES = 8 * 1024 * 1024
 
 
+class CloudDraftCreate(EditorialContent):
+    style_template: caption_styles.StyleRevision | None = None
+    logo: LogoPlacement | None = None
+
+
 class CloudDraftUpdate(DraftUpdate):
     style_template: caption_styles.StyleRevision | None = None
+    logo: LogoPlacement | None = None
 
 
 def _int_product_route():
@@ -444,6 +451,8 @@ def candidate_to_draft(job_id: str, run_id: str, candidate_id: int, request: Req
                                   "provider": item["provider"], "model": item["model"]}}
     if job["payload"].get("caption_style_template"):
         draft["style_template"] = job["payload"]["caption_style_template"]
+    if job["payload"].get("caption_logo"):
+        draft["logo"] = job["payload"]["caption_logo"]
     with get_engine().begin() as connection:
         current = repo.beta_document(connection, principal, job_id)
         previous = repo.document(job_id, "draft", draft_id, connection, required=False)
@@ -477,13 +486,17 @@ def drafts(job_id: str, offset: int = Query(0, ge=0), limit: int = Query(20, ge=
 
 
 @router.post("/jobs/{job_id}/drafts", status_code=201)
-def create_draft(job_id: str, payload: EditorialContent, request: Request):
+def create_draft(job_id: str, payload: CloudDraftCreate, request: Request):
     now = time.time()
     content = _content(job_id, payload)
+    if not beta_enabled() and (payload.style_template is not None or "logo" in payload.model_fields_set):
+        raise HTTPException(404, "Función no disponible")
     item = {**content, "id": uuid.uuid4().hex, "job_id": job_id,
             "revision": 1, "created_at": now, "updated_at": now, "version": VERSION}
     owner = request.state.principal.id
-    fingerprint = hashlib.sha256(repo.packed({"job_id": job_id, "kind": "draft", "content": content}).encode()).hexdigest()
+    intent = payload.model_dump(include={"logo", "style_template"}, exclude_unset=True)
+    fingerprint = hashlib.sha256(repo.packed({"job_id": job_id, "kind": "draft",
+                                             "content": content, **intent}).encode()).hexdigest()
     with repo.request_transaction(owner, request.headers.get("Idempotency-Key"), fingerprint) as (c, previous, key):
         job = None
         if beta_enabled():
@@ -493,11 +506,17 @@ def create_draft(job_id: str, payload: EditorialContent, request: Request):
                 raise HTTPException(409, "La clave identifica otra solicitud")
             item = repo.document(job_id, "draft", previous["item_id"], c)["payload"]
         else:
-            if job and job.get("caption_style_template") and (
-                caption_styles.style_values(content["options"])
-                == caption_styles.style_values(clip_captions.project_presentation(job).model_dump())
-            ):
-                item["style_template"] = job["caption_style_template"]
+            if job:
+                default = clip_captions.project_presentation(job).model_dump()
+                options, template, logo = caption_styles.resolve(
+                    c, request.state.principal, payload, content["options"], default,
+                    job.get("caption_style_template"), job.get("caption_logo"),
+                )
+                item["options"] = options
+                if template:
+                    item["style_template"] = template
+                if logo is not None:
+                    item["logo"] = logo
             repo.insert_document(c, job_id, "draft", item)
             repo.remember_request(c, owner, key, fingerprint, job_id, "draft", item["id"])
     return item
@@ -512,7 +531,7 @@ def draft(job_id: str, draft_id: str):
 def update_draft(job_id: str, draft_id: str, payload: CloudDraftUpdate, request: Request):
     content = _content(job_id, payload)
     is_beta = beta_enabled()
-    if payload.style_template is not None and not is_beta:
+    if not is_beta and (payload.style_template is not None or "logo" in payload.model_fields_set):
         raise HTTPException(404, "Función no disponible")
     principal = request.state.principal
     with get_engine().begin() as c:
@@ -524,13 +543,19 @@ def update_draft(job_id: str, draft_id: str, payload: CloudDraftUpdate, request:
         current = previous["payload"]
         item = {**current, **content, "revision": payload.revision+1, "updated_at": time.time()}
         if is_beta:
-            options, template = caption_styles.resolve(c, principal.id, payload.style_template, content["options"],
-                                                        current["options"], current.get("style_template"))
+            options, template, logo = caption_styles.resolve(
+                c, principal, payload, content["options"], current["options"],
+                current.get("style_template"), current.get("logo"),
+            )
             item["options"] = options
             if template:
                 item["style_template"] = template
             else:
                 item.pop("style_template", None)
+            if logo is not None:
+                item["logo"] = logo
+            else:
+                item.pop("logo", None)
         repo.update_document(c, job_id, "draft", item, payload.revision)
     return item
 
@@ -617,6 +642,8 @@ def export_draft(job_id: str, draft_id: str, payload: RevisionRequest, request: 
             "start": snapshot["start"], "end": snapshot["end"], "options": snapshot["options"], "cues": snapshot["cues"]}
     if snapshot.get("style_template"):
         item["style_template"] = snapshot["style_template"]
+    if snapshot.get("logo"):
+        item["logo"] = snapshot["logo"]
     pilot = _doc(job_id)["payload"].get("pilot") is True
     key = f"draft-{draft_id}-{payload.revision}" if pilot else None
     return _submit_export(job_id, item, request, pilot=pilot, request_key=key)

@@ -137,7 +137,7 @@ editorial_settings() {
 }
 
 capture_previous() {
-    local version front previous_api worker_spec worker worker_editorial migrator_image
+    local version front previous_api worker_spec worker worker_editorial migrator_image recovery_worker migrator_source
     if ! version="$(curl --silent --fail --max-time 10 "$public/environment" |
         jq -er 'select(.environment == "INT") | .revision')"; then
         return 0
@@ -150,27 +150,41 @@ capture_previous() {
     worker_spec="$(run jobs describe clipforge-int-worker --format='json(spec.template.spec.template.spec.containers)')"
     worker="$(jq -er '.spec.template.spec.template.spec.containers[0].image' <<< "$worker_spec")"
     worker_editorial="$(editorial_settings <<< "$worker_spec")"
+    recovery_worker="$(jq -ec '.spec.template.spec.template.spec.containers[0] | {
+        worker_source: ([.env[] | select(.name == "CLIPFORGE_REVISION")][0].value | select(test("^[a-f0-9]{40}$"))),
+        worker_cpu: (.resources.limits.cpu | select(. == "2" or . == "4")),
+        worker_memory: (.resources.limits.memory | select(. == "4Gi"))
+    }' <<< "$worker_spec")"
     migrator_image="$(run jobs describe "$migrator" --format='value(spec.template.spec.template.spec.containers[0].image)')"
+    migrator_source="$(run jobs describe "$migrator" --format='json(spec.template.spec.template.spec.containers)' |
+        jq -er '.spec.template.spec.template.spec.containers[0].env[] | select(.name == "CLIPFORGE_REVISION") |
+                .value | select(test("^[a-f0-9]{40}$"))')"
     [[ "$front" =~ ^clipforge-int-beta-[0-9][0-9a-z-]+$ &&
        "$previous_api" =~ ^clipforge-int-beta-api-[0-9][0-9a-z-]+$ &&
        "$migrator_image" =~ ^us-central1-docker\.pkg\.dev/clipforgebeta2/clipforge-int/beta-web@sha256:[a-f0-9]{64}$ &&
        "$worker" =~ ^us-central1-docker\.pkg\.dev/clipforgebeta2/clipforge-int/beta-worker@sha256:[a-f0-9]{64}$ ]]
     jq -n --arg commit "$version" --arg frontend "$front" --arg api "$previous_api" --arg worker "$worker" \
-        --arg migrator "$migrator_image" --argjson editorial "$worker_editorial" \
+        --arg migrator "$migrator_image" --arg migrator_source "$migrator_source" \
+        --argjson editorial "$worker_editorial" --argjson worker_settings "$recovery_worker" \
         '{commit:$commit,frontend_revision:$frontend,api_revision:$api,worker_image:$worker,
-          migrator_image:$migrator,editorial:$editorial}' \
+          migrator_image:$migrator,migrator_source:$migrator_source,editorial:$editorial} + $worker_settings' \
         > "$reports/previous-live.json"
 }
 
 restore_previous() {
     local previous="$reports/previous-live.json" version front previous_api worker provider model key_version timeout daily_limit migrator_image
     local keep_public="${1:-false}"
+    local worker_source worker_cpu worker_memory migrator_source
     local -a editorial_options
     version="$(jq -er '.commit' "$previous")" || return
     front="$(jq -er '.frontend_revision' "$previous")" || return
     previous_api="$(jq -er '.api_revision' "$previous")" || return
     worker="$(jq -er '.worker_image' "$previous")" || return
+    worker_source="$(jq -er '.worker_source' "$previous")" || return
+    worker_cpu="$(jq -er '.worker_cpu' "$previous")" || return
+    worker_memory="$(jq -er '.worker_memory' "$previous")" || return
     migrator_image="$(jq -er '.migrator_image' "$previous")" || return
+    migrator_source="$(jq -er '.migrator_source' "$previous")" || return
     provider="$(jq -er '.editorial.provider' "$previous")" || return
     if [[ "$provider" == openai ]]; then
         model="$(jq -er '.editorial.model' "$previous")" || return
@@ -178,12 +192,12 @@ restore_previous() {
         timeout="$(jq -er '.editorial.timeout' "$previous")" || return
         daily_limit="$(jq -er '.editorial.daily_limit' "$previous")" || return
         editorial_options=(
-            --update-env-vars "CLIPFORGE_REVISION=$version,CLIPFORGE_AI_PROVIDER=openai,CLIPFORGE_AI_MODEL=$model,CLIPFORGE_AI_CONFIG_REVISION=$key_version,CLIPFORGE_AI_TIMEOUT_SECONDS=$timeout,CLIPFORGE_AI_DAILY_LIMIT=$daily_limit"
+            --update-env-vars "CLIPFORGE_REVISION=$worker_source,CLIPFORGE_AI_PROVIDER=openai,CLIPFORGE_AI_MODEL=$model,CLIPFORGE_AI_CONFIG_REVISION=$key_version,CLIPFORGE_AI_TIMEOUT_SECONDS=$timeout,CLIPFORGE_AI_DAILY_LIMIT=$daily_limit"
             --update-secrets "OPENAI_API_KEY=clipforge-int-openai-key:$key_version"
         )
     else
         editorial_options=(
-            --update-env-vars "CLIPFORGE_REVISION=$version,CLIPFORGE_AI_PROVIDER=disabled"
+            --update-env-vars "CLIPFORGE_REVISION=$worker_source,CLIPFORGE_AI_PROVIDER=disabled"
             --remove-env-vars CLIPFORGE_AI_MODEL,CLIPFORGE_AI_CONFIG_REVISION,CLIPFORGE_AI_TIMEOUT_SECONDS,CLIPFORGE_AI_DAILY_LIMIT
             --remove-secrets OPENAI_API_KEY
         )
@@ -191,10 +205,10 @@ restore_previous() {
     if [[ "$keep_public" == false ]]; then
         run services update "$frontend" --invoker-iam-check || return
     fi
-    run jobs update clipforge-int-worker --image "$worker" "${editorial_options[@]}" || return
+    run jobs update clipforge-int-worker --image "$worker" --cpu "$worker_cpu" --memory "$worker_memory" "${editorial_options[@]}" || return
     run services update-traffic "$api" --to-revisions "$previous_api=100" || return
     run services update-traffic "$frontend" --to-revisions "$front=100" || return
-    run jobs update "$migrator" --image "$migrator_image" || return
+    run jobs update "$migrator" --image "$migrator_image" --update-env-vars "CLIPFORGE_REVISION=$migrator_source" || return
     if [[ "$keep_public" == false ]]; then
         run services update "$frontend" --no-invoker-iam-check || return
     fi
@@ -332,15 +346,19 @@ browser_acceptance() {
 
 verify_focused_baseline() {
     local increment="$1" receipt="$2"
-    [[ "$increment" == c04 || "$increment" == c05 || "$increment" == c06 ]]
+    [[ "$increment" == c04 || "$increment" == c05 || "$increment" == c06 || "$increment" == logos ]]
     [[ "$receipt" == "$reports/$increment-baseline.json" && -f "$receipt" && ! -L "$receipt" ]]
-    jq -e --arg schema "clipforge-int-$increment-baseline-1" --arg commit "$GITHUB_SHA" \
+    jq -e --arg schema "clipforge-int-$increment-baseline-1" --arg increment "$increment" --arg commit "$GITHUB_SHA" \
         --slurpfile previous "$reports/previous-live.json" '
         .schema == $schema and .status == "passed" and .target_commit == $commit and
-        (.baseline | {
+        (.baseline as $expected | $previous[0] as $live |
+        ($expected | {
             commit, frontend_revision, api_revision, worker_image, migrator_image,
             editorial: (.editorial | del(.api_daily_limit))
-        }) == $previous[0]
+        }) == ($live | {commit,frontend_revision,api_revision,worker_image,migrator_image,editorial}) and
+        ($increment != "logos" or
+           (($expected | {worker_source,worker_cpu,worker_memory}) == ($live | {worker_source,worker_cpu,worker_memory})
+            and $live.migrator_source == $expected.commit)))
     ' "$receipt" > /dev/null
 }
 
@@ -365,6 +383,9 @@ restore_failed_delivery() {
     fi
     if [[ -f "$reports/previous-live.json" ]] && restore_previous "$keep_public"; then
         printf '%s\n' 'The last healthy public beta revisions, worker and migrator pin were restored.' > "$reports/acceptance-failure.txt"
+    elif [[ "$keep_public" == true ]]; then
+        printf '%s\n' 'Automatic restoration was incomplete. Public access remains enabled.' > "$reports/acceptance-failure.txt"
+        return 1
     elif apply_beta false "run-$GITHUB_RUN_ID-b$GITHUB_RUN_ATTEMPT" hidden; then
         printf '%s\n' 'Public access disabled after unsuccessful Hito B acceptance.' > "$reports/acceptance-failure.txt"
     else
@@ -404,8 +425,12 @@ case "${1:-}" in
             -backend-config=bucket=clipforgebeta2-tfstate-int -backend-config=prefix=terraform/int-beta
         tf validate -no-color
         capture_previous
-        if [[ -n "${INT_C04_ACCEPTANCE:-}" ]]; then
-            verify_focused_baseline c04 "$INT_C04_ACCEPTANCE"
+        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}" ]]; then
+            if [[ -n "${INT_CREATOR_LOGOS_ACCEPTANCE:-}" ]]; then
+                verify_focused_baseline logos "$INT_CREATOR_LOGOS_ACCEPTANCE"
+            else
+                verify_focused_baseline c04 "$INT_C04_ACCEPTANCE"
+            fi
             # The additive migration can run while the accepted API and public frontend still serve traffic.
             if ! run jobs update "$migrator" --image "$TF_VAR_web_image"; then
                 restore_migrator_pin
@@ -422,7 +447,7 @@ case "${1:-}" in
         fi
         ;;
     migrate)
-        if [[ -n "${INT_C04_ACCEPTANCE:-}" ]]; then
+        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}" ]]; then
             if ! run_migration; then
                 restore_migrator_pin
                 exit 1
@@ -455,6 +480,13 @@ case "${1:-}" in
             apply_beta true "run-$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT" replacement
             capture_rollout after
             browser_acceptance zip --video "$DELIVERY_DIR/archive.mp4"
+        elif [[ -n "${INT_CREATOR_LOGOS_ACCEPTANCE:-}" ]]; then
+            verify_focused_baseline logos "$INT_CREATOR_LOGOS_ACCEPTANCE"
+            create_framing_fixture
+            : > "$DELIVERY_DIR/focused-promoting"
+            apply_beta true "run-$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT" replacement
+            capture_rollout after
+            browser_acceptance logos --video "$DELIVERY_DIR/framing.mp4"
         elif [[ -n "${INT_DELETION_REPLAY_REPORT:-}" ]]; then
             [[ "$INT_DELETION_REPLAY_REPORT" == "$reports/deletion-replay.json" && ! -L "$INT_DELETION_REPLAY_REPORT" ]]
             jq -e '.schema == "clipforge-int-hito-b-delete-evidence-1" and .status == "passed"
@@ -484,7 +516,7 @@ case "${1:-}" in
         run_worker_benchmark "$@"
         ;;
     rollback)
-        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_C05_ACCEPTANCE:-}${INT_C06_ACCEPTANCE:-}" && ! -f "$DELIVERY_DIR/focused-promoting" ]]; then
+        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_C05_ACCEPTANCE:-}${INT_C06_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}" && ! -f "$DELIVERY_DIR/focused-promoting" ]]; then
             restore_migrator_pin
         else
             restore_failed_delivery

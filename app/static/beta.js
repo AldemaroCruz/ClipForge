@@ -165,7 +165,7 @@ function betaCaptionOutput(jobId, file, captions) {
   const original = jobPath + "/clips/" + file;
   const variant = BETA_JOB_ID.test(output?.id) ? jobPath + "/exports/" + output.id + "/files/clip" : "";
   if (!output || (output.mp4 !== original && (!variant || output.mp4 !== variant + ".mp4"))) return null;
-  const files = {mp4: output.mp4, burn_subtitles: output.burn_subtitles === true};
+  const files = {mp4: output.mp4, burn_subtitles: output.burn_subtitles === true, logo: output.logo ?? null};
   for (const format of ["srt", "vtt"]) {
     const expected = output.mp4 === original ? original + "/subtitles/" + format : variant + "." + format;
     if (output[format] === expected) files[format] = expected;
@@ -224,6 +224,7 @@ async function initBeta() {
   const uploadBurnSubtitles = element("upload-burn-subtitles");
   const caption = suffix => element("clip-caption-" + suffix);
   const captionFields = window.ClipForgeCaptionFields;
+  const logos = window.ClipForgeLogos;
   const deleteDialog = element("project-delete-dialog");
   const zipActions = element("clip-zip-actions");
   const zipButton = element("clip-zip-download");
@@ -249,9 +250,12 @@ async function initBeta() {
   const unavailableProjects = new Set();
   const projectEvents = typeof BroadcastChannel === "function" && BETA_JOB_ID.test(user.id)
     ? new BroadcastChannel("clipforge-beta-projects:" + user.id) : null;
+  const clipLogos = logos.mount("clip-caption-logos", updateCaptionSample);
   const savedStyles = captionFields?.mountCaptionStyles("clip-caption-styles", {
     style: () => captionFields.editorStyle(caption, captionView?.data?.style),
     snapshot: () => captionView?.data?.style_template,
+    validateLogo: clipLogos.reportValidity,
+    logo: clipLogos.read,
     apply: item => saveCaptions(false, item),
     applyAll: item => saveCaptions(true, item),
     canApplyAll: () => !captionView?.quick,
@@ -428,11 +432,11 @@ async function initBeta() {
       const actions = document.createElement("div");
       actions.className = "actions";
       const initial = ["draft", "queued", "rendering", "failed"].includes(clip.captions?.status) && !output;
-      const download = betaText("a", initial ? "Descargar MP4 inicial" : "Descargar MP4");
+      const download = betaText("a", output?.logo ? "Descargar MP4 con logo" : initial ? "Descargar MP4 inicial" : "Descargar MP4");
       download.href = filePath;
       download.download = clip.file;
       const variant = clip.captions?.status === "draft" ? " inicial" : "";
-      download.setAttribute("aria-label", "Descargar " + label + variant + " en MP4");
+      download.setAttribute("aria-label", "Descargar " + label + variant + " en MP4" + (output?.logo ? " con logo" : ""));
       actions.append(download);
       if (output?.mp4 && output.mp4 !== path) {
         const original = betaText("a", "MP4 inicial");
@@ -459,7 +463,7 @@ async function initBeta() {
       if (Number.isFinite(clip.start) && Number.isFinite(clip.end)) {
         card.append(betaText("p", clip.start.toFixed(1) + "–" + clip.end.toFixed(1) + " s del original", "muted"));
       }
-      const captionsMessage = betaCaptionMessage(clip.captions, output);
+      const captionsMessage = [betaCaptionMessage(clip.captions, output), output?.logo ? "Con logo" : ""].filter(Boolean).join(" · ");
       if (captionsMessage) {
         const state = betaText("p", captionsMessage, "muted");
         state.setAttribute("role", "status");
@@ -506,6 +510,8 @@ async function initBeta() {
     if (!captionView) return;
     captionView = undefined;
     savedStyles?.reset();
+    clipLogos.reset();
+    logos.show(caption("sample").querySelector(".caption-frame"), null);
     caption("editor").hidden = true;
     caption("form").hidden = true;
     caption("fields").disabled = false;
@@ -526,7 +532,8 @@ async function initBeta() {
   function updateCaptionSample() {
     if (!captionView?.data) return;
     const style = captionView.quick ? captionView.data.style : captionStyle(captionView);
-    captionFields.showCaptionSample(caption("sample"), caption("cues"), style);
+    const logo = captionView.quick ? captionView.data.logo : clipLogos.read();
+    captionFields.showCaptionSample(caption("sample"), caption("cues"), style, logo);
   }
 
   function quickCueRow(cue, index) {
@@ -553,20 +560,21 @@ async function initBeta() {
     const base = "/jobs/" + view.id + "/clips/" + view.file;
     const mediaPath = (output?.mp4 || base) + "?inline=true";
     const player = caption("preview");
-    const exportReady = view.quick && output && current?.revision === view.data?.revision;
+    const exportReady = output && current?.revision === view.data?.revision;
     downloads.hidden = !exportReady || view.dirty;
     const key = JSON.stringify([current?.status, current?.notice, current?.revision, mediaPath,
-      Boolean(exportReady), output?.srt, output?.vtt]);
+      Boolean(exportReady), Boolean(output?.logo), output?.srt, output?.vtt]);
     if (key === view.renderKey) return;
     view.renderKey = key;
     if (player.getAttribute("src") !== mediaPath) player.src = mediaPath;
     player.hidden = false;
-    const message = exportReady && output.burn_subtitles ? "Versión lista para descargar." : betaCaptionMessage(current, output);
+    const message = exportReady && (output.burn_subtitles || output.logo)
+      ? "Versión lista para descargar." : betaCaptionMessage(current, output);
     caption("status").textContent = message;
     player.setAttribute("aria-label", output ? "Vista previa del MP4 disponible" : "Vista previa del clip inicial");
     downloads.replaceChildren();
     if (exportReady) {
-      const mp4 = betaText("a", "Descargar MP4");
+      const mp4 = betaText("a", output.logo ? "Descargar MP4 con logo" : "Descargar MP4");
       mp4.href = output.mp4;
       mp4.download = view.file;
       downloads.append(mp4);
@@ -587,6 +595,7 @@ async function initBeta() {
       : data.start.toFixed(3) + "–" + data.end.toFixed(3)
         + " s del original. Los tiempos de los subtítulos empiezan en cero para este recorte.";
     captionFields.fillStyleControls(caption, data.style);
+    clipLogos.fill(data.logo);
     if (!preserveCues) {
       const rows = view.quick ? data.cues.map(quickCueRow)
         : data.cues.map(cue => captionFields.cueRow(cue, data.duration, updateCaptionSample));
@@ -612,6 +621,7 @@ async function initBeta() {
     caption("heading").textContent = (quick ? "Corregir texto" : "Editar subtítulos") + " · Clip " + Number(file.slice(5, 7));
     caption("legend").textContent = quick ? "Subtítulos" : "Estilo y sincronización";
     caption("advanced").hidden = quick;
+    caption("logos").hidden = quick;
     caption("add").hidden = quick;
     caption("apply-all").hidden = quick;
     caption("save").textContent = quick ? "Guardar y exportar" : "Guardar y generar clip";
@@ -637,6 +647,7 @@ async function initBeta() {
     if (!view?.data || view.busy || job?.status !== "completed") return false;
     if (view.quick && (applyAll || (!template && !view.data.cues.length))) return false;
     let style = view.data.style;
+    if (!template && !view.quick && !clipLogos.reportValidity()) return false;
     if (!template && (!applyAll || view.quick) && !caption("form").reportValidity()) return false;
     if (!view.quick && !template) {
       style = applyAll ? captionFields.editorStyle(caption, style) : captionStyle(view);
@@ -666,8 +677,10 @@ async function initBeta() {
     caption("status").textContent = applyAll ? "Aplicando estilo al proyecto." : "Guardando los subtítulos.";
     try {
       const path = applyAll ? "/jobs/" + view.id + "/captions" : captionPath(view.id, view.file);
+      const logo = template ? template.logo ?? null : view.quick ? view.data.logo ?? null : clipLogos.read();
       const body = applyAll ? {style, revision: projectRevision, apply_to_all: true}
         : {style, cues, revision: view.data.revision};
+      if (logo || view.data.logo || applyAll) body.logo = logo;
       if (template) {
         body.style_template = {id: template.id, revision: template.revision};
         body.render = false;
@@ -972,12 +985,12 @@ async function initBeta() {
     void saveCaptions();
   });
   caption("form").addEventListener("input", event => {
-    if (event.target.closest(".caption-styles")) return;
-    if (captionView?.quick) {
+    if (event.target.closest("#clip-caption-styles")) return;
+    if (captionView) {
       captionView.dirty = true;
       caption("downloads").hidden = true;
     }
-    updateCaptionSample();
+    if (!event.target.closest(".creator-logo-controls")) updateCaptionSample();
   });
   captionFields?.trackCaptionCue(caption("cues"), updateCaptionSample);
   caption("apply-all").addEventListener("click", () => saveCaptions(true));

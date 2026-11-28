@@ -43,10 +43,16 @@ output="${DESTDIR:-}/opt/clipforge/media"
   --pkg-config-flags=--static \
   --disable-doc --disable-debug --disable-autodetect --disable-everything --disable-x86asm \
   --disable-network --disable-ffplay --enable-ffmpeg --enable-ffprobe --enable-gpl --enable-libx264 --enable-libass \
-  --enable-protocol=file,pipe --enable-demuxer=mov --enable-muxer=mp4,pcm_s16le \
-  --enable-decoder=h264,aac --enable-encoder=libx264,aac,pcm_s16le --enable-parser=h264,aac \
-  --enable-filter=scale,setsar,setpts,pad,asetpts,aresample,aformat,format,fps,transpose,hflip,vflip,rotate,ass
+  --enable-zlib --enable-protocol=file,pipe --enable-demuxer=mov,image_png_pipe --enable-muxer=mp4,pcm_s16le \
+  --enable-decoder=h264,aac,png --enable-encoder=libx264,aac,pcm_s16le --enable-parser=h264,aac \
+  --enable-filter=scale,setsar,setpts,pad,asetpts,aresample,aformat,format,fps,transpose,hflip,vflip,rotate,ass,split,gblur,overlay,colorchannelmixer
 make -j "$(nproc)"
+filters="$(./ffmpeg -hide_banner -filters)"
+for filter in overlay colorchannelmixer split gblur; do
+    grep -Eq "^[[:space:].A-Z]+[[:space:]]${filter}[[:space:]]+" <<< "$filters"
+done
+grep -Eq '^[[:space:]]+D[[:space:]]+png_pipe[[:space:]]+' <<< "$(./ffmpeg -hide_banner -demuxers)"
+grep -Eq '^[[:space:]]+V[[:space:].A-Z]+[[:space:]]+png[[:space:]]+' <<< "$(./ffmpeg -hide_banner -decoders)"
 mkdir -p "$output/bin" "$output/provenance"
 install -m 0555 ffmpeg ffprobe "$output/bin/"
 install -m 0444 COPYING.GPLv2 ../signature.txt ../libass-signature.txt "$output/provenance/"
