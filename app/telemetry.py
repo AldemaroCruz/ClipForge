@@ -9,7 +9,7 @@ from .state import write_json_atomic
 
 class Recorder:
     def __init__(self, root: Path, job_id: str, kind: str, run_id: str):
-        if kind not in {'process','export'} or any(not re.fullmatch('[a-f0-9]{32}', x) for x in (job_id,run_id)):
+        if kind not in {'process','export','alignment'} or any(not re.fullmatch('[a-f0-9]{32}', x) for x in (job_id,run_id)):
             raise ValueError('Invalid metric identity')
         self.path = root / job_id / 'metrics' / f'{kind}-{run_id}.json'
         self.started = self.last = time.monotonic()

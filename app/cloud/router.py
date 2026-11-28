@@ -12,7 +12,7 @@ from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 from sqlalchemy import text
 from starlette.concurrency import run_in_threadpool
 
@@ -21,7 +21,7 @@ from ..editorial import EditorialContent, DraftUpdate, ProjectName, RangeChange,
 from ..logo_placement import LogoPlacement
 from ..presentation import Presentation, ExportRequest
 from ..subtitles import SubtitleError, cues_from_segments, to_srt, to_vtt, validate_cues
-from . import caption_styles, clip_captions, clip_package, creator_logos, project_deletion
+from . import caption_styles, clip_captions, clip_package, creator_logos, project_deletion, transcript_selection
 from . import editorial_selection as selection
 from . import repository as repo
 from .config import beta_enabled
@@ -41,6 +41,10 @@ class CloudDraftCreate(EditorialContent):
 class CloudDraftUpdate(DraftUpdate):
     style_template: caption_styles.StyleRevision | None = None
     logo: LogoPlacement | None = None
+
+
+class CloudRangeChange(RangeChange):
+    transcript_version: str | None = Field(default=None, pattern=transcript_selection.VERSION_PATTERN)
 
 
 def _int_product_route():
@@ -357,18 +361,82 @@ def workspace(job_id: str):
 
 
 @router.post("/jobs/{job_id}/editor/range")
-def change_range(job_id: str, request: RangeChange):
+def change_range(job_id: str, request: CloudRangeChange):
     doc, duration = _workspace(job_id)
     try:
         start, end = validate_range(request.start, request.end, duration)
         if request.previous_start is not None and request.previous_end is not None:
             validate_range(request.previous_start, request.previous_end, duration)
-        cues, stats = retime_cues([c.model_dump() for c in request.cues], request.previous_start, request.previous_end, start, end, _transcript(doc))
+        if request.transcript_version is not None:
+            _int_product_route()
+            view, _ = transcript_selection.snapshot(doc)
+            segments = transcript_selection.find_version(view, request.transcript_version)["segments"]
+        else:
+            segments = _transcript(doc)
+        cues, stats = retime_cues([c.model_dump() for c in request.cues], request.previous_start, request.previous_end, start, end, segments)
     except (ValueError, TypeError) as exc:
         raise HTTPException(422, str(exc)) from exc
     return {"start": start, "end": end, "duration": round(end-start, 3), "source_duration": duration,
             "cues": cues, "changes": stats, "warning": None,
             "timing_note": "Los subtítulos usan tiempos por segmento; revisa los bordes."}
+
+
+@router.get("/jobs/{job_id}/transcript-selection", dependencies=[Depends(_int_product_route)])
+def transcript_view(job_id: str, response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    view, _ = transcript_selection.snapshot(_doc(job_id))
+    if _needs_dispatch(job_id, "alignment", [{"status": view["alignment_status"]}]):
+        _dispatch({})
+    return view
+
+
+@router.post("/jobs/{job_id}/transcript-selection/prepare", status_code=202, dependencies=[Depends(_int_product_route)])
+def prepare_transcript(job_id: str, payload: transcript_selection.AlignmentRequest, request: Request):
+    item = repo.prepare_alignment(job_id, request.state.principal, retry=payload.retry)
+    return _dispatch(item) if item["status"] == "queued" else item
+
+
+@router.post("/jobs/{job_id}/transcript-selection/drafts", status_code=201, dependencies=[Depends(_int_product_route)])
+def transcript_draft(job_id: str, payload: transcript_selection.TranscriptClip, request: Request):
+    principal = request.state.principal
+    fingerprint = hashlib.sha256(repo.packed({"job_id": job_id, "kind": "transcript_draft",
+                                             **payload.model_dump()}).encode()).hexdigest()
+    key = request.headers.get("Idempotency-Key")
+    if key:
+        with repo.request_transaction(principal.id, key, fingerprint) as (c, previous, _):
+            repo.beta_document(c, principal, job_id)
+            if previous:
+                return repo.document(job_id, "draft", previous["item_id"], c)["payload"]
+    view, identity = transcript_selection.snapshot(_doc(job_id))
+    try:
+        start, end, cues, origin = transcript_selection.resolve(view, identity, payload)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(422, str(exc)) from None
+    with repo.request_transaction(principal.id, key, fingerprint) as (c, previous, own_key):
+        job = repo.beta_document(c, principal, job_id)
+        if previous:
+            return repo.document(job_id, "draft", previous["item_id"], c)["payload"]
+        if selection.source_identity(job) != identity:
+            raise HTTPException(409, "La transcripción cambió. Volvé a abrirla antes de crear el borrador.")
+        if origin["alignment_generation"] is not None:
+            _, alignment = transcript_selection.alignment_record(job, identity, c)
+            if not alignment or transcript_selection.version_id(job_id, identity, alignment) != payload.version:
+                raise HTTPException(409, "La alineación cambió. Volvé a abrir la transcripción.")
+        project = job["payload"]
+        options = clip_captions.project_presentation(project)
+        if not cues:
+            options = options.model_copy(update={"burn_subtitles": False})
+        content = EditorialContent(title="Clip desde la transcripción", start=start, end=end, cues=cues, options=options)
+        now = time.time()
+        item = {**content.model_dump(), "id": uuid.uuid4().hex, "job_id": job_id, "revision": 1,
+                "created_at": now, "updated_at": now, "version": VERSION, "selection_origin": origin}
+        if project.get("caption_style_template"):
+            item["style_template"] = project["caption_style_template"]
+        if project.get("caption_logo"):
+            item["logo"] = project["caption_logo"]
+        repo.insert_document(c, job_id, "draft", item)
+        repo.remember_request(c, principal.id, own_key, fingerprint, job_id, "draft", item["id"])
+    return item
 
 
 @router.get("/jobs/{job_id}/selections/context")
@@ -643,7 +711,7 @@ def export_draft(job_id: str, draft_id: str, payload: RevisionRequest, request: 
     if snapshot.get("logo"):
         item["logo"] = snapshot["logo"]
     origin = snapshot.get("selection_origin", {})
-    if origin.get("search_topic"):
+    if origin.get("search_topic") or origin.get("mode") == "transcript":
         item["selection_origin"] = origin
     pilot = _doc(job_id)["payload"].get("pilot") is True
     key = f"draft-{draft_id}-{payload.revision}" if pilot else None

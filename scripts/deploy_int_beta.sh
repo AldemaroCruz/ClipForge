@@ -452,6 +452,54 @@ d01_acceptance() {
     browser_acceptance d01 "${options[@]}"
 }
 
+d02_fixture() {
+    local audio="$DELIVERY_DIR/chapter.mp3" video="$DELIVERY_DIR/transcript.mp4"
+    local source=https://archive.org/download/donquijote_2507_librivox/donquijote_008_cervantes_64kb.mp3
+    local digest=8fa9d75f7a16b8be5f4b5c60f0b73438fd7abfe0408a12d4b3090f982eff1587
+    curl --silent --show-error --fail --location --proto '=https' --proto-redir '=https' \
+        --max-time 120 --max-filesize 12582912 --output "$audio" "$source"
+    [[ "$(stat -c %s "$audio")" == 10336426 && "$(sha256sum "$audio" | cut -d ' ' -f 1)" == "$digest" ]]
+    ffmpeg -hide_banner -loglevel error -nostdin -f lavfi -i 'color=c=0x223448:s=640x360:r=24' \
+        -i "$audio" -map 0:v:0 -map 1:a:0 -map_metadata -1 -t 1200 -c:v libx264 -preset ultrafast \
+        -crf 26 -threads 2 -pix_fmt yuv420p -c:a aac -b:a 64k -movflags +faststart "$video"
+    jq -n --arg source "$source" --arg audio_sha "$digest" \
+        --arg video_sha "$(sha256sum "$video" | cut -d ' ' -f 1)" \
+        '{source_url:$source,audio_sha256:$audio_sha,video_sha256:$video_sha,duration_seconds:1200,
+          type:"natural_speech",reader:"Lu",catalog:"LibriVox · Don Quijote, capítulo VIII",
+          license:"Public Domain Mark 1.0"}' > "$reports/d02-source.json"
+}
+
+d02_acceptance() {
+    verify_focused_baseline d02 "$INT_D02_ACCEPTANCE"
+    d02_fixture
+    local video="$DELIVERY_DIR/transcript.mp4"
+    browser_on_rollout "$reports/previous-live.json" d02-prepare --video "$video"
+    : > "$DELIVERY_DIR/focused-promoting"
+    apply_beta true "run-$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT" replacement
+    capture_rollout after
+    jq -e '.worker_configuration.cpu == "4" and .worker_configuration.memory == "4Gi" and
+        .editorial.daily_limit == 100 and .editorial.api_daily_limit == 100' \
+        "$reports/after-rollout.json" > /dev/null
+    browser_acceptance d02 --video "$video"
+}
+
+capture_prior_worker() {
+    run jobs describe clipforge-int-worker --format='json(metadata.generation,status.observedGeneration,spec.template.spec)' |
+        jq -e --slurpfile prior "$reports/previous-live.json" '
+            .spec.template.spec.template.spec.containers[0] as $container |
+            select((.metadata.generation | tonumber) == (.status.observedGeneration | tonumber) and
+               $container.image == $prior[0].worker_image and
+               $container.resources.limits.cpu == "4" and $container.resources.limits.memory == "4Gi") |
+            {generation: (.metadata.generation | tonumber),
+             observed_generation: (.status.observedGeneration | tonumber), image:$container.image,
+             cpu:$container.resources.limits.cpu,memory:$container.resources.limits.memory,
+             task_count:(.spec.template.spec.taskCount // 1),
+             parallelism:(.spec.template.spec.parallelism // 1),
+             timeout_seconds: (.spec.template.spec.template.spec.timeoutSeconds | tonumber),
+             max_retries: .spec.template.spec.template.spec.maxRetries,
+             editorial: $prior[0].editorial}' > "$1"
+}
+
 caption_color_cleanup() {
     local phase="${1:-caption-color-cleanup}" state="$DELIVERY_DIR/browser-private.json" revision receipt
     if [[ ! -f "$state" ]]; then
@@ -469,7 +517,7 @@ caption_color_cleanup() {
 verify_focused_baseline() {
     local increment="$1" receipt="$2"
     case "$increment" in
-        c04|c05|c06|logos|caption-color|mixed-zip|d01) ;;
+        c04|c05|c06|logos|caption-color|mixed-zip|d01|d02) ;;
         *) return 1 ;;
     esac
     [[ "$receipt" == "$reports/$increment-baseline.json" && -f "$receipt" && ! -L "$receipt" ]]
@@ -481,7 +529,7 @@ verify_focused_baseline() {
             commit, frontend_revision, api_revision, worker_image, migrator_image,
             editorial: (.editorial | del(.api_daily_limit))
         }) == ($live | {commit,frontend_revision,api_revision,worker_image,migrator_image,editorial}) and
-        (($increment != "logos" and $increment != "caption-color" and $increment != "mixed-zip" and $increment != "d01") or
+        (($increment != "logos" and $increment != "caption-color" and $increment != "mixed-zip" and $increment != "d01" and $increment != "d02") or
            (($expected | {worker_source,worker_cpu,worker_memory}) == ($live | {worker_source,worker_cpu,worker_memory})
             and $live.migrator_source == $expected.commit)))
     ' "$receipt" > /dev/null
@@ -550,8 +598,11 @@ case "${1:-}" in
             -backend-config=bucket=clipforgebeta2-tfstate-int -backend-config=prefix=terraform/int-beta
         tf validate -no-color
         capture_previous
-        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}" ]]; then
-            if [[ -n "${INT_CREATOR_LOGOS_ACCEPTANCE:-}" ]]; then
+        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}${INT_D02_ACCEPTANCE:-}" ]]; then
+            if [[ -n "${INT_D02_ACCEPTANCE:-}" ]]; then
+                verify_focused_baseline d02 "$INT_D02_ACCEPTANCE"
+                capture_prior_worker "$reports/d02-prior-worker.json"
+            elif [[ -n "${INT_CREATOR_LOGOS_ACCEPTANCE:-}" ]]; then
                 verify_focused_baseline logos "$INT_CREATOR_LOGOS_ACCEPTANCE"
             else
                 verify_focused_baseline c04 "$INT_C04_ACCEPTANCE"
@@ -571,21 +622,7 @@ case "${1:-}" in
             verify_focused_baseline mixed-zip "$INT_MIXED_ZIP_ACCEPTANCE"
         elif [[ -n "${INT_D01_ACCEPTANCE:-}" ]]; then
             verify_focused_baseline d01 "$INT_D01_ACCEPTANCE"
-            run jobs describe clipforge-int-worker --format='json(metadata.generation,status.observedGeneration,spec.template.spec)' |
-                jq -e --slurpfile prior "$reports/previous-live.json" '
-                    .spec.template.spec.template.spec.containers[0] as $container |
-                    select((.metadata.generation | tonumber) == (.status.observedGeneration | tonumber) and
-                       $container.image == $prior[0].worker_image and
-                       $container.resources.limits.cpu == "4" and $container.resources.limits.memory == "4Gi") |
-                    {generation: (.metadata.generation | tonumber),
-                     observed_generation: (.status.observedGeneration | tonumber),
-                     image:$container.image, cpu:$container.resources.limits.cpu,memory:$container.resources.limits.memory,
-                     task_count:(.spec.template.spec.taskCount // 1),
-                     parallelism:(.spec.template.spec.parallelism // 1),
-                     timeout_seconds: (.spec.template.spec.template.spec.timeoutSeconds | tonumber),
-                     max_retries: .spec.template.spec.template.spec.maxRetries,
-                     editorial: $prior[0].editorial}
-                ' > "$reports/d01-prior-worker.json"
+            capture_prior_worker "$reports/d01-prior-worker.json"
         else
             trap rollback_delivery EXIT
             apply_beta false "run-$GITHUB_RUN_ID-b$GITHUB_RUN_ATTEMPT" private
@@ -593,7 +630,7 @@ case "${1:-}" in
         fi
         ;;
     migrate)
-        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}" ]]; then
+        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}${INT_D02_ACCEPTANCE:-}" ]]; then
             if ! run_migration; then
                 restore_migrator_pin
                 exit 1
@@ -639,6 +676,8 @@ case "${1:-}" in
             mixed_zip_acceptance
         elif [[ -n "${INT_D01_ACCEPTANCE:-}" ]]; then
             d01_acceptance
+        elif [[ -n "${INT_D02_ACCEPTANCE:-}" ]]; then
+            d02_acceptance
         elif [[ -n "${INT_DELETION_REPLAY_REPORT:-}" ]]; then
             [[ "$INT_DELETION_REPLAY_REPORT" == "$reports/deletion-replay.json" && ! -L "$INT_DELETION_REPLAY_REPORT" ]]
             jq -e '.schema == "clipforge-int-hito-b-delete-evidence-1" and .status == "passed"
@@ -668,7 +707,7 @@ case "${1:-}" in
         run_worker_benchmark "$@"
         ;;
     rollback)
-        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_C05_ACCEPTANCE:-}${INT_C06_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}${INT_CAPTION_COLOR_ACCEPTANCE:-}${INT_MIXED_ZIP_ACCEPTANCE:-}${INT_D01_ACCEPTANCE:-}" && ! -f "$DELIVERY_DIR/focused-promoting" ]]; then
+        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_C05_ACCEPTANCE:-}${INT_C06_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}${INT_CAPTION_COLOR_ACCEPTANCE:-}${INT_MIXED_ZIP_ACCEPTANCE:-}${INT_D01_ACCEPTANCE:-}${INT_D02_ACCEPTANCE:-}" && ! -f "$DELIVERY_DIR/focused-promoting" ]]; then
             restore_migrator_pin
         else
             restore_failed_delivery
@@ -681,6 +720,10 @@ case "${1:-}" in
     d01-cleanup)
         [[ -n "${INT_D01_ACCEPTANCE:-}" ]]
         caption_color_cleanup d01-cleanup
+        ;;
+    d02-cleanup)
+        [[ -n "${INT_D02_ACCEPTANCE:-}" ]]
+        caption_color_cleanup d02-cleanup
         ;;
     *)
         exit 2

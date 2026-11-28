@@ -14,7 +14,7 @@ from .cloud.caption_styles import router as styles_router
 from .cloud.creator_logos import router as logos_router
 from .cloud.config import beta_enabled, settings as cloud_settings
 from .cloud.migrate import REVISION
-from .cloud.migrate_beta import beta_schema_ready, editorial_schema_ready, logos_schema_ready, styles_schema_ready
+from .cloud.migrate_beta import alignment_schema_ready, beta_schema_ready, editorial_schema_ready, logos_schema_ready, styles_schema_ready
 from .cloud.migrate_project_deletions import project_deletion_schema_ready
 from .cloud.pilot import router as pilot_router
 from .cloud.router import reconcile_project_cleanups, router as media_router
@@ -76,9 +76,11 @@ media_gets = {
     "/jobs/{job_id}/selections/{run_id}", "/jobs/{job_id}/drafts", "/jobs/{job_id}/drafts/{draft_id}",
     "/jobs/{job_id}/clips/{filename}/captions", "/jobs/{job_id}/clips/{filename}/subtitles/{kind}",
     "/jobs/{project_id}/deletion",
+    "/jobs/{job_id}/transcript-selection",
 }
 media_posts = {
     "/jobs/{job_id}/editor/range", "/jobs/{job_id}/editor/exports",
+    "/jobs/{job_id}/transcript-selection/prepare", "/jobs/{job_id}/transcript-selection/drafts",
     "/jobs/{job_id}/exports/{export_id}/retry",
     "/jobs/{job_id}/selections/preview", "/jobs/{job_id}/selections",
     "/jobs/{job_id}/selections/{run_id}/candidates/{candidate_id}/draft",
@@ -134,7 +136,8 @@ def health():
             )).scalars().all()
             if (revisions == [REVISION] and beta_schema_ready(connection)
                     and editorial_schema_ready(connection) and project_deletion_schema_ready(connection)
-                    and styles_schema_ready(connection) and logos_schema_ready(connection) and database_ready()):
+                    and styles_schema_ready(connection) and logos_schema_ready(connection)
+                    and alignment_schema_ready(connection) and database_ready()):
                 return {"status": "ok", "profile": "int-beta"}
     except (SQLAlchemyError, AuthConfigurationError):
         raise HTTPException(503, "El almacenamiento persistente todavía no está disponible.") from None

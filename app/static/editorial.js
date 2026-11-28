@@ -105,7 +105,7 @@
     draftLogos.reset();
     logos.show(el("sample").querySelector(".caption-frame"), null);
     for (const name of ["config", "status", "draft-status", "summary", "search-topic", "search-guidance", "search-limit",
-      "candidates", "exports", "drafts", "runs", "cues"]) {
+      "candidates", "exports", "drafts", "runs", "cues", "transcript-origin"]) {
       el(name).replaceChildren();
     }
     for (const name of ["history", "older-runs", "results", "search-details", "search-guidance", "search-limit", "empty", "retry",
@@ -393,33 +393,26 @@
     }
   }
 
-  async function createManualDraft(id, range) {
+  async function openNewDraft(id, create) {
     const state = view;
-    if (state?.id !== id || state.draftBusy) return;
+    if (state?.id !== id || state.draftBusy) return false;
     if (state.draft && !formMatches(state.draft)
-      && !window.confirm("¿Descartar los cambios sin guardar del borrador?")) return;
+      && !window.confirm("¿Descartar los cambios sin guardar del borrador?")) return false;
     setDraftBusy(state, true);
     const openedForDraft = !details.open;
-    if (openedForDraft) state.manualTogglePending = true;
+    if (openedForDraft) state.draftTogglePending = true;
     details.open = true;
     let listedDrafts = false;
     try {
-      const options = await request(state, "/editor/range", auth.payload(range));
-      if (!visible(state)) return;
-      const body = auth.payload({
-        title: "Fragmento manual", start: options.start, end: options.end,
-        options: {...state.options, burn_subtitles: false}, cues: options.cues,
-      });
-      body.headers["Idempotency-Key"] = "manual-draft-" + id + "-"
-        + Math.round(options.start * 1000) + "-" + Math.round(options.end * 1000);
-      const item = await request(state, "/drafts", body);
-      if (!visible(state)) return;
+      const item = await create(state);
+      if (!item || !visible(state)) return false;
       mountDraft(state, item);
       listedDrafts = true;
       await loadDrafts(state);
       if (!visible(state)) return;
       el("draft-form").scrollIntoView({block: "nearest"});
       status(state, "Borrador listo para editar.", "draft-status");
+      return true;
     } catch (error) {
       status(state, error.message, "draft-status");
       throw error;
@@ -427,6 +420,28 @@
       setDraftBusy(state, false);
       if (openedForDraft && visible(state)) void loadPanel(state, !listedDrafts);
     }
+  }
+
+  function createManualDraft(id, range) {
+    return openNewDraft(id, async state => {
+      const options = await request(state, "/editor/range", auth.payload(range));
+      if (!visible(state)) return null;
+      const body = auth.payload({
+        title: "Fragmento manual", start: options.start, end: options.end,
+        options: {...state.options, burn_subtitles: false}, cues: options.cues,
+      });
+      body.headers["Idempotency-Key"] = "manual-draft-" + id + "-"
+        + Math.round(options.start * 1000) + "-" + Math.round(options.end * 1000);
+      return request(state, "/drafts", body);
+    });
+  }
+
+  function createTranscriptDraft(id, selection, key) {
+    return openNewDraft(id, state => {
+      const body = auth.payload(selection);
+      body.headers["Idempotency-Key"] = key;
+      return request(state, "/transcript-selection/drafts", body);
+    });
   }
 
   async function loadDrafts(state, restore = false) {
@@ -1009,6 +1024,18 @@
       resetFramingPreview();
     }
     state.draft = item;
+    const origin = item.selection_origin;
+    const originNote = el("transcript-origin");
+    originNote.hidden = origin?.mode !== "transcript";
+    if (!originNote.hidden) {
+      originNote.textContent = "Selección original de la transcripción · "
+        + sourceTime(origin.start) + "–" + sourceTime(origin.end);
+      originNote.dataset.version = origin.transcript_version;
+      window.ClipForgeTranscript?.rememberSelection(state.id, origin);
+    } else {
+      originNote.replaceChildren();
+      delete originNote.dataset.version;
+    }
     state.range = {start: item.start, end: item.end};
     el("draft-form").hidden = false;
     el("drafts").value = item.id;
@@ -1093,8 +1120,10 @@
     const range = rangeFields();
     const previous = state.range;
     if (range.start === previous.start && range.end === previous.end) return range;
+    const origin = state.draft.selection_origin;
     const result = await request(state, "/editor/range", auth.payload({
       ...range, previous_start: previous.start, previous_end: previous.end, cues: readCues(),
+      ...(origin?.mode === "transcript" ? {transcript_version: origin.transcript_version} : {}),
     }));
     if (!visible(state)) return range;
     state.range = {start: result.start, end: result.end};
@@ -1243,7 +1272,7 @@
     const state = view;
     if (!state) return;
     if (!details.open) {
-      state.manualTogglePending = false;
+      state.draftTogglePending = false;
       clearTimers(state);
       stopPreview();
       resetFrameObservation();
@@ -1254,8 +1283,8 @@
     source.src = sourcePath(state);
     observeSourceFrames(state);
     selectionControls(state);
-    if (state.manualTogglePending) {
-      state.manualTogglePending = false;
+    if (state.draftTogglePending) {
+      state.draftTogglePending = false;
       return;
     }
     void loadPanel(state, true);
@@ -1339,7 +1368,7 @@
     if (!source.seeking && previewEnd !== null && source.currentTime >= previewEnd) stopPreview();
   });
 
-  window.ClipForgeEditorial = {selectJob, createManualDraft};
+  window.ClipForgeEditorial = {selectJob, createManualDraft, createTranscriptDraft};
   window.ClipForgeCaptionFields = {cueInput, cueRow, readCues, addCue, replaceCueRows, trackCaptionCue,
-    showCaptionSample, styleControls, fillStyleControls, editorStyle, mountCaptionStyles, mountColorControls};
+    showCaptionSample, styleControls, fillStyleControls, editorStyle, mountCaptionStyles, mountColorControls, sourceTime};
 })();

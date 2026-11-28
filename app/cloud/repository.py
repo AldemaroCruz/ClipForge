@@ -118,7 +118,7 @@ def admit_beta(c, owner, current_job="", *, caption_job=""):
                       THEN d.job_id ELSE d.id END AS slot
           FROM cloud_documents d JOIN auth_projects p ON p.id=d.job_id
           JOIN auth_users u ON u.id=p.owner_id
-          WHERE d.kind IN ('job','export','selection') AND d.payload->'pilot'=CAST('true' AS jsonb)
+          WHERE d.kind IN ('job','export','selection','alignment') AND d.payload->'pilot'=CAST('true' AS jsonb)
             AND p.deletion_started_at IS NULL AND d.job_id<>:j
             AND NOT (d.job_id=:caption AND COALESCE(d.payload->'clip_captions'=CAST('true' AS jsonb),false))
             AND (
@@ -182,6 +182,48 @@ def beta_document(c, principal, job_id):
     return doc
 
 
+def _alignment_id(job_id, fingerprint):
+    canonical = json.dumps({**fingerprint, "source_duration": float(fingerprint["source_duration"]), "job_id": job_id},
+                           allow_nan=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()[:32]
+
+
+def alignment_document(job_id, fingerprint, connection=None):
+    return document(job_id, "alignment", _alignment_id(job_id, fingerprint), connection, required=False, live=True)
+
+
+def prepare_alignment(job_id, principal, retry=False):
+    from ..transcribe import ALIGNMENT_FILE
+    from .editorial_selection import source_identity
+
+    with get_engine().begin() as connection:
+        job = beta_document(connection, principal, job_id)
+        fingerprint = source_identity(job)
+        existing_words = job["payload"].get("transcript_alignment")
+        if (ALIGNMENT_FILE in job["manifest"] and existing_words
+                and existing_words.get("source_fingerprint") == fingerprint):
+            return existing_words
+        previous = alignment_document(job_id, fingerprint, connection)
+        if previous:
+            item = previous["payload"]
+            if not retry or item["status"] in {"queued", "running", "completed"}:
+                return item
+            if not item.get("retryable") or previous["manifest"]:
+                raise HTTPException(409, "Esta preparación ya no admite un reintento.")
+            admit_beta(connection, principal.id)
+            task = _failed_task(connection, job_id, "alignment", item["id"])
+            _requeue_failed_task(connection, job_id, "alignment", item, task)
+            return item
+        if retry:
+            raise HTTPException(409, "No hay una preparación anterior de esta versión para reintentar.")
+        admit_beta(connection, principal.id)
+        item = {"id": _alignment_id(job_id, fingerprint), "job_id": job_id, "pilot": True, "status": "queued",
+                "source_fingerprint": fingerprint, "created_at": time.time(), "retryable": False}
+        insert_document(connection, job_id, "alignment", item)
+        enqueue(connection, job_id, "alignment", item["id"])
+        return item
+
+
 def _failed_task(c, job_id, kind, item_id):
     task = c.execute(text("""
         SELECT t.id,t.status,t.cleaned_at,t.fence,t.updated_at,o.attempts
@@ -197,12 +239,16 @@ def _failed_task(c, job_id, kind, item_id):
 
 def _requeue_failed_task(c, job_id, kind, item, task):
     item.setdefault("attempt_history", []).append({
-        "error_code": public_beta_error_code(item.get("error_code")), "fence": task["fence"],
+        "error_code": item["error_code"] if kind == "alignment" else public_beta_error_code(item.get("error_code")),
+        "fence": task["fence"],
         "finished_at": task["updated_at"].isoformat(), "dispatches": task["attempts"],
     })
     item.update(status="queued", retryable=False, retry_count=item.get("retry_count", 0) + 1)
     for key in ("error", "error_code", "dispatch_status"):
         item.pop(key, None)
+    if kind == "alignment":
+        item.pop("started_at", None)
+        item.pop("completed_at", None)
     update_document(c, job_id, kind, item)
     c.execute(text("""
         UPDATE cloud_tasks SET status='queued',lease_until=NULL,cleaned_at=NULL,
@@ -287,6 +333,23 @@ def worker_guard(c, task):
     return dict(row)
 
 
+_ALIGNMENT_ERRORS = {
+    "SOURCE_UNAVAILABLE": "No se pudo verificar el video original de esta transcripción.",
+    "ALIGNMENT_INCOMPLETE": "Las marcas disponibles son insuficientes. Podés seguir seleccionando por frases.",
+    "ALIGNMENT_SOURCE_CHANGED": "El original o la transcripción cambió durante la preparación.",
+    "WORKER_INTERRUPTED": "La preparación se interrumpió. Podés volver a intentar.",
+    "ALIGNMENT_TRANSPORT": "La transferencia de la preparación se interrumpió. Podés volver a intentar.",
+    "ALIGNMENT_FAILED": "No se pudieron preparar las marcas. La transcripción guardada se conserva.",
+}
+
+
+def alignment_failure(item, code):
+    item.update(status="failed", error_code=code, error=_ALIGNMENT_ERRORS[code], completed_at=time.time(),
+                retryable=code in {"ALIGNMENT_TRANSPORT", "WORKER_INTERRUPTED"}
+                and item.get("retry_count", 0) < BETA_RETRIES)
+    item.pop("word_segments", None)
+
+
 def worker_progress(job_id, kind, payload):
     context = CURRENT_TASK.get()
     if context is None or context["task"]["job_id"] != job_id:
@@ -310,10 +373,27 @@ def worker_progress(job_id, kind, payload):
 
 def finish_task(task, payload, manifest):
     kind = "job" if task["kind"] == "process" else task["kind"]
-    if kind != "selection":
+    if kind not in {"selection", "alignment"}:
         public_beta_failure(payload)
     with get_engine().begin() as c:
+        if kind == "alignment":
+            # Deletion takes the project lock before fencing all of its tasks.
+            project = c.execute(text("""
+                SELECT id FROM auth_projects WHERE id=:j AND deletion_started_at IS NULL FOR UPDATE
+                """), {"j": task["job_id"]}).scalar()
+            if project is None:
+                raise RuntimeError("Project no longer permits alignment publication")
         worker_guard(c, task)
+        if kind == "alignment" and payload["status"] == "completed":
+            from .editorial_selection import source_identity
+
+            try:
+                fingerprint = source_identity(document(task["job_id"], connection=c))
+            except HTTPException:
+                fingerprint = None
+            if fingerprint != payload["source_fingerprint"]:
+                alignment_failure(payload, "ALIGNMENT_SOURCE_CHANGED")
+                manifest = {}
         update_document(c, task["job_id"], kind, payload, manifest=manifest)
         c.execute(text("UPDATE cloud_tasks SET status=:s,lease_until=NULL,updated_at=clock_timestamp() WHERE id=:i AND fence=:f"),
                   {"s": "succeeded" if payload["status"] == "completed" else "failed", "i": task["id"], "f": task["fence"]})
@@ -327,6 +407,8 @@ def mark_crashed(task):
         item = doc["payload"]
         if kind == "selection":
             interrupt_selection(item)
+        elif kind == "alignment":
+            alignment_failure(item, "WORKER_INTERRUPTED")
         else:
             item.update(status="failed", error="Procesamiento interrumpido. El original se conserva; revisa el estado antes de reintentar.", error_code="WORKER_INTERRUPTED")
             public_beta_failure(item)

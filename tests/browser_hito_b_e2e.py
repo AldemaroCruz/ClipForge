@@ -70,6 +70,7 @@ class BrowserHitoBTest(unittest.TestCase):
                       "manual": None, "manual_keys": [], "manual_retries": [],
                       "ai_configured": True, "analysis": None, "saved_analyses": {},
                       "selection_previews": [], "selection_posts": [], "draft": None,
+                      "transcript_timeline": None, "transcript_prepare_posts": [], "transcript_draft_posts": [],
                       "range_posts": [], "draft_updates": [], "approved": {},
                       "caption": None, "project_caption": None, "caption_updates": [], "deletions": [],
                       "saved_style": None, "framing_source": None, "source_reads": 0,
@@ -93,7 +94,7 @@ class BrowserHitoBTest(unittest.TestCase):
         path = parsed.path
         assets = {"beta.js": "text/javascript", "auth.js": "text/javascript", "logos.js": "text/javascript",
                   "mvp.js": "text/javascript", "editorial.js": "text/javascript", "mvp.css": "text/css",
-                  "beta.css": "text/css", "account.css": "text/css"}
+                  "beta.css": "text/css", "account.css": "text/css", "transcript.js": "text/javascript"}
         if path == "/":
             route.fulfill(status=200, content_type="text/html", headers={"Content-Security-Policy": CSP},
                           body=(STATIC / "beta.html").read_bytes())
@@ -293,6 +294,28 @@ class BrowserHitoBTest(unittest.TestCase):
             data = request.post_data_json
             self.state["range_posts"].append(data)
             return {**data, "cues": data.get("cues", self.cue_fixture())}, 200
+        if path == f"/jobs/{JOB}/transcript-selection" and method == "GET":
+            return self.state["transcript_timeline"], 200
+        if path == f"/jobs/{JOB}/transcript-selection/prepare" and method == "POST":
+            self.state["transcript_prepare_posts"].append(request.post_data_json)
+            self.state["transcript_timeline"]["alignment_status"] = "queued"
+            return {"alignment_status": "queued"}, 202
+        if path == f"/jobs/{JOB}/transcript-selection/drafts" and method == "POST":
+            body = request.post_data_json
+            key = request.headers.get("idempotency-key")
+            self.state["transcript_draft_posts"].append((key, body))
+            selected = next(version for version in self.state["transcript_timeline"]["versions"]
+                            if version["id"] == body["version"])
+            units = {unit["id"]: unit for segment in selected["segments"] for unit in (segment["words"] or [segment])}
+            start, end = units[body["first"]]["start"], units[body["last"]]["end"]
+            draft = self.store_draft(title="Recorte de la transcripción", start=start, end=end,
+                                     cues=[{"start": .2, "end": .9, "text": "Voz de prueba."}],
+                                     selection_origin={"mode": "transcript", "method": selected["method"],
+                                                       "transcript_version": body["version"], "first": body["first"],
+                                                       "last": body["last"], "start": start, "end": end})
+            if len(self.state["transcript_draft_posts"]) == 1 and self.state.get("interrupt_transcript_receipt"):
+                return {"detail": "Respuesta interrumpida."}, 503
+            return draft, 201
         if path == f"/jobs/{JOB}/editor/exports" and method == "POST":
             self.state["manual_keys"].append(request.headers.get("idempotency-key"))
             if self.state["manual"] is None:
@@ -1398,6 +1421,128 @@ class BrowserHitoBTest(unittest.TestCase):
                                          self.state["draft"]["options"]["subtitle_color"]))
         self.assertEqual(2, len(self.state["draft_updates"]))
         self.assertEqual(2, len(self.state["selection_posts"]))
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
+    @staticmethod
+    def transcript_timeline(*, ready):
+        segments = [
+            {"id": "s1", "start": 0, "end": .6, "text": "Voz breve"},
+            {"id": "s2", "start": 2, "end": 4, "text": "Voz al principio"},
+            {"id": "s3", "start": 360, "end": 365, "text": "Voz al final"},
+        ]
+        marks = [
+            [(0, .32, "Voz"), (.32, .6, "breve")],
+            [(2, 2.6, "Voz"), (2.6, 2.8, "al"), (2.8, 4, "principio")],
+            [(360, 360.7, "Voz"), (360.7, 361, "al"), (361, 365, "final")],
+        ]
+        base = {"id": "a" * 64, "method": "segments", "alternate": False,
+                "segments": [{**row, "words": []} for row in segments]}
+        words = {"id": "b" * 64, "method": "faster-whisper-word-timestamps", "alternate": False,
+                 "segments": [{**row, "words": [{"id": f"w{i}.{j}", "start": start, "end": end, "text": text}
+                                                for j, (start, end, text) in enumerate(cues, 1)]}
+                              for i, (row, cues) in enumerate(zip(segments, marks), 1)]}
+        return {"job_id": JOB, "source_url": f"/jobs/{JOB}/source", "source_duration": 426.55,
+                "alignment_status": "ready" if ready else "not_prepared", "min_seconds": 1, "max_seconds": 60,
+                "default_version": words["id"] if ready else base["id"], "versions": [base, words] if ready else [base]}
+
+    def test_transcript_desktop_drag_playback_and_versioned_draft_recovery(self):
+        self.state.update(status="completed", transcript_timeline=self.transcript_timeline(ready=True),
+                          framing_source=FRAMING_WEBM, interrupt_transcript_receipt=True)
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        self.page.get_by_text("Crear clip desde la transcripción", exact=True).click()
+        create = self.page.locator("#transcript-create")
+        expect(create).to_be_disabled()
+        playback = self.page.locator("#transcript-source")
+        self.page.locator('[data-transcript-segment="s1"]').click()
+        self.page.wait_for_function("""() => {
+            const video = document.querySelector('#transcript-source');
+            return video.currentTime > 0 && document.querySelector('.transcript-playing') !== null;
+        }""")
+        playback.evaluate("video => video.pause()")
+        list_box = self.page.locator("#transcript-text")
+        first = list_box.locator('[data-transcript-unit="w1.2"]')
+        last = list_box.locator('[data-transcript-unit="w2.2"]')
+        last.scroll_into_view_if_needed()
+        start, end = first.bounding_box(), last.bounding_box()
+        self.page.mouse.move(start["x"] + 1, start["y"] + start["height"] / 2)
+        self.page.mouse.down()
+        self.page.mouse.move(end["x"] + end["width"] - 1, end["y"] + end["height"] / 2, steps=12)
+        self.page.mouse.up()
+        expect(self.page.locator("#transcript-selection-start")).to_have_text("00:00.32")
+        expect(self.page.locator("#transcript-selection-end")).to_have_text("00:02.8")
+        expect(list_box.locator(".transcript-selected")).to_have_count(3)
+        expect(self.page.locator("#transcript-play-selection")).to_be_enabled()
+        list_box.evaluate("list => list.scrollTop = list.scrollHeight")
+        expect(first).to_have_class("transcript-selected")
+        create.click()
+        expect(self.page.locator("#transcript-status")).to_contain_text("Respuesta interrumpida.")
+        create.click()
+        expect(self.page.locator("#editorial-draft-form")).to_be_visible()
+        accepted, replay = self.state["transcript_draft_posts"]
+        self.assertEqual(accepted, replay)
+        self.assertTrue(accepted[0])
+        self.assertEqual({"version": "b" * 64, "first": "w1.2", "last": "w2.2"}, accepted[1])
+        expect(self.page.locator("#editorial-preview-start")).to_be_enabled()
+        expect(self.page.locator("#editorial-preview-end")).to_be_enabled()
+        self.page.locator("#editorial-start").fill("0.42")
+        self.page.locator("#editorial-apply-range").click()
+        expect(self.page.locator("#editorial-draft-status")).to_contain_text("Recorte aplicado.")
+        self.assertEqual("b" * 64, self.state["range_posts"][-1]["transcript_version"])
+        self.page.locator("#editorial-save").click()
+        expect(self.page.locator("#editorial-draft-status")).to_contain_text("Borrador guardado.")
+        self.page.reload()
+        self.page.locator("#editorial-heading").click()
+        expect(self.page.locator("#editorial-start")).to_have_value("0.42")
+        expect(self.page.locator("#editorial-transcript-origin")).to_have_text(
+            "Selección original de la transcripción · 00:00.32–00:02.8")
+        self.page.locator("#transcript-heading").click()
+        expect(list_box.locator(".transcript-selected")).to_have_count(3)
+        self.assertEqual([], self.state["selection_posts"])
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
+    def test_historical_transcript_preparation_keeps_coarse_selection_until_explicit_switch(self):
+        self.state.update(status="completed", transcript_timeline=self.transcript_timeline(ready=False))
+        self.page.set_viewport_size({"width": 375, "height": 760})
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        self.page.locator("#transcript-heading").click()
+        transcript = self.page.locator("#transcript-text")
+        expect(transcript.locator('[data-granularity="segment"]')).to_have_count(3)
+        expect(self.page.locator("#transcript-granularity")).to_contain_text("segmentos completos")
+        transcript.press("Home")
+        self.page.locator("#transcript-mark-start").press("Enter")
+        transcript.press("End")
+        self.page.locator("#transcript-mark-end").press("Space")
+        expect(self.page.locator("#transcript-selection-duration")).to_have_text("365 s")
+        expect(self.page.locator("#transcript-selection-note")).to_contain_text("máximo de 60 s")
+        expect(self.page.locator("#transcript-create")).to_be_disabled()
+        self.assertTrue(transcript.evaluate("list => list.getBoundingClientRect().right <= innerWidth"))
+        self.page.locator("#transcript-prepare").click()
+        expect(self.page.locator("#transcript-status")).to_contain_text("en cola")
+        self.assertEqual([{"retry": False}], self.state["transcript_prepare_posts"])
+        self.state["transcript_timeline"] = self.transcript_timeline(ready=True)
+        self.state["transcript_timeline"]["versions"][1]["alternate"] = True
+        self.state["transcript_timeline"]["default_version"] = "a" * 64
+        menu = self.page.locator("#transcript-version")
+        expect(menu).to_be_visible(timeout=8000)
+        expect(menu).to_have_value("a" * 64)
+        expect(self.page.locator("#transcript-selection-duration")).to_have_text("365 s")
+        menu.select_option("b" * 64)
+        expect(self.page.locator("#transcript-granularity")).to_contain_text("transcripción nueva")
+        expect(self.page.locator("#transcript-selection-duration")).to_have_text("—")
+        expect(transcript.locator('[data-transcript-unit="w2.1"]')).to_have_text("Voz")
+        transcript.locator('[data-transcript-unit="w3.1"]').click()
+        self.page.locator("#transcript-mark-start").press("Enter")
+        transcript.press("End")
+        self.page.locator("#transcript-mark-end").press("Enter")
+        expect(self.page.locator("#transcript-selection-start")).to_have_text("06:00")
+        expect(self.page.locator("#transcript-selection-end")).to_have_text("06:05")
+        self.page.locator("#transcript-create").click()
+        expect(self.page.locator("#editorial-transcript-origin")).to_contain_text("06:00–06:05")
+        self.assertEqual({"version": "b" * 64, "first": "w3.1", "last": "w3.3"},
+                         self.state["transcript_draft_posts"][0][1])
+        self.assertEqual([], self.state["selection_posts"])
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])
 

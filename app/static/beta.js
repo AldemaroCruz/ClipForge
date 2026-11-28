@@ -423,6 +423,7 @@ async function initBeta() {
     syncZipProject();
     window.ClipForgeMvp?.selectJob(job);
     window.ClipForgeEditorial?.selectJob(job);
+    window.ClipForgeTranscript?.selectJob(job);
     const title = projects.find(project => project.id === selectedId)?.title;
     element("job-title").textContent = title || job?.source_filename || "Revisar clips";
     const startExisting = element("start-existing");

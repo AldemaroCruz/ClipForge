@@ -53,6 +53,11 @@ on:
         required: false
         type: boolean
         default: false
+      focused_d02:
+        description: Verify transcript selection, word alignment and export against the accepted D01 portal
+        required: false
+        type: boolean
+        default: false
       worker_benchmark_base:
         description: Accepted INT commit to keep serving during an INT worker-only comparison
         required: false
@@ -101,6 +106,7 @@ jobs:
           node --check app/static/beta.js
           node --check app/static/mvp.js
           node --check app/static/editorial.js
+          node --check app/static/transcript.js
           node --check app/static/logos.js
           node --check app/static/auth.js
           node --check app/static/account.js
@@ -784,6 +790,49 @@ jobs:
             --accepted-d01-provider-base
           printf 'INT_D01_PROVIDER_EVIDENCE=%s\n' "$receipt" >> "$GITHUB_ENV"
 
+      - name: Constrain the protected transcript-selection release
+        if: inputs.focused_d02
+        shell: bash
+        env:
+          OTHER_MODE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c04_styles || inputs.focused_c05_framing || inputs.focused_c06_zip || inputs.focused_creator_logos || inputs.focused_caption_color || inputs.focused_mixed_zip || inputs.focused_d01 || inputs.reuse_d01_provider_evidence || inputs.worker_benchmark_base != '' || inputs.adopt_worker_profile }}
+        run: |
+          set -euo pipefail
+          test "$OTHER_MODE" = false
+          base=9e49209aad98f74428b50276836719fd5bd76310
+          git merge-base --is-ancestor "$base" HEAD
+          git diff --name-only --no-renames -z "$base" HEAD | while IFS= read -r -d '' path; do
+            case "$path" in
+              .github/workflows/int-hito-b.yml|Dockerfile.int-beta|config/int-hito-b-bandit-review.json|docs/BACKLOG.md|docs/INT-FOCUS-GROUP.md) ;;
+              app/main.py|app/telemetry.py|app/transcribe.py|app/int_beta.py|app/int_beta_proxy.py) ;;
+              app/cloud/dispatch.py|app/cloud/migrate_beta.py|app/cloud/migrate_transcript_alignment.py|app/cloud/repository.py|app/cloud/router.py|app/cloud/transcript_selection.py|app/cloud/worker.py|app/cloud/worker_measurements.py) ;;
+              app/static/beta.html|app/static/beta.js|app/static/beta.css|app/static/editorial.js|app/static/mvp.css|app/static/transcript.js) ;;
+              scripts/deploy_int_beta.sh|scripts/int_hito_b_browser.py|scripts/int_hito_c_styles_evidence.py|scripts/int_hito_d02_browser.py) ;;
+              tests/browser_hito_b_e2e.py|tests/test_hito_b_proxy.py|tests/test_transcript_selection.py|tests/test_transcript_processing.py) ;;
+              *) printf 'Outside the D00/D02 release scope: %s\n' "$path" >&2; exit 1 ;;
+            esac
+          done
+
+      - name: Download the accepted D01 portal and worker receipts
+        if: inputs.focused_d02
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          github-token: ${{ github.token }}
+          run-id: 46120063759
+          artifact-ids: 15253603462
+          path: ${{ env.DELIVERY_DIR }}/d02-baseline
+          merge-multiple: true
+
+      - name: Verify D01 acceptance and recovery pins before OIDC
+        if: inputs.focused_d02
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          receipt="$DELIVERY_DIR/reports/d02-baseline.json"
+          python -m scripts.int_hito_c_styles_evidence --source "$DELIVERY_DIR/d02-baseline" \
+            --commit "$GITHUB_SHA" --model "$INT_EDITORIAL_OPENAI_MODEL" --receipt "$receipt" --accepted-d02-base
+          printf 'INT_D02_ACCEPTANCE=%s\n' "$receipt" >> "$GITHUB_ENV"
+
       - name: Check the exact source scope of the reused evidence
         id: reuse_scope
         if: inputs.reuse_int_provider_evidence
@@ -1007,11 +1056,16 @@ jobs:
             ${{ env.DELIVERY_DIR }}/reports/browser-d01-prepare.json
             ${{ env.DELIVERY_DIR }}/reports/browser-d01.json
             ${{ env.DELIVERY_DIR }}/reports/d01-*.png
+            ${{ env.DELIVERY_DIR }}/reports/browser-d02-*.json
+            ${{ env.DELIVERY_DIR }}/reports/browser-d02.json
+            ${{ env.DELIVERY_DIR }}/reports/d02-*.json
+            ${{ env.DELIVERY_DIR }}/reports/d02-*.png
+            ${{ env.DELIVERY_DIR }}/reports/d02-*.wav
           if-no-files-found: error
 
       - name: Replace the public revision and verify persistence
         id: acceptance_verify
-        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && !inputs.focused_caption_color && !inputs.focused_mixed_zip && !inputs.focused_d01 && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && !inputs.focused_caption_color && !inputs.focused_mixed_zip && !inputs.focused_d01 && !inputs.focused_d02 && steps.reuse_scope.outputs.mode != 'deletion' }}
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
         run: bash scripts/deploy_int_beta.sh acceptance-verify
@@ -1030,7 +1084,7 @@ jobs:
 
       - name: Create the three synthetic capacity accounts
         id: capacity_setup
-        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && !inputs.focused_caption_color && !inputs.focused_mixed_zip && !inputs.focused_d01 && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && !inputs.focused_caption_color && !inputs.focused_mixed_zip && !inputs.focused_d01 && !inputs.focused_d02 && steps.reuse_scope.outputs.mode != 'deletion' }}
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
         run: bash scripts/deploy_int_beta.sh capacity-setup
@@ -1047,7 +1101,7 @@ jobs:
 
       - name: Check three near-limit uploads and concurrent processing
         id: capacity_load
-        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && !inputs.focused_caption_color && !inputs.focused_mixed_zip && !inputs.focused_d01 && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && !inputs.focused_caption_color && !inputs.focused_mixed_zip && !inputs.focused_d01 && !inputs.focused_d02 && steps.reuse_scope.outputs.mode != 'deletion' }}
         run: bash scripts/deploy_int_beta.sh capacity-load
 
       - name: Publish the capacity evidence
@@ -1062,7 +1116,7 @@ jobs:
 
       - name: Export and measure both precise cuts
         id: capacity_cuts
-        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && !inputs.focused_caption_color && !inputs.focused_mixed_zip && !inputs.focused_d01 && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && !inputs.focused_caption_color && !inputs.focused_mixed_zip && !inputs.focused_d01 && !inputs.focused_d02 && steps.reuse_scope.outputs.mode != 'deletion' }}
         run: bash scripts/deploy_int_beta.sh capacity-cuts
 
       - name: Publish the precise-cut evidence
@@ -1077,7 +1131,7 @@ jobs:
 
       - name: Check three-account editorial acceptance and finish cleanup
         id: capacity_editorial
-        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && !inputs.focused_caption_color && !inputs.focused_mixed_zip && !inputs.focused_d01 && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && !inputs.focused_caption_color && !inputs.focused_mixed_zip && !inputs.focused_d01 && !inputs.focused_d02 && steps.reuse_scope.outputs.mode != 'deletion' }}
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
         run: bash scripts/deploy_int_beta.sh capacity-editorial
@@ -1099,7 +1153,7 @@ jobs:
         run: bash scripts/deploy_int_beta.sh capacity-cleanup
 
       - name: Restore the previous INT components after a failed acceptance
-        if: ${{ always() && !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && (failure() || cancelled()) && (steps.acceptance_open.outcome == 'success' || steps.acceptance_open.outcome == 'failure' || steps.acceptance_open.outcome == 'cancelled' || ((inputs.focused_c04_styles || inputs.focused_c05_framing || inputs.focused_c06_zip || inputs.focused_creator_logos || inputs.focused_caption_color || inputs.focused_mixed_zip || inputs.focused_d01) && steps.deploy_prepare.outcome == 'success')) }}
+        if: ${{ always() && !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && (failure() || cancelled()) && (steps.acceptance_open.outcome == 'success' || steps.acceptance_open.outcome == 'failure' || steps.acceptance_open.outcome == 'cancelled' || ((inputs.focused_c04_styles || inputs.focused_c05_framing || inputs.focused_c06_zip || inputs.focused_creator_logos || inputs.focused_caption_color || inputs.focused_mixed_zip || inputs.focused_d01 || inputs.focused_d02) && steps.deploy_prepare.outcome == 'success')) }}
         run: bash scripts/deploy_int_beta.sh rollback
 
       - name: Remove only the work and account prepared for the focused browser check
@@ -1113,6 +1167,12 @@ jobs:
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
         run: bash scripts/deploy_int_beta.sh d01-cleanup
+
+      - name: Remove only the projects and accounts prepared for D02
+        if: ${{ always() && inputs.focused_d02 && steps.acceptance_open.outcome != 'skipped' }}
+        env:
+          INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
+        run: bash scripts/deploy_int_beta.sh d02-cleanup
 
       - name: Record the accepted services, worker, and matched fixture
         id: worker_benchmark_prepare

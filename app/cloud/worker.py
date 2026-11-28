@@ -19,6 +19,8 @@ from sqlalchemy import text
 from ..auth_db import get_engine
 from ..logo_placement import LogoPlacement
 from ..media import MediaValidationError, inspect_beta_media
+from ..telemetry import Recorder
+from ..transcribe import ALIGNMENT_FILE, transcribe_pilot, write_alignment
 from . import enabled
 from .config import BETA_MAX_BYTES, BETA_WORKER_CONCURRENCY, beta_enabled, settings
 from .creator_logos import MAX_STORED_BYTES, storage_item_for_job
@@ -69,7 +71,7 @@ def _claim(connection, job_id=None):
             LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE t.status='running' AND (t.lease_until IS NULL OR t.lease_until<=clock_timestamp())
               AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind IN ('process','selection','delete') OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (NOT :beta OR t.kind IN ('process','selection','delete','alignment') OR e.payload->'pilot'=CAST('true' AS jsonb))
               AND (CAST(:job AS text) IS NULL OR t.job_id=:job)
             ORDER BY t.created_at,t.id LIMIT :limit FOR UPDATE OF t SKIP LOCKED
             """), {**profile, "limit": BETA_WORKER_CONCURRENCY if beta else 1}).mappings().all()
@@ -82,6 +84,8 @@ def _claim(connection, job_id=None):
             item = doc["payload"]
             if kind == "selection":
                 repo.interrupt_selection(item)
+            elif kind == "alignment":
+                repo.alignment_failure(item, "WORKER_INTERRUPTED")
             else:
                 item.update(status="failed", error="Procesamiento interrumpido; el original se conserva. Crea una nueva variante para reintentar.", error_code="WORKER_INTERRUPTED")
                 repo.public_beta_failure(item)
@@ -92,7 +96,7 @@ def _claim(connection, job_id=None):
                 SELECT count(*), count(*) FILTER (
                     WHERE NOT (t.status='cancelled' AND p.deletion_started_at IS NOT NULL)
                       AND NOT (COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)
-                      AND (t.kind IN ('process','selection','delete') OR COALESCE(e.payload->'pilot'=CAST('true' AS jsonb),false))))
+                      AND (t.kind IN ('process','selection','delete','alignment') OR COALESCE(e.payload->'pilot'=CAST('true' AS jsonb),false))))
                 FROM cloud_tasks t
                 JOIN auth_projects p ON p.id=t.job_id
                 LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
@@ -112,7 +116,7 @@ def _claim(connection, job_id=None):
             LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
             LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE t.status='queued' AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind IN ('process','selection','delete') OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (NOT :beta OR t.kind IN ('process','selection','delete','alignment') OR e.payload->'pilot'=CAST('true' AS jsonb))
               AND (CAST(:job AS text) IS NULL OR t.job_id=:job)
               AND NOT (t.id=ANY(CAST(:deferred AS varchar[])))
               AND (NOT COALESCE(e.payload->'clip_captions'=CAST('true' AS jsonb),false) OR NOT EXISTS (
@@ -142,7 +146,7 @@ def cleanup_failed():
             WHERE t.status='failed' AND t.cleaned_at IS NULL
               AND (NOT :beta OR to_jsonb(p)->>'deletion_started_at' IS NULL)
               AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind IN ('process','selection') OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (NOT :beta OR t.kind IN ('process','selection','alignment') OR e.payload->'pilot'=CAST('true' AS jsonb))
             ORDER BY t.created_at LIMIT 100
             """), {"beta": beta_enabled()}).mappings().all()
     for task in tasks:
@@ -287,7 +291,7 @@ def drain(max_tasks=None, recovery=None):
                     scratch = tempfile.TemporaryDirectory(prefix=SCRATCH_PREFIX)
                     env = {**os.environ, SCRATCH_ENV: str(Path(scratch.name).resolve())}
                     measurements = (WorkerMeasurements(scratch.name, task, execution)
-                                    if beta and execution and task["kind"] in {"process", "export"} else None)
+                                    if beta and execution and task["kind"] in {"process", "export", "alignment"} else None)
                     status = "interrupted"
                     try:
                         child = subprocess.Popen(command, start_new_session=os.name == "posix", env=env)
@@ -351,6 +355,67 @@ def drain(max_tasks=None, recovery=None):
     return {"status": "interrupted" if interrupted else "drained", "tasks": completed, "local_test": cfg.local_test}
 
 
+def _alignment_task(task, workspace):
+    from .editorial_selection import source_identity
+
+    job_id = task["job_id"]
+    with get_engine().begin() as connection:
+        repo.worker_guard(connection, task)
+        document = repo.document(job_id, "alignment", task["item_id"], connection)
+        item = document["payload"]
+        item.update(status="running", started_at=time.time())
+        repo.update_document(connection, job_id, "alignment", item)
+    job = repo.document(job_id, live=True)
+    try:
+        matches = source_identity(job) == item["source_fingerprint"]
+    except HTTPException:
+        matches = False
+    if not matches:
+        repo.alignment_failure(item, "ALIGNMENT_SOURCE_CHANGED")
+        repo.finish_task(task, item, {})
+        return
+    with scratch_context() as cache:
+        root = Path(cache)
+        folder = root / job_id
+        folder.mkdir()
+        recorder = Recorder(root, job_id, "alignment", item["id"])
+        timings, manifest = {}, {}
+        began = time.monotonic()
+        original = folder / "input.mp4"
+        try:
+            storage.download(job["manifest"]["input.mp4"], original, max_bytes=BETA_MAX_BYTES)
+        except storage.TransportError:
+            repo.alignment_failure(item, "ALIGNMENT_TRANSPORT")
+        except storage.StorageError:
+            repo.alignment_failure(item, "SOURCE_UNAVAILABLE")
+        record_stage(cache, timings, "download", began)
+        if item["status"] == "running":
+            try:
+                result = transcribe_pilot(original, item["source_fingerprint"]["source_duration"], recorder)
+                if write_alignment(folder / ALIGNMENT_FILE, result.alignment):
+                    item.update(status="completed", completed_at=time.time(),
+                                word_segments=sum(bool(row["words"]) for row in result.alignment["segments"]))
+                else:
+                    repo.alignment_failure(item, "ALIGNMENT_INCOMPLETE")
+            except MediaValidationError:
+                repo.alignment_failure(item, "ALIGNMENT_INCOMPLETE")
+            except Exception:
+                repo.alignment_failure(item, "ALIGNMENT_FAILED")
+        recorder.finish(item["status"], item.get("error_code"))
+        if item["status"] == "completed":
+            began = time.monotonic()
+            object_name = f"workspaces/{workspace}/jobs/{job_id}/tasks/{task['id']}/{task['fence']}/{ALIGNMENT_FILE}"
+            try:
+                with project_deletion.publication(task), (folder / ALIGNMENT_FILE).open("rb") as source:
+                    manifest[ALIGNMENT_FILE] = storage.upload(object_name, source, "application/json")
+            except storage.TransportError:
+                repo.alignment_failure(item, "ALIGNMENT_TRANSPORT")
+            except storage.StorageError:
+                repo.alignment_failure(item, "ALIGNMENT_FAILED")
+            record_stage(cache, timings, "publish", began)
+        repo.finish_task(task, item, manifest)
+
+
 def execute(task_id, fence):
     cfg = settings()
     with get_engine().connect() as c:
@@ -361,7 +426,7 @@ def execute(task_id, fence):
             LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE t.id=:i AND t.fence=:f AND t.status='running' AND t.lease_until>clock_timestamp()
               AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind IN ('process','selection','delete') OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (NOT :beta OR t.kind IN ('process','selection','delete','alignment') OR e.payload->'pilot'=CAST('true' AS jsonb))
             """), {"i": task_id, "f": fence, "beta": beta_enabled()}).mappings().first()
         if task is None:
             raise RuntimeError("Task lease unavailable")
@@ -377,6 +442,8 @@ def execute(task_id, fence):
         raise RuntimeError("Cloud worker requires an identified offline model lock")
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    if task["kind"] == "alignment":
+        return _alignment_task(task, workspace)
     with scratch_context() as cache:
         os.environ["CLIPFORGE_DATA_DIR"] = cache
         from .. import main
@@ -457,6 +524,8 @@ def execute(task_id, fence):
             if payload["status"] == "completed":
                 if kind == "job":
                     names = ["transcript.json"] if (directory / "transcript.json").is_file() else []
+                    if pilot and (directory / ALIGNMENT_FILE).is_file():
+                        names.append(ALIGNMENT_FILE)
                     for clip in payload["clips"]:
                         names.extend([clip["file"], Path(clip["file"]).with_suffix(".srt").name, Path(clip["file"]).with_suffix(".vtt").name])
                 else:
@@ -470,6 +539,12 @@ def execute(task_id, fence):
                     publication = project_deletion.publication(task) if pilot else nullcontext()
                     with publication, path.open("rb") as source:
                         manifest[name] = storage.upload(object_name, source, mime)
+                if kind == "job" and ALIGNMENT_FILE in manifest:
+                    from .editorial_selection import source_identity
+
+                    payload["transcript_alignment"] = {
+                        "status": "completed", "source_fingerprint": source_identity({"payload": payload, "manifest": manifest}),
+                    }
             repo.finish_task(task, payload, manifest)
             if measure and payload["status"] == "completed":
                 record_stage(cache, timings, "publish", began)

@@ -10,7 +10,6 @@ import math
 import os
 import re
 import shutil
-import tempfile
 import threading
 import time
 import uuid
@@ -32,6 +31,7 @@ from .logo_placement import LogoPlacement
 from .presentation import Presentation, ExportRequest
 from .render import render_clip, run_ffmpeg
 from .subtitles import SubtitleError, cues_from_segments, validate_cues, to_srt, to_vtt
+from .transcribe import ALIGNMENT_FILE, transcribe_pilot, write_alignment
 from .auth import AuthenticationBoundary, require_access, register_project, unregister_project, router as auth_router
 from .environment import identity as environment_identity
 from .cloud import enabled as cloud_enabled
@@ -198,36 +198,6 @@ def process(job_id: str) -> None:
         _process(job_id, recorder)
 
 
-def _beta_audio(source: Path) -> Any:
-    import numpy as np
-    from .cloud.config import BETA_AUDIO_PADDING_SECONDS, BETA_MAX_SECONDS
-
-    samples_per_second = 16000
-    # Permit normal AAC rounding and detect media with timelines that exceed
-    # the admitted duration instead of silently transcribing a truncated file.
-    probe_seconds = BETA_MAX_SECONDS + 1
-    byte_limit = probe_seconds * samples_per_second * 2
-    admitted_bytes = int((BETA_MAX_SECONDS + BETA_AUDIO_PADDING_SECONDS) * samples_per_second) * 2
-    with tempfile.TemporaryDirectory(prefix=".audio-", dir=source.parent) as directory:
-        pcm = Path(directory) / "voice.pcm"
-        run_ffmpeg(
-            "-protocol_whitelist", "file,pipe", "-f", "mov", "-i", source.resolve(),
-            "-map", "0:a:0", "-vn", "-sn", "-dn",
-            # PCM has no timestamps. Fill timeline gaps so Whisper offsets
-            # still refer to positions in the original video.
-            "-af", "aresample=async=1:first_pts=0",
-            "-ar", samples_per_second, "-ac", 1, "-c:a", "pcm_s16le",
-            "-t", probe_seconds, "-fs", byte_limit, "-f", "s16le", pcm,
-        )
-        with pcm.open("rb") as audio:
-            data = audio.read(byte_limit + 1)
-    if len(data) > admitted_bytes:
-        raise MediaValidationError("VIDEO_OUTSIDE_LIMITS", "La pista de audio excede la duración admitida.")
-    if not data or len(data) % 2:
-        raise MediaValidationError("UNSUPPORTED_MEDIA", "No se pudo decodificar la pista de audio.")
-    return np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
-
-
 def _process(job_id: str, recorder: Recorder | None = None, *,
              validated_media: dict[str, Any] | None = None,
              logo: LogoPlacement | None = None, logo_path: Path | None = None) -> None:
@@ -256,36 +226,27 @@ def _process(job_id: str, recorder: Recorder | None = None, *,
         job["status"] = "transcribing"
         persist(job_id, job)
         LOGGER.info("Job %s: cargando Whisper y transcribiendo", job_id)
-        from faster_whisper import WhisperModel
-
-        recorder.phase("model_load")
-        model = WhisperModel(resolve_model(), device="cpu", compute_type="int8")
-        recorder.phase("transcription")
-        audio = _beta_audio(source) if validated_media is not None else str(source)
-        segments, info = model.transcribe(audio, beam_size=1, vad_filter=True)
-        segs = [{"start": s.start, "end": s.end, "text": s.text.strip()}
-                for s in segments if s.text.strip()]
         if validated_media is not None:
-            decoded_seconds = len(audio) / 16000
-            timeline_end = min(decoded_seconds, validated["duration_seconds"])
-            # Whisper can place its last segment inside model padding. Bound
-            # the actual transcript and selection inputs to the source timeline.
-            bounded = []
-            for segment in segs:
-                start, end = segment["start"], segment["end"]
-                if not math.isfinite(start) or not math.isfinite(end):
-                    continue
-                start, end = max(0.0, start), min(timeline_end, end)
-                if start < end:
-                    bounded.append({**segment, "start": start, "end": end})
-            segs = bounded
-            job["analysis_seconds"] = round(decoded_seconds, 2)
+            result = transcribe_pilot(source, validated["duration_seconds"], recorder)
+            segs, language = result.segments, result.language
+            write_alignment(folder / ALIGNMENT_FILE, result.alignment)
+            job["analysis_seconds"] = round(result.decoded_seconds, 2)
             job["speech_until_seconds"] = round(max((s["end"] for s in segs), default=0.0), 2)
+        else:
+            from faster_whisper import WhisperModel
+
+            recorder.phase("model_load")
+            model = WhisperModel(resolve_model(), device="cpu", compute_type="int8")
+            recorder.phase("transcription")
+            segments, info = model.transcribe(str(source), beam_size=1, vad_filter=True)
+            segs = [{"start": s.start, "end": s.end, "text": s.text.strip()}
+                    for s in segments if s.text.strip()]
+            language = info.language
         write_json_atomic(folder / "transcript.json", segs)
         if not segs:
             raise MediaValidationError("NO_SPEECH_DETECTED", "No se detectó voz transcribible en el video. Hay una pista de audio, pero podría contener silencio, música o voz poco clara. Prueba una conversación audible de 1–3 minutos.", job["media"])
         job["status"] = "rendering"
-        job["language"] = info.language
+        job["language"] = language
         persist(job_id, job)
         recorder.phase("selection")
         chosen = select_clips(segs)

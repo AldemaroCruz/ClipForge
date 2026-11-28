@@ -41,7 +41,7 @@ def reconcile(*, cleanup_only=False):
                 LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
                 WHERE (t.status IN ('running','cancelled') AND t.lease_until>clock_timestamp())
                   OR (t.status='queued' AND d.payload->'pilot'=CAST('true' AS jsonb)
-                      AND (t.kind IN ('process','selection','delete') OR e.payload->'pilot'=CAST('true' AS jsonb))
+                      AND (t.kind IN ('process','selection','delete','alignment') OR e.payload->'pilot'=CAST('true' AS jsonb))
                       AND NOT (t.id=ANY(CAST(:deferred AS varchar[])))
                       AND o.dispatched_at>clock_timestamp()-
                         CASE WHEN o.last_error IS NULL THEN interval '5 minutes' ELSE interval '15 seconds' END)
@@ -55,7 +55,7 @@ def reconcile(*, cleanup_only=False):
             LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
             LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind IN ('process','selection','delete') OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (NOT :beta OR t.kind IN ('process','selection','delete','alignment') OR e.payload->'pilot'=CAST('true' AS jsonb))
               AND (NOT :cleanup_only OR t.kind='delete')
               AND ((t.status='queued' AND
                   NOT (t.id=ANY(CAST(:deferred AS varchar[]))) AND

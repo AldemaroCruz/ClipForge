@@ -12,6 +12,7 @@
   <script src="/static/logos.js" defer></script>
   <script src="/static/mvp.js" defer></script>
   <script src="/static/editorial.js" defer></script>
+  <script src="/static/transcript.js" defer></script>
   <script src="/static/beta.js" defer></script>
 </head>
 <body class="beta">
@@ -131,6 +132,39 @@
           </form>
           <div id="clip-caption-downloads" class="actions" role="group" aria-label="Descargas de subtítulos y video" hidden></div>
         </section>
+        <section id="transcript-editor" aria-labelledby="transcript-heading" hidden>
+          <details id="transcript-details">
+            <summary id="transcript-heading">Crear clip desde la transcripción</summary>
+            <p id="transcript-status" class="status beta-message" role="status"></p>
+            <button type="button" id="transcript-prepare" class="secondary" hidden>Preparar marcas por palabra</button>
+            <div id="transcript-content" hidden>
+              <div id="transcript-version-choice" hidden>
+                <label for="transcript-version">Versión de la transcripción</label>
+                <select id="transcript-version"></select>
+              </div>
+              <p id="transcript-granularity" class="muted"></p>
+              <video id="transcript-source" controls playsinline preload="none" aria-label="Video original para la selección desde la transcripción"></video>
+              <p id="transcript-help" class="muted">Arrastrá para seleccionar texto o elegí un punto y usá «Marcar inicio» y «Marcar final». Con el foco en la transcripción, podés mover ese punto con las flechas.</p>
+              <div id="transcript-text" tabindex="0" role="region" aria-label="Transcripción del video" aria-describedby="transcript-help"></div>
+              <p id="transcript-cursor" class="status beta-message" role="status"></p>
+              <div class="actions">
+                <button type="button" id="transcript-mark-start" class="secondary" disabled>Marcar inicio</button>
+                <button type="button" id="transcript-mark-end" class="secondary" disabled>Marcar final</button>
+                <button type="button" id="transcript-clear" class="secondary" disabled>Limpiar selección</button>
+              </div>
+              <dl id="transcript-times" aria-label="Tiempos de la selección" aria-live="polite" aria-atomic="true">
+                <div><dt>Inicio</dt><dd id="transcript-selection-start"></dd></div>
+                <div><dt>Final</dt><dd id="transcript-selection-end"></dd></div>
+                <div><dt>Duración</dt><dd id="transcript-selection-duration"></dd></div>
+              </dl>
+              <p id="transcript-selection-note" class="status beta-message" role="status"></p>
+              <div class="actions">
+                <button type="button" id="transcript-play-selection" class="secondary" disabled>Escuchar selección</button>
+                <button type="button" id="transcript-create" disabled>Crear clip con esta selección</button>
+              </div>
+            </div>
+          </details>
+        </section>
         <section id="editorial" aria-labelledby="editorial-heading" hidden>
           <details id="editorial-details">
             <summary id="editorial-heading">Buscar momentos por tema</summary>
@@ -191,6 +225,7 @@
             <form id="editorial-draft-form" hidden>
               <fieldset id="editorial-draft-fields">
                 <legend>Editar borrador</legend>
+                <p id="editorial-transcript-origin" class="muted" hidden></p>
                 <label for="editorial-title">Título del clip</label>
                 <input type="text" id="editorial-title" maxlength="120" required>
                 <div class="mvp-range">
@@ -336,6 +371,7 @@
         <li>Entra con la cuenta que te entregó el administrador y selecciona un MP4 con voz audible.</li>
         <li>Elige «Subir y procesar». Puedes salir cuando el trabajo figure como pendiente o procesando y retomarlo en «Mis trabajos».</li>
         <li>Usa «Corregir texto» para corregir subtítulos y volver a exportar un clip automático. En «Editar subtítulos» puedes ajustar tiempos y estilo.</li>
+        <li>Abre «Crear clip desde la transcripción», elegí un pasaje y escuchalo antes de crear el borrador. Ajustá los bordes y corregí los subtítulos desde el editor.</li>
         <li>Abre «Buscar momentos por tema». Indicá el tema, revisá el texto por enviar y autorizá el análisis. Desde cada propuesta podés crear un borrador para ajustar el recorte y los subtítulos antes de exportar.</li>
       </ol>
     </section>

@@ -244,6 +244,33 @@ def verify_d01_provider(root, commit, model):
             "evidence": {"run_id": run_id, "artifact_id": artifact_id, "sha256": hashes}}
 
 
+def verify_d02_baseline(root, commit, model):
+    accepted = "9e49209aad98f74428b50276836719fd5bd76310"
+    if not re.fullmatch(r"[a-f0-9]{40}", commit) or commit == accepted:
+        raise ValueError("Se requiere una candidata descendiente del D01 aceptado")
+    hashes = {
+        "after-rollout.json": "86658a788be2b6860f1b7c2e9e7dd8a103b37ad9ae4fcc7e02ab4881f8f5025c",
+        "browser-d01.json": "acf8057a0ee304107ccbf1091e8cdb2e38304ac46af9ceece477b786277d2b5f",
+    }
+    rollout, browser = (native_report(root, name, digest) for name, digest in hashes.items())
+    revisions = {"frontend": rollout["frontend_revision"], "api": rollout["api_revision"]}
+    approved = {row["name"] for row in browser["checks"] if row["status"] == "passed"}
+    required = {"d01_protected_provider_evidence_reused_without_reservations_or_calls",
+                "d01_editorial_mp4_and_mixed_zip_keep_exact_revisions_and_bytes"}
+    worker = rollout["worker_configuration"]
+    if (rollout["commit"] != accepted or browser["commit"] != accepted or browser["revisions"] != revisions
+            or browser["phase"] != "d01" or browser["status"] != "passed" or not required <= approved
+            or browser["provider_continuation"]["original_usage"] != {"reservations": 3, "calls": 3, "responses": 3}
+            or rollout["editorial"]["model"] != model or rollout["editorial"]["daily_limit"] != 100
+            or worker["cpu"] != "4" or worker["memory"] != "4Gi"):
+        raise ValueError("Falta la aceptación nativa del portal, el worker o D01")
+    return {
+        "schema": "clipforge-int-d02-baseline-1", "status": "passed", "target_commit": commit,
+        "baseline": {**rollout, "worker_source": accepted, "worker_cpu": worker["cpu"], "worker_memory": worker["memory"]},
+        "evidence": {"run_id": "46120063759", "artifact_id": "15253603462", "sha256": hashes},
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, type=Path)
@@ -260,6 +287,7 @@ def main():
                        metavar=("SHA", "RUN", "ARTIFACT", "ROLLOUT_HASH", "BROWSER_HASH"))
     group.add_argument("--accepted-d01-base", action="store_true")
     group.add_argument("--accepted-d01-provider-base", action="store_true")
+    group.add_argument("--accepted-d02-base", action="store_true")
     args = parser.parse_args()
     if args.accepted_styles:
         receipt = verify_product_release(args.source, args.commit, args.model, "styles", *args.accepted_styles)
@@ -275,6 +303,8 @@ def main():
         receipt = verify_d01_baseline(args.source, args.commit, args.model)
     elif args.accepted_d01_provider_base:
         receipt = verify_d01_provider(args.source, args.commit, args.model)
+    elif args.accepted_d02_base:
+        receipt = verify_d02_baseline(args.source, args.commit, args.model)
     else:
         receipt = verify(args.source, args.commit, args.model)
     with args.receipt.open("x", encoding="utf-8") as output:

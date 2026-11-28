@@ -26,6 +26,14 @@ Disponible en INT en el commit `9e49209aad98f74428b50276836719fd5bd76310`. Cada 
 
 La prueba con voz sintética cubrió todo el video de 20 minutos, incluida una propuesta entre 19:02 y 19:41. Las capturas muestran temas presentes, un tema ausente y el recorrido hasta el ZIP. [Búsquedas y capturas](https://github.com/AldemaroCruz/ClipForge/actions/runs/46116426162/artifacts/15252033378) · [Capturas y recibos del MP4 y el ZIP](https://github.com/AldemaroCruz/ClipForge/actions/runs/46120063759/artifacts/15253603462)
 
+## Crear clip desde la transcripción
+
+1. Abrí un proyecto completado y desplegá **Crear clip desde la transcripción**. Reproducí un pasaje desde su tiempo en la lista.
+2. Seleccioná texto consecutivo con el mouse o marcá inicio y final con los controles de selección. Los controles también funcionan con teclado y en una pantalla estrecha. Revisá el inicio, el final y la duración visible. Los recortes pueden durar de 1 a 60 segundos.
+3. En proyectos anteriores, podés usar los tiempos por segmento mientras pedís **Preparar tiempos por palabra**. Si el transcriptor produce una versión diferente, podés abrir la alineación adicional y conservar la transcripción original. En segmentos con marcas incompletas, la selección usa los límites de la frase.
+4. Reproducí la selección y escuchá los bordes. El transcriptor estima los tiempos. Usá **Crear clip con esta selección** y ajustá los bordes con **Revisar inicio** y **Revisar final** en el editor.
+5. Corregí los subtítulos, aplicá un estilo o logo y guardá el borrador. Exportá y descargá MP4, SRT y VTT desde su tarjeta. También podés incluir esa versión en el ZIP junto con otros clips.
+
 ## Base de continuidad y reversión de logos
 
 | Componente | Pin aceptado |
