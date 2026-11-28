@@ -120,8 +120,9 @@ class ClipPackageDatabaseTests(unittest.TestCase):
         response.iter_content.return_value = iter((self.contents[item["name"]],))
         return response
 
-    def query(self, client=None, *, inspect=False, tokens=None):
+    def query(self, client=None, *, inspect=False, tokens=None, publication=()):
         params = [("selection", token) for token in (self.tokens if tokens is None else tokens)]
+        params.extend(("publication", token) for token in publication)
         if inspect:
             params.append(("inspect", "1"))
         return (client or self.client).get(self.path, params=params)
@@ -278,6 +279,35 @@ class ClipPackageDatabaseTests(unittest.TestCase):
         self.assertEqual(project_deletion.begin(self.principal, self.job_id)["status"], "deleted")
         self.assertEqual(self.query().status_code, 404)
         self.body.assert_not_called()
+
+
+    def test_publication_revision_is_pinned_with_the_exact_media(self):
+        media_token = self.tokens[0]
+        selected = f"{media_token}~2"
+        saved = {"revision": 2, "title": "Árbol público", "description": "Descripción guardada",
+                 "hashtags": ["#Árbol"]}
+        with patch.object(clip_package.publication, "saved_for_selection", return_value=saved):
+            expected_text = clip_package.publication.text_bytes(saved)
+            readback = self.query(inspect=True, publication=[selected])
+            self.assertEqual(readback.status_code, 200)
+            self.assertEqual(readback.json()["bytes"], 60 + len(expected_text))
+            self.body.assert_not_called()
+            self.assertEqual(self.query(publication=[selected, selected]).status_code, 422)
+            self.assertEqual(self.query(publication=[f"{self.tokens[1]}~1"], tokens=[media_token]).status_code, 422)
+            self.assertEqual(self.query(publication=[f"{media_token}~1"]).status_code, 409)
+            package = clip_package.prepare(self.job_id, self.tokens, self.principal, [selected])
+            saved.update(revision=3, title="Nuevo título")
+            self.assertEqual(self.query(publication=[selected]).status_code, 409)
+        self.body.assert_not_called()
+        with ZipFile(BytesIO(b"".join(clip_package.chunks(package)))) as archive:
+            self.assertEqual(archive.read("clip_01/publicacion.txt"), expected_text)
+            self.assertEqual(archive.read("clip_01/clip_01.mp4"), b"base mp4")
+            self.assertEqual(archive.read("clip_01/clip_01.srt"), b"base subtitles")
+            self.assertEqual(archive.read("clip_02.mp4"), b"approved variant")
+            self.assertNotIn("clip_02/publicacion.txt", archive.namelist())
+            manifest = json.loads(archive.read("manifest.json"))
+            self.assertEqual(manifest["clips"][0]["publication_revision"], 2)
+            self.assertEqual(manifest["clips"][0]["files"][-1]["sha256"], sha256(expected_text).hexdigest())
 
 
 class ClipPackageStreamTests(unittest.TestCase):

@@ -6,6 +6,7 @@ from sqlalchemy import text
 from ..auth_db import get_engine
 from .migrate import upgrade as upgrade_base
 from .migrate_project_deletions import REVISION as DELETION_REVISION, upgrade_project_deletions
+from .migrate_publication import REVISION as PUBLICATION_REVISION, upgrade_publication
 from .migrate_transcript_alignment import REVISION as ALIGNMENT_REVISION, upgrade_alignment
 
 BETA_REVISION = "cloud_beta01_0001"
@@ -147,12 +148,14 @@ def upgrade_beta(engine=None):
         styles = upgrade_styles(connection)
         logos = upgrade_logos(connection)
         alignment = upgrade_alignment(connection)
+        publication = upgrade_publication(connection)
     return {"status": "applied" if not revisions else "current", "revision": BETA_REVISION,
             "editorial_status": editorial, "editorial_revision": EDITORIAL_REVISION,
             "deletion_status": deletion, "deletion_revision": DELETION_REVISION,
             "styles_status": styles, "styles_revision": STYLES_REVISION,
             "logos_status": logos, "logos_revision": LOGOS_REVISION,
-            "alignment_status": alignment, "alignment_revision": ALIGNMENT_REVISION}
+            "alignment_status": alignment, "alignment_revision": ALIGNMENT_REVISION,
+            "publication_status": publication, "publication_revision": PUBLICATION_REVISION}
 
 
 def beta_schema_ready(connection):
@@ -184,6 +187,12 @@ def alignment_schema_ready(connection):
         "SELECT revision FROM cloud_transcript_alignment_schema_migrations ORDER BY revision"
     )).scalars().all()
     return revisions == [ALIGNMENT_REVISION]
+
+
+def publication_schema_ready(connection):
+    return connection.execute(text(
+        "SELECT revision FROM cloud_publication_schema_migrations ORDER BY revision"
+    )).scalars().all() == [PUBLICATION_REVISION]
 
 
 def main():

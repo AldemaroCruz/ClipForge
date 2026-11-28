@@ -71,7 +71,7 @@ def _claim(connection, job_id=None):
             LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE t.status='running' AND (t.lease_until IS NULL OR t.lease_until<=clock_timestamp())
               AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind IN ('process','selection','delete','alignment') OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (NOT :beta OR t.kind IN ('process','selection','delete','alignment','publication_ai') OR e.payload->'pilot'=CAST('true' AS jsonb))
               AND (CAST(:job AS text) IS NULL OR t.job_id=:job)
             ORDER BY t.created_at,t.id LIMIT :limit FOR UPDATE OF t SKIP LOCKED
             """), {**profile, "limit": BETA_WORKER_CONCURRENCY if beta else 1}).mappings().all()
@@ -84,6 +84,8 @@ def _claim(connection, job_id=None):
             item = doc["payload"]
             if kind == "selection":
                 repo.interrupt_selection(item)
+            elif kind == "publication_ai":
+                repo.interrupt_publication(item)
             elif kind == "alignment":
                 repo.alignment_failure(item, "WORKER_INTERRUPTED")
             else:
@@ -96,7 +98,7 @@ def _claim(connection, job_id=None):
                 SELECT count(*), count(*) FILTER (
                     WHERE NOT (t.status='cancelled' AND p.deletion_started_at IS NOT NULL)
                       AND NOT (COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)
-                      AND (t.kind IN ('process','selection','delete','alignment') OR COALESCE(e.payload->'pilot'=CAST('true' AS jsonb),false))))
+                      AND (t.kind IN ('process','selection','delete','alignment','publication_ai') OR COALESCE(e.payload->'pilot'=CAST('true' AS jsonb),false))))
                 FROM cloud_tasks t
                 JOIN auth_projects p ON p.id=t.job_id
                 LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
@@ -116,7 +118,7 @@ def _claim(connection, job_id=None):
             LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
             LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE t.status='queued' AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind IN ('process','selection','delete','alignment') OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (NOT :beta OR t.kind IN ('process','selection','delete','alignment','publication_ai') OR e.payload->'pilot'=CAST('true' AS jsonb))
               AND (CAST(:job AS text) IS NULL OR t.job_id=:job)
               AND NOT (t.id=ANY(CAST(:deferred AS varchar[])))
               AND (NOT COALESCE(e.payload->'clip_captions'=CAST('true' AS jsonb),false) OR NOT EXISTS (
@@ -146,7 +148,7 @@ def cleanup_failed():
             WHERE t.status='failed' AND t.cleaned_at IS NULL
               AND (NOT :beta OR to_jsonb(p)->>'deletion_started_at' IS NULL)
               AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind IN ('process','selection','alignment') OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (NOT :beta OR t.kind IN ('process','selection','alignment','publication_ai') OR e.payload->'pilot'=CAST('true' AS jsonb))
             ORDER BY t.created_at LIMIT 100
             """), {"beta": beta_enabled()}).mappings().all()
     for task in tasks:
@@ -159,7 +161,7 @@ def cleanup_failed():
                     """), {"i": task["id"]}).mappings().first()
                 if current is None or current["status"] != "failed" or current["cleaned_at"] is not None:
                     continue
-                if task["kind"] != "selection":
+                if task["kind"] not in {"selection", "publication_ai"}:
                     manifests = c.execute(text("SELECT manifest FROM cloud_documents WHERE job_id=:j"), {"j": task["job_id"]}).scalars().all()
                     references = {(value["name"], value["generation"]) for manifest in manifests for value in manifest.values()}
                     for item in storage.list_staged(prefix):
@@ -426,7 +428,7 @@ def execute(task_id, fence):
             LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
             WHERE t.id=:i AND t.fence=:f AND t.status='running' AND t.lease_until>clock_timestamp()
               AND COALESCE(d.payload->'pilot'=CAST('true' AS jsonb),false)=:beta
-              AND (NOT :beta OR t.kind IN ('process','selection','delete','alignment') OR e.payload->'pilot'=CAST('true' AS jsonb))
+              AND (NOT :beta OR t.kind IN ('process','selection','delete','alignment','publication_ai') OR e.payload->'pilot'=CAST('true' AS jsonb))
             """), {"i": task_id, "f": fence, "beta": beta_enabled()}).mappings().first()
         if task is None:
             raise RuntimeError("Task lease unavailable")
@@ -437,6 +439,9 @@ def execute(task_id, fence):
     if task["kind"] == "selection":
         from .editorial_selection import execute_task
         return execute_task(task)
+    if task["kind"] == "publication_ai":
+        from .publication import execute_task
+        return execute_task(task, workspace)
     # Offline weights are compulsory for automatic cloud transcription.
     if not cfg.local_test and not os.getenv("CLIPFORGE_MODEL_LOCK"):
         raise RuntimeError("Cloud worker requires an identified offline model lock")

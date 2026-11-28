@@ -1229,6 +1229,8 @@
         link.href = files + "clip." + extension;
         links.append(link);
       }
+      const publication = window.ClipForgePublication?.action(state.id, item.archive_selection, title);
+      if (publication) links.append(publication);
       card.append(player, links);
       const include = window.ClipForgeZip?.includeExport(state.id, "editorial", item.id, title + " · revisión " + item.draft_revision);
       if (include) card.append(include);

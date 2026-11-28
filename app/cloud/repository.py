@@ -118,7 +118,7 @@ def admit_beta(c, owner, current_job="", *, caption_job=""):
                       THEN d.job_id ELSE d.id END AS slot
           FROM cloud_documents d JOIN auth_projects p ON p.id=d.job_id
           JOIN auth_users u ON u.id=p.owner_id
-          WHERE d.kind IN ('job','export','selection','alignment') AND d.payload->'pilot'=CAST('true' AS jsonb)
+          WHERE d.kind IN ('job','export','selection','alignment','publication_ai') AND d.payload->'pilot'=CAST('true' AS jsonb)
             AND p.deletion_started_at IS NULL AND d.job_id<>:j
             AND NOT (d.job_id=:caption AND COALESCE(d.payload->'clip_captions'=CAST('true' AS jsonb),false))
             AND (
@@ -140,11 +140,11 @@ def admit_beta(c, owner, current_job="", *, caption_job=""):
         raise HTTPException(429, "La cola del piloto está llena. Intenta nuevamente cuando termine un trabajo.")
 
 
-def admit_selection(c, job_id, day, planned_calls, daily_limit, max_runs):
+def admit_selection(c, job_id, day, planned_calls, daily_limit, max_runs, *, kind="selection"):
     """Reserve all provider calls under the existing admission transaction lock."""
     runs = c.execute(text("""
-        SELECT count(*) FROM cloud_documents WHERE job_id=:j AND kind='selection'
-        """), {"j": job_id}).scalar_one()
+        SELECT count(*) FROM cloud_documents WHERE job_id=:j AND kind=:kind
+        """), {"j": job_id, "kind": kind}).scalar_one()
     if runs >= max_runs:
         raise HTTPException(409, "Este trabajo alcanzó el máximo de análisis guardados.")
     reserved = c.execute(text("""
@@ -154,6 +154,14 @@ def admit_selection(c, job_id, day, planned_calls, daily_limit, max_runs):
         """), {"day": day}).scalar_one()
     if reserved + planned_calls > daily_limit:
         raise HTTPException(429, "Se alcanzó el presupuesto diario de solicitudes por IA. Podés intentarlo otro día.")
+    if kind == "publication_ai":
+        # Keep D03 reservations in the shared aggregate at admission. D02's
+        # unchanged quota query still counts them after restoring its runtime,
+        # even if that runtime later scrubs the D03 project and run documents.
+        c.execute(text("""
+            INSERT INTO cloud_deleted_selection_calls(day_utc,planned) VALUES (CAST(CAST(:day AS text) AS date),:planned)
+            ON CONFLICT (day_utc) DO UPDATE SET planned=cloud_deleted_selection_calls.planned+EXCLUDED.planned
+            """), {"day": day, "planned": planned_calls})
 
 
 def check_active_workspace(c, principal):
@@ -373,7 +381,7 @@ def worker_progress(job_id, kind, payload):
 
 def finish_task(task, payload, manifest):
     kind = "job" if task["kind"] == "process" else task["kind"]
-    if kind not in {"selection", "alignment"}:
+    if kind not in {"selection", "alignment", "publication_ai"}:
         public_beta_failure(payload)
     with get_engine().begin() as c:
         if kind == "alignment":
@@ -407,6 +415,8 @@ def mark_crashed(task):
         item = doc["payload"]
         if kind == "selection":
             interrupt_selection(item)
+        elif kind == "publication_ai":
+            interrupt_publication(item)
         elif kind == "alignment":
             alignment_failure(item, "WORKER_INTERRUPTED")
         else:
@@ -421,3 +431,8 @@ def interrupt_selection(item):
                 error="El análisis se interrumpió. Para intentarlo de nuevo, revisa y autoriza otra solicitud.")
     if "topic" in item.get("spec", {}):
         item["retryable"] = not item.get("retry_of") and not item.get("retry_consumed")
+
+
+def interrupt_publication(item):
+    item.update(status="failed", error_code="AI_TASK_INTERRUPTED", completed_at=time.time(),
+                error="La generación se interrumpió. Podés editar o conservar tus textos guardados.")

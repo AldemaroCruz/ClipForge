@@ -38,6 +38,13 @@ Disponible en INT en el commit `e7145844fd9db57df9a5ad20593c8df2da00080f`. Los p
 
 La prueba en INT llevó un pasaje del minuto 18 de una lectura humana de 20 minutos hasta un MP4 con subtítulos y logo y un ZIP con los archivos exactos. Los recibos incluyen fragmentos del audio original y del MP4 para revisar los bordes. [Lectura de LibriVox](https://librivox.org/el-ingenioso-hidalgo-by-miguel-de-cervantes-saavedra/) · [Capturas, recibos y audio](https://github.com/AldemaroCruz/ClipForge/actions/runs/46153668496/artifacts/15267434009)
 
+## Preparar textos para publicar
+
+1. En la tarjeta de un clip o exportación terminada, abrí **Preparar textos para publicar**. Escribí un título, una descripción o hashtags. Podés cambiar el idioma de los textos.
+2. Si querés sugerencias, elegí el idioma y revisá el texto que se enviará al proveedor. Autorizá el envío, pedí las sugerencias y revisá que se ajusten al audio o a los subtítulos de esa variante. Elegí el título que quieras conservar y editá los campos.
+3. Pulsá **Guardar para el paquete**. Podés copiar cada campo y descargar `publicacion.txt` con el título, la descripción y los hashtags de la revisión guardada.
+4. Seleccioná el clip y sus textos en el ZIP. La carpeta de esa variante reúne el archivo de publicación en UTF-8 y los archivos multimedia disponibles. Una exportación con cambios de apariencia puede recuperar los textos cuando el contenido coincide.
+
 ## Base de continuidad y reversión de logos
 
 | Componente | Pin aceptado |

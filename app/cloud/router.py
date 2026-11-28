@@ -21,7 +21,7 @@ from ..editorial import EditorialContent, DraftUpdate, ProjectName, RangeChange,
 from ..logo_placement import LogoPlacement
 from ..presentation import Presentation, ExportRequest
 from ..subtitles import SubtitleError, cues_from_segments, to_srt, to_vtt, validate_cues
-from . import caption_styles, clip_captions, clip_package, creator_logos, project_deletion, transcript_selection
+from . import caption_styles, clip_captions, clip_package, creator_logos, project_deletion, publication, transcript_selection
 from . import editorial_selection as selection
 from . import repository as repo
 from .config import beta_enabled
@@ -291,16 +291,63 @@ def download_clip_package(
     job_id: str, request: Request,
     selection: list[str] = Query(min_length=1, max_length=clip_package.MAX_CLIPS),
     inspect: Literal["1"] | None = None,
+    publication_revisions: list[str] | None = Query(default=None, alias="publication", max_length=clip_package.MAX_CLIPS),
 ):
-    if set(request.query_params) - {"selection", "inspect"} or len(request.query_params.getlist("inspect")) > 1:
+    if set(request.query_params) - {"selection", "inspect", "publication"} or len(request.query_params.getlist("inspect")) > 1:
         raise HTTPException(422, "La selección de clips no es válida.")
-    package = clip_package.prepare(job_id, selection, request.state.principal)
+    package = clip_package.prepare(job_id, selection, request.state.principal, publication_revisions or ())
     if inspect is not None:
         return package.summary()
     return StreamingResponse(clip_package.chunks(package), media_type="application/zip", headers={
         "Content-Disposition": f'attachment; filename="clipforge-{job_id[:8]}-clips.zip"',
         "Cache-Control": "no-store",
     })
+
+
+@router.get("/jobs/{job_id}/publication", dependencies=[Depends(_int_product_route)])
+def publication_view(job_id: str, request: Request, selection: str | None = Query(default=None, max_length=128)):
+    principal = request.state.principal
+    if selection is None:
+        return publication.index(job_id, principal)
+    view = publication.read(job_id, selection, principal)
+    suggestion = view.get("suggestion")
+    if suggestion and _needs_dispatch(job_id, "publication_ai", [suggestion]):
+        _dispatch({})
+    return view
+
+
+@router.post("/jobs/{job_id}/publication/preview", dependencies=[Depends(_int_product_route)])
+def preview_publication(job_id: str, payload: publication.PreviewRequest, request: Request):
+    return publication.preview(job_id, payload, request.state.principal)
+
+
+@router.post("/jobs/{job_id}/publication/suggestions", status_code=202, dependencies=[Depends(_int_product_route)])
+def suggest_publication(job_id: str, payload: publication.SuggestionRequest, request: Request):
+    item = publication.suggest(job_id, payload, request.state.principal)
+    return _dispatch(item) if item["status"] == "queued" else item
+
+
+@router.put("/jobs/{job_id}/publication", dependencies=[Depends(_int_product_route)])
+def save_publication(job_id: str, payload: publication.SaveRequest, request: Request):
+    return publication.save(job_id, payload, request.state.principal)
+
+
+@router.post("/jobs/{job_id}/publication/reuse", dependencies=[Depends(_int_product_route)])
+def reuse_publication(job_id: str, payload: publication.ReuseRequest, request: Request):
+    return publication.reuse(job_id, payload, request.state.principal)
+
+
+@router.get("/jobs/{job_id}/publication/file", dependencies=[Depends(_int_product_route)])
+def publication_file(
+    job_id: str, request: Request, selection: str = Query(max_length=128),
+    revision: int = Query(ge=1, le=9223372036854775807),
+):
+    saved = publication.read(job_id, selection, request.state.principal)["saved"]
+    if not saved or saved["revision"] != revision:
+        raise HTTPException(409, "Cambió la revisión de los textos. Volvé a abrirla antes de descargar.")
+    return Response(publication.text_bytes(saved), media_type="text/plain",
+                    headers={"Content-Disposition": 'attachment; filename="publicacion.txt"',
+                             "Cache-Control": "no-store"})
 
 
 @router.put("/jobs/{job_id}/clips/{filename}/captions", status_code=202, dependencies=[Depends(_int_product_route)])

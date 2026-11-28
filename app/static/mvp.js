@@ -109,6 +109,8 @@
         for (const [extension, title] of [["mp4", "Descargar clip manual"], ["srt", "Subtítulos SRT"], ["vtt", "Subtítulos VTT"]]) {
           if (available.includes(extension)) links.append(link(title, files + "clip." + extension));
         }
+        const publication = window.ClipForgePublication?.action(id, item.archive_selection, "Clip manual");
+        if (publication) links.append(publication);
         article.append(player, links);
         const include = zip?.includeExport(id, "manual", item.id, "clip manual " + range);
         if (include) article.append(include);

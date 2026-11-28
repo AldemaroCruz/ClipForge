@@ -73,6 +73,7 @@ class BrowserHitoBTest(unittest.TestCase):
                       "transcript_timeline": None, "transcript_prepare_posts": [], "transcript_draft_posts": [],
                       "range_posts": [], "draft_updates": [], "approved": {},
                       "caption": None, "project_caption": None, "caption_updates": [], "deletions": [],
+                      "publications": {}, "publication_writes": [], "publication_previews": [], "publication_requests": [],
                       "saved_style": None, "framing_source": None, "source_reads": 0,
                       "zip_requests": [], "zip_stale": False, "logo": None, "logo_versions": {}}
         self.context = self.browser.new_context(service_workers="block")
@@ -94,7 +95,8 @@ class BrowserHitoBTest(unittest.TestCase):
         path = parsed.path
         assets = {"beta.js": "text/javascript", "auth.js": "text/javascript", "logos.js": "text/javascript",
                   "mvp.js": "text/javascript", "editorial.js": "text/javascript", "mvp.css": "text/css",
-                  "beta.css": "text/css", "account.css": "text/css", "transcript.js": "text/javascript"}
+                  "beta.css": "text/css", "account.css": "text/css", "transcript.js": "text/javascript",
+                  "publication.js": "text/javascript"}
         if path == "/":
             route.fulfill(status=200, content_type="text/html", headers={"Content-Security-Policy": CSP},
                           body=(STATIC / "beta.html").read_bytes())
@@ -135,6 +137,14 @@ class BrowserHitoBTest(unittest.TestCase):
             result = ({"detail": "La edición cambió."} if stale
                       else {"clips": count, "bytes": count * 2048, "max_bytes": 128 * 1024**2})
             route.fulfill(status=409 if stale else 200, content_type="application/json", body=json.dumps(result))
+            return
+        if path == f"/jobs/{JOB}/publication/file":
+            params = parse_qs(parsed.query)
+            saved = self.state["publications"][params["selection"][0]]["saved"]
+            self.assertEqual([str(saved["revision"])], params["revision"])
+            route.fulfill(status=200, content_type="text/plain; charset=utf-8",
+                          headers={"content-disposition": 'attachment; filename="publicacion.txt"'},
+                          body="\n".join((saved["title"], saved["description"], " ".join(saved["hashtags"]))))
             return
         data, status = self.api(path, request)
         route.fulfill(status=status, content_type="application/json", body=json.dumps(data))
@@ -294,6 +304,10 @@ class BrowserHitoBTest(unittest.TestCase):
             data = request.post_data_json
             self.state["range_posts"].append(data)
             return {**data, "cues": data.get("cues", self.cue_fixture())}, 200
+        if path == f"/jobs/{OTHER_JOB}/publication":
+            return {"saved": []}, 200
+        if path.startswith(f"/jobs/{JOB}/publication"):
+            return self.publication_api(path.removeprefix(f"/jobs/{JOB}/publication"), request)
         if path == f"/jobs/{JOB}/transcript-selection" and method == "GET":
             return self.state["transcript_timeline"], 200
         if path == f"/jobs/{JOB}/transcript-selection/prepare" and method == "POST":
@@ -409,6 +423,44 @@ class BrowserHitoBTest(unittest.TestCase):
             })
             return item, 202
         self.state["unexpected"].append(path)
+        return {}, 404
+
+    def publication_api(self, suffix, request):
+        records = self.state["publications"]
+        if request.method == "GET":
+            selection = parse_qs(urlsplit(request.url).query).get("selection")
+            if selection:
+                return records[selection[0]], 200
+            return {"saved": [{"selection": key, "revision": value["saved"]["revision"]}
+                              for key, value in records.items() if value.get("saved")]}, 200
+        body = request.post_data_json
+        selection = body["selection"]
+        record = records[selection]
+        if suffix == "/preview":
+            self.state["publication_previews"].append(body)
+            return {"preview_token": "d" * 64, "provider": record["provider"], "language": body["language"],
+                    "payload_text": {"content": "Recolectamos agua de lluvia para regar."},
+                    "system_instructions": "Usá el contenido del fragmento."}, 200
+        if suffix == "/suggestions":
+            self.state["publication_requests"].append(body)
+            if self.state.get("interrupt_publication_receipt") and len(self.state["publication_requests"]) == 1:
+                return {"detail": "Respuesta interrumpida."}, 503
+            record["suggestion"] = {"id": "8" * 32, "status": "queued"}
+            return record["suggestion"], 202
+        if suffix in {"", "/reuse"}:
+            self.state["publication_writes"].append(body)
+            revision = (record.get("saved") or {}).get("revision", 0)
+            self.assertEqual(revision, body["revision"])
+            source = records[body["source_selection"]]["saved"] if suffix == "/reuse" else body
+            if suffix == "/reuse":
+                self.assertEqual(source["revision"], body["source_revision"])
+            saved = {key: source[key] for key in ("title", "description", "hashtags", "language", "suggestion_id")
+                     if key in source}
+            if suffix == "/reuse":
+                saved["reused_from"] = {"selection": body["source_selection"], "revision": body["source_revision"]}
+            record["saved"] = {**saved, "selection": selection, "revision": revision + 1}
+            return record["saved"], 200
+        self.state["unexpected"].append(suffix)
         return {}, 404
 
     def apply_mock_style(self, destination, update, key):
@@ -670,6 +722,180 @@ class BrowserHitoBTest(unittest.TestCase):
 
         self.page.get_by_role("link", name="Otro video").click()
         expect(self.page.locator("#clip-zip-actions")).to_be_hidden()
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
+    @staticmethod
+    def publication_fixture(selection, *, title="Agua de lluvia", kind="automatic", has_content=True):
+        return {"selection": selection, "target": {"kind": kind, "title": title, "title_source": "export_title",
+                                                    "start": 8, "end": 28, "language": "es",
+                                                    "has_content": has_content, "context_source": "subtitles"},
+                "provider": {"configured": True, "provider": "openai", "model": "fixture-model",
+                             "destination": "https://example.test/responses"},
+                "saved": None, "suggestion": None, "reusable": []}
+
+    def test_publication_consent_replay_manual_edits_copy_download_and_reload(self):
+        selection = f"{CLIP}:3:" + "f" * 64
+        other = "clip_02.mp4"
+        second = f"{other}:1:" + "e" * 64
+        self.state.update(status="completed", interrupt_publication_receipt=True, caption={
+            "start": 8, "end": 28, "duration": 20, "revision": 3, "status": "completed",
+            "output": {"id": "f" * 64, "mp4": f"/jobs/{JOB}/clips/{CLIP}", "burn_subtitles": True},
+        }, sibling_clip={"file": other, "start": 50, "end": 70, "captions": {
+            "revision": 1, "status": "completed",
+            "output": {"id": "e" * 64, "mp4": f"/jobs/{JOB}/clips/{other}", "burn_subtitles": True},
+        }}, publications={selection: self.publication_fixture(selection),
+                          second: self.publication_fixture(second, title="Freno de bicicleta")})
+        self.context.grant_permissions(["clipboard-read", "clipboard-write"], origin=ORIGIN)
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        card = self.page.locator(f'[data-clip-file="{CLIP}"]')
+        action = card.get_by_role("button", name="Preparar textos para publicar", exact=True)
+        action.click()
+        form = self.page.locator("#publication-form")
+        expect(form).to_be_visible()
+        title = self.page.locator("#publication-title")
+        description = self.page.locator("#publication-description")
+        tags = self.page.locator("#publication-hashtags")
+        expect(title).to_have_value("Agua de lluvia")
+        expect(self.page.locator("#publication-language")).to_have_value("es")
+        description.fill("Texto manual antes de solicitar sugerencias.")
+        self.page.locator("#publication-save").click()
+        expect(self.page.locator("#publication-saved")).to_contain_text("Revisión 1")
+        self.assertEqual([], self.state["publication_requests"])
+        self.page.locator("#publication-preview").click()
+        expect(self.page.locator("#publication-payload")).to_contain_text("agua de lluvia para regar.")
+        expect(self.page.locator("#publication-destination")).to_contain_text("fixture-model")
+        generate = self.page.locator("#publication-generate")
+        expect(generate).to_be_disabled()
+        consent = self.page.locator("#publication-consent")
+        consent.check()
+        self.page.locator("#publication-instructions").fill("Mencioná el riego.")
+        expect(self.page.locator("#publication-consent-panel")).to_be_hidden()
+        self.page.locator("#publication-preview").click()
+        consent.check()
+        generate.click()
+        expect(self.page.locator("#publication-ai-status")).to_contain_text("Respuesta interrumpida")
+        generate.click()
+        expect(self.page.locator("#publication-ai-status")).to_contain_text("Preparando sugerencias")
+        first, replay = self.state["publication_requests"]
+        self.assertEqual(first, replay)
+        self.assertTrue(first["consent"])
+        self.assertFalse(first["new_attempt"])
+        self.assertEqual(("es", "Mencioná el riego."), (first["language"], first["instructions"]))
+        description.fill("Edición manual durante la generación.")
+        self.page.locator("#publication-save").click()
+        expect(self.page.locator("#publication-saved")).to_contain_text("Revisión 2")
+        self.state["publications"][selection]["suggestion"].update(
+            status="completed", titles=["Agua para el huerto", "Recolección de lluvia", "Riego sencillo"],
+            description="Guardamos la lluvia para el huerto.", hashtags=["#Huerto", "#Lluvia"],
+        )
+        expect(self.page.locator("#publication-suggestions")).to_be_visible(timeout=8000)
+        expect(description).to_have_value("Edición manual durante la generación.")
+        self.page.locator('[data-publication-title-option="1"]').click()
+        expect(title).to_have_value("Recolección de lluvia")
+        self.page.locator("#publication-use-description").click()
+        self.page.locator("#publication-use-hashtags").click()
+        description.fill("Recolectamos lluvia para el huerto.")
+        expect(tags).to_have_value("#Huerto #Lluvia")
+        self.page.locator("#publication-copy-title").click()
+        expect(self.page.locator("#publication-status")).to_have_text("Texto copiado.")
+        self.assertEqual("Recolección de lluvia", self.page.evaluate("navigator.clipboard.readText()"))
+        self.page.locator("#publication-save").click()
+        expect(self.page.locator("#publication-saved")).to_contain_text("Revisión 3")
+        self.assertEqual("8" * 32, self.state["publication_writes"][-1]["suggestion_id"])
+        download = self.page.locator("#publication-download")
+        expect(download).to_have_attribute("download", "publicacion.txt")
+        downloaded = download.evaluate("""async link => {
+            const response = await fetch(link.href);
+            return [response.status, response.headers.get('content-disposition'), await response.text()];
+        }""")
+        self.assertEqual([200, 'attachment; filename="publicacion.txt"',
+                          "Recolección de lluvia\nRecolectamos lluvia para el huerto.\n#Huerto #Lluvia"], downloaded)
+        self.page.reload()
+        action.click()
+        expect(title).to_have_value("Recolección de lluvia")
+        expect(description).to_have_value("Recolectamos lluvia para el huerto.")
+        expect(self.page.locator("#publication-saved")).to_contain_text("Revisión 3")
+        self.page.locator("#publication-close").click()
+        self.page.set_viewport_size({"width": 375, "height": 760})
+        self.page.locator(f'[data-clip-file="{other}"]').get_by_role(
+            "button", name="Preparar textos para publicar", exact=True).click()
+        expect(title).to_have_value("Freno de bicicleta")
+        expect(self.page.locator("#publication-download")).to_be_hidden()
+        self.assertTrue(self.page.locator("#publication-dialog").evaluate(
+            "dialog => dialog.clientWidth >= dialog.scrollWidth && dialog.getBoundingClientRect().right <= innerWidth"))
+        self.assertEqual(2, len(self.state["publication_requests"]))
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
+    def test_zip_publication_revisions_and_shared_completed_export_controls(self):
+        automatic = f"{CLIP}:3:" + "f" * 64
+        manual = f"export:{EXPORT}:7"
+        variant = "5" * 32
+        editorial = f"export:{variant}:10"
+        records = {key: self.publication_fixture(key, kind=kind, has_content=kind != "manual")
+                   for key, kind in ((automatic, "automatic"), (manual, "manual"), (editorial, "transcript"))}
+        for key, version in ((automatic, 1), (editorial, 2)):
+            records[key]["saved"] = {"selection": key, "revision": version, "title": "Texto guardado",
+                                     "description": "", "hashtags": [], "language": "es"}
+        single = f"/jobs/{JOB}/clips/{CLIP}"
+        self.state.update(status="completed", publications=records, caption={
+            "start": 8, "end": 28, "duration": 20, "revision": 3, "status": "completed",
+            "output": {"id": "f" * 64, "mp4": single},
+        }, manual={"id": EXPORT, "status": "completed", "clip_file": "manual.mp4",
+                   "start": 1, "end": 10, "archive_selection": manual, "archive_files": ["mp4"]},
+            approved={1: {"id": variant, "title": "Recorte de la transcripción", "draft_id": DRAFT, "draft_revision": 1,
+                          "status": "completed", "options": {}, "archive_selection": editorial,
+                          "archive_files": ["mp4", "vtt"]}})
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        self.page.locator("#mvp-heading").click()
+        self.page.locator("#editorial-heading").click()
+        manual_card = self.page.locator(f'#mvp-results [data-export-id="{EXPORT}"]')
+        manual_card.get_by_role("button", name="Preparar textos para publicar", exact=True).click()
+        expect(self.page.locator("#publication-availability")).to_contain_text("admite textos manuales")
+        expect(self.page.locator("#publication-preview")).to_be_disabled()
+        self.page.locator("#publication-close").click()
+        automatic_box = self.page.get_by_role("checkbox", name="Incluir Clip 1 en ZIP", exact=True)
+        automatic_box.check()
+        manual_card.locator(f'[data-archive-id="{EXPORT}"]').check()
+        editorial_card = self.page.locator(f'#editorial-exports [data-export-id="{variant}"]')
+        editorial_card.locator(f'[data-archive-id="{variant}"]').check()
+        automatic_copy = self.page.locator(f'[data-publication-zip="{automatic}"]')
+        editorial_copy = self.page.locator(f'[data-publication-zip="{editorial}"]')
+        automatic_copy.check()
+        editorial_copy.check()
+        expect(self.page.locator(f'[data-publication-zip="{manual}"]')).to_be_hidden()
+        expect(self.page.locator("#clip-zip-status")).to_contain_text("3 clips seleccionados · 2 con textos")
+        self.page.evaluate("""() => document.addEventListener('click', event => {
+            if (event.target instanceof HTMLAnchorElement && event.target.download) {
+                event.preventDefault();
+                window.zipLink = event.target.href;
+            }
+        }, {capture: true})""")
+        self.page.locator("#clip-zip-download").click()
+        expect(self.page.locator("#clip-zip-status")).to_contain_text("Descarga iniciada para 3 clips")
+        expected = {"selection": [automatic, manual, editorial], "publication": [automatic + "~1", editorial + "~2"]}
+        self.assertEqual({**expected, "inspect": ["1"]}, self.state["zip_requests"][-1])
+        self.assertEqual(expected, parse_qs(urlsplit(self.page.evaluate("window.zipLink")).query))
+        editorial_card.get_by_role("button", name="Preparar textos para publicar", exact=True).click()
+        self.page.locator("#publication-title").fill("Versión de texto nueva")
+        self.page.locator("#publication-save").click()
+        expect(self.page.locator("#publication-saved")).to_contain_text("Revisión 3")
+        self.page.locator("#publication-close").click()
+        expect(editorial_copy).not_to_be_checked()
+        expect(automatic_copy).to_be_checked()
+        expect(self.page.locator("#clip-zip-status")).to_contain_text("Los textos de un clip cambiaron")
+        records[manual]["reusable"] = [{"selection": automatic, "revision": 1, "title": "Texto guardado"}]
+        manual_card.get_by_role("button", name="Preparar textos para publicar", exact=True).click()
+        self.page.get_by_role("button", name="Reutilizar revisión 1 · Texto guardado", exact=True).click()
+        expect(self.page.locator("#publication-saved")).to_contain_text("Reutiliza la revisión 1")
+        expect(self.page.locator("#publication-title")).to_have_value("Texto guardado")
+        self.assertEqual({"selection": manual, "revision": 0, "source_selection": automatic, "source_revision": 1},
+                         self.state["publication_writes"][-1])
+        self.page.locator("#publication-close").click()
+        expect(self.page.locator(f'[data-publication-zip="{manual}"]')).to_be_visible()
+        expect(self.page.locator(f'[data-publication-zip="{manual}"]')).not_to_be_checked()
+        self.assertEqual([], self.state["publication_requests"])
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])
 

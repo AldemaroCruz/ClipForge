@@ -231,6 +231,8 @@ async function initBeta() {
   const zipStatus = element("clip-zip-status");
   const zipSelection = new Map();
   const zipCandidates = new Map();
+  const zipPublicationSelection = new Map();
+  let zipPublicationRevisions = new Map();
   let zipProject;
   let zipRequest;
 
@@ -326,6 +328,8 @@ async function initBeta() {
       zipProject = id;
       zipSelection.clear();
       zipCandidates.clear();
+      zipPublicationSelection.clear();
+      zipPublicationRevisions = new Map();
       zipStatus.textContent = "";
       updateZipActions();
     }
@@ -334,6 +338,23 @@ async function initBeta() {
   function updateZipActions() {
     zipActions.hidden = ![...zipCandidates.values()].some(entries => entries.size);
     zipButton.disabled = !zipSelection.size || Boolean(zipRequest);
+    for (const field of document.querySelectorAll("[data-publication-zip]")) updateZipPublication(field);
+  }
+
+  function updateZipPublication(field) {
+    const token = field.dataset.publicationZip;
+    const revision = zipPublicationRevisions.get(token);
+    field.parentElement.hidden = !revision;
+    field.disabled = zipSelection.get(field.dataset.zipKey) !== token;
+    field.checked = zipPublicationSelection.get(token) === revision && Boolean(revision);
+    field.nextElementSibling.textContent = revision ? "Incluir textos guardados · revisión " + revision + " en ZIP" : "";
+  }
+
+  function showZipSelection() {
+    const count = zipSelection.size;
+    const texts = zipPublicationSelection.size;
+    zipStatus.textContent = count ? count + (count === 1 ? " clip seleccionado" : " clips seleccionados")
+      + (texts ? " · " + texts + " con textos" : "") + "." : "";
   }
 
   function syncZipSource(id, source, entries) {
@@ -344,6 +365,7 @@ async function initBeta() {
     for (const [key, token] of zipSelection) {
       if (!key.startsWith(prefix) || tokens.get(key.slice(prefix.length)) === token) continue;
       zipSelection.delete(key);
+      zipPublicationSelection.delete(token);
       zipStatus.textContent = "Un clip cambió de versión. Selecciónalo de nuevo para incluirlo.";
     }
     updateZipActions();
@@ -361,13 +383,31 @@ async function initBeta() {
     checkbox.addEventListener("change", () => {
       if (id !== zipProject || zipCandidates.get(source)?.get(item) !== token) return;
       if (checkbox.checked) zipSelection.set(key, token);
-      else zipSelection.delete(key);
+      else {
+        zipSelection.delete(key);
+        zipPublicationSelection.delete(token);
+      }
       updateZipActions();
-      zipStatus.textContent = zipSelection.size
-        ? zipSelection.size + (zipSelection.size === 1 ? " clip seleccionado." : " clips seleccionados.") : "";
+      showZipSelection();
     });
     label.prepend(checkbox);
-    return label;
+    const publication = betaText("label", "", "beta-check");
+    const publicationField = document.createElement("input");
+    publicationField.type = "checkbox";
+    publicationField.dataset.publicationZip = token;
+    publicationField.dataset.zipKey = key;
+    publicationField.addEventListener("change", () => {
+      const revision = zipPublicationRevisions.get(token);
+      if (id !== zipProject || zipSelection.get(key) !== token || !revision) return;
+      if (publicationField.checked) zipPublicationSelection.set(token, revision);
+      else zipPublicationSelection.delete(token);
+      showZipSelection();
+    });
+    publication.append(publicationField, document.createElement("span"));
+    updateZipPublication(publicationField);
+    const container = document.createElement("div");
+    container.append(label, publication);
+    return container;
   }
 
   window.ClipForgeZip = {
@@ -378,6 +418,16 @@ async function initBeta() {
         return [item.id, item.status === "completed" && match?.[1] === item.id ? token : null];
       }));
     },
+    syncPublications(id, revisions) {
+      if (id !== zipProject) return;
+      zipPublicationRevisions = new Map(revisions);
+      for (const [token, revision] of zipPublicationSelection) {
+        if (zipPublicationRevisions.get(token) === revision) continue;
+        zipPublicationSelection.delete(token);
+        zipStatus.textContent = "Los textos de un clip cambiaron. Seleccioná la revisión que quieras incluir.";
+      }
+      updateZipActions();
+    },
     includeExport: zipCheckbox,
   };
 
@@ -385,8 +435,10 @@ async function initBeta() {
     if (zipRequest || !zipSelection.size || !BETA_JOB_ID.test(zipProject)) return;
     const id = zipProject;
     const approved = new Map(zipSelection);
+    const approvedTexts = new Map(zipPublicationSelection);
     const tokens = [...approved.values()];
     const params = new URLSearchParams(tokens.map(token => ["selection", token]));
+    for (const [token, revision] of approvedTexts) params.append("publication", token + "~" + revision);
     const path = "/jobs/" + id + "/clips.zip?" + params.toString();
     const request = new AbortController();
     zipRequest = request;
@@ -395,7 +447,9 @@ async function initBeta() {
     try {
       const info = await json(path + "&inspect=1", {signal: request.signal});
       if (request.signal.aborted || zipProject !== id) return;
-      if (approved.size !== zipSelection.size || [...approved].some(([key, token]) => zipSelection.get(key) !== token)) {
+      if (approved.size !== zipSelection.size || [...approved].some(([key, token]) => zipSelection.get(key) !== token)
+          || approvedTexts.size !== zipPublicationSelection.size
+          || [...approvedTexts].some(([token, revision]) => zipPublicationSelection.get(token) !== revision)) {
         zipStatus.textContent = "La selección cambió. Vuelve a pulsar Descargar ZIP.";
         return;
       }
@@ -421,6 +475,7 @@ async function initBeta() {
 
   function renderJob() {
     syncZipProject();
+    window.ClipForgePublication?.selectProject(zipProject || null);
     window.ClipForgeMvp?.selectJob(job);
     window.ClipForgeEditorial?.selectJob(job);
     window.ClipForgeTranscript?.selectJob(job);
@@ -485,6 +540,8 @@ async function initBeta() {
       const variant = clip.captions?.status === "draft" ? " inicial" : "";
       download.setAttribute("aria-label", "Descargar " + label + variant + " en MP4" + (output?.logo ? " con logo" : ""));
       actions.append(download);
+      const publication = window.ClipForgePublication?.action(selectedId, zipToken(clip), label);
+      if (publication) actions.append(publication);
       if (output?.mp4 && output.mp4 !== path) {
         const original = betaText("a", "MP4 inicial");
         original.href = path;

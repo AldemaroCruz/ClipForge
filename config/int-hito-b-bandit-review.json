@@ -66,7 +66,7 @@
       "cwe": 78,
       "line": 13,
       "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
-      "source_sha256": "e77e1707123e0afb6962f8276507d3c68bb8955aff956aaeec3130b49a7469c8",
+      "source_sha256": "9e4dc96746a662f0eb5b58127bc8d2ea59f20e878a5ff463a325d1a9d1570530",
       "reason": "Imports subprocess for the reviewed worker child, bounded waits and process-group termination."
     },
     {
@@ -75,9 +75,9 @@
       "severity": "LOW",
       "confidence": "HIGH",
       "cwe": 78,
-      "line": 297,
+      "line": 299,
       "context_sha256": "218a985e32d3d468184e18beeba5c6a5ab4c4a92738f5589dad71520409a4e3c",
-      "source_sha256": "e77e1707123e0afb6962f8276507d3c68bb8955aff956aaeec3130b49a7469c8",
+      "source_sha256": "9e4dc96746a662f0eb5b58127bc8d2ea59f20e878a5ff463a325d1a9d1570530",
       "reason": "A fixed Python interpreter and worker module run without a shell. The child validates the UUID and fence from the claimed PostgreSQL task. The supervisor adds a path it allocated in private scratch to the inherited environment."
     },
     {

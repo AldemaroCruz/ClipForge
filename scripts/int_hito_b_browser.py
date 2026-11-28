@@ -1341,8 +1341,9 @@ def main():
     caption_modes = {"caption-color-prepare", "caption-color-baseline", "caption-color", "caption-color-cleanup"}
     d01_modes = {"d01-prepare", "d01", "d01-cleanup"}
     d02_modes = {"d02-prepare", "d02", "d02-cleanup"}
+    d03_modes = {"d03-prepare", "d03", "d03-cleanup"}
     parser.add_argument("mode", choices=["prepare", "verify", "deletion-recheck", "styles", "framing", "zip", "logos", "mixed-zip",
-                                         *sorted(caption_modes | d01_modes | d02_modes)])
+                                         *sorted(caption_modes | d01_modes | d02_modes | d03_modes)])
     parser.add_argument("--commit", required=True)
     parser.add_argument("--frontend-revision", required=True)
     parser.add_argument("--api-revision", required=True)
@@ -1368,15 +1369,17 @@ def main():
         shared_http.private_file(args.state, must_exist=args.mode in {
             "verify", "caption-color-baseline", "caption-color", "caption-color-cleanup", "mixed-zip", "d01", "d01-cleanup",
             "d02", "d02-cleanup",
+            "d03", "d03-cleanup",
         })
         require(args.report != args.state, "report_and_state_paths_must_differ")
         shared_http.private_file(args.report, must_exist=False)
         require((args.mode in {"prepare", "styles", "framing", "zip", "logos", "caption-color-prepare", "d01-prepare",
-                               "d02-prepare", "d02"}
+                               "d02-prepare", "d02", "d03-prepare"}
                  and args.video is not None and args.video.is_absolute()
                  and args.video.is_file() and args.video.suffix.lower() == ".mp4") or
                 (args.mode in {"verify", "deletion-recheck", "caption-color-baseline", "mixed-zip",
-                               "caption-color", "caption-color-cleanup", "d01", "d01-cleanup", "d02-cleanup"}
+                               "caption-color", "caption-color-cleanup", "d01", "d01-cleanup", "d02-cleanup",
+                               "d03", "d03-cleanup"}
                  and args.video is None), "fixture_argument")
         admin = shared_http.validate_admin(json.loads(os.environ.pop("INT_BOOTSTRAP_ADMIN_JSON", "")))
         from playwright.sync_api import sync_playwright
@@ -1420,6 +1423,13 @@ def main():
                 elif args.mode in d02_modes:
                     from scripts import int_hito_d02_browser as d02
                     action = {"d02-prepare": d02.prepare, "d02": d02.acceptance, "d02-cleanup": d02.cleanup}[args.mode]
+                    action(browser, args, admin, report)
+                elif args.mode == "d03-prepare":
+                    from scripts.int_hito_d01_browser import prepare as prepare_publication
+                    prepare_publication(browser, args, admin, report)
+                elif args.mode in d03_modes:
+                    from scripts import int_hito_d03_browser as d03
+                    action = d03.acceptance if args.mode == "d03" else d03.cleanup
                     action(browser, args, admin, report)
                 elif args.mode in caption_modes:
                     from scripts import int_hito_c_caption_color_browser as color

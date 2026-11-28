@@ -13,6 +13,7 @@
   <script src="/static/mvp.js" defer></script>
   <script src="/static/editorial.js" defer></script>
   <script src="/static/transcript.js" defer></script>
+  <script src="/static/publication.js" defer></script>
   <script src="/static/beta.js" defer></script>
 </head>
 <body class="beta">
@@ -78,7 +79,7 @@
         </div>
         <div id="clip-zip-actions" class="actions" hidden>
           <button id="clip-zip-download" type="button" class="secondary" disabled>Descargar ZIP de clips seleccionados</button>
-          <p id="clip-zip-scope" class="muted">El ZIP reúne los clips automáticos, recortes manuales y exportaciones de borradores que selecciones. Incluye los subtítulos disponibles y conserva el logo de las versiones que lo tienen.</p>
+          <p id="clip-zip-scope" class="muted">El ZIP reúne los clips automáticos, recortes manuales y exportaciones de borradores que selecciones. Incluye los subtítulos disponibles y conserva el logo de las versiones que lo tienen. Podés incluir los textos guardados de cada clip.</p>
           <p id="clip-zip-status" class="status beta-message" role="status"></p>
         </div>
         <h3 id="heuristic-heading" hidden>Clips automáticos por heurística</h3>
@@ -416,6 +417,79 @@
     </div>
     <p class="status beta-message" role="status" data-style-field="status"></p>
   </template>
+  <dialog id="publication-dialog" class="panel beta-dialog" aria-labelledby="publication-heading">
+    <div class="beta-panel-heading">
+      <h2 id="publication-heading">Preparar textos para publicar</h2>
+      <button id="publication-close" type="button" class="secondary">Cerrar textos</button>
+    </div>
+    <p id="publication-target" class="muted"></p>
+    <p id="publication-status" class="status beta-message" role="status"></p>
+    <form id="publication-form" hidden>
+      <label for="publication-language">Idioma de los textos</label>
+      <input type="text" id="publication-language" maxlength="21" list="publication-languages" aria-describedby="publication-language-help" required>
+      <datalist id="publication-languages">
+        <option value="auto">Idioma del clip</option>
+        <option value="es">Español</option>
+        <option value="en">Inglés</option>
+        <option value="pt">Portugués</option>
+        <option value="fr">Francés</option>
+        <option value="it">Italiano</option>
+        <option value="de">Alemán</option>
+      </datalist>
+      <p id="publication-language-help" class="muted">Usá el código del idioma, como es para español o en para inglés.</p>
+      <label for="publication-title">Título</label>
+      <div class="publication-field">
+        <input type="text" id="publication-title" maxlength="120">
+        <button id="publication-copy-title" type="button" class="secondary">Copiar título</button>
+      </div>
+      <label for="publication-description">Descripción</label>
+      <div class="publication-field">
+        <textarea id="publication-description" class="caption-text" maxlength="1000" rows="3"></textarea>
+        <button id="publication-copy-description" type="button" class="secondary">Copiar descripción</button>
+      </div>
+      <label for="publication-hashtags">Hashtags</label>
+      <div class="publication-field">
+        <textarea id="publication-hashtags" class="caption-text" maxlength="500" rows="2" placeholder="#Tema #Consejo"></textarea>
+        <button id="publication-copy-hashtags" type="button" class="secondary">Copiar hashtags</button>
+      </div>
+      <div class="actions">
+        <button id="publication-save" type="submit">Guardar para el paquete</button>
+        <a id="publication-download" hidden download="publicacion.txt">Descargar publicacion.txt</a>
+      </div>
+      <p id="publication-saved" class="status beta-message" role="status"></p>
+      <section id="publication-reusable" aria-labelledby="publication-reusable-heading" hidden>
+        <h3 id="publication-reusable-heading">Textos para este contenido</h3>
+        <div id="publication-reusable-options"></div>
+      </section>
+      <section class="editorial-review" aria-labelledby="publication-ai-heading">
+        <h3 id="publication-ai-heading">Sugerencias de IA</h3>
+        <p id="publication-availability" class="muted"></p>
+        <label for="publication-instructions">Instrucciones para las sugerencias (opcional)</label>
+        <textarea id="publication-instructions" class="caption-text" maxlength="600" rows="2"></textarea>
+        <div class="actions">
+          <button id="publication-preview" type="button" class="secondary">Revisar texto y destino</button>
+        </div>
+        <div id="publication-consent-panel" hidden>
+          <h4>Autorizar estas sugerencias</h4>
+          <p id="publication-destination"></p>
+          <p>El proveedor recibe el texto del fragmento y las instrucciones. El video y el audio permanecen en ClipForge.</p>
+          <details><summary>Ver texto del fragmento</summary><pre id="publication-payload"></pre></details>
+          <details><summary>Ver instrucciones del proveedor</summary><pre id="publication-system-instructions"></pre></details>
+          <label class="beta-check"><input type="checkbox" id="publication-consent">Revisé el texto y el destino y autorizo estas sugerencias.</label>
+          <button id="publication-generate" type="button" disabled>Solicitar sugerencias</button>
+        </div>
+        <p id="publication-ai-status" class="status beta-message" role="status"></p>
+        <div id="publication-suggestions" hidden>
+          <p>Revisá las sugerencias antes de guardarlas en el paquete.</p>
+          <div id="publication-title-options" class="actions" aria-label="Títulos sugeridos"></div>
+          <p id="publication-suggested-description" class="publication-suggestion"></p>
+          <button id="publication-use-description" type="button" class="secondary">Usar descripción sugerida</button>
+          <p id="publication-suggested-hashtags" class="publication-suggestion"></p>
+          <button id="publication-use-hashtags" type="button" class="secondary">Usar hashtags sugeridos</button>
+        </div>
+      </section>
+    </form>
+  </dialog>
   <dialog id="project-delete-dialog" class="panel beta-dialog" aria-labelledby="project-delete-heading" aria-describedby="project-delete-scope">
     <h2 id="project-delete-heading">Eliminar proyecto</h2>
     <p id="project-delete-title"></p>

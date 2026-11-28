@@ -271,6 +271,33 @@ def verify_d02_baseline(root, commit, model):
     }
 
 
+def verify_d03_baseline(root, commit, model):
+    accepted = "e7145844fd9db57df9a5ad20593c8df2da00080f"
+    if not re.fullmatch(r"[a-f0-9]{40}", commit) or commit == accepted:
+        raise ValueError("D03 requiere una candidata distinta del portal aceptado")
+    hashes = {
+        "after-rollout.json": "971dd6035dc9e45fc51e399facf0b582766660be7e71b5beea869c6d8933e9cd",
+        "browser-d02.json": "9457b0729abc890b16c39fc56d6f951b09931294c8e353e061e8e3c3420a4012",
+    }
+    rollout, browser = (native_report(root, name, digest) for name, digest in hashes.items())
+    revisions = {"frontend": rollout["frontend_revision"], "api": rollout["api_revision"]}
+    approved = {row["name"] for row in browser["checks"] if row["status"] == "passed"}
+    required = {"d02_historical_alignment_is_idempotent_and_preserves_prior_transcript",
+                "d02_rendered_clip_srt_vtt_and_mixed_zip_agree_without_ai"}
+    worker = rollout["worker_configuration"]
+    if (rollout["commit"] != accepted or browser["commit"] != accepted or browser["revisions"] != revisions
+            or browser["phase"] != "d02" or browser["status"] != "passed" or not required <= approved
+            or browser["package"]["members"] != 6 or browser["export"]["origin"]["mode"] != "transcript"
+            or rollout["editorial"]["model"] != model or rollout["editorial"]["daily_limit"] != 100
+            or worker["cpu"] != "4" or worker["memory"] != "4Gi"):
+        raise ValueError("Falta la aceptación nativa de la transcripción y el ZIP desplegados")
+    return {
+        "schema": "clipforge-int-d03-baseline-1", "status": "passed", "target_commit": commit,
+        "baseline": {**rollout, "worker_source": accepted, "worker_cpu": worker["cpu"], "worker_memory": worker["memory"]},
+        "evidence": {"run_id": "46153668496", "artifact_id": "15267434009", "sha256": hashes},
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, type=Path)
@@ -288,6 +315,7 @@ def main():
     group.add_argument("--accepted-d01-base", action="store_true")
     group.add_argument("--accepted-d01-provider-base", action="store_true")
     group.add_argument("--accepted-d02-base", action="store_true")
+    group.add_argument("--accepted-d03-base", action="store_true")
     args = parser.parse_args()
     if args.accepted_styles:
         receipt = verify_product_release(args.source, args.commit, args.model, "styles", *args.accepted_styles)
@@ -305,6 +333,8 @@ def main():
         receipt = verify_d01_provider(args.source, args.commit, args.model)
     elif args.accepted_d02_base:
         receipt = verify_d02_baseline(args.source, args.commit, args.model)
+    elif args.accepted_d03_base:
+        receipt = verify_d03_baseline(args.source, args.commit, args.model)
     else:
         receipt = verify(args.source, args.commit, args.model)
     with args.receipt.open("x", encoding="utf-8") as output:

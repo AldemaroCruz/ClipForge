@@ -11,7 +11,7 @@ from fastapi import HTTPException
 from requests import RequestException
 
 from ..auth_db import get_engine
-from . import clip_captions, repository as repo, storage
+from . import clip_captions, publication, repository as repo, storage
 
 MAX_CLIPS = 30
 MAX_BYTES = 128 * 1024 * 1024
@@ -34,7 +34,8 @@ class Selection:
 @dataclass(frozen=True)
 class Member:
     filename: str
-    object: dict
+    object: dict | None = None
+    content: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -114,8 +115,20 @@ def export_selection(document, job_id, workspace_id):
             "archive_files": list(objects)}
 
 
-def prepare(job_id, tokens: list[str], principal) -> Package:
+def _publication_revisions(tokens, publications):
+    revisions = {}
+    for token in publications:
+        selection, _, revision = token.rpartition("~")
+        if (selection not in tokens or selection in revisions
+                or not re.fullmatch(r"[1-9][0-9]{0,18}", revision)):
+            raise HTTPException(422, "La selección de textos para el ZIP no es válida.")
+        revisions[selection] = int(revision)
+    return revisions
+
+
+def prepare(job_id, tokens: list[str], principal, publications=()) -> Package:
     selections = _parse(tokens)
+    text_revisions = _publication_revisions(set(tokens), publications)
     members: list[Member] = []
     provenance = []
     export_provenance = []
@@ -125,31 +138,51 @@ def prepare(job_id, tokens: list[str], principal) -> Package:
     with get_engine().begin() as connection:
         doc = repo.beta_document(connection, principal, job_id)
         project_prefix = f"workspaces/{principal.workspace_id}/jobs/{job_id}/"
-        for item in selections:
+        for token, item in zip(tokens, selections, strict=True):
             files = []
             if item.filename is not None:
                 objects = clip_captions.selected_output(doc, item.filename, item.revision, item.output_id, connection)
                 stem = item.filename.removesuffix(".mp4")
-                provenance.append({
+                entry = {
                     "clip": item.filename, "caption_revision": item.revision, "output_id": item.output_id, "files": files,
-                })
+                }
+                provenance.append(entry)
             else:
                 export = repo.document(job_id, "export", item.output_id, connection)
                 export_kind, objects = _completed_export(export)
                 if export["revision"] != item.revision or export["payload"].get("id") != item.output_id or not objects:
                     raise HTTPException(409, "Cambió una exportación seleccionada. Actualizá la lista y volvé a seleccionarla.")
                 stem = f"{export_kind}_{item.output_id}"
-                export_provenance.append({
+                entry = {
                     "kind": export_kind, "export_id": item.output_id, "revision": item.revision, "files": files,
-                })
+                }
+                export_provenance.append(entry)
+            folder = ""
+            text_content = None
+            if token in text_revisions:
+                revision = text_revisions[token]
+                saved = publication.saved_for_selection(connection, job_id, token)
+                if not saved or saved["revision"] != revision:
+                    raise HTTPException(409, "Cambió una revisión de textos. Volvé a seleccionarla para el ZIP.")
+                text_content = publication.text_bytes(saved)
+                folder = f"{stem}/"
+                entry["publication_revision"] = revision
             for kind, original in objects.items():
                 _validate_object(original, kind, project_prefix)
                 total += original["bytes"]
                 if total > MAX_BYTES:
                     raise HTTPException(413, "Los archivos seleccionados superan 128 MiB. Seleccioná menos clips.")
-                filename = f"{stem}.{kind}"
+                filename = f"{folder}{stem}.{kind}"
                 members.append(Member(filename, original))
                 files.append({"file": filename, "bytes": original["bytes"], "sha256": original["sha256"]})
+            if text_content is not None:
+                total += len(text_content)
+                if total > MAX_BYTES:
+                    raise HTTPException(413, "Los archivos seleccionados superan 128 MiB. Seleccioná menos clips.")
+                filename = f"{folder}publicacion.txt"
+                members.append(Member(filename, content=text_content))
+                files.append({"file": filename, "bytes": len(text_content),
+                              "sha256": hashlib.sha256(text_content).hexdigest()})
     return Package(len(selections), total, tuple(members), tuple(provenance), tuple(export_provenance))
 
 
@@ -178,6 +211,10 @@ def _check_deadline(deadline):
 
 def _write_member(archive, sink, member, deadline) -> Iterator[bytes]:
     _check_deadline(deadline)
+    if member.content is not None:
+        archive.writestr(ZipInfo(member.filename), member.content)
+        yield from sink.drain()
+        return
     item = member.object
     source = storage.open_object(item, retry=False, timeout=OBJECT_TIMEOUT)
     digest = hashlib.sha256()

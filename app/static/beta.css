@@ -145,6 +145,36 @@
 .beta-dialog::backdrop {
   background: rgb(5 10 18 / 78%);
 }
+#publication-dialog {
+  width: min(44rem, calc(100% - 32px));
+  max-width: none;
+  max-height: calc(100% - 32px);
+  overflow: auto;
+}
+.publication-field {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.publication-field input, .publication-field textarea {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+#publication-target, .publication-suggestion {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+#publication-title-options button {
+  max-width: 100%;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+#publication-reusable-options button {
+  margin: 0 8px 8px 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
 .beta button.beta-danger.secondary {
   color: #ffd0dc;
 }
