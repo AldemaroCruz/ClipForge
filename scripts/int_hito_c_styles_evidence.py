@@ -195,6 +195,55 @@ def verify_d01_baseline(root, commit, model):
     }
 
 
+def verify_d01_provider(root, commit, model):
+    original = "0e7738b9107451ee34e2783d2646aabfdce2f027"
+    run_id, artifact_id = "46116426162", "15252033378"
+    if not re.fullmatch(r"[a-f0-9]{40}", commit) or commit == original:
+        raise ValueError("La continuación de D01 requiere una corrección descendiente")
+    hashes = {
+        "after-rollout.json": "0db413342f548ae642286ddd8d3c99966b272ef3ec7c40d0f835bbfc804fef90",
+        "browser-d01-prepare.json": "9036dd6d02425afa3a5cb05f011fa41a020ffc98d338399d279f8c916940a792",
+        "browser-d01.json": "286890cb1761e29502e90b5efc3a6346447d1a0386e253e83e45e785e0abff13",
+    }
+    rollout, prepared, browser = (native_report(root, name, digest) for name, digest in hashes.items())
+    approved = {entry["name"] for entry in browser["checks"] if entry["status"] == "passed"}
+    required = {"d01_three_explicit_searches_and_idempotent_replays",
+                "d01_relogin_restores_queries_and_private_results_desktop_and_narrow"}
+    expected_usage = {"reservations": 3, "calls": 3, "responses": 3}
+    revisions = {"frontend": rollout["frontend_revision"], "api": rollout["api_revision"]}
+    if (rollout["commit"] != original or browser["commit"] != original or browser["revisions"] != revisions
+            or prepared["status"] != "passed" or prepared["phase"] != "d01-prepare"
+            or prepared["fixture"]["duration_seconds"] != 1200 or prepared["fixture"]["content"] != "synthetic_spoken_topics"
+            or browser["phase"] != "d01" or browser["status"] != "failed"
+            or browser["failure"] != "d01_draft_export_and_exact_zip" or not required <= approved
+            or rollout["editorial"]["model"] != model or rollout["editorial"]["daily_limit"] != 100
+            or browser["daily_limit_utc"] != 100 or browser["usage"] != expected_usage):
+        raise ValueError("La evidencia real de D01 no corresponde al tramo aceptado")
+    searches = browser["searches"]
+    if (len(searches) != 3 or len({item["transcript_sha256"] for item in searches}) != 1
+            or [item["outcome"] for item in searches] != ["matches", "matches", "no_matches"]
+            or searches[2]["proposals"]
+            or any(item["status"] != "completed" or item["provider"] != "openai" or item["model"] != model
+                   or item["models_received"] != [model] or len(item["provider_call_intervals"]) != 1
+                   or item["last_transcript_end"] != 1181 or item["windows"] != [
+                       {"start": 0, "end": 1200, "segments": 9, "eligible_ranges": 9}]
+                   or any(item[key] != 1 for key in expected_usage) for item in searches)):
+        raise ValueError("Las búsquedas D01 no acreditan tres llamadas reales sobre la misma transcripción")
+    late = searches[1]
+    proposal, = late["proposals"]
+    if (late["topic"] != "reparar el freno de una bicicleta"
+            or (proposal["start"], proposal["end"], proposal["range_id"]) != (1142, 1181, "r6_9")
+            or proposal["evidence"]["segment_id"] != 6):
+        raise ValueError("La propuesta tardía no coincide con el intervalo comprobado")
+    replay = {"source_commit": original, "run_id": run_id, "search_id": late["id"],
+              "report_sha256": hashes["browser-d01.json"], "video_sha256": prepared["fixture"]["sha256"],
+              "transcript_sha256": late["transcript_sha256"], "model": model,
+              "range_id": proposal["range_id"], "evidence_segment": proposal["evidence"]["segment_id"]}
+    return {"schema": "clipforge-int-d01-provider-continuation-1", "status": "passed",
+            "target_commit": commit, "original_usage": expected_usage, "replay": replay,
+            "evidence": {"run_id": run_id, "artifact_id": artifact_id, "sha256": hashes}}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, type=Path)
@@ -210,6 +259,7 @@ def main():
     group.add_argument("--accepted-mixed-zip-base", nargs=5,
                        metavar=("SHA", "RUN", "ARTIFACT", "ROLLOUT_HASH", "BROWSER_HASH"))
     group.add_argument("--accepted-d01-base", action="store_true")
+    group.add_argument("--accepted-d01-provider-base", action="store_true")
     args = parser.parse_args()
     if args.accepted_styles:
         receipt = verify_product_release(args.source, args.commit, args.model, "styles", *args.accepted_styles)
@@ -223,6 +273,8 @@ def main():
         receipt = verify_mixed_zip_baseline(args.source, args.commit, args.model, *args.accepted_mixed_zip_base)
     elif args.accepted_d01_base:
         receipt = verify_d01_baseline(args.source, args.commit, args.model)
+    elif args.accepted_d01_provider_base:
+        receipt = verify_d01_provider(args.source, args.commit, args.model)
     else:
         receipt = verify(args.source, args.commit, args.model)
     with args.receipt.open("x", encoding="utf-8") as output:

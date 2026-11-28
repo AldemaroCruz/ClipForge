@@ -18,7 +18,7 @@ from scripts import int_hito_c_caption_color_browser as fixture
 from scripts import int_hito_c_logos_browser as logos
 from scripts import int_hito_c_mixed_zip_browser as mixed
 from scripts import int_hito_c_styles_browser as styles
-from scripts.int_hito_c_framing_browser import ZOOM, crop_controls
+from scripts.int_hito_c_framing_browser import ZOOM
 
 
 EARLY = "recolección de agua de lluvia para el huerto"
@@ -31,6 +31,9 @@ WINDOWS = {
 }
 COLOR = "#FFFF00"
 TITLE = "Trabajo con el freno de la bicicleta"
+USAGE_KEYS = ("reservations", "calls", "responses")
+REPLAY_FIELDS = {"source_commit", "run_id", "search_id", "report_sha256", "video_sha256",
+                 "transcript_sha256", "model", "range_id", "evidence_segment"}
 
 
 def prepare(browser, args, admin, report):
@@ -256,16 +259,18 @@ def show_search(page, item):
                    "d01_ui_exact_proposals")
 
 
-def verify_other_creator(browser, args, outsider, path, item, request):
+def verify_other_creator(browser, args, outsider, path, item, request=None):
     candidate = item["candidates"][0]
     run = f"{path}/{item['id']}"
     with portal.browser_page(browser) as page:
         fixture.owned_session(page, outsider, args.commit)
         for endpoint in (path, run):
             portal.require(portal.browser_get(page, endpoint)["status"] == 404, "d01_owner_only_search_read")
-        portal.require(portal.browser_post(page, path, request)["status"] == 404
-                       and portal.browser_post(page, f"{run}/candidates/{candidate['id']}/draft", {})["status"] == 404,
-                       "d01_owner_only_search_and_draft_writes")
+        if request is not None:
+            portal.require(portal.browser_post(page, path, request)["status"] == 404,
+                           "d01_owner_only_search_writes")
+        portal.require(portal.browser_post(page, f"{run}/candidates/{candidate['id']}/draft", {})["status"] == 404,
+                       "d01_owner_only_draft_writes")
         portal.logout(page)
 
 
@@ -326,7 +331,9 @@ def editor_flow(page, job_id, late, scratch, evidence):
     cue.wait_for()
     cue.fill("Ajustamos el freno antes de probarlo.")
     page.locator("#editorial-title").fill(TITLE)
-    crop_controls(page, .2, .35)
+    page.locator("#editorial-framing").select_option("crop")
+    for field, value in (("x", "20"), ("y", "35"), ("zoom", str(ZOOM))):
+        page.locator("#editorial-crop-" + field).fill(value)
     saved = fixture.save_draft_color(page, job_id, draft["id"], COLOR)
     portal.require((saved["start"], saved["end"]) == (start, end)
                    and saved["title"] == TITLE and saved["cues"][0]["text"] == cue.input_value()
@@ -413,6 +420,56 @@ def verify_zip(page, job, automatic, editorial, scratch, evidence):
             "members": len(expected), "tokens": tokens}
 
 
+def verified_replay(page, args, job, path, report):
+    verified = json.loads(portal.shared_http.read_private(args.d01_provider_evidence))
+    replay = verified["replay"]
+    prior = verified["evidence"]
+    portal.require(verified["schema"] == "clipforge-int-d01-provider-continuation-1"
+                   and verified["status"] == "passed" and verified["target_commit"] == args.commit
+                   and verified["original_usage"] == dict.fromkeys(USAGE_KEYS, 3)
+                   and set(replay) == REPLAY_FIELDS and replay["run_id"] == prior["run_id"]
+                   and replay["model"] == args.editorial_model
+                   and portal.COMMIT.fullmatch(replay["source_commit"]) and portal.ID.fullmatch(replay["search_id"])
+                   and all(portal.SHA256.fullmatch(replay[key])
+                           for key in ("report_sha256", "video_sha256", "transcript_sha256"))
+                   and replay["report_sha256"] == prior["sha256"]["browser-d01.json"]
+                   and job["fixture_sha256"] == replay["video_sha256"],
+                   "d01_protected_replay_receipt")
+    listing = get_json(page, path)
+    items = listing["analyses"]
+    portal.require(listing["total"] == len(items) == 1 and portal.ID.fullmatch(items[0]["id"]),
+                   "d01_only_attested_replay_search_present")
+    late = get_json(page, f"{path}/{items[0]['id']}")
+    identity = late["source_fingerprint"]
+    spec = late["spec"]
+    usage = dict(zip(USAGE_KEYS, (late["provider_calls_planned"], late["provider_calls"],
+                                 late["provider_responses"])))
+    portal.require(late == items[0] and late["job_id"] == job["id"] and late["id"] != replay["search_id"]
+                   and late["fixture_replay"] == replay and late["status"] == "completed" and late["outcome"] == "matches"
+                   and late["provider"] == "openai" and late["model"] == args.editorial_model
+                   and late["transcript_sha256"] == identity["transcript_sha256"] == replay["transcript_sha256"]
+                   and 1199.8 <= identity["source_duration"] <= 1200
+                   and spec["topic"] == LATE and spec["instructions"] == INSTRUCTIONS and spec["max_clips"] == 2
+                   and usage == dict.fromkeys(USAGE_KEYS, 0) and late["provider_response_received"] is False
+                   and late["provider_models_received"] == [] and portal.provider_call_intervals(late) == [],
+                   "d01_replay_identity_and_zero_new_provider_activity")
+    candidates = late["candidates"]
+    portal.require(len(candidates) == 1, "d01_one_attested_replay_candidate")
+    candidate = candidates[0]
+    anchor = candidate["evidence"]
+    start, end, phrase = WINDOWS[LATE]
+    portal.require(candidate["range_id"] == replay["range_id"] and anchor["segment_id"] == replay["evidence_segment"]
+                   and candidate["start"] <= anchor["start"] < anchor["end"] <= candidate["end"]
+                   and candidate["start"] < end and start < candidate["end"]
+                   and 20 <= round(candidate["end"] - candidate["start"], 3) <= 60
+                   and phrase.search(anchor["text"]), "d01_replayed_late_range_keeps_server_evidence")
+    report["provider_continuation"] = {"replay": replay, "original_usage": verified["original_usage"],
+                                       "original_evidence": prior, "synthetic_search": late["id"]}
+    report["usage"] = usage
+    portal.check(report, "d01_protected_provider_evidence_reused_without_reservations_or_calls")
+    return late
+
+
 def acceptance(browser, args, admin, report):
     state = fixture.read_state(args.state)
     outsider = outsider_account(browser, args, admin)
@@ -422,6 +479,8 @@ def acceptance(browser, args, admin, report):
     report["synthetic_projects"] = [job_id]
     report["searches"] = []
     evidence = args.report.parent
+    replay = args.d01_provider_evidence is not None
+    screenshots = []
     with tempfile.TemporaryDirectory(prefix="d01-browser-", dir=args.state.parent) as current:
         scratch = Path(current)
         with portal.browser_page(browser) as page:
@@ -441,19 +500,25 @@ def acceptance(browser, args, admin, report):
             portal.open_editorial(page)
             portal.require("Buscar momentos por tema" in page.locator("#editorial-heading").inner_text(),
                            "d01_topic_search_entry")
-            items = []
             late_request = None
-            for topic in (EARLY, LATE, ABSENT):
-                report["step"] = "d01_" + {EARLY: "early", LATE: "late", ABSENT: "absent"}[topic]
-                item, request = search(page, path, topic, args.editorial_model, [row["id"] for row in items], report)
-                if topic == LATE:
-                    late_request = request
-                items.append(item)
-                show_search(page, item)
-            portal.require(len({item["transcript_sha256"] for item in items}) == 1
-                           and all(item["source_fingerprint"] == items[0]["source_fingerprint"] for item in items),
-                           "d01_same_source_and_transcript_for_all_searches")
-            portal.check(report, "d01_three_explicit_searches_and_idempotent_replays")
+            if replay:
+                report["step"] = "d01_verified_late_replay"
+                late = verified_replay(page, args, job, path, report)
+                items = [late]
+            else:
+                items = []
+                for topic in (EARLY, LATE, ABSENT):
+                    report["step"] = "d01_" + {EARLY: "early", LATE: "late", ABSENT: "absent"}[topic]
+                    item, request = search(page, path, topic, args.editorial_model, [row["id"] for row in items], report)
+                    if topic == LATE:
+                        late_request = request
+                    items.append(item)
+                    show_search(page, item)
+                early, late, _ = items
+                portal.require(len({item["transcript_sha256"] for item in items}) == 1
+                               and all(item["source_fingerprint"] == early["source_fingerprint"] for item in items),
+                               "d01_same_source_and_transcript_for_all_searches")
+                portal.check(report, "d01_three_explicit_searches_and_idempotent_replays")
 
             report["step"] = "d01_relogin_and_isolation"
             portal.logout(page)
@@ -462,11 +527,16 @@ def acceptance(browser, args, admin, report):
             portal.open_editorial(page)
             for item in items:
                 show_search(page, item)
-            early, late, _ = items
-            page.locator("#editorial-empty").screenshot(path=evidence / "d01-absent.png", animations="disabled")
             verify_other_creator(browser, args, outsider, path, late, late_request)
-            show_search(page, early)
-            page.locator("#editorial-candidates").screenshot(path=evidence / "d01-early.png", animations="disabled")
+            if replay:
+                desktop = "d01-late.png"
+            else:
+                page.locator("#editorial-empty").screenshot(path=evidence / "d01-absent.png", animations="disabled")
+                screenshots.append("d01-absent.png")
+                show_search(page, early)
+                desktop = "d01-early.png"
+            page.locator("#editorial-candidates").screenshot(path=evidence / desktop, animations="disabled")
+            screenshots.append(desktop)
             page.set_viewport_size({"width": 390, "height": 844})
             show_search(page, late)
             page.wait_for_function("""() => {
@@ -489,8 +559,8 @@ def acceptance(browser, args, admin, report):
             portal.require({item["id"]: item for item in saved_searches} == {item["id"]: item for item in items},
                            "d01_browsing_and_editing_preserve_all_searches_and_reservations")
             portal.check(report, "d01_editorial_mp4_and_mixed_zip_keep_exact_revisions_and_bytes")
-            report["screenshots"] = ["d01-early.png", "d01-late-narrow.png", "d01-absent.png",
-                                     "d01-draft.png", "d01-export.png", "d01-mixed-zip.png"]
+            report["screenshots"] = [*screenshots, "d01-late-narrow.png", "d01-draft.png",
+                                     "d01-export.png", "d01-mixed-zip.png"]
             portal.logout(page)
 
 

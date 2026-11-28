@@ -384,20 +384,28 @@ create_d01_fixture() {
 
 prepare_caption_fixture() {
     local phase="${1:-caption-color-prepare}" previous="$reports/previous-live.json"
-    local state="$DELIVERY_DIR/browser-private.json" owner job source_sha video flag=""
+    local state="$DELIVERY_DIR/browser-private.json" owner job source_sha video replay flag=""
     if [[ "$phase" == d01-prepare ]]; then
         create_d01_fixture
         video="$DELIVERY_DIR/topic.mp4"
         flag=",--topic"
+        if [[ -n "${INT_D01_PROVIDER_EVIDENCE:-}" ]]; then
+            replay="$(jq -ec '.replay' "$INT_D01_PROVIDER_EVIDENCE" | base64 -w0 | tr '/+' '_-')"
+            [[ "$replay" =~ ^[A-Za-z0-9_-]{1,2048}={0,2}$ ]]
+            flag+=",--replay=$replay"
+        fi
     else
         create_framing_fixture
         video="$DELIVERY_DIR/framing.mp4"
     fi
+    source_sha="$(sha256sum "$video" | cut -d ' ' -f 1)"
+    [[ "$source_sha" =~ ^[a-f0-9]{64}$ ]]
+    if [[ -n "${replay:-}" ]]; then
+        [[ "$source_sha" == "$(jq -er '.replay.video_sha256' "$INT_D01_PROVIDER_EVIDENCE")" ]]
+    fi
     browser_on_rollout "$previous" "$phase" --video "$video"
     owner="$(jq -er '.owner_id | select(test("^[a-f0-9]{32}$"))' "$state")"
     job="$(jq -er '.job_id | select(test("^[a-f0-9]{32}$"))' "$state")"
-    source_sha="$(sha256sum "$video" | cut -d ' ' -f 1)"
-    [[ "$source_sha" =~ ^[a-f0-9]{64}$ ]]
     : > "$DELIVERY_DIR/focused-promoting"
     # The accepted HTTP revisions keep serving the same tenant-isolated API.
     # The new image adds the private seed command to the existing worker.
@@ -425,14 +433,23 @@ mixed_zip_acceptance() {
 }
 
 d01_acceptance() {
+    local -a options=()
     verify_focused_baseline d01 "$INT_D01_ACCEPTANCE"
+    if [[ -n "${INT_D01_PROVIDER_EVIDENCE:-}" ]]; then
+        [[ "$INT_D01_PROVIDER_EVIDENCE" == "$reports/d01-provider-baseline.json" &&
+            -f "$INT_D01_PROVIDER_EVIDENCE" && ! -L "$INT_D01_PROVIDER_EVIDENCE" ]]
+        jq -e --arg commit "$GITHUB_SHA" '.schema == "clipforge-int-d01-provider-continuation-1" and
+            .status == "passed" and .target_commit == $commit and .evidence.run_id == "46116426162"' \
+            "$INT_D01_PROVIDER_EVIDENCE" >/dev/null
+        options=(--d01-provider-evidence "$INT_D01_PROVIDER_EVIDENCE")
+    fi
     prepare_caption_fixture d01-prepare
     apply_beta true "run-$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT" replacement
     capture_rollout after
     jq -e '.worker_configuration.cpu == "4" and .worker_configuration.memory == "4Gi" and
         .editorial.daily_limit == 100 and .editorial.api_daily_limit == 100' \
         "$reports/after-rollout.json" > /dev/null
-    browser_acceptance d01
+    browser_acceptance d01 "${options[@]}"
 }
 
 caption_color_cleanup() {

@@ -1346,6 +1346,7 @@ def main():
     parser.add_argument("--frontend-revision", required=True)
     parser.add_argument("--api-revision", required=True)
     parser.add_argument("--video", type=Path)
+    parser.add_argument("--d01-provider-evidence", type=Path)
     parser.add_argument("--editorial-model", default="")
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
@@ -1356,6 +1357,11 @@ def main():
         require(COMMIT.fullmatch(args.commit), "commit_shape")
         require(not args.editorial_model or MODEL.fullmatch(args.editorial_model), "editorial_model_shape")
         require(args.mode != "deletion-recheck" or args.editorial_model, "deletion_recheck_requires_editorial_model")
+        require(args.d01_provider_evidence is None or (
+            args.mode == "d01" and args.d01_provider_evidence.is_absolute()
+            and args.d01_provider_evidence.is_file() and not args.d01_provider_evidence.is_symlink()
+            and args.d01_provider_evidence == args.report.parent / "d01-provider-baseline.json"
+        ), "d01_provider_evidence_argument")
         revisions = cloud_revisions(args.frontend_revision, args.api_revision)
         report.update(commit=args.commit, revisions=revisions)
         shared_http.private_file(args.state, must_exist=args.mode in {

@@ -48,6 +48,11 @@ on:
         required: false
         type: boolean
         default: false
+      reuse_d01_provider_evidence:
+        description: Continue the pinned D01 browser acceptance from the verified real searches
+        required: false
+        type: boolean
+        default: false
       worker_benchmark_base:
         description: Accepted INT commit to keep serving during an INT worker-only comparison
         required: false
@@ -705,12 +710,14 @@ jobs:
           printf 'INT_MIXED_ZIP_ACCEPTANCE=%s\n' "$receipt" >> "$GITHUB_ENV"
 
       - name: Constrain the topic selection release to D01
-        if: inputs.focused_d01
+        if: inputs.focused_d01 || inputs.reuse_d01_provider_evidence
         shell: bash
         env:
+          FOCUSED_D01: ${{ inputs.focused_d01 }}
           OTHER_MODE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c04_styles || inputs.focused_c05_framing || inputs.focused_c06_zip || inputs.focused_creator_logos || inputs.focused_caption_color || inputs.focused_mixed_zip || inputs.worker_benchmark_base != '' || inputs.adopt_worker_profile }}
         run: |
           set -euo pipefail
+          test "$FOCUSED_D01" = true
           test "$OTHER_MODE" = false
           base=86ab0a9f4dd5de69fd14b766320db16a570f0b1e
           git merge-base --is-ancestor "$base" HEAD
@@ -745,6 +752,37 @@ jobs:
             --commit "$GITHUB_SHA" --model "$INT_EDITORIAL_OPENAI_MODEL" --receipt "$receipt" \
             --accepted-d01-base
           printf 'INT_D01_ACCEPTANCE=%s\n' "$receipt" >> "$GITHUB_ENV"
+
+      - name: Download the pinned D01 real provider evidence
+        if: inputs.reuse_d01_provider_evidence
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          github-token: ${{ github.token }}
+          run-id: 46116426162
+          artifact-ids: 15252033378
+          path: ${{ env.DELIVERY_DIR }}/d01-provider
+          merge-multiple: true
+
+      - name: Verify unchanged D01 product code and real provider receipts before OIDC
+        if: inputs.reuse_d01_provider_evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          original=0e7738b9107451ee34e2783d2646aabfdce2f027
+          git merge-base --is-ancestor "$original" HEAD
+          git diff --name-only --no-renames -z "$original" HEAD | while IFS= read -r -d '' path; do
+            case "$path" in
+              .github/workflows/int-hito-b.yml|app/cloud/caption_color_fixture.py|scripts/deploy_int_beta.sh) ;;
+              scripts/int_hito_b_browser.py|scripts/int_hito_c_styles_evidence.py|scripts/int_hito_d01_browser.py) ;;
+              *) printf 'Outside the D01 acceptance continuation: %s\n' "$path" >&2; exit 1 ;;
+            esac
+          done
+          receipt="$DELIVERY_DIR/reports/d01-provider-baseline.json"
+          python -m scripts.int_hito_c_styles_evidence --source "$DELIVERY_DIR/d01-provider" \
+            --commit "$GITHUB_SHA" --model "$INT_EDITORIAL_OPENAI_MODEL" --receipt "$receipt" \
+            --accepted-d01-provider-base
+          printf 'INT_D01_PROVIDER_EVIDENCE=%s\n' "$receipt" >> "$GITHUB_ENV"
 
       - name: Check the exact source scope of the reused evidence
         id: reuse_scope
@@ -965,6 +1003,7 @@ jobs:
             ${{ env.DELIVERY_DIR }}/reports/browser-mixed-zip.json
             ${{ env.DELIVERY_DIR }}/reports/mixed-zip-*.png
             ${{ env.DELIVERY_DIR }}/reports/d01-prior-worker.json
+            ${{ env.DELIVERY_DIR }}/reports/d01-provider-baseline.json
             ${{ env.DELIVERY_DIR }}/reports/browser-d01-prepare.json
             ${{ env.DELIVERY_DIR }}/reports/browser-d01.json
             ${{ env.DELIVERY_DIR }}/reports/d01-*.png
