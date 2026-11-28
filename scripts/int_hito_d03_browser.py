@@ -379,8 +379,16 @@ def new_transcript_export(page, job, automatic, scratch):
 
 
 def new_editorial_export(page, job, scratch):
-    identity, draft = mixed.editorial_export(page, job)
-    return mixed.exported(page, job, identity, "editorial", scratch, (draft["start"], draft["end"]), draft["cues"])
+    interval = (35, 43)
+    portal.open_late_draft(page, job, *interval, generated=False)
+    picker = page.locator("#editorial-drafts")
+    page.wait_for_function("() => /^[a-f0-9]{32}$/.test(document.querySelector('#editorial-drafts')?.value)"
+                           " && document.querySelector('#editorial-export')?.disabled === false")
+    draft = d01.get_json(page, f"/jobs/{job}/drafts/{picker.input_value()}")
+    portal.require((draft["start"], draft["end"]) == interval and draft["cues"],
+                   "d03_editorial_draft_uses_existing_transcript")
+    identity, _, _ = portal.start_editorial_export(page, job, draft)
+    return mixed.exported(page, job, identity, "editorial", scratch, interval, draft["cues"])
 
 
 def empty_target(page, job, clip, kind):
