@@ -163,6 +163,7 @@ capture_previous() {
 
 restore_previous() {
     local previous="$reports/previous-live.json" version front previous_api worker provider model key_version timeout daily_limit migrator_image
+    local keep_public="${1:-false}"
     local -a editorial_options
     version="$(jq -er '.commit' "$previous")" || return
     front="$(jq -er '.frontend_revision' "$previous")" || return
@@ -186,21 +187,29 @@ restore_previous() {
             --remove-secrets OPENAI_API_KEY
         )
     fi
-    run services update "$frontend" --invoker-iam-check || return
+    if [[ "$keep_public" == false ]]; then
+        run services update "$frontend" --invoker-iam-check || return
+    fi
     run jobs update clipforge-int-worker --image "$worker" "${editorial_options[@]}" || return
     run services update-traffic "$api" --to-revisions "$previous_api=100" || return
     run services update-traffic "$frontend" --to-revisions "$front=100" || return
     run jobs update "$migrator" --image "$migrator_image" || return
-    run services update "$frontend" --no-invoker-iam-check || return
+    if [[ "$keep_public" == false ]]; then
+        run services update "$frontend" --no-invoker-iam-check || return
+    fi
     curl --silent --fail --max-time 15 --retry 3 "$public/health" | jq -e '.status == "ok"' >/dev/null || return
     curl --silent --fail --max-time 15 "$public/environment" |
         jq -e --arg version "$version" '.revision == $version' >/dev/null
 }
 
-create_fixture() {
+create_voice_fixture() {
     local speech
     speech='En Guatemala los vecinos recuperaron un huerto comunitario. Empezaron guardando semillas de maíz de varios colores. Luego compartieron turnos para regar y aprender de la cosecha. Un año después, el grupo enseñó a otras escuelas a conservar semillas y a cultivar en espacios pequeños. La lección es clara: cuidar la tierra funciona mejor cuando todos comparten lo que aprenden.'
     espeak-ng -v es -s 148 -w "$DELIVERY_DIR/voice.wav" "$speech $speech"
+}
+
+create_fixture() {
+    create_voice_fixture
     ffmpeg -hide_banner -loglevel error -nostdin \
         -f lavfi -i 'testsrc2=size=1280x720:rate=24' -stream_loop -1 -i "$DELIVERY_DIR/voice.wav" \
         -t 120 -c:v libx264 -preset veryfast -pix_fmt yuv420p -threads 2 \
@@ -210,16 +219,15 @@ create_fixture() {
 }
 
 create_framing_fixture() {
-    local speech colors
-    speech='En Guatemala los vecinos recuperaron un huerto comunitario. Guardaron semillas de maíz, compartieron turnos para regar y enseñaron a otras escuelas a cultivar.'
-    espeak-ng -v es -s 148 -w "$DELIVERY_DIR/voice.wav" "$speech $speech"
+    local colors
+    create_voice_fixture
     colors="color=black:s=1280x720:r=24,drawbox=x=0:y=0:w=420:h=360:c=red:t=fill"
     colors+=",drawbox=x=420:y=0:w=440:h=360:c=green:t=fill,drawbox=x=860:y=0:w=420:h=360:c=blue:t=fill"
     colors+=",drawbox=x=0:y=360:w=420:h=360:c=yellow:t=fill,drawbox=x=420:y=360:w=440:h=360:c=magenta:t=fill"
     colors+=",drawbox=x=860:y=360:w=420:h=360:c=cyan:t=fill"
     ffmpeg -hide_banner -loglevel error -nostdin \
         -f lavfi -i "$colors" -stream_loop -1 -i "$DELIVERY_DIR/voice.wav" \
-        -t 32 -c:v libx264 -preset veryfast -pix_fmt yuv420p -threads 2 \
+        -t 120 -c:v libx264 -preset veryfast -pix_fmt yuv420p -threads 2 \
         -b:v 2800k -minrate 2800k -maxrate 2800k -bufsize 5600k -x264-params nal-hrd=cbr \
         -c:a aac -b:a 96k -movflags +faststart "$DELIVERY_DIR/framing.mp4"
 }
@@ -341,7 +349,11 @@ run_migration() {
 }
 
 restore_failed_delivery() {
-    if [[ -f "$reports/previous-live.json" ]] && restore_previous; then
+    local keep_public=false
+    if [[ -f "$DELIVERY_DIR/focused-promoting" ]]; then
+        keep_public=true
+    fi
+    if [[ -f "$reports/previous-live.json" ]] && restore_previous "$keep_public"; then
         printf '%s\n' 'The last healthy public beta revisions, worker and migrator pin were restored.' > "$reports/acceptance-failure.txt"
     elif apply_beta false "run-$GITHUB_RUN_ID-b$GITHUB_RUN_ATTEMPT" hidden; then
         printf '%s\n' 'Public access disabled after unsuccessful Hito B acceptance.' > "$reports/acceptance-failure.txt"
