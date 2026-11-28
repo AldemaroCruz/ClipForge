@@ -51,6 +51,8 @@ En la prueba desde una cuenta normal, OpenAI sugirió «Agua de lluvia para el h
 
 ## Resaltar palabra actual
 
+Disponible en INT desde el commit `51da59c5992a88be5114fb69171dedaf9da24eb9`.
+
 En **Subtítulos**, activá **Resaltar palabra actual** y elegí el color base y el activo con el selector o el código HEX. Reproducí el recorte o mové el cabezal para comprobar el efecto. En una pausa del habla, el texto vuelve al color base.
 
 Pulsá **Guardar como estilo** para conservar ambos colores y la opción de resaltado en tu biblioteca. Podés aplicar la plantilla a otro borrador. Los trabajos y estilos existentes empiezan con el resaltado apagado.
@@ -58,6 +60,8 @@ Pulsá **Guardar como estilo** para conservar ambos colores y la opción de resa
 Si una frase editada ya no coincide con las marcas, se mantiene estática y el editor muestra un aviso. Para un trabajo anterior sin marcas, usá **Preparar marcas por palabra** cuando esté disponible. El texto corregido se conserva.
 
 Exportá con **Incrustar subtítulos** habilitado para ver el efecto en el MP4. Los archivos SRT y VTT conservan su texto y sus tiempos. Podés seleccionar esta variante exacta en el ZIP y reutilizar los textos de publicación si el contenido sigue siendo el mismo.
+
+La aceptación comprobó el primer y el último término, las repeticiones, las pausas y la posición del texto en el editor y el MP4. Podés abrir las capturas y comparar las exportaciones con y sin resaltado. Los WAV conservan el audio para revisar la sincronía de oído. [Evidencia de E01](https://github.com/AldemaroCruz/ClipForge/actions/runs/46167894270/artifacts/15273392326)
 
 ## Base de continuidad y reversión de logos
 
