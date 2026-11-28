@@ -22,6 +22,8 @@ def upgrade_alignment(connection):
         return "current"
     if revisions:
         raise ValueError("Unknown transcript alignment schema revision")
+    # Avoid waiting on a creator transaction while holding one queue table.
+    connection.execute(text("LOCK TABLE cloud_tasks, cloud_documents IN ACCESS EXCLUSIVE MODE NOWAIT"))
     for statement in DDL:
         connection.execute(text(statement))
     connection.execute(text("INSERT INTO cloud_transcript_alignment_schema_migrations(revision) VALUES (:r)"),

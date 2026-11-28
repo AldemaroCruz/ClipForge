@@ -1,5 +1,7 @@
 import unittest
-from unittest.mock import patch
+from contextlib import nullcontext
+import sys
+from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
 
@@ -105,3 +107,20 @@ class TranscriptSelectionTests(unittest.TestCase):
         segment, = subject._aligned(rows, 60.0006)
         self.assertEqual(segment["end"], 60.0)
         self.assertEqual(segment["words"][0]["end"], 60.0)
+
+    def test_historical_prepare_runs_without_the_worker_package(self):
+        repository = subject.repo
+        engine = Mock()
+        engine.begin.return_value = nullcontext()
+        principal = Mock(id="owner")
+        with (patch.dict(sys.modules, {"app.transcribe": None}),
+              patch.object(repository, "get_engine", return_value=engine),
+              patch.object(repository, "beta_document", return_value=JOB),
+              patch.object(subject.editorial_selection, "source_identity", return_value=IDENTITY),
+              patch.object(repository, "alignment_document", return_value=None),
+              patch.object(repository, "admit_beta"),
+              patch.object(repository, "insert_document"),
+              patch.object(repository, "enqueue") as enqueue):
+            item = repository.prepare_alignment(JOB["payload"]["id"], principal)
+        self.assertEqual(item["status"], "queued")
+        enqueue.assert_called_once_with(None, JOB["payload"]["id"], "alignment", item["id"])

@@ -475,6 +475,8 @@ d02_acceptance() {
     local video="$DELIVERY_DIR/transcript.mp4"
     browser_on_rollout "$reports/previous-live.json" d02-prepare --video "$video"
     : > "$DELIVERY_DIR/focused-promoting"
+    run jobs update clipforge-int-worker --image "$TF_VAR_worker_image" \
+        --update-env-vars "CLIPFORGE_REVISION=$GITHUB_SHA"
     apply_beta true "run-$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT" replacement
     capture_rollout after
     jq -e '.worker_configuration.cpu == "4" and .worker_configuration.memory == "4Gi" and

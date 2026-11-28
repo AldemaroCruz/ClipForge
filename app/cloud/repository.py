@@ -193,14 +193,14 @@ def alignment_document(job_id, fingerprint, connection=None):
 
 
 def prepare_alignment(job_id, principal, retry=False):
-    from ..transcribe import ALIGNMENT_FILE
     from .editorial_selection import source_identity
+    from .transcript_selection import SIDECAR
 
     with get_engine().begin() as connection:
         job = beta_document(connection, principal, job_id)
         fingerprint = source_identity(job)
         existing_words = job["payload"].get("transcript_alignment")
-        if (ALIGNMENT_FILE in job["manifest"] and existing_words
+        if (SIDECAR in job["manifest"] and existing_words
                 and existing_words.get("source_fingerprint") == fingerprint):
             return existing_words
         previous = alignment_document(job_id, fingerprint, connection)
