@@ -16,7 +16,6 @@ from pydantic import ValidationError
 from sqlalchemy import text
 from starlette.concurrency import run_in_threadpool
 
-from ..ai_selection import SelectionCreate, SelectionSpec
 from ..auth_db import get_engine
 from ..editorial import EditorialContent, DraftUpdate, ProjectName, RangeChange, RevisionRequest, retime_cues, validate_range
 from ..logo_placement import LogoPlacement
@@ -379,13 +378,13 @@ def selection_context(job_id: str, response: Response):
 
 
 @router.post("/jobs/{job_id}/selections/preview")
-def selection_preview(job_id: str, payload: SelectionSpec, response: Response):
+def selection_preview(job_id: str, payload: selection.EditorialSelectionSpec, response: Response):
     response.headers["Cache-Control"] = "no-store"
     return selection.preview(_doc(job_id), payload)
 
 
 @router.post("/jobs/{job_id}/selections", status_code=202)
-def create_selection(job_id: str, payload: SelectionCreate, request: Request):
+def create_selection(job_id: str, payload: selection.EditorialSelectionCreate, request: Request):
     item = selection.create(job_id, payload, request.state.principal)
     return _dispatch(item) if item["status"] == "queued" else item
 
@@ -449,6 +448,10 @@ def candidate_to_draft(job_id: str, run_id: str, candidate_id: int, request: Req
              "selection_origin": {"analysis_id": run_id, "candidate_id": str(candidate_id), "mode": "llm",
                                   "range_id": candidate["range_id"], "transcript_sha256": identity["transcript_sha256"],
                                   "provider": item["provider"], "model": item["model"]}}
+    if topic := item["spec"].get("topic"):
+        draft["selection_origin"].update(search_topic=topic, source_generation=identity["source_generation"],
+                                         transcript_generation=identity["transcript_generation"],
+                                         prompt_version=item["prompt_version"])
     if job["payload"].get("caption_style_template"):
         draft["style_template"] = job["payload"]["caption_style_template"]
     if job["payload"].get("caption_logo"):
@@ -639,6 +642,9 @@ def export_draft(job_id: str, draft_id: str, payload: RevisionRequest, request: 
         item["style_template"] = snapshot["style_template"]
     if snapshot.get("logo"):
         item["logo"] = snapshot["logo"]
+    origin = snapshot.get("selection_origin", {})
+    if origin.get("search_topic"):
+        item["selection_origin"] = origin
     pilot = _doc(job_id)["payload"].get("pilot") is True
     key = f"draft-{draft_id}-{payload.revision}" if pilot else None
     return _submit_export(job_id, item, request, pilot=pilot, request_key=key)

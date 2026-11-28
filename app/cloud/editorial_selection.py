@@ -12,10 +12,12 @@ import time
 import uuid
 
 from fastapi import HTTPException
+from pydantic import Field, field_validator, model_validator
 
 from ..ai_provider import (AIError, PROMPT_VERSION, SELECTION_CONTRACT, SYSTEM_PROMPT,
+                           TOPIC_PROMPT_VERSION, TOPIC_SELECTION_CONTRACT, TOPIC_SYSTEM_PROMPT,
                            check_input_budget, get_config, request_selection)
-from ..ai_selection import MAX_RUNS_PER_JOB, SelectionSpec, validate_answer
+from ..ai_selection import MAX_RUNS_PER_JOB, SelectionCreate, SelectionSpec, validate_answer
 from ..auth_db import get_engine
 from ..subtitles import plain_text
 from . import repository as repo
@@ -28,6 +30,47 @@ MAX_CATALOG = 180
 MIN_TARGET_CATALOG = 24
 MAX_CALLS = 8
 MAX_PROVIDER_SECONDS = 600
+TOPIC_RETRYABLE = frozenset({"AI_TIMEOUT", "AI_CONNECTION_FAILED", "AI_INVALID_RESPONSE", "AI_INCOMPLETE",
+                             "AI_SCHEMA_INVALID", "AI_INVALID_RANGE", "AI_TASK_INTERRUPTED"})
+
+
+class EditorialSelectionSpec(SelectionSpec):
+    topic: str | None = Field(default=None, max_length=160, strict=True)
+    instructions: str = Field(default="", max_length=600, strict=True)
+
+    @field_validator("topic", "instructions")
+    @classmethod
+    def clean_editorial_intent(cls, value):
+        return plain_text(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def check_editorial_intent(self):
+        if self.topic == "":
+            raise ValueError("Ingresá un tema para buscar momentos.")
+        if self.instructions and self.topic is None:
+            raise ValueError("Las indicaciones opcionales requieren un tema.")
+        if self.topic is not None and "brief" in self.model_fields_set:
+            raise ValueError("Usá el tema y las indicaciones para esta búsqueda.")
+        return self
+
+
+class EditorialSelectionCreate(SelectionCreate, EditorialSelectionSpec):
+    retry_of: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
+
+    @model_validator(mode="after")
+    def check_retry(self):
+        if self.retry_of is not None and self.topic is None:
+            raise ValueError("El reintento debe indicar el tema de la búsqueda original.")
+        return self
+
+
+def canonical_spec(spec):
+    data = {field: getattr(spec, field) for field in SelectionSpec.model_fields}
+    data["window_start"] = float(data["window_start"])
+    if getattr(spec, "topic", None) is not None:
+        del data["brief"]
+        data.update(topic=spec.topic, instructions=spec.instructions)
+    return data
 
 
 def provider_config(*, worker=False):
@@ -143,6 +186,9 @@ def planned_windows(segments, spec, duration, config):
     starts = [round(row["start"] * 1000) for row in segments]
     ends = [round(row["end"] * 1000) for row in segments]
     batches = []
+    topical = getattr(spec, "topic", None) is not None
+    intent = {"topic": spec.topic, "instructions": spec.instructions} if topical else {"brief": spec.brief}
+    contract = TOPIC_SELECTION_CONTRACT if topical else SELECTION_CONTRACT
 
     def plan(start, stop):
         choices = catalog(segments, ends, start, stop, spec)
@@ -157,10 +203,10 @@ def planned_windows(segments, spec, duration, config):
         left = bisect_left(ends, starts[start] - 15000)
         right = bisect_right(starts, starts[stop - 1] + spec.max_seconds * 1000)
         selected = segments[left:right]
-        content = {"brief": spec.brief, "max_clips": spec.max_clips, "min_seconds": spec.min_seconds,
+        content = {**intent, "max_clips": spec.max_clips, "min_seconds": spec.min_seconds,
                    "max_seconds": spec.max_seconds, "analysis_window": {"start": selected[0]["start"],
                                                                          "end": selected[-1]["end"]},
-                   "segments": selected, "selection_contract": SELECTION_CONTRACT, "eligible_ranges": choices}
+                   "segments": selected, "selection_contract": contract, "eligible_ranges": choices}
         while True:
             try:
                 budget = check_input_budget(config, content)
@@ -198,13 +244,14 @@ def prepare(job, spec, *, worker=False):
     identity = source_identity(job)
     segments = transcript_segments(job, identity)
     batches = planned_windows(segments, spec, identity["source_duration"], config)
-    spec_data = {**spec.model_dump(), "window_start": 0.0}
+    spec_data = canonical_spec(spec)
+    prompt_version = TOPIC_PROMPT_VERSION if "topic" in spec_data else PROMPT_VERSION
     payload_hash = hashlib.sha256(repo.packed([batch["content"] for batch in batches]).encode()).hexdigest()
     token = hashlib.sha256(repo.packed({"job_id": job["payload"]["id"], "identity": identity,
                                        "spec": spec_data, "config": config_id,
-                                       "prompt": PROMPT_VERSION, "payload": payload_hash}).encode()).hexdigest()
+                                       "prompt": prompt_version, "payload": payload_hash}).encode()).hexdigest()
     return {"config": config, "identity": identity, "segments": segments, "spec": spec_data,
-            "batches": batches, "preview_token": token}
+            "batches": batches, "preview_token": token, "prompt_version": prompt_version}
 
 
 def prepare_request(job, spec):
@@ -236,7 +283,8 @@ def preview(job, spec):
     }
     count = len(prepared["segments"])
     return {"preview_token": prepared["preview_token"], "provider": prepared["config"].public(),
-            "spec": prepared["spec"], "prompt_version": PROMPT_VERSION, "system_instructions": SYSTEM_PROMPT,
+            "spec": prepared["spec"], "prompt_version": prepared["prompt_version"],
+            "system_instructions": TOPIC_SYSTEM_PROMPT if "topic" in prepared["spec"] else SYSTEM_PROMPT,
             "payload_text": payload_text, "segment_count": count, "total_segments": count,
             "source_duration": prepared["identity"]["source_duration"],
             "eligible_range_count": sum(len(payload["eligible_ranges"]) for payload in payloads),
@@ -250,24 +298,42 @@ def preview(job, spec):
 def create(job_id, request, principal):
     if not request.consent:
         raise HTTPException(422, "Debes revisar y autorizar explícitamente esta solicitud.")
-    spec = SelectionSpec.model_validate(request.model_dump(include=set(SelectionSpec.model_fields)))
+    spec = EditorialSelectionSpec.model_validate(request.model_dump(include=set(EditorialSelectionSpec.model_fields),
+                                                                    exclude_unset=True))
+    retry_of = getattr(request, "retry_of", None)
+    request_key = request.request_id
+    request_data = {field: getattr(request, field) for field in SelectionCreate.model_fields}
+    if spec.topic is not None:
+        topical_request = {"job_id": job_id, "preview_token": request.preview_token, "retry_of": retry_of}
+        request_key = hashlib.sha256(repo.packed(topical_request).encode()).hexdigest()
+        request_data = {**canonical_spec(spec), "preview_token": request.preview_token,
+                        "retry_of": retry_of, "consent": request.consent}
     fingerprint = hashlib.sha256(repo.packed({"kind": "selection", "job_id": job_id,
-                                             "request": request.model_dump()}).encode()).hexdigest()
+                                             "request": request_data}).encode()).hexdigest()
     # Duplicate submissions return the committed run before rereading GCS or
     # checking a changed provider configuration. Another session still needs ownership.
-    with repo.request_transaction(principal.id, request.request_id, fingerprint) as (c, previous, key):
+    with repo.request_transaction(principal.id, request_key, fingerprint) as (c, previous, key):
         job = repo.beta_document(c, principal, job_id)
         if previous:
             return repo.document(job_id, "selection", previous["item_id"], c)["payload"]
     prepared = prepare_request(job, spec)
     if request.preview_token != prepared["preview_token"]:
         raise HTTPException(409, "Cambió el original, el objetivo o la configuración. Prepará y autorizá una nueva vista previa.")
-    with repo.request_transaction(principal.id, request.request_id, fingerprint) as (c, previous, key):
+    with repo.request_transaction(principal.id, request_key, fingerprint) as (c, previous, key):
         current = repo.beta_document(c, principal, job_id)
         if previous:
             return repo.document(job_id, "selection", previous["item_id"], c)["payload"]
         if source_identity(current) != prepared["identity"]:
             raise HTTPException(409, "Cambió la transcripción. Prepará y autorizá una nueva vista previa.")
+        if retry_of is not None:
+            previous_run = repo.document(job_id, "selection", retry_of, c, required=False)
+            prior = previous_run["payload"] if previous_run else {}
+            if (prior.get("status") != "failed" or prior.get("error_code") not in TOPIC_RETRYABLE
+                    or prior.get("retry_of") or prior.get("retry_consumed")
+                    or prior.get("preview_token") != request.preview_token or prior.get("spec") != prepared["spec"]):
+                raise HTTPException(409, "Esta búsqueda no admite otro reintento con los datos actuales.")
+            prior.update(retryable=False, retry_consumed=True)
+            repo.update_document(c, job_id, "selection", prior)
         repo.admit_beta(c, principal.id)
         day = datetime.now(timezone.utc).date().isoformat()
         batches = prepared["batches"]
@@ -277,7 +343,7 @@ def create(job_id, request, principal):
         item = {"id": uuid.uuid4().hex, "job_id": job_id, "status": "queued", "mode": "llm",
                 "pilot": True, "spec": prepared["spec"], "preview_token": request.preview_token,
                 "source_fingerprint": prepared["identity"], "transcript_sha256": prepared["identity"]["transcript_sha256"],
-                "provider": config.provider, "model": config.model, "prompt_version": PROMPT_VERSION,
+                "provider": config.provider, "model": config.model, "prompt_version": prepared["prompt_version"],
                 "day_utc": day, "created_at": now, "consent_at": now, "provider_calls_planned": len(batches),
                 "provider_calls": 0, "provider_responses": 0, "provider_response_received": False,
                 "provider_elapsed_seconds": 0.0, "provider_call_intervals": [],
@@ -285,6 +351,8 @@ def create(job_id, request, principal):
                 "analysis_windows": [batch["summary"] for batch in batches],
                 "segment_count": len(prepared["segments"]), "last_transcript_end": prepared["segments"][-1]["end"],
                 "candidates": [], "summary": "", "warnings": [], "usage": {}}
+        if retry_of is not None:
+            item["retry_of"] = retry_of
         repo.insert_document(c, job_id, "selection", item)
         repo.enqueue(c, job_id, "selection", item["id"])
         repo.remember_request(c, principal.id, key, fingerprint, job_id, "selection", item["id"])
@@ -320,7 +388,7 @@ def execute_task(task):
     item.update(status="running", started_at=time.time())
     _progress(task, item)
     try:
-        prepared = prepare(repo.document(job_id), SelectionSpec.model_validate(item["spec"]), worker=True)
+        prepared = prepare(repo.document(job_id), EditorialSelectionSpec.model_validate(item["spec"]), worker=True)
         if (item["preview_token"] != prepared["preview_token"] or
                 item["provider_calls_planned"] != len(prepared["batches"])):
             raise AIError("AI_PREVIEW_STALE", "Cambió el original o la configuración. Prepará y autorizá una nueva vista previa.")
@@ -360,12 +428,18 @@ def execute_task(task):
         if invalid and not summaries:
             raise invalid
         item["summary"] = " ".join(filter(None, summaries))[:800]
-        if len(item["candidates"]) < item["spec"]["max_clips"]:
+        if "topic" in item["spec"]:
+            item["outcome"] = "matches" if item["candidates"] else "no_matches"
+        if item.get("outcome") == "no_matches":
+            item["summary"] = "No se encontraron momentos adecuados para este tema en la transcripción."
+        elif len(item["candidates"]) < item["spec"]["max_clips"]:
             item["warnings"].append(
                 f"Se obtuvieron {len(item['candidates'])} propuestas válidas sin solapamientos para este objetivo.")
         item["status"] = "completed"
     except AIError as exc:
         item.update(status="failed", error_code=exc.code, error=str(exc))
+        if "topic" in item["spec"]:
+            item["retryable"] = not item.get("retry_of") and exc.code in TOPIC_RETRYABLE
     except HTTPException as exc:
         item.update(status="failed", error_code="AI_SOURCE_UNAVAILABLE", error=exc.detail)
     except Exception:

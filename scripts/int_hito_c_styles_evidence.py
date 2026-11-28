@@ -170,6 +170,31 @@ def verify_mixed_zip_baseline(root, commit, model, accepted, run, artifact, roll
     }
 
 
+def verify_d01_baseline(root, commit, model):
+    accepted = "86ab0a9f4dd5de69fd14b766320db16a570f0b1e"
+    if not re.fullmatch(r"[a-f0-9]{40}", commit) or commit == accepted:
+        raise ValueError("D01 requiere una candidata distinta de la versión aceptada")
+    hashes = {
+        "after-rollout.json": "4d1b67b582b9d0b1c6fede0f67c1f36c7a436aaf64e10456bf0ebffdac3acf80",
+        "browser-mixed-zip.json": "3a6528a29118f8dc5aa8b1275ffccc48ebe80de58a0e9940941444281aab356a",
+    }
+    rollout, browser = (native_report(root, name, digest) for name, digest in hashes.items())
+    worker = rollout["worker_configuration"]
+    revisions = {"frontend": rollout["frontend_revision"], "api": rollout["api_revision"]}
+    approved = {entry["name"] for entry in browser["checks"] if entry["status"] == "passed"}
+    if (rollout["commit"] != accepted or browser["commit"] != accepted or browser["revisions"] != revisions
+            or browser["phase"] != "mixed-zip" or browser["status"] != "passed"
+            or "automatic_manual_editorial_zip_matches_individual_downloads_byte_for_byte" not in approved
+            or rollout["editorial"]["model"] != model or rollout["editorial"]["daily_limit"] != 100
+            or worker["cpu"] != "4" or worker["memory"] != "4Gi"):
+        raise ValueError("La evidencia no corresponde a la base editorial y de ZIP de INT")
+    return {
+        "schema": "clipforge-int-d01-baseline-1", "status": "passed", "target_commit": commit,
+        "baseline": {**rollout, "worker_source": accepted, "worker_cpu": worker["cpu"], "worker_memory": worker["memory"]},
+        "evidence": {"run_id": "46111969891", "artifact_id": "15251015617", "sha256": hashes},
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, type=Path)
@@ -184,6 +209,7 @@ def main():
     group.add_argument("--accepted-caption-color-base", action="store_true")
     group.add_argument("--accepted-mixed-zip-base", nargs=5,
                        metavar=("SHA", "RUN", "ARTIFACT", "ROLLOUT_HASH", "BROWSER_HASH"))
+    group.add_argument("--accepted-d01-base", action="store_true")
     args = parser.parse_args()
     if args.accepted_styles:
         receipt = verify_product_release(args.source, args.commit, args.model, "styles", *args.accepted_styles)
@@ -195,6 +221,8 @@ def main():
         receipt = verify_caption_color_baseline(args.source, args.commit, args.model)
     elif args.accepted_mixed_zip_base:
         receipt = verify_mixed_zip_baseline(args.source, args.commit, args.model, *args.accepted_mixed_zip_base)
+    elif args.accepted_d01_base:
+        receipt = verify_d01_baseline(args.source, args.commit, args.model)
     else:
         receipt = verify(args.source, args.commit, args.model)
     with args.receipt.open("x", encoding="utf-8") as output:

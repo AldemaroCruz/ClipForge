@@ -133,11 +133,23 @@
         </section>
         <section id="editorial" aria-labelledby="editorial-heading" hidden>
           <details id="editorial-details">
-            <summary id="editorial-heading">Propuestas por IA y edición</summary>
+            <summary id="editorial-heading">Buscar momentos por tema</summary>
             <p id="editorial-config" class="status" role="status"></p>
             <form id="editorial-selection">
-              <label for="editorial-brief">Objetivo editorial</label>
-              <textarea id="editorial-brief" maxlength="800" rows="3" required placeholder="Por ejemplo, elige consejos con un problema concreto y una solución."></textarea>
+              <label for="editorial-brief">Tema</label>
+              <textarea id="editorial-brief" maxlength="160" rows="2" aria-describedby="editorial-topic-help" required></textarea>
+              <p id="editorial-topic-help" class="muted">Ejemplos de temas: consejos para principiantes, errores comunes o una explicación paso a paso.</p>
+              <label for="editorial-guidance">Instrucciones adicionales (opcional)</label>
+              <textarea id="editorial-guidance" maxlength="600" rows="2" placeholder="Por ejemplo, priorizá consejos concretos y evitá las promociones."></textarea>
+              <label for="editorial-max-clips">Máximo de propuestas</label>
+              <select id="editorial-max-clips" aria-describedby="editorial-max-help">
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+                <option value="5" selected>5</option>
+              </select>
+              <p id="editorial-max-help" class="muted">Cada propuesta dura de 20 a 60 segundos. Pueden aparecer menos si el tema tiene pocas coincidencias.</p>
               <div class="actions">
                 <button type="submit" id="editorial-preview-button" class="secondary" disabled>Revisar texto y destino</button>
                 <button type="button" id="editorial-refresh" class="secondary">Actualizar análisis</button>
@@ -146,7 +158,7 @@
             <section id="editorial-consent-panel" class="editorial-review" aria-labelledby="editorial-preview-heading" hidden>
               <h3 id="editorial-preview-heading">Autorizar este análisis</h3>
               <p id="editorial-destination"></p>
-              <p>La solicitud incluye la transcripción, el objetivo editorial y los rangos calculados. El video y el audio permanecen en ClipForge.</p>
+              <p>Se envían el texto de la transcripción, el tema, las instrucciones adicionales y los intervalos candidatos. El video y el audio permanecen en ClipForge.</p>
               <details><summary>Ver texto y rangos</summary><pre id="editorial-payload"></pre></details>
               <details><summary>Ver instrucciones de selección</summary><pre id="editorial-instructions"></pre></details>
               <label class="editorial-check"><input type="checkbox" id="editorial-consent">Revisé el texto y el destino y autorizo este análisis.</label>
@@ -156,10 +168,18 @@
             <div id="editorial-history" hidden>
               <label for="editorial-runs">Análisis guardados</label>
               <select id="editorial-runs"></select>
+              <p><button type="button" id="editorial-older-runs" class="secondary" hidden>Ver búsquedas anteriores</button></p>
             </div>
             <section id="editorial-results" aria-label="Resultado del análisis" hidden>
               <h3>Propuestas por IA</h3>
+              <div id="editorial-search-details" hidden>
+                <p id="editorial-search-topic"></p>
+                <p id="editorial-search-guidance" hidden></p>
+                <p id="editorial-search-limit" class="muted" hidden></p>
+              </div>
               <p id="editorial-summary" class="status"></p>
+              <p id="editorial-empty" class="status" hidden>No encontramos momentos suficientemente relacionados con este tema. Podés probar con otro enfoque.</p>
+              <button type="button" id="editorial-retry" class="secondary" hidden>Revisar y reintentar análisis</button>
               <div id="editorial-candidates" class="beta-clips"></div>
             </section>
             <h3>Revisar intervalos</h3>
@@ -316,7 +336,7 @@
         <li>Entra con la cuenta que te entregó el administrador y selecciona un MP4 con voz audible.</li>
         <li>Elige «Subir y procesar». Puedes salir cuando el trabajo figure como pendiente o procesando y retomarlo en «Mis trabajos».</li>
         <li>Usa «Corregir texto» para corregir subtítulos y volver a exportar un clip automático. En «Editar subtítulos» puedes ajustar tiempos y estilo.</li>
-        <li>Abre «Propuestas por IA y edición». Define un objetivo, revisa el texto por enviar y autoriza el análisis. Elige una propuesta para ajustar el recorte y los subtítulos antes de aprobar la exportación.</li>
+        <li>Abre «Buscar momentos por tema». Indicá el tema, revisá el texto por enviar y autorizá el análisis. Desde cada propuesta podés crear un borrador para ajustar el recorte y los subtítulos antes de exportar.</li>
       </ol>
     </section>
   </main>

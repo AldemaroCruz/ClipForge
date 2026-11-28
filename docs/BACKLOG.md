@@ -58,6 +58,14 @@ Prioridad P0: bloqueante para su hito. P1: mejora necesaria/próxima. P2: optimi
 | C02 | Corrección rápida de subtítulos | Evidencia funcional en INT, promoción pendiente | Corrección comprobada en MP4/SRT/WebVTT, otros clips conservados y persistencia al volver a iniciar sesión tras el reemplazo. |
 | C03 | Ajuste preciso de recortes | Evidencia funcional en INT, promoción pendiente | Dos recortes tardíos exportados, con PTS, audio y subtítulos comprobados sobre los archivos descargados. |
 
+## Hito D en INT
+
+| ID | Tarea | Estado | Criterio de aceptación |
+|---|---|---|---|
+| D01 | Buscar momentos por tema | En validación en INT | Consentimiento y evidencia de la transcripción, temas distintos y ausencia de coincidencias, cobertura hasta el final, persistencia y recorrido hasta borrador, MP4 y ZIP. |
+| D00 | Alineación por palabra | Pendiente | Preparar la edición desde la transcripción con tiempos verificables. |
+| — | Publicación progresiva de clips | Pendiente | Publicar cada clip con su manifiesto y preservar recuperación, idempotencia, aislamiento y eliminación. |
+
 ## Primer incremento recomendado
 
 **CF-001 a CF-005**, manteniendo una tarea principal en curso. CF-006 puede trabajarse como diseño y presupuesto, sin crear recursos. Después de validar CF-001/002/003/004, promover el hito v0.4.2 y comenzar el piloto privado.

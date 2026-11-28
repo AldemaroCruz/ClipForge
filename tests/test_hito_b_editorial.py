@@ -11,15 +11,16 @@ import unittest
 from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.schema import DropSchema
 
 from app import auth
-from app.ai_provider import AIConfig, AIError
+from app.ai_provider import AIConfig, AIError, TOPIC_PROMPT_VERSION, TOPIC_SYSTEM_PROMPT, build_payload
 from app.ai_selection import SelectionCreate, SelectionSpec, validate_answer
 from app.auth_db import reset_engine
 from app.cloud import editorial_selection as editor
-from app.cloud import migrate_beta, repository, router, worker
+from app.cloud import migrate_beta, project_deletion, repository, router, worker
 from auth_support import auth_environment, prepare_database
 
 
@@ -65,6 +66,69 @@ class EditorialCatalogTests(unittest.TestCase):
         self.assertEqual(len(candidates), 1)
         self.assertEqual((len(warnings), candidates[0]["end"]), (2, 1200))
         self.assertGreater(candidates[0]["start"], 1100)
+
+    def test_topic_payload_and_evidence_include_end_of_twenty_minute_original(self):
+        rows = transcript()
+        rows[-1]["text"] = "La restauración de manglares devuelve hábitat a los peces juveniles."
+        identity = {"source_duration": 1200, "source_generation": "4", "transcript_generation": "5",
+                    "transcript_sha256": hashlib.sha256(repository.packed(rows).encode()).hexdigest()}
+        spec = editor.EditorialSelectionSpec(topic="  Restauración de manglares ", instructions="  Omitir  promociones. ")
+        config = AIConfig("openai", "fixture", "https://api.openai.com/v1/responses",
+                          timeout=40, max_input_chars=26000)
+        job = {"payload": {"id": "fixture"}}
+        with (patch.object(editor, "source_identity", return_value=identity),
+              patch.object(editor, "transcript_segments", return_value=rows),
+              patch.object(editor, "provider_config", return_value=(config, "editorial-fixture")),
+              patch.object(editor, "request_selection") as send):
+            preview = editor.preview(job, spec)
+        send.assert_not_called()
+        self.assertEqual(preview["prompt_version"], TOPIC_PROMPT_VERSION)
+        self.assertEqual(preview["system_instructions"], TOPIC_SYSTEM_PROMPT)
+        self.assertEqual(preview["spec"]["topic"], "Restauración de manglares")
+        self.assertEqual(preview["spec"]["instructions"], "Omitir promociones.")
+        self.assertNotIn("brief", preview["spec"])
+        windows = preview["analysis_windows"]
+        self.assertGreater(len(windows), 1)
+        self.assertEqual((windows[0]["start"], windows[-1]["end"]), (0, 1200))
+        self.assertTrue(all(a["end"] == b["start"] for a, b in zip(windows, windows[1:])))
+        self.assertEqual({row["id"] for chunk in preview["payload_text"]["chunks"] for row in chunk["segments"]},
+                         {row["id"] for row in rows})
+
+        last = preview["payload_text"]["chunks"][-1]
+        wire = build_payload(config, last)
+        self.assertEqual(json.loads(wire["input"][0]["content"]), last)
+        self.assertEqual(wire["instructions"], TOPIC_SYSTEM_PROMPT)
+        required = wire["text"]["format"]["schema"]["properties"]["candidates"]["items"]["required"]
+        self.assertIn("evidence_segment", required)
+        choice = last["eligible_ranges"][-1]
+        answer = {"summary": "Decisión al final", "candidates": [
+            {**proposal(choice["range_id"]), "evidence_segment": rows[-1]["id"]}]}
+        prepared = {"spec": preview["spec"], "content": last, "segments": rows, "identity": identity}
+        _, candidates, warnings = validate_answer(answer, prepared)
+        self.assertEqual(warnings, [])
+        candidate = candidates[0]
+        self.assertGreater(candidate["start"], 1100)
+        self.assertEqual(candidate["end"], 1200)
+        self.assertEqual(candidate["evidence"], {"segment_id": 400, "start": 1197, "end": 1200,
+                                                "text": rows[-1]["text"], "truncated": False})
+        self.assertEqual(candidate["transcript_excerpt"], rows[-1]["text"])
+
+        empty = {"summary": "Ningún candidato", "candidates": []}
+        self.assertEqual(validate_answer(empty, prepared), ("Ningún candidato", [], []))
+        cases = [({**answer["candidates"][0], "range_id": "r1_2"}, "AI_INVALID_RANGE"),
+                 ({**answer["candidates"][0], "evidence_segment": choice["start_segment"] - 1}, "AI_INVALID_RANGE"),
+                 (proposal(choice["range_id"]), "AI_SCHEMA_INVALID")]
+        for invalid, code in cases:
+            with self.subTest(code=code), self.assertRaises(AIError) as rejected:
+                validate_answer({**answer, "candidates": [invalid]}, prepared)
+            self.assertEqual(rejected.exception.code, code)
+
+    def test_topic_requires_bounded_text_and_an_explicit_intent(self):
+        for payload in ({"topic": "\n\t"}, {"topic": "x" * 161}, {"instructions": "Omitir promoción"},
+                        {"topic": "Tema", "instructions": "x" * 601}, {"topic": "Tema", "brief": "Otro objetivo"}):
+            with self.subTest(payload=payload), self.assertRaises(ValidationError):
+                editor.EditorialSelectionSpec(**payload)
+        self.assertEqual(editor.EditorialSelectionSpec(topic="Una decisión").instructions, "")
 
     def test_preview_does_not_have_access_to_the_worker_credential(self):
         with patch.dict(os.environ, {**SETTINGS, "OPENAI_API_KEY": ""}, clear=False):
@@ -185,6 +249,147 @@ class EditorialDatabaseTests(unittest.TestCase):
         response = Mock()
         response.iter_content.return_value = [self.raw[:123], self.raw[123:]]
         return response
+
+    def topic_request(self, topic):
+        fields = {"topic": topic, "instructions": "Omitir promociones", "max_clips": 1}
+        preview = editor.preview(repository.document(self.job_id), editor.EditorialSelectionSpec(**fields))
+        return editor.EditorialSelectionCreate(**fields, preview_token=preview["preview_token"],
+                                               consent=True, request_id=secrets.token_hex(16))
+
+    def run_selection(self, run_id, model):
+        with self.engine.connect() as connection:
+            task = worker._claim(connection)
+        self.assertEqual((task["kind"], task["item_id"]), ("selection", run_id))
+        with (patch.dict(os.environ, {"OPENAI_API_KEY": "fixture-provider-credential"}),
+              patch.object(editor, "request_selection", side_effect=model) as call,
+              patch.object(worker, "settings", return_value=SimpleNamespace(local_test=True))):
+            worker.execute(task["id"], task["fence"])
+        call.assert_called_once()
+        return repository.document(self.job_id, "selection", run_id)["payload"]
+
+    def test_topic_dedupes_across_request_ids_and_persists_empty_and_retry(self):
+        body = self.topic_request("Restauración de manglares")
+        with self.assertRaises(HTTPException) as denied:
+            editor.create(self.job_id, body, self.visitor)
+        self.assertEqual(denied.exception.status_code, 404)
+        with self.assertRaises(HTTPException) as refused:
+            editor.create(self.job_id, body.model_copy(update={"consent": False}), self.owner)
+        self.assertEqual(refused.exception.status_code, 422)
+
+        barrier = Barrier(2)
+
+        def submit(request):
+            barrier.wait(timeout=10)
+            return editor.create(self.job_id, request, self.owner)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            second_post = pool.submit(submit, body.model_copy(update={"request_id": secrets.token_hex(16)}))
+            first = submit(body)
+            self.assertEqual(first["id"], second_post.result(timeout=10)["id"])
+        with self.engine.connect() as connection:
+            self.assertEqual(connection.execute(text("SELECT count(*) FROM cloud_tasks")).scalar_one(), 1)
+        self.assertEqual(first["provider_calls_planned"], 1)
+
+        failed = self.run_selection(first["id"], AIError("AI_TIMEOUT", "Timeout del fixture"))
+        self.assertEqual((failed["status"], failed["provider_calls"], failed["provider_responses"]), ("failed", 1, 0))
+        self.assertTrue(failed["retryable"])
+        self.assertEqual(editor.create(self.job_id, body, self.owner)["id"], first["id"])
+        other_topic = self.topic_request("Mecánica orbital")
+        with self.assertRaises(HTTPException) as changed:
+            editor.create(self.job_id, other_topic.model_copy(update={"retry_of": first["id"]}), self.owner)
+        self.assertEqual(changed.exception.status_code, 409)
+
+        retry_body = body.model_copy(update={"retry_of": first["id"], "request_id": secrets.token_hex(16)})
+        retry = editor.create(self.job_id, retry_body, self.owner)
+        self.assertEqual(retry["retry_of"], first["id"])
+        self.assertEqual(editor.create(self.job_id, retry_body, self.owner)["id"], retry["id"])
+        first_again = repository.document(self.job_id, "selection", first["id"])["payload"]
+        self.assertTrue(first_again["retry_consumed"])
+        self.assertFalse(first_again["retryable"])
+        interrupted = self.run_selection(retry["id"], AIError("AI_TIMEOUT", "Timeout del fixture"))
+        self.assertFalse(interrupted["retryable"])
+        with self.assertRaises(HTTPException) as repeated:
+            editor.create(self.job_id, retry_body.model_copy(update={"retry_of": retry["id"]}), self.owner)
+        self.assertEqual(repeated.exception.status_code, 409)
+
+        different = editor.create(self.job_id, other_topic, self.owner)
+        self.assertNotEqual(different["id"], first["id"])
+        empty = self.run_selection(different["id"], lambda _config, _payload, **_kw: (
+            {"summary": "Ninguna coincidencia", "candidates": []}, {"total_tokens": 10}))
+        self.assertEqual((empty["status"], empty["outcome"], empty["candidates"]), ("completed", "no_matches", []))
+        self.assertEqual((empty["provider_calls"], empty["provider_responses"]), (1, 1))
+        self.assertEqual(empty["source_fingerprint"]["transcript_generation"], "8")
+        self.assertEqual(editor.create(self.job_id, other_topic, self.owner)["id"], different["id"])
+        with self.assertRaises(HTTPException) as not_retryable:
+            editor.create(self.job_id, other_topic.model_copy(update={"retry_of": different["id"]}), self.owner)
+        self.assertEqual(not_retryable.exception.status_code, 409)
+        with self.engine.connect() as connection:
+            totals = connection.execute(text("""SELECT sum(CAST(payload->>'provider_calls_planned' AS integer)),
+                sum(CAST(payload->>'provider_calls' AS integer)), sum(CAST(payload->>'provider_responses' AS integer))
+                FROM cloud_documents WHERE kind='selection'""")).one()
+        self.assertEqual(tuple(totals), (3, 3, 1))
+        self.assertEqual(repository.document(self.job_id)["payload"]["clips"], [{"file": "clip_01.mp4"}])
+
+    def test_deleted_project_fences_late_topic_response_without_releasing_reservation(self):
+        body = self.topic_request("Decisión cerca del final")
+        run = editor.create(self.job_id, body, self.owner)
+        with self.engine.connect() as connection:
+            task = worker._claim(connection)
+        self.assertEqual(task["item_id"], run["id"])
+
+        def model(_config, payload, *, receipt):
+            choice = payload["eligible_ranges"][-1]
+            result = {**proposal(choice["range_id"]), "evidence_segment": choice["end_segment"]}
+            self.assertEqual(project_deletion.begin(self.owner, self.job_id)["status"], "deleted")
+            return {"summary": "Decisión final", "candidates": [result]}, {}
+
+        with (patch.dict(os.environ, {"OPENAI_API_KEY": "fixture-provider-credential"}),
+              patch.object(editor, "request_selection", side_effect=model) as call,
+              self.assertRaisesRegex(RuntimeError, "fencing token lost")):
+            editor.execute_task(task)
+        call.assert_called_once()
+        self.assertEqual(repository.list_documents(self.job_id, "selection"), [])
+        with self.assertRaises(HTTPException) as hidden:
+            editor.create(self.job_id, body, self.owner)
+        self.assertEqual(hidden.exception.status_code, 404)
+        with self.engine.connect() as connection:
+            reserved = connection.execute(text("SELECT planned FROM cloud_deleted_selection_calls")).scalar_one()
+        self.assertEqual(reserved, 1)
+
+    def test_topic_draft_and_export_keep_search_range_and_revision_after_edit(self):
+        body = self.topic_request("Decisión cerca del final")
+        run = editor.create(self.job_id, body, self.owner)
+
+        def model(_config, payload, *, receipt):
+            choice = payload["eligible_ranges"][-1]
+            result = {**proposal(choice["range_id"]), "evidence_segment": choice["end_segment"]}
+            return {"summary": "Decisión final", "candidates": [result]}, {}
+
+        saved = self.run_selection(run["id"], model)
+        self.assertEqual(saved["outcome"], "matches")
+        candidate = saved["candidates"][0]
+        self.assertEqual(candidate["evidence"]["text"], transcript(120)[-1]["text"])
+        request = SimpleNamespace(state=SimpleNamespace(principal=self.owner), headers={})
+        draft = router.candidate_to_draft(self.job_id, saved["id"], 1, request)
+        origin = draft["selection_origin"]
+        self.assertEqual(origin["analysis_id"], saved["id"])
+        self.assertEqual(origin["range_id"], candidate["range_id"])
+        self.assertEqual(origin["search_topic"], body.topic)
+        self.assertEqual(origin["transcript_sha256"], saved["transcript_sha256"])
+        self.assertEqual(origin["transcript_generation"], "8")
+
+        fields = {key: draft[key] for key in router.EditorialContent.model_fields}
+        fields.update(title="Decisión editada", start=draft["start"] - 0.25)
+        fields["cues"][0]["text"] = "Subtítulo corregido"
+        edited = router.update_draft(self.job_id, draft["id"],
+                                     router.CloudDraftUpdate(**fields, revision=draft["revision"]), request)
+        self.assertEqual(edited["selection_origin"], origin)
+        with patch.object(router, "reconcile", return_value={"status": "dispatched"}):
+            export = router.export_draft(self.job_id, draft["id"], router.RevisionRequest(revision=2), request)
+        self.assertEqual((export["draft_id"], export["draft_revision"]), (draft["id"], 2))
+        self.assertEqual(export["selection_origin"], origin)
+        self.assertEqual(export["start"], fields["start"])
+        self.assertEqual(export["cues"][0]["text"], "Subtítulo corregido")
 
     def test_idempotent_selection_and_draft_keep_existing_clips(self):
         spec = SelectionSpec(brief="La justificación del final de la conversación", max_clips=3)

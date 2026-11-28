@@ -78,7 +78,7 @@
 #editorial h3 {
   margin-block: 18px 8px;
 }
-#editorial-brief, .caption-text {
+#editorial-brief, #editorial-guidance, .caption-text {
   display: block;
   width: 100%;
   padding: 9px 12px;
@@ -89,7 +89,8 @@
   font: inherit;
   resize: vertical;
 }
-#editorial-brief:focus-visible, .caption-text:focus-visible {
+#editorial-brief:focus-visible, #editorial-guidance:focus-visible,
+#editorial-max-clips:focus-visible, #editorial-runs:focus-visible, .caption-text:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
@@ -242,6 +243,21 @@
 }
 #editorial-candidates article {
   overflow-wrap: anywhere;
+}
+#editorial-search-details {
+  overflow-wrap: anywhere;
+}
+#editorial-max-clips, #editorial-runs {
+  max-width: 100%;
+  padding: 9px 12px;
+  border: 1px solid #49607f;
+  border-radius: 8px;
+  background: #0f192b;
+  color: inherit;
+  font: inherit;
+}
+.editorial-evidence {
+  margin: 12px 0;
 }
 #editorial-candidates blockquote {
   margin: 10px 0;

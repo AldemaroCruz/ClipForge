@@ -20,7 +20,7 @@ from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .ai_provider import (AIConfig, AIError, PROMPT_VERSION, SYSTEM_PROMPT, SELECTION_CONTRACT, MAX_ELIGIBLE_RANGES,
-                          check_input_budget, get_config, request_selection)
+                          TOPIC_SELECTION_CONTRACT, check_input_budget, get_config, request_selection)
 from .editorial import EditorialContent
 from .presentation import Presentation
 from .state import write_json_atomic
@@ -30,6 +30,7 @@ from .workspace import backend, workspace_source, draft_path, read_draft, valida
 router = APIRouter()
 MAX_SEGMENTS = 2000
 MAX_RUNS_PER_JOB = 100
+TOPIC_EXCERPT_CHARS = 400
 
 
 class SelectionSpec(BaseModel):
@@ -82,6 +83,14 @@ class ModelAnswer(BaseModel):
     model_config = ConfigDict(extra="forbid")
     summary: str = Field(max_length=800, strict=True)
     candidates: list[ModelCandidate] = Field(max_length=5)
+
+
+class TopicModelCandidate(ModelCandidate):
+    evidence_segment: int = Field(ge=1, le=999999, strict=True)
+
+
+class TopicModelAnswer(ModelAnswer):
+    candidates: list[TopicModelCandidate] = Field(max_length=5)
 
 
 def safe_error(exc: AIError, status=422):
@@ -273,16 +282,20 @@ def validate_answer(data: dict, prepared: dict, diagnostics: dict | None = None)
     Diagnostics retain safe structural/numeric facts, not raw provider bodies,
     response text, exception inputs or API keys. They survive the all-rejected case.
     """
+    content = prepared["content"]
+    contract = content.get("selection_contract", SELECTION_CONTRACT)
+    topical = contract == TOPIC_SELECTION_CONTRACT
     report = diagnostics if diagnostics is not None else {}
-    report.update(contract=SELECTION_CONTRACT, eligible_ranges=len(prepared["content"].get("eligible_ranges", [])),
+    report.update(contract=contract, eligible_ranges=len(content.get("eligible_ranges", [])),
                   proposed_count=0, accepted_count=0, rejected_count=0, rejected=[], rejection_counts={})
     try:
-        answer = ModelAnswer.model_validate(data)
+        answer = (TopicModelAnswer if topical else ModelAnswer).model_validate(data)
     except ValueError as exc:
         report["schema_valid"] = False
         # Do not persist Pydantic input/context, unknown property names or messages.
         if hasattr(exc, "errors"):
-            allowed = {"summary", "candidates", "range_id", "title", "reason", "hook", "clarity", "completeness"}
+            allowed = {"summary", "candidates", "range_id", "title", "reason", "hook", "clarity",
+                       "completeness", "evidence_segment"}
             report["schema_issues"] = [
                 {"path": [v if type(v) is int or v in allowed else "unknown_field" for v in e["loc"]],
                  "type": e["type"]}
@@ -291,8 +304,8 @@ def validate_answer(data: dict, prepared: dict, diagnostics: dict | None = None)
     report.update(schema_valid=True, proposed_count=len(answer.candidates))
     if len(answer.candidates) > prepared["spec"]["max_clips"]:
         raise AIError("AI_SCHEMA_INVALID", "El modelo excedió el número solicitado de propuestas. No se utilizará esa salida.", diagnostics=report)
-    catalog = {r["range_id"]: r for r in prepared["content"].get("eligible_ranges", [])}
-    allowed = {s["id"]: s for s in prepared["content"]["segments"]}
+    catalog = {r["range_id"]: r for r in content.get("eligible_ranges", [])}
+    allowed = {s["id"]: s for s in content["segments"]}
     accepted, warnings = [], []
 
     def reject(i: int, candidate: ModelCandidate, code: str, message: str, **details):
@@ -311,11 +324,21 @@ def validate_answer(data: dict, prepared: dict, diagnostics: dict | None = None)
         if not a or not b or b["id"] < a["id"]:
             reject(i, candidate, "INVALID_SEGMENTS", "los extremos no pertenecen al tramo autorizado.")
             continue
+        if topical and (candidate.range_id != f"r{a['id']}_{b['id']}"
+                        or not 0 <= a["start"] < b["end"] <= prepared["identity"]["source_duration"]):
+            reject(i, candidate, "INVALID_SEGMENTS", "el intervalo no pertenece al original autorizado.")
+            continue
         length = (round(b["end"] * 1000) - round(a["start"] * 1000)) / 1000
         if not prepared["spec"]["min_seconds"] <= length <= prepared["spec"]["max_seconds"]:
             reject(i, candidate, "DURATION_OUT_OF_RANGE", f"duración {length:.3f} s; permitida {prepared['spec']['min_seconds']}–{prepared['spec']['max_seconds']} s.",
                    actual_seconds=length, min_seconds=prepared["spec"]["min_seconds"], max_seconds=prepared["spec"]["max_seconds"])
             continue
+        if topical:
+            anchor = allowed.get(candidate.evidence_segment)
+            if (not anchor or not a["id"] <= anchor["id"] <= b["id"]
+                    or not a["start"] <= anchor["start"] < anchor["end"] <= b["end"]):
+                reject(i, candidate, "EVIDENCE_OUTSIDE_RANGE", "el segmento de evidencia no pertenece al intervalo.")
+                continue
         prior = next((c for c in accepted if a["start"] < c["end"] and b["end"] > c["start"]), None)
         if prior:
             reject(i, candidate, "OVERLAP", f"se solapa con la propuesta aceptada {prior['id']} ({prior['start']:.3f}–{prior['end']:.3f} s).",
@@ -325,8 +348,20 @@ def validate_answer(data: dict, prepared: dict, diagnostics: dict | None = None)
                                {k: getattr(candidate, k) for k in ("hook", "clarity", "completeness")},
                                "llm", len(accepted)+1)
         item["range_id"] = candidate.range_id
+        if topical:
+            excerpt = anchor["text"][:TOPIC_EXCERPT_CHARS]
+            item.update(
+                evidence={"segment_id": anchor["id"], "start": anchor["start"], "end": anchor["end"],
+                          "text": excerpt, "truncated": len(anchor["text"]) > len(excerpt)},
+                transcript_excerpt=excerpt,
+                context_before=item["context_before"][-TOPIC_EXCERPT_CHARS:],
+                context_after=item["context_after"][:TOPIC_EXCERPT_CHARS],
+            )
         accepted.append(item)
     report["accepted_count"] = len(accepted)
+    if topical and any(code != "OVERLAP" for code in report["rejection_counts"]):
+        raise AIError("AI_INVALID_RANGE", "La respuesta incluyó un intervalo o una evidencia que no pertenece al catálogo autorizado.",
+                      warnings=warnings, diagnostics=report)
     if answer.candidates and not accepted:
         raise AIError("AI_NO_VALID_CANDIDATES", "El modelo respondió, pero ninguna propuesta superó la validación local. Consulta el desglose de rechazos. No se cambiaron duraciones, modelo ni clips.",
                       warnings=warnings, diagnostics=report)

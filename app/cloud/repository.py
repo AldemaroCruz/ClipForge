@@ -337,3 +337,5 @@ def mark_crashed(task):
 def interrupt_selection(item):
     item.update(status="failed", error_code="AI_TASK_INTERRUPTED", completed_at=time.time(),
                 error="El análisis se interrumpió. Para intentarlo de nuevo, revisa y autoriza otra solicitud.")
+    if "topic" in item.get("spec", {}):
+        item["retryable"] = not item.get("retry_of") and not item.get("retry_consumed")

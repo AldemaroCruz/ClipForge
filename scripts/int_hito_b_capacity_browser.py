@@ -535,7 +535,7 @@ def review_capacity_selection(case, model, brief):
     spec = preview["spec"]
     windows = preview["analysis_windows"]
     calls = preview["budget"]["provider_calls"]
-    require(browser_test.SHA256.fullmatch(token) and spec.get("brief") == brief and spec.get("mode") == "llm"
+    require(browser_test.SHA256.fullmatch(token) and spec.get("topic", spec.get("brief")) == brief and spec.get("mode") == "llm"
             and spec.get("window_start") == 0 and spec.get("window_end") is None
             and windows and abs(windows[0]["start"]) <= .1 and abs(windows[-1]["end"] - 1200) <= .1
             and type(calls) is int and calls == len(windows)

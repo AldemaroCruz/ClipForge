@@ -104,10 +104,12 @@
     draftStyles.reset();
     draftLogos.reset();
     logos.show(el("sample").querySelector(".caption-frame"), null);
-    for (const name of ["config", "status", "draft-status", "summary", "candidates", "exports", "drafts", "runs", "cues"]) {
+    for (const name of ["config", "status", "draft-status", "summary", "search-topic", "search-guidance", "search-limit",
+      "candidates", "exports", "drafts", "runs", "cues"]) {
       el(name).replaceChildren();
     }
-    for (const name of ["history", "results", "draft-label", "drafts", "draft-form", "output"]) el(name).hidden = true;
+    for (const name of ["history", "older-runs", "results", "search-details", "search-guidance", "search-limit", "empty", "retry",
+      "draft-label", "drafts", "draft-form", "output"]) el(name).hidden = true;
     el("draft-empty").hidden = false;
     el("draft-fields").disabled = false;
     view = id ? {id, duration: job.media.duration_seconds, options: job.options,
@@ -129,6 +131,9 @@
     const available = state.config?.configured === true && state.context?.available === true;
     el("preview-button").disabled = !available || state.selectionBusy || state.analysisActive;
     el("brief").disabled = Boolean(state.selectionBusy);
+    el("guidance").disabled = Boolean(state.selectionBusy);
+    el("max-clips").disabled = Boolean(state.selectionBusy);
+    el("retry").disabled = el("preview-button").disabled;
     el("run").disabled = !available || !state.preview || !el("consent").checked || state.selectionBusy || state.analysisActive;
   }
 
@@ -155,13 +160,13 @@
     }
   }
 
-  async function prepareSelection(event) {
-    event.preventDefault();
+  async function prepareSelection(retryOf) {
     const state = view;
-    const brief = el("brief").value.trim();
+    const topic = el("brief").value.trim();
+    const instructions = el("guidance").value.trim();
     if (!state || el("preview-button").disabled) return;
-    if (!brief) {
-      status(state, "Escribe un objetivo para preparar la solicitud.");
+    if (!topic) {
+      status(state, "Escribí un tema para preparar la búsqueda.");
       return;
     }
     resetConsent();
@@ -170,20 +175,23 @@
     status(state, "Preparando la revisión.");
     try {
       const result = await request(state, "/selections/preview", auth.payload({
-        mode: "llm", brief, max_clips: 5, min_seconds: 20, max_seconds: 60,
+        mode: "llm", topic, instructions, max_clips: Number(el("max-clips").value), min_seconds: 20, max_seconds: 60,
         window_start: 0, window_end: null,
       }));
       if (!visible(state)) return;
       const id = Array.from(crypto.getRandomValues(new Uint8Array(16)),
         byte => byte.toString(16).padStart(2, "0")).join("");
-      state.preview = {id, token: result.preview_token, spec: result.spec};
+      state.preview = {id, token: result.preview_token, spec: result.spec, retryOf};
       const provider = result.provider;
-      const target = [provider?.provider, provider?.model, provider?.destination].filter(Boolean).join(" · ");
-      el("destination").textContent = target + " · " + result.eligible_range_count + " rangos válidos";
+      el("destination").textContent = [provider?.provider, provider?.model, provider?.destination,
+        result.eligible_range_count + " intervalos candidatos",
+        result.budget?.provider_calls && result.budget.provider_calls + " solicitudes previstas",
+      ].filter(Boolean).join(" · ");
       el("payload").textContent = JSON.stringify(result.payload_text, null, 2);
       el("instructions").textContent = result.system_instructions || "";
       el("consent-panel").hidden = false;
-      status(state, "Ya puedes revisar el contenido que se enviará.");
+      if (retryOf) el("consent-panel").scrollIntoView({block: "nearest"});
+      status(state, "Ya podés revisar el contenido que se enviará.");
     } catch (error) {
       status(state, error.message);
     } finally {
@@ -202,13 +210,17 @@
     try {
       const item = await request(state, "/selections", auth.payload({
         ...preview.spec, preview_token: preview.token, request_id: preview.id, consent: true,
+        ...(preview.retryOf ? {retry_of: preview.retryOf} : {}),
       }));
       if (!visible(state)) return;
       resetConsent();
       state.runId = item.id;
       await loadRuns(state);
     } catch (error) {
-      status(state, error.message + " Puedes actualizar el historial o volver a pulsar el botón para consultar la misma solicitud.");
+      if (error.status === 409) resetConsent();
+      const guidance = !error.status || error.status >= 500
+        ? " Podés actualizar el historial o volver a pulsar el botón para consultar la misma solicitud." : "";
+      status(state, error.message + guidance);
     } finally {
       state.selectionBusy = false;
       if (visible(state)) selectionControls(state);
@@ -218,8 +230,9 @@
   function runLabel(item) {
     const date = new Date(item.created_at * 1000);
     const label = Number.isFinite(date.getTime()) ? date.toLocaleString() : item.id.slice(0, 8);
-    const phase = item.status === "completed" ? "Completado" : item.status === "failed" ? "Fallido" : "En curso";
-    return label + " · " + phase + " · " + item.id.slice(0, 8);
+    const phase = item.outcome === "no_matches" ? "Sin coincidencias"
+      : item.status === "completed" ? "Completado" : item.status === "failed" ? "Fallido" : "En curso";
+    return [item.spec?.topic || item.spec?.brief, label, phase].filter(Boolean).join(" · ");
   }
 
   async function loadRuns(state) {
@@ -227,13 +240,21 @@
     const sequence = (state.runSequence || 0) + 1;
     state.runSequence = sequence;
     try {
-      const result = await request(state, "/selections?limit=50");
+      const pageSize = 50;
+      let result = await request(state, "/selections?limit=" + pageSize);
+      const analyses = new Map(result.analyses.map(item => [item.id, item]));
+      for (let page = 1; result.has_more && page < (state.historyPages || 1); page++) {
+        if (!visible(state) || sequence !== state.runSequence) return;
+        result = await request(state, "/selections?limit=" + pageSize + "&offset=" + page * pageSize);
+        for (const item of result.analyses) analyses.set(item.id, item);
+      }
       if (!visible(state) || sequence !== state.runSequence) return;
-      const runs = result.analyses.filter(item => idPattern.test(item.id) && item.mode === "llm");
+      const runs = [...analyses.values()].filter(item => idPattern.test(item.id) && item.mode === "llm");
       state.analysisActive = runs.some(item => active(item.status));
       el("history").hidden = !runs.length;
+      el("older-runs").hidden = !result.has_more;
+      el("older-runs").disabled = false;
       el("runs").replaceChildren(...runs.map(item => new Option(runLabel(item), item.id)));
-      if (state.preview && runs.some(item => item.id === state.preview.id)) resetConsent();
       if (runs.length) {
         const item = runs.find(run => run.id === state.runId) ?? runs[0];
         state.runId = item.id;
@@ -242,7 +263,10 @@
       }
       if (visible(state) && sequence === state.runSequence) selectionControls(state);
     } catch (error) {
-      if (sequence === state.runSequence) status(state, error.message + " Usa «Actualizar análisis» para recuperar el estado.");
+      if (visible(state) && sequence === state.runSequence) {
+        el("older-runs").disabled = false;
+        status(state, error.message + " Usa «Actualizar análisis» para recuperar el estado.");
+      }
     }
   }
 
@@ -250,16 +274,32 @@
     try {
       const item = await request(state, "/selections/" + runId);
       if (!visible(state) || sequence !== state.runSequence || runId !== state.runId) return;
+      state.run = item;
       el("results").hidden = false;
+      const topic = item.spec?.topic || item.spec?.brief;
+      const guidance = item.spec?.instructions;
+      const limit = item.spec?.max_clips;
+      el("search-details").hidden = !topic;
+      el("search-topic").textContent = topic ? "Tema buscado · " + topic : "";
+      el("search-guidance").hidden = !guidance;
+      el("search-guidance").textContent = guidance ? "Instrucciones adicionales · " + guidance : "";
+      el("search-limit").hidden = !limit;
+      el("search-limit").textContent = limit ? "Máximo de propuestas · " + limit : "";
       const summary = [item.provider, item.model].filter(Boolean).join(" · ");
-      el("summary").textContent = [summary, item.summary, item.error, ...(item.warnings || [])].filter(Boolean).join("\n");
+      const noMatches = item.status === "completed" && item.outcome === "no_matches";
+      el("empty").hidden = !noMatches;
+      el("retry").hidden = item.status !== "failed" || !item.retryable;
+      el("summary").textContent = [summary, item.summary, item.error, ...(item.warnings || [])]
+        .filter(Boolean).join("\n");
       el("candidates").replaceChildren(...(item.candidates || [])
         .filter(candidate => candidatePattern.test(candidate.id))
         .map(candidate => candidateCard(state, item, candidate)));
-      if (item.status === "completed") {
+      if (noMatches) {
+        status(state, "Búsqueda completada.");
+      } else if (item.status === "completed") {
         status(state, item.candidates?.length ? "Propuestas guardadas." : "El análisis terminó sin propuestas válidas.");
       } else if (item.status === "failed") {
-        status(state, "El análisis no se completó. Puedes preparar y autorizar un nuevo intento.");
+        status(state, "El análisis no se completó. Revisá el detalle del error.");
       } else {
         status(state, "Análisis en curso. Puedes retomarlo desde este trabajo.");
       }
@@ -271,20 +311,51 @@
     }
   }
 
+  function sourceTime(seconds) {
+    const millis = Math.round(seconds * 1000);
+    const minutes = String(Math.floor(millis / 60_000)).padStart(2, "0");
+    const wholeSeconds = String(Math.floor(millis / 1000) % 60).padStart(2, "0");
+    const fraction = String(millis % 1000).padStart(3, "0").replace(/0+$/, "");
+    return minutes + ":" + wholeSeconds + (fraction ? "." + fraction : "");
+  }
+
   function candidateCard(state, item, candidate) {
     const card = node("article", undefined, "beta-clip");
-    const context = node("details");
-    context.append(node("summary", "Contexto"),
-      node("p", "Antes · " + (candidate.context_before || "Inicio de la transcripción")),
-      node("p", "Después · " + (candidate.context_after || "Fin de la transcripción")));
+    const {id, range_id: rangeId, start, end} = candidate;
+    if (rangeId) card.dataset.rangeId = rangeId;
+    card.dataset.candidateId = id;
+    card.dataset.start = start;
+    card.dataset.end = end;
+    card.append(node("h3", candidate.title),
+      node("p", sourceTime(start) + "–" + sourceTime(end) + " del original", "editorial-interval muted"));
+    if (candidate.reason) {
+      const reason = node("div", undefined, "editorial-reason");
+      reason.append(node("strong", "Por qué coincide según la IA"), node("p", candidate.reason));
+      card.append(reason);
+    }
+    const excerpt = candidate.evidence?.text || candidate.transcript_excerpt;
+    if (excerpt) {
+      const evidence = node("figure", undefined, "editorial-evidence");
+      const cue = candidate.evidence;
+      const label = cue ? "Transcripción guardada · " + sourceTime(cue.start) + "–" + sourceTime(cue.end)
+        : "Transcripción guardada";
+      evidence.append(node("figcaption", label, "muted"), node("blockquote", excerpt));
+      if (cue?.truncated) evidence.append(node("p", "Extracto parcial.", "muted"));
+      card.append(evidence);
+    }
+    if (candidate.context_before || candidate.context_after) {
+      const context = node("details");
+      context.append(node("summary", "Contexto"));
+      if (candidate.context_before) context.append(node("p", "Antes · " + candidate.context_before));
+      if (candidate.context_after) context.append(node("p", "Después · " + candidate.context_after));
+      card.append(context);
+    }
     const actions = node("div", undefined, "actions");
     actions.append(
-      button("Reproducir intervalo", () => playRange(state, candidate.start, candidate.end).catch(error => status(state, error.message))),
-      button("Crear / abrir borrador", event => createDraft(state, item.id, candidate.id, event.currentTarget)),
+      button("Reproducir intervalo", () => playRange(state, start, end).catch(error => status(state, error.message))),
+      button("Crear / abrir borrador", event => createDraft(state, item.id, id, event.currentTarget)),
     );
-    card.append(node("h3", candidate.title),
-      node("p", candidate.start.toFixed(3) + "–" + candidate.end.toFixed(3) + " s del original", "muted"),
-      node("p", candidate.reason), node("blockquote", candidate.transcript_excerpt), context, actions);
+    card.append(actions);
     return card;
   }
 
@@ -1189,10 +1260,23 @@
     }
     void loadPanel(state, true);
   });
-  el("selection").addEventListener("submit", prepareSelection);
+  el("selection").addEventListener("submit", event => {
+    event.preventDefault();
+    void prepareSelection();
+  });
   el("brief").addEventListener("input", resetConsent);
+  el("guidance").addEventListener("input", resetConsent);
+  el("max-clips").addEventListener("change", resetConsent);
   el("consent").addEventListener("change", () => selectionControls(view));
   el("run").addEventListener("click", beginSelection);
+  el("retry").addEventListener("click", () => {
+    const item = view?.run;
+    if (!item?.spec?.topic || !item.retryable || item.id !== view.runId) return;
+    el("brief").value = item.spec.topic;
+    el("guidance").value = item.spec.instructions || "";
+    el("max-clips").value = item.spec.max_clips || 5;
+    void prepareSelection(item.id);
+  });
   el("refresh").addEventListener("click", async () => {
     const state = view;
     if (!visible(state)) return;
@@ -1202,6 +1286,12 @@
   el("runs").addEventListener("change", event => {
     if (!view || !idPattern.test(event.target.value)) return;
     view.runId = event.target.value;
+    void loadRuns(view);
+  });
+  el("older-runs").addEventListener("click", event => {
+    if (!visible(view)) return;
+    event.currentTarget.disabled = true;
+    view.historyPages = (view.historyPages || 1) + 1;
     void loadRuns(view);
   });
   el("drafts").addEventListener("change", event => {

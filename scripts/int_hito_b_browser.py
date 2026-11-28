@@ -1339,8 +1339,9 @@ def verify(browser, args, admin, report, revisions):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     caption_modes = {"caption-color-prepare", "caption-color-baseline", "caption-color", "caption-color-cleanup"}
+    d01_modes = {"d01-prepare", "d01", "d01-cleanup"}
     parser.add_argument("mode", choices=["prepare", "verify", "deletion-recheck", "styles", "framing", "zip", "logos", "mixed-zip",
-                                         *sorted(caption_modes)])
+                                         *sorted(caption_modes | d01_modes)])
     parser.add_argument("--commit", required=True)
     parser.add_argument("--frontend-revision", required=True)
     parser.add_argument("--api-revision", required=True)
@@ -1358,15 +1359,16 @@ def main():
         revisions = cloud_revisions(args.frontend_revision, args.api_revision)
         report.update(commit=args.commit, revisions=revisions)
         shared_http.private_file(args.state, must_exist=args.mode in {
-            "verify", "caption-color-baseline", "caption-color", "caption-color-cleanup", "mixed-zip",
+            "verify", "caption-color-baseline", "caption-color", "caption-color-cleanup", "mixed-zip", "d01", "d01-cleanup",
         })
         require(args.report != args.state, "report_and_state_paths_must_differ")
         shared_http.private_file(args.report, must_exist=False)
-        require((args.mode in {"prepare", "styles", "framing", "zip", "logos", "caption-color-prepare"}
+        require((args.mode in {"prepare", "styles", "framing", "zip", "logos", "caption-color-prepare", "d01-prepare"}
                  and args.video is not None and args.video.is_absolute()
                  and args.video.is_file() and args.video.suffix.lower() == ".mp4") or
                 (args.mode in {"verify", "deletion-recheck", "caption-color-baseline", "mixed-zip",
-                               "caption-color", "caption-color-cleanup"} and args.video is None), "fixture_argument")
+                               "caption-color", "caption-color-cleanup", "d01", "d01-cleanup"}
+                 and args.video is None), "fixture_argument")
         admin = shared_http.validate_admin(json.loads(os.environ.pop("INT_BOOTSTRAP_ADMIN_JSON", "")))
         from playwright.sync_api import sync_playwright
 
@@ -1402,6 +1404,10 @@ def main():
                 elif args.mode == "mixed-zip":
                     from scripts.int_hito_c_mixed_zip_browser import acceptance
                     acceptance(browser, args, admin, report)
+                elif args.mode in d01_modes:
+                    from scripts import int_hito_d01_browser as d01
+                    action = {"d01-prepare": d01.prepare, "d01": d01.acceptance, "d01-cleanup": d01.cleanup}[args.mode]
+                    action(browser, args, admin, report)
                 elif args.mode in caption_modes:
                     from scripts import int_hito_c_caption_color_browser as color
                     action = {"caption-color-prepare": color.prepare, "caption-color-baseline": color.baseline,

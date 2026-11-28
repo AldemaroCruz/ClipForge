@@ -68,7 +68,8 @@ class BrowserHitoBTest(unittest.TestCase):
         self.state = {"admin": False, "status": None, "reservations": [], "starts": [],
                       "puts": [], "unexpected": [], "hide_range": False,
                       "manual": None, "manual_keys": [], "manual_retries": [],
-                      "ai_configured": True, "analysis": None, "selection_posts": [], "draft": None,
+                      "ai_configured": True, "analysis": None, "saved_analyses": {},
+                      "selection_previews": [], "selection_posts": [], "draft": None,
                       "range_posts": [], "draft_updates": [], "approved": {},
                       "caption": None, "project_caption": None, "caption_updates": [], "deletions": [],
                       "saved_style": None, "framing_source": None, "source_reads": 0,
@@ -313,25 +314,47 @@ class BrowserHitoBTest(unittest.TestCase):
             return {"available": True, "duration": 426.55}, 200
         if path == f"/jobs/{JOB}/selections/preview" and method == "POST":
             spec = request.post_data_json
+            self.state["selection_previews"].append(spec)
             return {"spec": spec, "preview_token": "e" * 64, "eligible_range_count": 3,
                     "provider": {"provider": "fixture", "model": "editorial-fixture", "destination": "fixture"},
-                    "payload_text": {"editorial_brief": spec["brief"], "transcript": "Una decisión útil"},
+                    "payload_text": {"topic": spec["topic"], "instructions": spec["instructions"],
+                                     "transcript": "Una decisión útil"},
                     "system_instructions": "Escoge identificadores del catálogo."}, 200
         if path == f"/jobs/{JOB}/selections":
             if method == "GET":
-                return {"analyses": [self.state["analysis"]] if self.state["analysis"] else []}, 200
+                current = [self.state["analysis"]] if self.state["analysis"] else []
+                items = current + list(self.state["saved_analyses"].values())
+                query = parse_qs(urlsplit(request.url).query)
+                offset = int(query.get("offset", ["0"])[0])
+                limit = int(query.get("limit", ["50"])[0])
+                return {"analyses": items[offset:offset + limit], "has_more": len(items) > offset + limit}, 200
             submitted = request.post_data_json
             self.state["selection_posts"].append(submitted)
-            if self.state["analysis"] is None:
+            if previous := self.state["saved_analyses"].get(submitted.get("retry_of")):
+                self.assertTrue(previous["retryable"])
+                previous.update(retryable=False, retry_consumed=True)
                 self.state["analysis"] = {
-                    "id": submitted["request_id"], "mode": "llm", "status": "completed", "created_at": 1,
+                    **previous, "id": "2" * 32, "status": "completed", "outcome": "no_matches",
+                    "error": None, "error_code": None, "retry_of": previous["id"],
+                }
+                return self.state["analysis"], 202
+            if self.state["analysis"] is None:
+                spec = {key: submitted[key] for key in ("topic", "instructions", "max_clips")}
+                self.state["analysis"] = {
+                    "id": "1" * 32, "mode": "llm", "status": "completed", "created_at": 1,
                     "provider": "fixture", "model": "editorial-fixture", "summary": "Una idea práctica.",
+                    "spec": spec, "outcome": "matches",
                     "candidates": [{"id": "1", "title": "Una decisión útil", "reason": "Explica un paso concreto.",
-                                    "start": 392, "end": 421.5, "transcript_excerpt": "Así se hace.",
+                                    "range_id": "r_392_421500", "start": 392, "end": 421.5,
+                                    "evidence": {"text": "Así se hace.", "start": 395, "end": 399.65,
+                                                 "segment_id": "s395", "truncated": False},
                                     "context_before": "La pregunta inicial.", "context_after": "El resultado."}],
                 }
                 return {"detail": "Respuesta interrumpida."}, 503
             return self.state["analysis"], 202
+        if method == "GET" and path.startswith(f"/jobs/{JOB}/selections/"):
+            if previous := self.state["saved_analyses"].get(path.rsplit("/", 1)[-1]):
+                return previous, 200
         if self.state["analysis"]:
             selection = f"/jobs/{JOB}/selections/{self.state['analysis']['id']}"
             if path == selection:
@@ -582,7 +605,7 @@ class BrowserHitoBTest(unittest.TestCase):
         manual_box.check()
         expect(manual_card.get_by_role("link", name="Subtítulos SRT")).to_be_visible()
         expect(manual_card.get_by_role("link", name="Subtítulos VTT")).to_have_count(0)
-        self.page.get_by_text("Propuestas por IA y edición", exact=True).click()
+        self.page.get_by_text("Buscar momentos por tema", exact=True).click()
         results = self.page.locator("#editorial-exports")
         old_box = results.locator(f'[data-archive-id="{old_export}"]')
         current_card = results.locator(f'[data-export-id="{current_export}"]')
@@ -896,7 +919,7 @@ class BrowserHitoBTest(unittest.TestCase):
         self.page.locator("#clip-caption-close").click()
 
         self.page.set_viewport_size({"width": 390, "height": 844})
-        self.page.get_by_text("Propuestas por IA y edición", exact=True).click()
+        self.page.get_by_text("Buscar momentos por tema", exact=True).click()
         exercise("editorial")
         expect(self.page.locator("#editorial-sample .caption-export-note")).to_be_visible()
         self.page.locator("#editorial-save").click()
@@ -907,7 +930,7 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertFalse(updated["options"]["burn_subtitles"])
 
         self.page.reload()
-        self.page.get_by_text("Propuestas por IA y edición", exact=True).click()
+        self.page.get_by_text("Buscar momentos por tema", exact=True).click()
         expect(self.page.locator("#editorial-color-hex")).to_have_value("#0000FF")
         expect(self.page.locator("#editorial-color")).to_have_value("#0000ff")
         expect(self.page.locator("#editorial-sample span")).to_have_css("color", "rgb(0, 0, 255)")
@@ -926,7 +949,7 @@ class BrowserHitoBTest(unittest.TestCase):
         self.store_draft(title="Título guardado", start=392, end=421.5, cues=cues,
                          options={"burn_subtitles": True, "subtitle_font_size": 52})
         self.page.goto(ORIGIN + "/?job=" + JOB)
-        self.page.get_by_text("Propuestas por IA y edición", exact=True).click()
+        self.page.get_by_text("Buscar momentos por tema", exact=True).click()
         self.page.locator("#editorial-start").fill("393")
         text = self.page.locator("#editorial-cues textarea")
         text.fill("Edición después de abrir.")
@@ -1049,7 +1072,7 @@ class BrowserHitoBTest(unittest.TestCase):
                          style_template=style, options={"burn_subtitles": True, "subtitle_font_size": 76})
         self.state["framing_source"] = FRAMING_WEBM
         self.page.goto(ORIGIN + "/?job=" + JOB)
-        self.page.get_by_text("Propuestas por IA y edición", exact=True).click()
+        self.page.get_by_text("Buscar momentos por tema", exact=True).click()
         form = self.page.locator("#editorial-draft-form")
         expect(form).to_be_visible()
         self.page.locator("#editorial-cues textarea").nth(1).focus()
@@ -1103,7 +1126,7 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertEqual({}, self.state["approved"])
 
         self.page.reload()
-        self.page.get_by_text("Propuestas por IA y edición", exact=True).click()
+        self.page.get_by_text("Buscar momentos por tema", exact=True).click()
         expect(mode).to_have_value("crop")
         expect(self.page.locator("#editorial-crop-zoom")).to_have_value("2.2")
         expect(result).to_be_hidden()
@@ -1117,7 +1140,7 @@ class BrowserHitoBTest(unittest.TestCase):
         self.store_draft(title="Recorte con logo", start=0, end=12, cues=[], logo=logo,
                          options={"burn_subtitles": False, "framing": "crop", "crop_zoom": 2})
         self.page.goto(ORIGIN + "/?job=" + JOB)
-        self.page.get_by_text("Propuestas por IA y edición", exact=True).click()
+        self.page.get_by_text("Buscar momentos por tema", exact=True).click()
         preview = self.page.locator("#editorial-sample")
         expect(preview.get_by_role("heading")).to_have_text("Vista previa del logo")
         expect(preview.locator(".creator-logo-preview")).to_be_visible()
@@ -1311,12 +1334,25 @@ class BrowserHitoBTest(unittest.TestCase):
     def test_editorial_consent_replay_and_versioned_subtitles(self):
         self.state["status"] = "completed"
         self.page.goto(ORIGIN + "/?job=" + JOB)
-        self.page.get_by_text("Propuestas por IA y edición", exact=True).click()
-        self.page.locator("#editorial-brief").fill("Busca un consejo concreto.")
+        self.page.get_by_text("Buscar momentos por tema", exact=True).click()
+        topic = self.page.get_by_role("textbox", name="Tema", exact=True)
+        guidance = self.page.get_by_role("textbox", name="Instrucciones adicionales (opcional)", exact=True)
+        topic.fill("  Consejos concretos  ")
+        self.assertEqual([], self.state["selection_previews"])
+        self.assertEqual([], self.state["selection_posts"])
         self.page.locator("#editorial-preview-button").click()
         self.page.locator("#editorial-consent").wait_for()
         self.assertTrue(self.page.locator("#editorial-run").is_disabled())
         self.assertEqual([], self.state["selection_posts"])
+        self.page.locator("#editorial-consent").check()
+        guidance.fill("  Evitá promociones.  ")
+        expect(self.page.locator("#editorial-consent-panel")).to_be_hidden()
+        self.page.locator("#editorial-max-clips").select_option("2")
+        self.page.locator("#editorial-preview-button").click()
+        expect(self.page.locator("#editorial-destination")).to_contain_text("editorial-fixture")
+        expect(self.page.locator("#editorial-payload")).to_contain_text('"instructions": "Evitá promociones."')
+        expect(self.page.locator("#editorial-payload")).to_contain_text('"topic": "Consejos concretos"')
+        self.assertTrue(self.page.locator("#editorial-run").is_disabled())
         self.page.locator("#editorial-consent").check()
         self.page.locator("#editorial-run").click()
         self.until_text("#editorial-status", "Respuesta interrumpida")
@@ -1326,6 +1362,14 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertEqual(first, replay)
         self.assertTrue(first["consent"])
         self.assertEqual(("llm", 0, None), (first["mode"], first["window_start"], first["window_end"]))
+        self.assertEqual(("Consejos concretos", "Evitá promociones."), (first["topic"], first["instructions"]))
+        self.assertEqual(2, first["max_clips"])
+        self.assertNotIn("brief", first)
+        card = self.page.locator('#editorial-candidates article[data-range-id="r_392_421500"]')
+        expect(card.locator(".editorial-interval")).to_have_text("06:32–07:01.5 del original")
+        expect(card.locator(".editorial-reason")).to_contain_text("Explica un paso concreto.")
+        expect(card.locator(".editorial-evidence blockquote")).to_have_text("Así se hace.")
+        expect(card.get_by_role("button", name="Reproducir intervalo")).to_be_visible()
         self.page.get_by_role("button", name="Crear / abrir borrador").click()
         self.page.locator("#editorial-start").fill("393")
         self.page.locator("#editorial-cues textarea").fill("Decisión práctica.\nUna solución.")
@@ -1339,8 +1383,11 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertEqual(392, self.state["range_posts"][-1]["previous_start"])
 
         self.page.reload()
-        self.page.get_by_text("Propuestas por IA y edición", exact=True).click()
+        self.page.get_by_text("Buscar momentos por tema", exact=True).click()
         self.page.locator("#editorial-draft-form").wait_for()
+        expect(self.page.locator("#editorial-search-topic")).to_contain_text("Consejos concretos")
+        expect(self.page.locator("#editorial-search-guidance")).to_contain_text("Evitá promociones.")
+        expect(self.page.locator("#editorial-search-limit")).to_contain_text("2")
         self.assertEqual("Decisión práctica.\nUna solución.", self.page.locator("#editorial-cues textarea").input_value())
         self.page.locator("#editorial-size").fill("96")
         self.page.locator("#editorial-color").fill("#ffca28")
@@ -1351,6 +1398,62 @@ class BrowserHitoBTest(unittest.TestCase):
                                          self.state["draft"]["options"]["subtitle_color"]))
         self.assertEqual(2, len(self.state["draft_updates"]))
         self.assertEqual(2, len(self.state["selection_posts"]))
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
+    def test_topic_history_no_match_and_explicit_technical_retry_in_narrow_view(self):
+        empty_id, invalid_id, timeout_id = "3" * 32, "4" * 32, "5" * 32
+        common = {"mode": "llm", "created_at": 1, "provider": "fixture", "model": "editorial-fixture"}
+        earlier = {f"{i:032x}": {**common, "id": f"{i:032x}", "status": "completed"} for i in range(1, 50)}
+        self.state.update(status="completed", saved_analyses={
+            empty_id: {**common, "id": empty_id, "status": "completed", "outcome": "no_matches",
+                       "spec": {"topic": "Astrofísica", "instructions": ""}},
+            invalid_id: {**common, "id": invalid_id, "status": "failed", "error_code": "AI_INVALID_RANGE",
+                         "error": "La respuesta contiene un intervalo fuera del catálogo autorizado.",
+                         "spec": {"topic": "Intensidad de color", "instructions": ""}},
+            **earlier,
+            timeout_id: {**common, "id": timeout_id, "status": "failed", "error_code": "AI_TIMEOUT",
+                         "error": "Se agotó el tiempo de espera del proveedor.", "retryable": True,
+                         "spec": {"topic": "Consejos para principiantes", "instructions": "Evitá promociones.",
+                                  "max_clips": 3}},
+        })
+        self.page.set_viewport_size({"width": 375, "height": 760})
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        self.page.locator("#editorial-heading").click()
+        empty = self.page.locator("#editorial-empty")
+        expect(empty).to_contain_text("No encontramos momentos suficientemente relacionados con este tema.")
+        expect(empty).to_be_visible()
+        expect(self.page.locator("#editorial-candidates article")).to_have_count(0)
+        expect(self.page.locator("#editorial-retry")).to_be_hidden()
+        expect(self.page.locator("#editorial-search-topic")).to_contain_text("Astrofísica")
+        typed = self.page.locator("#editorial-brief")
+        typed.fill("Un tema por buscar")
+        history = self.page.locator("#editorial-runs")
+        expect(history.locator("option:checked")).to_contain_text("Sin coincidencias")
+        history.select_option(invalid_id)
+        expect(empty).to_be_hidden()
+        expect(self.page.locator("#editorial-summary")).to_contain_text("fuera del catálogo autorizado.")
+        expect(typed).to_have_value("Un tema por buscar")
+        self.assertEqual([], self.state["selection_previews"])
+        self.assertEqual([], self.state["selection_posts"])
+        self.assertTrue(history.evaluate("list => list.getBoundingClientRect().right <= innerWidth"))
+
+        self.page.get_by_role("button", name="Ver búsquedas anteriores").click()
+        history.select_option(timeout_id)
+        expect(self.page.locator("#editorial-summary")).to_contain_text("tiempo de espera")
+        self.page.locator("#editorial-retry").click()
+        expect(self.page.locator("#editorial-consent-panel")).to_be_visible()
+        expect(typed).to_have_value("Consejos para principiantes")
+        expect(self.page.locator("#editorial-guidance")).to_have_value("Evitá promociones.")
+        expect(self.page.locator("#editorial-max-clips")).to_have_value("3")
+        self.assertEqual([], self.state["selection_posts"])
+        self.page.locator("#editorial-consent").check()
+        self.page.locator("#editorial-run").click()
+        expect(empty).to_be_visible()
+        self.assertEqual(timeout_id, self.state["selection_posts"][0]["retry_of"])
+        history.select_option(timeout_id)
+        expect(self.page.locator("#editorial-retry")).to_be_hidden()
+        self.assertEqual(1, len(self.state["selection_posts"]))
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])
 

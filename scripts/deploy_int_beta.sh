@@ -353,13 +353,50 @@ browser_on_rollout() {
     BROWSER_EXPECTED_API="$(jq -er '.api_revision' "$receipt")" browser_acceptance "$@"
 }
 
+create_d01_fixture() {
+    local row words offset duration speech wav filter inputs index
+    local -a rows media
+    mapfile -t rows < <(python -m app.topic_fixture | jq -c '.[]')
+    [[ "${#rows[@]}" -eq 9 ]]
+    media=(-f lavfi -i 'color=c=0x223448:s=640x360:r=24' -f lavfi -i 'anullsrc=r=22050:cl=mono')
+    filter="[1:a]atrim=duration=1200[base];"
+    inputs="[base]"
+    index=2
+    for row in "${rows[@]}"; do
+        words="$(jq -er '.text' <<< "$row")"
+        offset="$(jq -er '.start*1000|round' <<< "$row")"
+        duration="$(jq -er '.end-.start' <<< "$row")"
+        wav="$DELIVERY_DIR/topic-$index.wav"
+        printf '%s\n' "$words" | espeak-ng --stdin -v es -s 155 -w "$wav"
+        speech="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$wav")"
+        jq -ne --argjson speech "$speech" --argjson duration "$duration" \
+            '$speech > 0 and $speech <= $duration' >/dev/null
+        media+=(-i "$wav")
+        filter+="[$index:a]aformat=sample_rates=22050:channel_layouts=mono,adelay=$offset[voice$index];"
+        inputs+="[voice$index]"
+        index=$((index + 1))
+    done
+    filter+="$inputs""amix=inputs=$((index - 1)):duration=first:normalize=0[audio]"
+    ffmpeg -hide_banner -loglevel error -nostdin "${media[@]}" -filter_complex "$filter" \
+        -map 0:v:0 -map '[audio]' -t 1200 -c:v libx264 -preset ultrafast -crf 26 \
+        -pix_fmt yuv420p -threads 2 -c:a aac -b:a 48k -movflags +faststart "$DELIVERY_DIR/topic.mp4"
+}
+
 prepare_caption_fixture() {
-    local previous="$reports/previous-live.json" state="$DELIVERY_DIR/browser-private.json" owner job source_sha
-    create_framing_fixture
-    browser_on_rollout "$previous" caption-color-prepare --video "$DELIVERY_DIR/framing.mp4"
+    local phase="${1:-caption-color-prepare}" previous="$reports/previous-live.json"
+    local state="$DELIVERY_DIR/browser-private.json" owner job source_sha video flag=""
+    if [[ "$phase" == d01-prepare ]]; then
+        create_d01_fixture
+        video="$DELIVERY_DIR/topic.mp4"
+        flag=",--topic"
+    else
+        create_framing_fixture
+        video="$DELIVERY_DIR/framing.mp4"
+    fi
+    browser_on_rollout "$previous" "$phase" --video "$video"
     owner="$(jq -er '.owner_id | select(test("^[a-f0-9]{32}$"))' "$state")"
     job="$(jq -er '.job_id | select(test("^[a-f0-9]{32}$"))' "$state")"
-    source_sha="$(sha256sum "$DELIVERY_DIR/framing.mp4" | cut -d ' ' -f 1)"
+    source_sha="$(sha256sum "$video" | cut -d ' ' -f 1)"
     [[ "$source_sha" =~ ^[a-f0-9]{64}$ ]]
     : > "$DELIVERY_DIR/focused-promoting"
     # The accepted HTTP revisions keep serving the same tenant-isolated API.
@@ -367,7 +404,7 @@ prepare_caption_fixture() {
     run jobs update clipforge-int-worker --image "$TF_VAR_worker_image" \
         --update-env-vars "CLIPFORGE_REVISION=$GITHUB_SHA"
     run jobs execute clipforge-int-worker --wait --tasks=1 \
-        --args="-m,app.cloud.caption_color_fixture,$owner,$job,$source_sha"
+        --args="-m,app.cloud.caption_color_fixture,$owner,$job,$source_sha$flag"
 }
 
 caption_color_acceptance() {
@@ -387,8 +424,19 @@ mixed_zip_acceptance() {
     browser_acceptance mixed-zip
 }
 
+d01_acceptance() {
+    verify_focused_baseline d01 "$INT_D01_ACCEPTANCE"
+    prepare_caption_fixture d01-prepare
+    apply_beta true "run-$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT" replacement
+    capture_rollout after
+    jq -e '.worker_configuration.cpu == "4" and .worker_configuration.memory == "4Gi" and
+        .editorial.daily_limit == 100 and .editorial.api_daily_limit == 100' \
+        "$reports/after-rollout.json" > /dev/null
+    browser_acceptance d01
+}
+
 caption_color_cleanup() {
-    local state="$DELIVERY_DIR/browser-private.json" revision receipt
+    local phase="${1:-caption-color-cleanup}" state="$DELIVERY_DIR/browser-private.json" revision receipt
     if [[ ! -f "$state" ]]; then
         return 0
     fi
@@ -398,13 +446,13 @@ caption_color_cleanup() {
         receipt="$reports/after-rollout.json"
     fi
     [[ "$(jq -er '.commit' "$receipt")" == "$revision" ]]
-    browser_on_rollout "$receipt" caption-color-cleanup
+    browser_on_rollout "$receipt" "$phase"
 }
 
 verify_focused_baseline() {
     local increment="$1" receipt="$2"
     case "$increment" in
-        c04|c05|c06|logos|caption-color|mixed-zip) ;;
+        c04|c05|c06|logos|caption-color|mixed-zip|d01) ;;
         *) return 1 ;;
     esac
     [[ "$receipt" == "$reports/$increment-baseline.json" && -f "$receipt" && ! -L "$receipt" ]]
@@ -416,7 +464,7 @@ verify_focused_baseline() {
             commit, frontend_revision, api_revision, worker_image, migrator_image,
             editorial: (.editorial | del(.api_daily_limit))
         }) == ($live | {commit,frontend_revision,api_revision,worker_image,migrator_image,editorial}) and
-        (($increment != "logos" and $increment != "caption-color" and $increment != "mixed-zip") or
+        (($increment != "logos" and $increment != "caption-color" and $increment != "mixed-zip" and $increment != "d01") or
            (($expected | {worker_source,worker_cpu,worker_memory}) == ($live | {worker_source,worker_cpu,worker_memory})
             and $live.migrator_source == $expected.commit)))
     ' "$receipt" > /dev/null
@@ -504,6 +552,23 @@ case "${1:-}" in
             verify_focused_baseline caption-color "$INT_CAPTION_COLOR_ACCEPTANCE"
         elif [[ -n "${INT_MIXED_ZIP_ACCEPTANCE:-}" ]]; then
             verify_focused_baseline mixed-zip "$INT_MIXED_ZIP_ACCEPTANCE"
+        elif [[ -n "${INT_D01_ACCEPTANCE:-}" ]]; then
+            verify_focused_baseline d01 "$INT_D01_ACCEPTANCE"
+            run jobs describe clipforge-int-worker --format='json(metadata.generation,status.observedGeneration,spec.template.spec)' |
+                jq -e --slurpfile prior "$reports/previous-live.json" '
+                    .spec.template.spec.template.spec.containers[0] as $container |
+                    select((.metadata.generation | tonumber) == (.status.observedGeneration | tonumber) and
+                       $container.image == $prior[0].worker_image and
+                       $container.resources.limits.cpu == "4" and $container.resources.limits.memory == "4Gi") |
+                    {generation: (.metadata.generation | tonumber),
+                     observed_generation: (.status.observedGeneration | tonumber),
+                     image:$container.image, cpu:$container.resources.limits.cpu,memory:$container.resources.limits.memory,
+                     task_count:(.spec.template.spec.taskCount // 1),
+                     parallelism:(.spec.template.spec.parallelism // 1),
+                     timeout_seconds: (.spec.template.spec.template.spec.timeoutSeconds | tonumber),
+                     max_retries: .spec.template.spec.template.spec.maxRetries,
+                     editorial: $prior[0].editorial}
+                ' > "$reports/d01-prior-worker.json"
         else
             trap rollback_delivery EXIT
             apply_beta false "run-$GITHUB_RUN_ID-b$GITHUB_RUN_ATTEMPT" private
@@ -555,6 +620,8 @@ case "${1:-}" in
             caption_color_acceptance
         elif [[ -n "${INT_MIXED_ZIP_ACCEPTANCE:-}" ]]; then
             mixed_zip_acceptance
+        elif [[ -n "${INT_D01_ACCEPTANCE:-}" ]]; then
+            d01_acceptance
         elif [[ -n "${INT_DELETION_REPLAY_REPORT:-}" ]]; then
             [[ "$INT_DELETION_REPLAY_REPORT" == "$reports/deletion-replay.json" && ! -L "$INT_DELETION_REPLAY_REPORT" ]]
             jq -e '.schema == "clipforge-int-hito-b-delete-evidence-1" and .status == "passed"
@@ -584,7 +651,7 @@ case "${1:-}" in
         run_worker_benchmark "$@"
         ;;
     rollback)
-        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_C05_ACCEPTANCE:-}${INT_C06_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}${INT_CAPTION_COLOR_ACCEPTANCE:-}${INT_MIXED_ZIP_ACCEPTANCE:-}" && ! -f "$DELIVERY_DIR/focused-promoting" ]]; then
+        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_C05_ACCEPTANCE:-}${INT_C06_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}${INT_CAPTION_COLOR_ACCEPTANCE:-}${INT_MIXED_ZIP_ACCEPTANCE:-}${INT_D01_ACCEPTANCE:-}" && ! -f "$DELIVERY_DIR/focused-promoting" ]]; then
             restore_migrator_pin
         else
             restore_failed_delivery
@@ -593,6 +660,10 @@ case "${1:-}" in
     caption-color-cleanup)
         [[ -n "${INT_CAPTION_COLOR_ACCEPTANCE:-}${INT_MIXED_ZIP_ACCEPTANCE:-}" ]]
         caption_color_cleanup
+        ;;
+    d01-cleanup)
+        [[ -n "${INT_D01_ACCEPTANCE:-}" ]]
+        caption_color_cleanup d01-cleanup
         ;;
     *)
         exit 2

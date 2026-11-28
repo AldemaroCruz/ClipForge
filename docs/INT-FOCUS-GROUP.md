@@ -15,6 +15,13 @@ Reemplazar un logo crea una revisión para futuras selecciones. Los borradores, 
 
 Enviá tus comentarios por el canal escrito acordado. Incluí el paso, el resultado y una captura si ayuda a identificar el problema.
 
+## Buscar momentos por tema
+
+1. Abrí un proyecto completado con transcripción y desplegá **Buscar momentos por tema**. Probá una idea reconocible del video. «Cómo reparar un freno» y «Ejemplos concretos para principiantes» son ejemplos generales.
+2. Si querés, agregá instrucciones como «evitá la introducción». Indicá el máximo de propuestas y abrí **Revisar texto y destino**. Revisá la transcripción y los datos que se enviarán a OpenAI. Autorizá el envío y generá las propuestas.
+3. Compará **Por qué coincide según la IA** con la evidencia de la transcripción. Usá **Reproducir intervalo** para ver ese momento en el original. El panel conserva el historial y permite recuperar búsquedas anteriores. Si el tema no tiene coincidencias suficientes, probá otro enfoque.
+4. Abrí una propuesta como borrador. Ajustá el recorte, el texto, el estilo, el logo y el encuadre. Exportá y marcá esa versión para el ZIP desde su tarjeta.
+
 ## Base de continuidad y reversión de logos
 
 | Componente | Pin aceptado |
