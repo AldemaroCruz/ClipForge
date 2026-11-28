@@ -62,9 +62,11 @@ Prioridad P0: bloqueante para su hito. P1: mejora necesaria/próxima. P2: optimi
 
 | ID | Tarea | Estado | Criterio de aceptación |
 |---|---|---|---|
-| D01 | Buscar momentos por tema | En validación en INT | Consentimiento y evidencia de la transcripción, temas distintos y ausencia de coincidencias, cobertura hasta el final, persistencia y recorrido hasta borrador, MP4 y ZIP. |
+| D01 | Buscar momentos por tema | Aceptado en INT | Consentimiento, evidencia de transcripción, dos temas y uno ausente, cobertura hasta el final, persistencia, borrador, MP4 y ZIP. |
 | D00 | Alineación por palabra | Pendiente | Preparar la edición desde la transcripción con tiempos verificables. |
 | — | Publicación progresiva de clips | Pendiente | Publicar cada clip con su manifiesto y preservar recuperación, idempotencia, aislamiento y eliminación. |
+
+INT sirve D01 en `9e49209aad98f74428b50276836719fd5bd76310`. La primera prueba registró tres reservas, tres llamadas y tres respuestas de OpenAI. La aceptación final reutilizó esa evidencia y comprobó el editor, el MP4 y el ZIP mixto con cero llamadas adicionales. [Búsquedas reales](https://github.com/AldemaroCruz/ClipForge/actions/runs/46116426162/artifacts/15252033378) · [Aceptación final](https://github.com/AldemaroCruz/ClipForge/actions/runs/46120063759)
 
 ## Primer incremento recomendado
 
