@@ -48,11 +48,21 @@ def upload_logo(page, path):
     library = open_panel(page, "#creator-logo-library")
     library.locator("#creator-logo-name").fill(NAME)
     library.locator("#creator-logo-file").set_input_files(str(path))
-    item = portal.click_response(page, library.get_by_role("button", name="Cargar logo", exact=True),
-                                 LIBRARY + "?", "POST", 201).json()
+    portal.click_response(page, library.get_by_role("button", name="Cargar logo", exact=True),
+                          LIBRARY + "?", "POST", 201)
+    library.get_by_text("Logo guardado.", exact=True).wait_for()
+    item = saved_logo(page, library.locator("#creator-logo-library-select").input_value())
     portal.require(portal.ID.fullmatch(item["id"]) and item["revision"] == 1 and item["name"] == NAME
                    and [item["width"], item["height"]] == [40, 80], "logo_uploaded_transparent_png")
     return item
+
+
+def saved_logo(page, identity):
+    library = portal.browser_get(page, LIBRARY)
+    portal.require(library["status"] == 200 and portal.ID.fullmatch(identity), "owned_logo_library_available")
+    items = [logo for logo in library["body"]["logos"] if logo["id"] == identity]
+    portal.require(len(items) == 1, "owned_logo_found_once")
+    return items[0]
 
 
 def set_placement(page, logo):
@@ -257,11 +267,14 @@ def creator_flow(browser, args, accounts, jobs, report):
             original_bytes = content_digest(page, original_url)
             portal.require(bool(original_bytes), "base_clip_before_branding")
 
-            report["step"] = "logo_upload_and_style_persistence"
+            report["step"] = "logo_upload_and_library_readback"
             asset = upload_logo(page, source)
             logo = {"id": asset["id"], "revision": 1, **PLACEMENT}
+            portal.check(report, "transparent_png_uploaded_and_retrieved_from_private_library")
+            report["step"] = "logo_original_bytes_owner_readback"
             logo_digest = content_digest(page, asset["url"])
             portal.require(bool(logo_digest), "uploaded_png_retrievable_as_owner")
+            report["step"] = "logo_saved_template_and_relogin"
             editor, panel = styles.editor_for(page, file)
             set_placement(page, asset)
             editor.locator("#clip-caption-size").fill("68")
@@ -314,9 +327,10 @@ def creator_flow(browser, args, accounts, jobs, report):
             library.locator("#creator-logo-library-select").select_option(asset["id"])
             library.locator("#creator-logo-name").fill(NAME)
             library.locator("#creator-logo-file").set_input_files(str(replacement))
-            latest_response, _ = styles.expect_dialog(page, library.locator("#creator-logo-replace"),
-                                                      f'{LIBRARY}/{asset["id"]}', "PUT", 200)
-            latest = latest_response.json()
+            styles.expect_dialog(page, library.locator("#creator-logo-replace"),
+                                 f'{LIBRARY}/{asset["id"]}', "PUT", 200)
+            library.get_by_text("La nueva revisión del logo está lista para seleccionar.", exact=True).wait_for()
+            latest = saved_logo(page, asset["id"])
             latest_digest = content_digest(page, latest["url"])
             portal.require(latest["revision"] == 2 and latest["id"] == asset["id"]
                            and latest_digest and latest_digest != logo_digest,
