@@ -1,4 +1,4 @@
-"""Authenticated, bounded ZIP streams from completed, generation-pinned clips."""
+"""Authenticated, bounded ZIP streams from generation-pinned clip versions."""
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 import hashlib
@@ -19,12 +19,14 @@ CHUNK_BYTES = 1024 * 1024
 STREAM_SECONDS = 150
 OBJECT_TIMEOUT = (5, 15)
 SELECTION = re.compile(r"(clip_[0-9]{2}\.mp4):([1-9][0-9]{0,9}):([a-f0-9]{32}(?:[a-f0-9]{32})?)")
+EXPORT_SELECTION = re.compile(r"export:([a-f0-9]{32}):([1-9][0-9]{0,18})")
+DOCUMENT_ID = re.compile(r"[a-f0-9]{32}")
 CONTENT_TYPES = {"mp4": "video/mp4", "srt": "application/x-subrip", "vtt": "text/vtt"}
 
 
 @dataclass(frozen=True)
 class Selection:
-    filename: str
+    filename: str | None
     revision: int
     output_id: str
 
@@ -41,6 +43,7 @@ class Package:
     bytes: int
     members: tuple[Member, ...]
     provenance: tuple[dict, ...]
+    export_provenance: tuple[dict, ...] = ()
 
     def summary(self):
         return {"clips": self.clips, "bytes": self.bytes, "max_clips": MAX_CLIPS, "max_bytes": MAX_BYTES}
@@ -50,11 +53,16 @@ def _parse(tokens: list[str]) -> list[Selection]:
     selections = []
     for token in tokens:
         match = SELECTION.fullmatch(token)
+        if match is not None:
+            filename, revision, output_id = match.groups()
+            selections.append(Selection(filename, int(revision), output_id))
+            continue
+        match = EXPORT_SELECTION.fullmatch(token)
         if match is None:
             raise HTTPException(422, "La selección de clips no es válida.")
-        filename, revision, output_id = match.groups()
-        selections.append(Selection(filename, int(revision), output_id))
-    if not 1 <= len(selections) <= MAX_CLIPS or len({item.filename for item in selections}) != len(selections):
+        output_id, revision = match.groups()
+        selections.append(Selection(None, int(revision), output_id))
+    if not 1 <= len(selections) <= MAX_CLIPS or len({item.filename or item.output_id for item in selections}) != len(selections):
         raise HTTPException(422, "Seleccioná entre 1 y 30 clips distintos.")
     return selections
 
@@ -69,10 +77,48 @@ def _validate_object(item, kind, project_prefix):
         raise HTTPException(409, "No se puede verificar uno de los archivos del clip. Volvé a generar el clip.")
 
 
+def is_pilot_manual_export(item):
+    return (item.get("clip_file") == "manual.mp4" and item.get("title") == "Fragmento manual"
+            and (item.get("pilot") is True or item.get("pilot") is None))
+
+
+def _completed_export(document):
+    item = document["payload"]
+    if item.get("status") != "completed" or item.get("clip_captions") is True:
+        return None, {}
+    draft_id = item.get("draft_id")
+    if item.get("pilot") is True and isinstance(draft_id, str) and DOCUMENT_ID.fullmatch(draft_id):
+        kind = "editorial"
+    elif is_pilot_manual_export(item):
+        kind = "manual"
+    else:
+        return None, {}
+    manifest = document["manifest"]
+    if "clip.mp4" not in manifest:
+        return None, {}
+    return kind, {part: manifest[f"clip.{part}"] for part in CONTENT_TYPES if f"clip.{part}" in manifest}
+
+
+def export_selection(document, job_id, workspace_id):
+    """Advertise only completed exports with verifiable files from this project."""
+    _, objects = _completed_export(document)
+    export_id = document["payload"].get("id")
+    if not objects or not isinstance(export_id, str) or not DOCUMENT_ID.fullmatch(export_id):
+        return {}
+    try:
+        for kind, original in objects.items():
+            _validate_object(original, kind, f"workspaces/{workspace_id}/jobs/{job_id}/")
+    except HTTPException:
+        return {}
+    return {"archive_selection": f"export:{export_id}:{document['revision']}",
+            "archive_files": list(objects)}
+
+
 def prepare(job_id, tokens: list[str], principal) -> Package:
     selections = _parse(tokens)
     members: list[Member] = []
     provenance = []
+    export_provenance = []
     total = 0
     # The project row serializes the snapshot with caption edits and deletion.
     # Release it before starting the stream. No request marks an active task.
@@ -80,20 +126,31 @@ def prepare(job_id, tokens: list[str], principal) -> Package:
         doc = repo.beta_document(connection, principal, job_id)
         project_prefix = f"workspaces/{principal.workspace_id}/jobs/{job_id}/"
         for item in selections:
-            objects = clip_captions.selected_output(doc, item.filename, item.revision, item.output_id, connection)
             files = []
+            if item.filename is not None:
+                objects = clip_captions.selected_output(doc, item.filename, item.revision, item.output_id, connection)
+                stem = item.filename.removesuffix(".mp4")
+                provenance.append({
+                    "clip": item.filename, "caption_revision": item.revision, "output_id": item.output_id, "files": files,
+                })
+            else:
+                export = repo.document(job_id, "export", item.output_id, connection)
+                export_kind, objects = _completed_export(export)
+                if export["revision"] != item.revision or export["payload"].get("id") != item.output_id or not objects:
+                    raise HTTPException(409, "Cambió una exportación seleccionada. Actualizá la lista y volvé a seleccionarla.")
+                stem = f"{export_kind}_{item.output_id}"
+                export_provenance.append({
+                    "kind": export_kind, "export_id": item.output_id, "revision": item.revision, "files": files,
+                })
             for kind, original in objects.items():
                 _validate_object(original, kind, project_prefix)
                 total += original["bytes"]
                 if total > MAX_BYTES:
                     raise HTTPException(413, "Los archivos seleccionados superan 128 MiB. Seleccioná menos clips.")
-                filename = f"{item.filename.removesuffix('.mp4')}.{kind}"
+                filename = f"{stem}.{kind}"
                 members.append(Member(filename, original))
                 files.append({"file": filename, "bytes": original["bytes"], "sha256": original["sha256"]})
-            provenance.append({
-                "clip": item.filename, "caption_revision": item.revision, "output_id": item.output_id, "files": files,
-            })
-    return Package(len(selections), total, tuple(members), tuple(provenance))
+    return Package(len(selections), total, tuple(members), tuple(provenance), tuple(export_provenance))
 
 
 class _ChunkSink:
@@ -153,7 +210,10 @@ def chunks(package: Package) -> Iterator[bytes]:
         for member in package.members:
             yield from _write_member(archive, sink, member, deadline)
         info = ZipInfo("manifest.json")
-        data = json.dumps({"clips": package.provenance}, ensure_ascii=False, separators=(",", ":"))
+        manifest = {"clips": package.provenance}
+        if package.export_provenance:
+            manifest["exports"] = package.export_provenance
+        data = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"))
         archive.writestr(info, data)
     # An interrupted or corrupt member never emits the archive footer.
     yield from sink.drain()

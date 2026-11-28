@@ -353,9 +353,8 @@ browser_on_rollout() {
     BROWSER_EXPECTED_API="$(jq -er '.api_revision' "$receipt")" browser_acceptance "$@"
 }
 
-caption_color_acceptance() {
+prepare_caption_fixture() {
     local previous="$reports/previous-live.json" state="$DELIVERY_DIR/browser-private.json" owner job source_sha
-    verify_focused_baseline caption-color "$INT_CAPTION_COLOR_ACCEPTANCE"
     create_framing_fixture
     browser_on_rollout "$previous" caption-color-prepare --video "$DELIVERY_DIR/framing.mp4"
     owner="$(jq -er '.owner_id | select(test("^[a-f0-9]{32}$"))' "$state")"
@@ -369,10 +368,23 @@ caption_color_acceptance() {
         --update-env-vars "CLIPFORGE_REVISION=$GITHUB_SHA"
     run jobs execute clipforge-int-worker --wait --tasks=1 \
         --args="-m,app.cloud.caption_color_fixture,$owner,$job,$source_sha"
-    browser_on_rollout "$previous" caption-color-baseline
+}
+
+caption_color_acceptance() {
+    verify_focused_baseline caption-color "$INT_CAPTION_COLOR_ACCEPTANCE"
+    prepare_caption_fixture
+    browser_on_rollout "$reports/previous-live.json" caption-color-baseline
     apply_beta true "run-$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT" replacement
     capture_rollout after
     browser_acceptance caption-color
+}
+
+mixed_zip_acceptance() {
+    verify_focused_baseline mixed-zip "$INT_MIXED_ZIP_ACCEPTANCE"
+    prepare_caption_fixture
+    apply_beta true "run-$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT" replacement
+    capture_rollout after
+    browser_acceptance mixed-zip
 }
 
 caption_color_cleanup() {
@@ -391,7 +403,10 @@ caption_color_cleanup() {
 
 verify_focused_baseline() {
     local increment="$1" receipt="$2"
-    [[ "$increment" == c04 || "$increment" == c05 || "$increment" == c06 || "$increment" == logos || "$increment" == caption-color ]]
+    case "$increment" in
+        c04|c05|c06|logos|caption-color|mixed-zip) ;;
+        *) return 1 ;;
+    esac
     [[ "$receipt" == "$reports/$increment-baseline.json" && -f "$receipt" && ! -L "$receipt" ]]
     jq -e --arg schema "clipforge-int-$increment-baseline-1" --arg increment "$increment" --arg commit "$GITHUB_SHA" \
         --slurpfile previous "$reports/previous-live.json" '
@@ -401,7 +416,7 @@ verify_focused_baseline() {
             commit, frontend_revision, api_revision, worker_image, migrator_image,
             editorial: (.editorial | del(.api_daily_limit))
         }) == ($live | {commit,frontend_revision,api_revision,worker_image,migrator_image,editorial}) and
-        (($increment != "logos" and $increment != "caption-color") or
+        (($increment != "logos" and $increment != "caption-color" and $increment != "mixed-zip") or
            (($expected | {worker_source,worker_cpu,worker_memory}) == ($live | {worker_source,worker_cpu,worker_memory})
             and $live.migrator_source == $expected.commit)))
     ' "$receipt" > /dev/null
@@ -487,6 +502,8 @@ case "${1:-}" in
             verify_focused_baseline c06 "$INT_C06_ACCEPTANCE"
         elif [[ -n "${INT_CAPTION_COLOR_ACCEPTANCE:-}" ]]; then
             verify_focused_baseline caption-color "$INT_CAPTION_COLOR_ACCEPTANCE"
+        elif [[ -n "${INT_MIXED_ZIP_ACCEPTANCE:-}" ]]; then
+            verify_focused_baseline mixed-zip "$INT_MIXED_ZIP_ACCEPTANCE"
         else
             trap rollback_delivery EXIT
             apply_beta false "run-$GITHUB_RUN_ID-b$GITHUB_RUN_ATTEMPT" private
@@ -536,6 +553,8 @@ case "${1:-}" in
             browser_acceptance logos --video "$DELIVERY_DIR/framing.mp4"
         elif [[ -n "${INT_CAPTION_COLOR_ACCEPTANCE:-}" ]]; then
             caption_color_acceptance
+        elif [[ -n "${INT_MIXED_ZIP_ACCEPTANCE:-}" ]]; then
+            mixed_zip_acceptance
         elif [[ -n "${INT_DELETION_REPLAY_REPORT:-}" ]]; then
             [[ "$INT_DELETION_REPLAY_REPORT" == "$reports/deletion-replay.json" && ! -L "$INT_DELETION_REPLAY_REPORT" ]]
             jq -e '.schema == "clipforge-int-hito-b-delete-evidence-1" and .status == "passed"
@@ -565,14 +584,14 @@ case "${1:-}" in
         run_worker_benchmark "$@"
         ;;
     rollback)
-        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_C05_ACCEPTANCE:-}${INT_C06_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}${INT_CAPTION_COLOR_ACCEPTANCE:-}" && ! -f "$DELIVERY_DIR/focused-promoting" ]]; then
+        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_C05_ACCEPTANCE:-}${INT_C06_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}${INT_CAPTION_COLOR_ACCEPTANCE:-}${INT_MIXED_ZIP_ACCEPTANCE:-}" && ! -f "$DELIVERY_DIR/focused-promoting" ]]; then
             restore_migrator_pin
         else
             restore_failed_delivery
         fi
         ;;
     caption-color-cleanup)
-        [[ -n "${INT_CAPTION_COLOR_ACCEPTANCE:-}" ]]
+        [[ -n "${INT_CAPTION_COLOR_ACCEPTANCE:-}${INT_MIXED_ZIP_ACCEPTANCE:-}" ]]
         caption_color_cleanup
         ;;
     *)

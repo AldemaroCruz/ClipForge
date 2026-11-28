@@ -129,8 +129,9 @@ class BrowserHitoBTest(unittest.TestCase):
             self.state["zip_requests"].append(params)
             self.assertEqual(["1"], params.get("inspect"))
             stale = self.state["zip_stale"]
+            count = len(params["selection"])
             result = ({"detail": "La edición cambió."} if stale
-                      else {"clips": 1, "bytes": 2048, "max_bytes": 128 * 1024**2})
+                      else {"clips": count, "bytes": count * 2048, "max_bytes": 128 * 1024**2})
             route.fulfill(status=409 if stale else 200, content_type="application/json", body=json.dumps(result))
             return
         data, status = self.api(path, request)
@@ -554,6 +555,78 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])
 
+    def test_zip_joins_exact_automatic_manual_and_editorial_selections(self):
+        automatic = f"{CLIP}:3:" + "f" * 64
+        manual = f"export:{EXPORT}:7"
+        old_export, current_export, pending_export = "4" * 32, "5" * 32, "6" * 32
+        editorial = f"export:{current_export}:10"
+        self.state.update(status="completed", other_project=True, caption={
+            "start": 392, "end": 421.5, "duration": 29.5, "revision": 3, "status": "completed",
+            "output": {"id": "f" * 64, "mp4": f"/jobs/{JOB}/clips/{CLIP}", "burn_subtitles": True},
+        }, manual={"id": EXPORT, "clip_file": "manual.mp4", "status": "completed",
+                   "start": 1, "end": 10, "archive_selection": manual, "archive_files": ["mp4", "srt"]})
+        for revision, variant, status in ((1, old_export, "completed"), (2, current_export, "completed"),
+                                          (3, pending_export, "queued")):
+            self.state["approved"][revision] = {
+                "id": variant, "title": "El mismo recorte", "draft_id": DRAFT, "draft_revision": revision,
+                "status": status, "options": {"burn_subtitles": True}, "cues": self.cue_fixture(),
+                "archive_selection": f"export:{variant}:10", "archive_files": ["mp4", "vtt"],
+            }
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        automatic_box = self.page.get_by_role("checkbox", name="Incluir Clip 1 en ZIP", exact=True)
+        automatic_box.check()
+        manual_panel = self.page.get_by_text("Elegir fragmento del original", exact=True)
+        manual_panel.click()
+        manual_card = self.page.locator(f'#mvp-results [data-export-id="{EXPORT}"]')
+        manual_box = manual_card.get_by_role("checkbox", name="Incluir clip manual 1.00–10.00 s en ZIP")
+        manual_box.check()
+        expect(manual_card.get_by_role("link", name="Subtítulos SRT")).to_be_visible()
+        expect(manual_card.get_by_role("link", name="Subtítulos VTT")).to_have_count(0)
+        self.page.get_by_text("Propuestas por IA y edición", exact=True).click()
+        results = self.page.locator("#editorial-exports")
+        old_box = results.locator(f'[data-archive-id="{old_export}"]')
+        current_card = results.locator(f'[data-export-id="{current_export}"]')
+        current_box = current_card.get_by_role("checkbox", name="Incluir El mismo recorte · revisión 2 en ZIP")
+        expect(old_box).to_be_visible()
+        expect(results.locator(f'[data-archive-id="{pending_export}"]')).to_have_count(0)
+        expect(current_card.get_by_role("link", name="Descargar SRT")).to_have_count(0)
+        expect(current_card.get_by_role("link", name="Descargar VTT")).to_be_visible()
+        current_box.check()
+        expect(old_box).not_to_be_checked()
+        self.until_text("#clip-zip-status", "3 clips seleccionados.")
+
+        self.page.evaluate("""() => {
+            document.addEventListener('click', event => {
+                if (event.target instanceof HTMLAnchorElement && event.target.download) {
+                    event.preventDefault();
+                    window.zipLink = event.target.href;
+                }
+            }, {capture: true});
+        }""")
+        self.page.locator("#clip-zip-download").click()
+        self.until_text("#clip-zip-status", "Descarga iniciada para 3 clips.")
+        expected = {"selection": [automatic, manual, editorial]}
+        self.assertEqual([{**expected, "inspect": ["1"]}], self.state["zip_requests"])
+        parsed = urlsplit(self.page.evaluate("window.zipLink"))
+        self.assertEqual((f"/jobs/{JOB}/clips.zip", expected), (parsed.path, parse_qs(parsed.query)))
+
+        self.state["manual"]["archive_selection"] = f"export:{EXPORT}:8"
+        manual_panel.click()
+        expect(manual_card).to_have_count(0)
+        manual_panel.click()
+        expect(manual_box).not_to_be_checked()
+        self.until_text("#clip-zip-status", "Un clip cambió de versión")
+        expect(automatic_box).to_be_checked()
+        expect(current_box).to_be_checked()
+        self.page.locator("#clip-zip-download").click()
+        self.until_text("#clip-zip-status", "Descarga iniciada para 2 clips.")
+        self.assertEqual({"inspect": ["1"], "selection": [automatic, editorial]}, self.state["zip_requests"][-1])
+
+        self.page.get_by_role("link", name="Otro video").click()
+        expect(self.page.locator("#clip-zip-actions")).to_be_hidden()
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
     def test_caption_preview_tracks_cue_and_export_style_at_both_widths(self):
         style = {"burn_subtitles": True, "subtitle_font_size": 52, "subtitle_color": "#FFFFFF",
                  "subtitle_position": "bottom", "subtitle_outline": 3}
@@ -936,7 +1009,8 @@ class BrowserHitoBTest(unittest.TestCase):
         })
         link = self.page.locator("#clip-caption-downloads").get_by_role("link", name="Descargar MP4 con logo")
         expect(link).to_have_attribute("href", variant + ".mp4", timeout=15_000)
-        expect(self.page.locator("#clip-zip-scope")).to_contain_text("clip automático seleccionado")
+        expect(self.page.locator("#clip-zip-scope")).to_contain_text("clips automáticos")
+        expect(self.page.locator("#clip-zip-scope")).to_contain_text("conserva el logo")
 
         self.page.set_viewport_size({"width": 390, "height": 844})
         library.locator("summary").click()

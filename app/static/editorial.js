@@ -1121,14 +1121,17 @@
       player.preload = "none";
       player.setAttribute("aria-label", title);
       const links = node("div", undefined, "actions");
-      for (const [name, label] of [["clip.mp4", item.logo ? "Descargar MP4 con logo" : "Descargar MP4 editado"],
-        ["clip.srt", "Descargar SRT"], ["clip.vtt", "Descargar VTT"]]) {
-        if (!hasCues && name !== "clip.mp4") continue;
+      const available = Array.isArray(item.archive_files) ? item.archive_files : (hasCues ? ["mp4", "srt", "vtt"] : ["mp4"]);
+      for (const [extension, label] of [["mp4", item.logo ? "Descargar MP4 con logo" : "Descargar MP4 editado"],
+        ["srt", "Descargar SRT"], ["vtt", "Descargar VTT"]]) {
+        if (!available.includes(extension)) continue;
         const link = node("a", label);
-        link.href = files + name;
+        link.href = files + "clip." + extension;
         links.append(link);
       }
       card.append(player, links);
+      const include = window.ClipForgeZip?.includeExport(state.id, "editorial", item.id, title + " · revisión " + item.draft_revision);
+      if (include) card.append(include);
     } else {
       const message = item.status === "failed" ? (item.error || "La exportación falló.")
         : item.status === "queued" ? "Exportación en cola." : "Generando clip.";
@@ -1143,7 +1146,8 @@
       const result = await request(state, "/exports");
       if (!visible(state)) return;
       const exports = result.exports.filter(item => idPattern.test(item.id) && idPattern.test(item.draft_id));
-      const key = exports.map(item => item.id + ":" + item.status).join();
+      window.ClipForgeZip?.syncExports(state.id, "editorial", exports);
+      const key = JSON.stringify(exports.map(item => [item.id, item.status, item.archive_selection, item.archive_files]));
       el("output").hidden = !exports.length;
       if (state.exportKey !== key) {
         el("exports").replaceChildren(...exports.map(item => exportCard(state, item)));

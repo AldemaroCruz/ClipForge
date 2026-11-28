@@ -146,6 +146,30 @@ def verify_caption_color_baseline(root, commit, model):
     }
 
 
+def verify_mixed_zip_baseline(root, commit, model, accepted, run, artifact, rollout_digest, browser_digest):
+    if (not re.fullmatch(r"[a-f0-9]{40}", commit) or not re.fullmatch(r"[a-f0-9]{40}", accepted)
+            or commit == accepted):
+        raise ValueError("La ampliación del ZIP requiere una revisión distinta de la corrección aceptada")
+    hashes = {"after-rollout.json": rollout_digest, "browser-caption-color.json": browser_digest}
+    rollout, browser = (native_report(root, name, digest) for name, digest in hashes.items())
+    worker = rollout["worker_configuration"]
+    revisions = {"frontend": rollout["frontend_revision"], "api": rollout["api_revision"]}
+    approved = {entry["name"] for entry in browser["checks"] if entry["status"] == "passed"}
+    required = {"template_recovered_and_applied_to_another_clip_with_cues_unchanged",
+                "two_downloaded_mp4s_show_distinct_caption_colors_with_identical_sidecars"}
+    if (rollout["commit"] != accepted or browser["commit"] != accepted or browser["revisions"] != revisions
+            or browser["phase"] != "caption-color" or browser["status"] != "passed" or not required <= approved
+            or rollout["editorial"]["model"] != model or rollout["editorial"]["daily_limit"] != 100
+            or worker["cpu"] != "4" or worker["memory"] != "4Gi"):
+        raise ValueError("La ampliación requiere la aceptación nativa de la corrección de color")
+    return {
+        "schema": "clipforge-int-mixed-zip-baseline-1", "status": "passed", "target_commit": commit,
+        "baseline": {**rollout, "worker_source": accepted, "worker_cpu": worker["cpu"],
+                     "worker_memory": worker["memory"]},
+        "evidence": {"run_id": run, "artifact_id": artifact, "sha256": hashes},
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, type=Path)
@@ -158,6 +182,8 @@ def main():
                            metavar=("SHA", "RUN", "ARTIFACT", "ROLLOUT_HASH", "BROWSER_HASH"))
     group.add_argument("--accepted-logo-profile", type=Path, metavar="PROFILE_RECEIPT_DIR")
     group.add_argument("--accepted-caption-color-base", action="store_true")
+    group.add_argument("--accepted-mixed-zip-base", nargs=5,
+                       metavar=("SHA", "RUN", "ARTIFACT", "ROLLOUT_HASH", "BROWSER_HASH"))
     args = parser.parse_args()
     if args.accepted_styles:
         receipt = verify_product_release(args.source, args.commit, args.model, "styles", *args.accepted_styles)
@@ -167,6 +193,8 @@ def main():
         receipt = verify_logos_baseline(args.source, args.accepted_logo_profile, args.commit, args.model)
     elif args.accepted_caption_color_base:
         receipt = verify_caption_color_baseline(args.source, args.commit, args.model)
+    elif args.accepted_mixed_zip_base:
+        receipt = verify_mixed_zip_baseline(args.source, args.commit, args.model, *args.accepted_mixed_zip_base)
     else:
         receipt = verify(args.source, args.commit, args.model)
     with args.receipt.open("x", encoding="utf-8") as output:

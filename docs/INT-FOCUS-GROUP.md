@@ -3,12 +3,12 @@
 Ingresá al [portal de ClipForge INT](https://clipforge-int-beta-816643438938.us-central1.run.app) con tu cuenta habitual. Usá un video que puedas compartir con este grupo.
 
 1. Subí el video y abrí el trabajo en **Mis trabajos** cuando termine de procesar.
-2. Revisá los clips automáticos. En **Editar subtítulos**, corregí una palabra y comprobá la vista previa.
+2. Revisá los clips automáticos. En **Editar subtítulos**, corregí una palabra y comprobá la vista previa. Podés elegir el color con el selector o escribir el HEX exacto.
 3. Abrí **Mis logos**. Cargá un PNG estático de hasta 5 MiB y 2048 píxeles por lado. El PNG puede tener transparencia.
 4. En **Logo del clip**, activá el logo y elegí el archivo. Ajustá esquina, tamaño, opacidad y margen sobre el encuadre final. La selección inicial coloca el logo arriba a la derecha.
-5. En **Estilos guardados**, guardá el estilo de subtítulos y el logo juntos. Podés aplicar esa plantilla a otro clip.
+5. Pulsá **Guardar como estilo** junto a los controles de apariencia. Escribí el nombre y guardá el estilo de subtítulos y el logo juntos. Podés aplicar esa plantilla a otro clip desde **Estilos guardados**.
 6. Abrí **Elegir fragmento del original**. Ajustá inicio y final, entrá en **Editar y subtitular** y revisá **Encuadre vertical**. Guardá el borrador y exportá.
-7. Descargá el MP4 de la variante terminada. Los enlaces SRT y VTT guardan el texto y los tiempos. Para obtener un ZIP, seleccioná clips de **Clips automáticos**. El ZIP usa la variante completada que muestra cada tarjeta. Las exportaciones de recortes manuales o editoriales se descargan desde su propia tarjeta.
+7. Descargá el MP4 de la variante terminada. Los enlaces SRT y VTT guardan el texto y los tiempos. Para obtener un ZIP, marcá las tarjetas de los clips automáticos, recortes manuales o exportaciones de borradores que quieras incluir. El ZIP reúne los archivos disponibles de las variantes que seleccionaste.
 8. Cerrá sesión, volvé a entrar y recuperá el trabajo. Para probar **Eliminar proyecto**, usá un proyecto de prueba. Al confirmarlo desaparece de **Mis trabajos**.
 
 Reemplazar un logo crea una revisión para futuras selecciones. Los borradores, clips y plantillas que ya referencian la revisión anterior conservan su apariencia. Retirarlo quita el logo de la biblioteca y de las plantillas que se apliquen en adelante. Los usos previos y los MP4 ya exportados conservan la revisión guardada.

@@ -125,6 +125,29 @@ class ClipPackageDatabaseTests(unittest.TestCase):
             params.append(("inspect", "1"))
         return (client or self.client).get(self.path, params=params)
 
+    def completed_export(self, kind, *, job=None, status="completed", pilot=True,
+                         extensions=("mp4", "srt", "vtt"), extra=None):
+        job_id = job or self.job_id
+        identity = secrets.token_hex(16)
+        export = {"id": identity, "job_id": job_id, "status": status, "title": "Fragmento manual",
+                  "clip_file": "manual.mp4", "options": Presentation().model_dump(), "cues": []}
+        if pilot is not None:
+            export["pilot"] = pilot
+        if kind == "editorial":
+            export.update(title="Recorte seleccionado", draft_id=secrets.token_hex(16), draft_revision=3)
+        export.update(extra or {})
+        prefix = f"workspaces/{self.principal.workspace_id}/jobs/{job_id}/tasks/{identity}/1/"
+        manifest, expected = {}, {}
+        for ext in extensions:
+            object_name = f"{prefix}clip.{ext}"
+            content = f"{kind} {identity} {ext}".encode()
+            self.contents[object_name] = content
+            manifest[f"clip.{ext}"] = object_item(object_name, ext, content)
+            expected[f"{kind}_{identity}.{ext}"] = content
+        with self.engine.begin() as connection:
+            repository.insert_document(connection, job_id, "export", export, manifest)
+        return export, manifest, expected
+
     def test_streams_exact_base_and_completed_variant_without_creating_a_task(self):
         summary = self.query(inspect=True)
         self.assertEqual(summary.status_code, 200)
@@ -143,6 +166,7 @@ class ClipPackageDatabaseTests(unittest.TestCase):
             self.assertIsNone(archive.testzip())
             self.assertEqual(archive.namelist(), [*expected, "manifest.json"])
             manifest = json.loads(archive.read("manifest.json"))
+            self.assertEqual(set(manifest), {"clips"})
             self.assertEqual([clip["caption_revision"] for clip in manifest["clips"]], [1, 4])
             self.assertEqual(manifest["clips"][1]["output_id"], self.variant)
             for item in manifest["clips"]:
@@ -153,6 +177,82 @@ class ClipPackageDatabaseTests(unittest.TestCase):
                     self.assertEqual(archive.getinfo(file["file"]).compress_type, ZIP_STORED)
         with self.engine.begin() as connection:
             self.assertEqual(connection.execute(text("SELECT count(*) FROM cloud_tasks")).scalar_one(), 0)
+
+    def test_mixed_zip_preserves_exact_auto_manual_editorial_variants_and_available_sidecars(self):
+        manual, _, manual_files = self.completed_export("manual", pilot=None, extensions=("mp4",))
+        editorial, _, editorial_files = self.completed_export("editorial")
+        rows = self.client.get(f"/jobs/{self.job_id}/exports")
+        self.assertEqual(rows.status_code, 200)
+        catalog = {item["id"]: item for item in rows.json()["exports"]}
+        self.assertNotIn("archive_selection", catalog[self.variant])
+        self.assertEqual(catalog[manual["id"]]["archive_files"], ["mp4"])
+        self.assertEqual(catalog[editorial["id"]]["archive_files"], ["mp4", "srt", "vtt"])
+        def selector(item):
+            token = catalog[item["id"]]["archive_selection"]
+            self.assertEqual(token, f"export:{item['id']}:1")
+            return token
+        tokens = [selector(manual), self.tokens[1], selector(editorial)]
+        expected = {**manual_files, SECOND: b"approved variant", "clip_02.srt": b"variant srt",
+                    "clip_02.vtt": b"variant vtt", **editorial_files}
+        summary = self.query(tokens=tokens, inspect=True)
+        self.assertEqual(summary.status_code, 200)
+        self.assertEqual(summary.json()["clips"], 3)
+        self.assertEqual(summary.json()["bytes"], sum(map(len, expected.values())))
+        self.body.assert_not_called()
+        result = self.query(tokens=tokens)
+        self.assertEqual(result.status_code, 200)
+        with ZipFile(BytesIO(result.content)) as archive:
+            self.assertIsNone(archive.testzip())
+            self.assertEqual(archive.namelist(), [*expected, "manifest.json"])
+            manifest = json.loads(archive.read("manifest.json"))
+            self.assertEqual(set(manifest), {"clips", "exports"})
+            self.assertEqual([(item["kind"], item["export_id"], item["revision"]) for item in manifest["exports"]],
+                             [("manual", manual["id"], 1), ("editorial", editorial["id"], 1)])
+            self.assertEqual([(item["clip"], item["caption_revision"], item["output_id"])
+                              for item in manifest["clips"]], [(SECOND, 4, self.variant)])
+            for item in manifest["clips"] + manifest["exports"]:
+                for file in item["files"]:
+                    content = expected[file["file"]]
+                    self.assertEqual(archive.read(file["file"]), content)
+                    self.assertEqual((file["bytes"], file["sha256"]), (len(content), sha256(content).hexdigest()))
+        with self.engine.begin() as connection:
+            self.assertEqual(connection.execute(text("SELECT count(*) FROM cloud_tasks")).scalar_one(), 0)
+
+    def test_export_selection_rejects_stale_foreign_incomplete_and_internal_rows(self):
+        another = pilot._reserve(self.principal, "other-zip-project", "other.mp4", 2048)
+        elsewhere, _, _ = self.completed_export("editorial", job=another["id"])
+        chosen, _, _ = self.completed_export("editorial")
+        queued, _, _ = self.completed_export("manual", status="queued")
+        failed, _, _ = self.completed_export("manual", status="failed")
+        internal, _, _ = self.completed_export("editorial", extra={"clip_captions": True})
+        without_mp4, _, _ = self.completed_export("manual", extensions=("srt",))
+        corrupt, manifest, _ = self.completed_export("manual")
+        manifest["clip.vtt"]["name"] = f"workspaces/{self.neighbor['principal'].workspace_id}/foreign.vtt"
+        with self.engine.begin() as connection:
+            repository.update_document(connection, self.job_id, "export", corrupt, manifest=manifest)
+        token = f"export:{chosen['id']}:1"
+        self.assertEqual(self.query(tokens=[token], inspect=True).status_code, 200)
+        self.assertEqual(self.query(self.login(), tokens=[token]).status_code, 401)
+        self.assertEqual(self.query(self.login(self.neighbor), tokens=[token]).status_code, 404)
+        self.assertEqual(self.query(tokens=[f"export:{elsewhere['id']}:1"]).status_code, 404)
+        self.assertEqual(self.query(tokens=[f"export:{chosen['id']}:2"]).status_code, 409)
+        self.assertEqual(self.query(tokens=[token, f"export:{chosen['id']}:2"]).status_code, 422)
+        self.assertEqual(self.query(tokens=[f"export:{chosen['id']}:01"]).status_code, 422)
+        self.assertEqual(self.query(tokens=[f"export:../{chosen['id']}:1"]).status_code, 422)
+        with patch.object(clip_package, "MAX_BYTES", 1):
+            self.assertEqual(self.query(tokens=[token]).status_code, 413)
+        rows = self.client.get(f"/jobs/{self.job_id}/exports")
+        self.assertEqual(rows.status_code, 200)
+        catalog = {item["id"]: item for item in rows.json()["exports"]}
+        for invalid in (queued, failed, internal, without_mp4, corrupt):
+            with self.subTest(status=invalid["status"], selection=invalid["id"]):
+                self.assertNotIn("archive_selection", catalog[invalid["id"]])
+                self.assertNotIn("archive_files", catalog[invalid["id"]])
+                revision = 2 if invalid is corrupt else 1
+                self.assertEqual(self.query(tokens=[f"export:{invalid['id']}:{revision}"]).status_code, 409)
+        self.assertEqual(project_deletion.begin(self.principal, self.job_id)["status"], "deleted")
+        self.assertEqual(self.query(tokens=[token]).status_code, 404)
+        self.body.assert_not_called()
 
     def test_rejects_bad_selection_stale_revision_and_wrong_owners_without_opening_objects(self):
         self.assertEqual(self.query(self.login()).status_code, 401)
@@ -236,7 +336,7 @@ class ClipPackageStreamTests(unittest.TestCase):
         response.iter_content.return_value = iter([b"PK", b"rest of zip"])
         session.request.return_value = response
         job_path = f"/jobs/{'1' * 32}/clips.zip"
-        selectors = [("selection", f"{FIRST}:1:{'2' * 64}"), ("selection", f"{SECOND}:4:{'3' * 32}")]
+        selectors = [("selection", f"{FIRST}:1:{'2' * 64}"), ("selection", f"export:{'3' * 32}:4")]
         with (
             TestClient(proxy.app, base_url=proxy.PUBLIC_ORIGIN) as client,
             patch.object(proxy, "session", return_value=session),

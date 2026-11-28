@@ -83,13 +83,19 @@
   }
 
   function renderExports(id, exports) {
-    const signature = JSON.stringify(exports.map(item => [item.id, item.status, item.start, item.end, item.retryable]));
+    const zip = window.ClipForgeZip;
+    zip?.syncExports(id, "manual", exports);
+    const signature = JSON.stringify(exports.map(item => [
+      item.id, item.status, item.start, item.end, item.retryable, item.archive_selection, item.archive_files,
+    ]));
     if (signature === exportSignature) return;
     exportSignature = signature;
     results.replaceChildren(...exports.map(item => {
       const article = text("article", "", "beta-clip");
+      article.dataset.exportId = item.id;
+      const range = item.start.toFixed(2) + "–" + item.end.toFixed(2) + " s";
       article.append(text("h3", "Clip manual"));
-      article.append(text("p", item.start.toFixed(2) + "–" + item.end.toFixed(2) + " s del original", "muted"));
+      article.append(text("p", range + " del original", "muted"));
       if (item.status === "completed") {
         const files = url(id, "/exports/" + item.id + "/files/");
         const player = document.createElement("video");
@@ -99,9 +105,13 @@
         player.preload = "none";
         player.setAttribute("aria-label", "Clip manual");
         const links = text("div", "", "actions");
-        links.append(link("Descargar clip manual", files + "clip.mp4"),
-          link("Subtítulos SRT", files + "clip.srt"), link("Subtítulos VTT", files + "clip.vtt"));
+        const available = Array.isArray(item.archive_files) ? item.archive_files : ["mp4", "srt", "vtt"];
+        for (const [extension, title] of [["mp4", "Descargar clip manual"], ["srt", "Subtítulos SRT"], ["vtt", "Subtítulos VTT"]]) {
+          if (available.includes(extension)) links.append(link(title, files + "clip." + extension));
+        }
         article.append(player, links);
+        const include = zip?.includeExport(id, "manual", item.id, "clip manual " + range);
+        if (include) article.append(include);
       } else {
         const label = item.status === "failed" ? "No se pudo generar este clip."
           : item.status === "queued" ? "Clip en cola." : "Generando clip…";

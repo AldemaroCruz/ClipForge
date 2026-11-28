@@ -601,11 +601,6 @@ def export_manual_range(job_id: str, payload: RangeChange, request: Request):
     return _submit_export(job_id, item, request, pilot=True)
 
 
-def _is_pilot_manual_export(item):
-    return (item.get("clip_file") == "manual.mp4" and item.get("title") == "Fragmento manual"
-            and (item.get("pilot") is True or item.get("pilot") is None))
-
-
 @router.post("/jobs/{job_id}/exports/{export_id}/retry", status_code=202)
 def retry_manual_export(job_id: str, export_id: str, request: Request):
     if not re.fullmatch(r"[a-f0-9]{32}", export_id):
@@ -616,7 +611,7 @@ def retry_manual_export(job_id: str, export_id: str, request: Request):
         job = repo.beta_document(connection, principal, job_id)
         document = repo.document(job_id, "export", export_id, connection)
         item = document["payload"]
-        if item.get("id") != export_id or not _is_pilot_manual_export(item):
+        if item.get("id") != export_id or not clip_package.is_pilot_manual_export(item):
             raise HTTPException(404, "Variante no encontrada")
         if item["status"] == "failed":
             if "input.mp4" not in job["manifest"]:
@@ -664,15 +659,16 @@ def create_export(job_id: str, filename: str, payload: ExportRequest, request: R
 
 
 @router.get("/jobs/{job_id}/exports")
-def exports(job_id: str):
+def exports(job_id: str, request: Request):
     job = _doc(job_id)["payload"]
     variants = repo.list_documents(job_id, "export")
     items = [variant["payload"] for variant in variants]
     if job.get("pilot") is True:
         for variant in variants:
             item = variant["payload"]
-            if _is_pilot_manual_export(item) and item["status"] == "failed":
+            if clip_package.is_pilot_manual_export(item) and item["status"] == "failed":
                 item["retryable"] = not variant["manifest"] and repo.manual_export_retryable(item)
+            item.update(clip_package.export_selection(variant, job_id, request.state.principal.workspace_id))
         if any(item.get("status") == "queued" and item.get("pilot") is None
                and item.get("clip_file") == "manual.mp4" for item in items):
             # The first manual-export endpoint persisted the variant but omitted

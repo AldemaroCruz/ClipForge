@@ -38,6 +38,11 @@ on:
         required: false
         type: boolean
         default: false
+      focused_mixed_zip:
+        description: Verify exact automatic and edited ZIP members after the subtitle correction is accepted
+        required: false
+        type: boolean
+        default: false
       worker_benchmark_base:
         description: Accepted INT commit to keep serving during an INT worker-only comparison
         required: false
@@ -652,6 +657,48 @@ jobs:
             --accepted-caption-color-base
           printf 'INT_CAPTION_COLOR_ACCEPTANCE=%s\n' "$receipt" >> "$GITHUB_ENV"
 
+      - name: Constrain the mixed ZIP to the accepted subtitle correction
+        if: inputs.focused_mixed_zip
+        shell: bash
+        env:
+          OTHER_MODE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c04_styles || inputs.focused_c05_framing || inputs.focused_c06_zip || inputs.focused_creator_logos || inputs.focused_caption_color || inputs.worker_benchmark_base != '' || inputs.adopt_worker_profile }}
+        run: |
+          set -euo pipefail
+          test "$OTHER_MODE" = false
+          base=d4c921509c74329c20c648c55c77a3a4e8cb573a
+          git merge-base --is-ancestor "$base" HEAD
+          git diff --name-only --no-renames -z "$base" HEAD | while IFS= read -r -d '' path; do
+            case "$path" in
+              .github/workflows/int-hito-b.yml|app/cloud/clip_package.py|app/cloud/router.py) ;;
+              app/static/beta.html|app/static/beta.js|app/static/editorial.js|app/static/mvp.js|docs/INT-FOCUS-GROUP.md) ;;
+              scripts/deploy_int_beta.sh|scripts/int_hito_b_browser.py|scripts/int_hito_c_mixed_zip_browser.py|scripts/int_hito_c_styles_evidence.py) ;;
+              tests/browser_hito_b_e2e.py|tests/test_clip_package.py) ;;
+              *) printf 'Outside the verified mixed ZIP scope: %s\n' "$path" >&2; exit 1 ;;
+            esac
+          done
+
+      - name: Download the pinned subtitle correction receipt
+        if: inputs.focused_mixed_zip
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          github-token: ${{ github.token }}
+          run-id: 46108294363
+          artifact-ids: 15249211928
+          path: ${{ env.DELIVERY_DIR }}/mixed-zip-baseline
+          merge-multiple: true
+
+      - name: Verify that both subtitle colors passed before the mixed ZIP
+        if: inputs.focused_mixed_zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          receipt="$DELIVERY_DIR/reports/mixed-zip-baseline.json"
+          python -m scripts.int_hito_c_styles_evidence --source "$DELIVERY_DIR/mixed-zip-baseline" \
+            --commit "$GITHUB_SHA" --model "$INT_EDITORIAL_OPENAI_MODEL" --receipt "$receipt" \
+            --accepted-mixed-zip-base d4c921509c74329c20c648c55c77a3a4e8cb573a 46108294363 15249211928 \
+            da3eeba02f0add97fbf8cee8596b2850363589111ecf9cf5a761c1711d47d6f1 aa9501c92f832bcc25abd2fad45ebe2ab77e498c7f34c78b0573d375542e105c
+          printf 'INT_MIXED_ZIP_ACCEPTANCE=%s\n' "$receipt" >> "$GITHUB_ENV"
+
       - name: Check the exact source scope of the reused evidence
         id: reuse_scope
         if: inputs.reuse_int_provider_evidence
@@ -825,7 +872,7 @@ jobs:
         run: bash scripts/deploy_int_beta.sh prepare
 
       - name: Run the additive PostgreSQL migration from INT
-        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_caption_color }}
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_caption_color && !inputs.focused_mixed_zip }}
         env:
           CLIPFORGE_GCP_DEPLOY_TOKEN: ${{ steps.publishing.outputs.access_token }}
           GOOGLE_OAUTH_ACCESS_TOKEN: ${{ steps.terraform_identity.outputs.access_token }}
@@ -868,11 +915,13 @@ jobs:
             ${{ env.DELIVERY_DIR }}/reports/browser-caption-color-baseline.json
             ${{ env.DELIVERY_DIR }}/reports/browser-caption-color.json
             ${{ env.DELIVERY_DIR }}/reports/caption-color-*.png
+            ${{ env.DELIVERY_DIR }}/reports/browser-mixed-zip.json
+            ${{ env.DELIVERY_DIR }}/reports/mixed-zip-*.png
           if-no-files-found: error
 
       - name: Replace the public revision and verify persistence
         id: acceptance_verify
-        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && !inputs.focused_caption_color && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && !inputs.focused_caption_color && !inputs.focused_mixed_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
         run: bash scripts/deploy_int_beta.sh acceptance-verify
@@ -891,7 +940,7 @@ jobs:
 
       - name: Create the three synthetic capacity accounts
         id: capacity_setup
-        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && !inputs.focused_caption_color && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && !inputs.focused_caption_color && !inputs.focused_mixed_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
         run: bash scripts/deploy_int_beta.sh capacity-setup
@@ -908,7 +957,7 @@ jobs:
 
       - name: Check three near-limit uploads and concurrent processing
         id: capacity_load
-        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && !inputs.focused_caption_color && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && !inputs.focused_caption_color && !inputs.focused_mixed_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
         run: bash scripts/deploy_int_beta.sh capacity-load
 
       - name: Publish the capacity evidence
@@ -923,7 +972,7 @@ jobs:
 
       - name: Export and measure both precise cuts
         id: capacity_cuts
-        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && !inputs.focused_caption_color && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && !inputs.focused_caption_color && !inputs.focused_mixed_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
         run: bash scripts/deploy_int_beta.sh capacity-cuts
 
       - name: Publish the precise-cut evidence
@@ -938,7 +987,7 @@ jobs:
 
       - name: Check three-account editorial acceptance and finish cleanup
         id: capacity_editorial
-        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && !inputs.focused_caption_color && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && !inputs.focused_creator_logos && !inputs.focused_caption_color && !inputs.focused_mixed_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
         run: bash scripts/deploy_int_beta.sh capacity-editorial
@@ -960,11 +1009,11 @@ jobs:
         run: bash scripts/deploy_int_beta.sh capacity-cleanup
 
       - name: Restore the previous INT components after a failed acceptance
-        if: ${{ always() && !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && (failure() || cancelled()) && (steps.acceptance_open.outcome == 'success' || steps.acceptance_open.outcome == 'failure' || steps.acceptance_open.outcome == 'cancelled' || ((inputs.focused_c04_styles || inputs.focused_c05_framing || inputs.focused_c06_zip || inputs.focused_creator_logos || inputs.focused_caption_color) && steps.deploy_prepare.outcome == 'success')) }}
+        if: ${{ always() && !inputs.adopt_worker_profile && inputs.worker_benchmark_base == '' && (failure() || cancelled()) && (steps.acceptance_open.outcome == 'success' || steps.acceptance_open.outcome == 'failure' || steps.acceptance_open.outcome == 'cancelled' || ((inputs.focused_c04_styles || inputs.focused_c05_framing || inputs.focused_c06_zip || inputs.focused_creator_logos || inputs.focused_caption_color || inputs.focused_mixed_zip) && steps.deploy_prepare.outcome == 'success')) }}
         run: bash scripts/deploy_int_beta.sh rollback
 
-      - name: Remove only the synthetic subtitle color project and account
-        if: ${{ always() && inputs.focused_caption_color && steps.acceptance_open.outcome != 'skipped' }}
+      - name: Remove only the work and account prepared for the focused browser check
+        if: ${{ always() && (inputs.focused_caption_color || inputs.focused_mixed_zip) && steps.acceptance_open.outcome != 'skipped' }}
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
         run: bash scripts/deploy_int_beta.sh caption-color-cleanup

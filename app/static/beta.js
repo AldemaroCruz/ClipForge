@@ -230,6 +230,7 @@ async function initBeta() {
   const zipButton = element("clip-zip-download");
   const zipStatus = element("clip-zip-status");
   const zipSelection = new Map();
+  const zipCandidates = new Map();
   let zipProject;
   let zipRequest;
 
@@ -317,25 +318,68 @@ async function initBeta() {
     return [clip.file, data.revision, data.output.id].join(":");
   }
 
-  function syncZip(clips) {
-    if (zipProject !== selectedId) {
+  function syncZipProject() {
+    const id = job?.id === selectedId ? selectedId : undefined;
+    if (zipProject !== id) {
       zipRequest?.abort();
       zipRequest = undefined;
-      zipProject = selectedId;
+      zipProject = id;
       zipSelection.clear();
+      zipCandidates.clear();
       zipStatus.textContent = "";
+      updateZipActions();
     }
-    const tokens = new Map(clips.map(clip => [clip.file, zipToken(clip)]));
-    for (const [file, token] of zipSelection) {
-      if (tokens.get(file) !== token) {
-        zipSelection.delete(file);
-        zipStatus.textContent = "Un clip cambió de versión. Selecciónalo de nuevo para incluirlo.";
-      }
-    }
-    zipActions.hidden = ![...tokens.values()].some(Boolean);
-    zipButton.disabled = !zipSelection.size || Boolean(zipRequest);
-    return tokens;
   }
+
+  function updateZipActions() {
+    zipActions.hidden = ![...zipCandidates.values()].some(entries => entries.size);
+    zipButton.disabled = !zipSelection.size || Boolean(zipRequest);
+  }
+
+  function syncZipSource(id, source, entries) {
+    if (id !== zipProject) return;
+    const tokens = new Map(entries.filter(([, token]) => token));
+    zipCandidates.set(source, tokens);
+    const prefix = source + ":";
+    for (const [key, token] of zipSelection) {
+      if (!key.startsWith(prefix) || tokens.get(key.slice(prefix.length)) === token) continue;
+      zipSelection.delete(key);
+      zipStatus.textContent = "Un clip cambió de versión. Selecciónalo de nuevo para incluirlo.";
+    }
+    updateZipActions();
+  }
+
+  function zipCheckbox(id, source, item, title) {
+    const token = id === zipProject && zipCandidates.get(source)?.get(item);
+    if (!token) return null;
+    const key = source + ":" + item;
+    const label = betaText("label", "Incluir " + title + " en ZIP", "beta-check");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    if (source !== "automatic") checkbox.dataset.archiveId = item;
+    checkbox.checked = zipSelection.get(key) === token;
+    checkbox.addEventListener("change", () => {
+      if (id !== zipProject || zipCandidates.get(source)?.get(item) !== token) return;
+      if (checkbox.checked) zipSelection.set(key, token);
+      else zipSelection.delete(key);
+      updateZipActions();
+      zipStatus.textContent = zipSelection.size
+        ? zipSelection.size + (zipSelection.size === 1 ? " clip seleccionado." : " clips seleccionados.") : "";
+    });
+    label.prepend(checkbox);
+    return label;
+  }
+
+  window.ClipForgeZip = {
+    syncExports(id, source, exports) {
+      syncZipSource(id, source, exports.map(item => {
+        const token = typeof item.archive_selection === "string" ? item.archive_selection : "";
+        const match = /^export:([a-f0-9]{32}):[1-9][0-9]{0,9}$/.exec(token);
+        return [item.id, item.status === "completed" && match?.[1] === item.id ? token : null];
+      }));
+    },
+    includeExport: zipCheckbox,
+  };
 
   async function downloadZip() {
     if (zipRequest || !zipSelection.size || !BETA_JOB_ID.test(zipProject)) return;
@@ -351,7 +395,7 @@ async function initBeta() {
     try {
       const info = await json(path + "&inspect=1", {signal: request.signal});
       if (request.signal.aborted || zipProject !== id) return;
-      if (approved.size !== zipSelection.size || [...approved].some(([file, token]) => zipSelection.get(file) !== token)) {
+      if (approved.size !== zipSelection.size || [...approved].some(([key, token]) => zipSelection.get(key) !== token)) {
         zipStatus.textContent = "La selección cambió. Vuelve a pulsar Descargar ZIP.";
         return;
       }
@@ -370,12 +414,13 @@ async function initBeta() {
     } finally {
       if (zipRequest === request) {
         zipRequest = undefined;
-        zipButton.disabled = !zipSelection.size;
+        updateZipActions();
       }
     }
   }
 
   function renderJob() {
+    syncZipProject();
     window.ClipForgeMvp?.selectJob(job);
     window.ClipForgeEditorial?.selectJob(job);
     const title = projects.find(project => project.id === selectedId)?.title;
@@ -402,7 +447,7 @@ async function initBeta() {
         ? "Pendiente. No se pudo activar el procesamiento. Se volverá a intentar."
       : betaStatus(job.status, job.lease_expired);
     syncCaptionRender();
-    const zipTokens = syncZip(clips);
+    syncZipSource(selectedId, "automatic", clips.map(clip => [clip.file, zipToken(clip)]));
     const key = selectedId + ":" + Boolean(job) + ":" + JSON.stringify(clips.map(clip => [clip.file, clip.captions]));
     if (key === renderKey) return;
     renderKey = key;
@@ -471,22 +516,8 @@ async function initBeta() {
         card.append(state);
       }
       card.append(player, actions);
-      const token = zipTokens.get(clip.file);
-      if (token) {
-        const include = betaText("label", "Incluir " + label + " en ZIP", "beta-check");
-        const checkbox = document.createElement("input");
-        checkbox.type = "checkbox";
-        checkbox.checked = zipSelection.has(clip.file);
-        checkbox.addEventListener("change", () => {
-          if (checkbox.checked) zipSelection.set(clip.file, token);
-          else zipSelection.delete(clip.file);
-          zipButton.disabled = !zipSelection.size || Boolean(zipRequest);
-          zipStatus.textContent = zipSelection.size
-            ? zipSelection.size + (zipSelection.size === 1 ? " clip seleccionado." : " clips seleccionados.") : "";
-        });
-        include.prepend(checkbox);
-        card.append(include);
-      }
+      const include = zipCheckbox(selectedId, "automatic", clip.file, label);
+      if (include) card.append(include);
       nextCards.push(card);
     }
     for (const card of [...cards.children]) {
