@@ -232,6 +232,15 @@ create_framing_fixture() {
         -c:a aac -b:a 96k -movflags +faststart "$DELIVERY_DIR/framing.mp4"
 }
 
+create_zip_fixture() {
+    create_voice_fixture
+    ffmpeg -hide_banner -loglevel error -nostdin \
+        -f lavfi -i 'testsrc2=size=720x1280:rate=24,noise=alls=38:allf=t+u:all_seed=613' \
+        -stream_loop -1 -i "$DELIVERY_DIR/voice.wav" -t 240 \
+        -c:v libx264 -preset ultrafast -pix_fmt yuv420p -threads 4 \
+        -b:v 4500k -maxrate 5600k -bufsize 11200k -c:a aac -b:a 96k -movflags +faststart "$DELIVERY_DIR/archive.mp4"
+}
+
 create_capacity_fixtures() {
     local minutes
     mkdir "$DELIVERY_DIR/capacity"
@@ -322,7 +331,7 @@ browser_acceptance() {
 
 verify_focused_baseline() {
     local increment="$1" receipt="$2"
-    [[ "$increment" == c04 || "$increment" == c05 ]]
+    [[ "$increment" == c04 || "$increment" == c05 || "$increment" == c06 ]]
     [[ "$receipt" == "$reports/$increment-baseline.json" && -f "$receipt" && ! -L "$receipt" ]]
     jq -e --arg schema "clipforge-int-$increment-baseline-1" --arg commit "$GITHUB_SHA" \
         --slurpfile previous "$reports/previous-live.json" '
@@ -388,6 +397,8 @@ case "${1:-}" in
             fi
         elif [[ -n "${INT_C05_ACCEPTANCE:-}" ]]; then
             verify_focused_baseline c05 "$INT_C05_ACCEPTANCE"
+        elif [[ -n "${INT_C06_ACCEPTANCE:-}" ]]; then
+            verify_focused_baseline c06 "$INT_C06_ACCEPTANCE"
         else
             trap rollback_delivery EXIT
             apply_beta false "run-$GITHUB_RUN_ID-b$GITHUB_RUN_ATTEMPT" private
@@ -421,6 +432,13 @@ case "${1:-}" in
             apply_beta true "run-$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT" replacement
             capture_rollout after
             browser_acceptance framing --video "$DELIVERY_DIR/framing.mp4"
+        elif [[ -n "${INT_C06_ACCEPTANCE:-}" ]]; then
+            verify_focused_baseline c06 "$INT_C06_ACCEPTANCE"
+            create_zip_fixture
+            : > "$DELIVERY_DIR/focused-promoting"
+            apply_beta true "run-$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT" replacement
+            capture_rollout after
+            browser_acceptance zip --video "$DELIVERY_DIR/archive.mp4"
         elif [[ -n "${INT_DELETION_REPLAY_REPORT:-}" ]]; then
             [[ "$INT_DELETION_REPLAY_REPORT" == "$reports/deletion-replay.json" && ! -L "$INT_DELETION_REPLAY_REPORT" ]]
             jq -e '.schema == "clipforge-int-hito-b-delete-evidence-1" and .status == "passed"
@@ -446,7 +464,7 @@ case "${1:-}" in
         capacity_acceptance "${1#capacity-}"
         ;;
     rollback)
-        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_C05_ACCEPTANCE:-}" && ! -f "$DELIVERY_DIR/focused-promoting" ]]; then
+        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_C05_ACCEPTANCE:-}${INT_C06_ACCEPTANCE:-}" && ! -f "$DELIVERY_DIR/focused-promoting" ]]; then
             restore_migrator_pin
         else
             restore_failed_delivery

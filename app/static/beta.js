@@ -225,6 +225,12 @@ async function initBeta() {
   const caption = suffix => element("clip-caption-" + suffix);
   const captionFields = window.ClipForgeCaptionFields;
   const deleteDialog = element("project-delete-dialog");
+  const zipActions = element("clip-zip-actions");
+  const zipButton = element("clip-zip-download");
+  const zipStatus = element("clip-zip-status");
+  const zipSelection = new Map();
+  let zipProject;
+  let zipRequest;
 
   let limits;
   let uploadBusy = false;
@@ -299,6 +305,71 @@ async function initBeta() {
     }
   }
 
+  function zipToken(clip) {
+    const data = clip.captions;
+    if (!betaCaptionOutput(selectedId, clip.file, data) || !Number.isSafeInteger(data.revision)
+        || data.revision < 1 || !/^(?:[a-f0-9]{32}|[a-f0-9]{64})$/.test(data.output.id)) return null;
+    return [clip.file, data.revision, data.output.id].join(":");
+  }
+
+  function syncZip(clips) {
+    if (zipProject !== selectedId) {
+      zipRequest?.abort();
+      zipRequest = undefined;
+      zipProject = selectedId;
+      zipSelection.clear();
+      zipStatus.textContent = "";
+    }
+    const tokens = new Map(clips.map(clip => [clip.file, zipToken(clip)]));
+    for (const [file, token] of zipSelection) {
+      if (tokens.get(file) !== token) {
+        zipSelection.delete(file);
+        zipStatus.textContent = "Un clip cambió de versión. Selecciónalo de nuevo para incluirlo.";
+      }
+    }
+    zipActions.hidden = ![...tokens.values()].some(Boolean);
+    zipButton.disabled = !zipSelection.size || Boolean(zipRequest);
+    return tokens;
+  }
+
+  async function downloadZip() {
+    if (zipRequest || !zipSelection.size || !BETA_JOB_ID.test(zipProject)) return;
+    const id = zipProject;
+    const approved = new Map(zipSelection);
+    const tokens = [...approved.values()];
+    const params = new URLSearchParams(tokens.map(token => ["selection", token]));
+    const path = "/jobs/" + id + "/clips.zip?" + params.toString();
+    const request = new AbortController();
+    zipRequest = request;
+    zipButton.disabled = true;
+    zipStatus.textContent = "Comprobando los clips seleccionados…";
+    try {
+      const info = await json(path + "&inspect=1", {signal: request.signal});
+      if (request.signal.aborted || zipProject !== id) return;
+      if (approved.size !== zipSelection.size || [...approved].some(([file, token]) => zipSelection.get(file) !== token)) {
+        zipStatus.textContent = "La selección cambió. Vuelve a pulsar Descargar ZIP.";
+        return;
+      }
+      if (info.clips !== tokens.length || !Number.isSafeInteger(info.bytes) || info.bytes <= 0 || info.bytes > info.max_bytes) {
+        throw new Error("No se pudo comprobar el tamaño del ZIP.");
+      }
+      const link = document.createElement("a");
+      link.href = path;
+      link.download = "clipforge-clips.zip";
+      document.body.append(link);
+      link.click();
+      link.remove();
+      zipStatus.textContent = "Descarga iniciada para " + tokens.length + (tokens.length === 1 ? " clip." : " clips.");
+    } catch (error) {
+      if (!request.signal.aborted && zipProject === id) zipStatus.textContent = error.message;
+    } finally {
+      if (zipRequest === request) {
+        zipRequest = undefined;
+        zipButton.disabled = !zipSelection.size;
+      }
+    }
+  }
+
   function renderJob() {
     window.ClipForgeMvp?.selectJob(job);
     window.ClipForgeEditorial?.selectJob(job);
@@ -326,6 +397,7 @@ async function initBeta() {
         ? "Pendiente. No se pudo activar el procesamiento. Se volverá a intentar."
       : betaStatus(job.status, job.lease_expired);
     syncCaptionRender();
+    const zipTokens = syncZip(clips);
     const key = selectedId + ":" + Boolean(job) + ":" + JSON.stringify(clips.map(clip => [clip.file, clip.captions]));
     if (key === renderKey) return;
     renderKey = key;
@@ -394,6 +466,22 @@ async function initBeta() {
         card.append(state);
       }
       card.append(player, actions);
+      const token = zipTokens.get(clip.file);
+      if (token) {
+        const include = betaText("label", "Incluir " + label + " en ZIP", "beta-check");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = zipSelection.has(clip.file);
+        checkbox.addEventListener("change", () => {
+          if (checkbox.checked) zipSelection.set(clip.file, token);
+          else zipSelection.delete(clip.file);
+          zipButton.disabled = !zipSelection.size || Boolean(zipRequest);
+          zipStatus.textContent = zipSelection.size
+            ? zipSelection.size + (zipSelection.size === 1 ? " clip seleccionado." : " clips seleccionados.") : "";
+        });
+        include.prepend(checkbox);
+        card.append(include);
+      }
       nextCards.push(card);
     }
     for (const card of [...cards.children]) {
@@ -847,6 +935,7 @@ async function initBeta() {
     if (selectedId) await openJob(selectedId);
   });
   element("more-projects").addEventListener("click", () => loadProjects(true));
+  zipButton.addEventListener("click", downloadZip);
   element("start-existing").addEventListener("click", event => startOrRetry(event.currentTarget, id => "/beta/uploads/" + id + "/start"));
   element("retry-job").addEventListener("click", event => startOrRetry(event.currentTarget, id => "/beta/jobs/" + id + "/retry"));
   element("delete-project").addEventListener("click", () => {

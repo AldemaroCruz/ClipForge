@@ -8,6 +8,7 @@ import re
 import tempfile
 import time
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
@@ -20,7 +21,7 @@ from ..auth_db import get_engine
 from ..editorial import EditorialContent, DraftUpdate, ProjectName, RangeChange, RevisionRequest, retime_cues, validate_range
 from ..presentation import Presentation, ExportRequest
 from ..subtitles import SubtitleError, cues_from_segments, to_srt, to_vtt, validate_cues
-from . import caption_styles, clip_captions, project_deletion
+from . import caption_styles, clip_captions, clip_package, project_deletion
 from . import editorial_selection as selection
 from . import repository as repo
 from .config import beta_enabled
@@ -273,6 +274,23 @@ def subtitles(job_id: str, filename: str, kind: str, request: Request):
 @router.get("/jobs/{job_id}/clips/{filename}/captions", dependencies=[Depends(_int_product_route)])
 def clip_caption_context(job_id: str, filename: str):
     return clip_captions.clip_context(_doc(job_id), filename)
+
+
+@router.get("/jobs/{job_id}/clips.zip", dependencies=[Depends(_int_product_route)])
+def download_clip_package(
+    job_id: str, request: Request,
+    selection: list[str] = Query(min_length=1, max_length=clip_package.MAX_CLIPS),
+    inspect: Literal["1"] | None = None,
+):
+    if set(request.query_params) - {"selection", "inspect"} or len(request.query_params.getlist("inspect")) > 1:
+        raise HTTPException(422, "La selección de clips no es válida.")
+    package = clip_package.prepare(job_id, selection, request.state.principal)
+    if inspect is not None:
+        return package.summary()
+    return StreamingResponse(clip_package.chunks(package), media_type="application/zip", headers={
+        "Content-Disposition": f'attachment; filename="clipforge-{job_id[:8]}-clips.zip"',
+        "Cache-Control": "no-store",
+    })
 
 
 @router.put("/jobs/{job_id}/clips/{filename}/captions", status_code=202, dependencies=[Depends(_int_product_route)])

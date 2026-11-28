@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import secrets
 import unittest
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -66,7 +66,8 @@ class BrowserHitoBTest(unittest.TestCase):
                       "ai_configured": True, "analysis": None, "selection_posts": [], "draft": None,
                       "range_posts": [], "draft_updates": [], "approved": {},
                       "caption": None, "project_caption": None, "caption_updates": [], "deletions": [],
-                      "saved_style": None, "framing_source": None, "source_reads": 0}
+                      "saved_style": None, "framing_source": None, "source_reads": 0,
+                      "zip_requests": [], "zip_stale": False}
         self.context = self.browser.new_context(service_workers="block")
         self.addCleanup(self.context.close)
         self.context.route("**/*", self.handle)
@@ -109,6 +110,15 @@ class BrowserHitoBTest(unittest.TestCase):
                     route.fulfill(status=200, content_type="video/webm", body=self.state["framing_source"])
                     return
             route.fulfill(status=404 if self.state["status"] == "deleted" else 503, content_type="video/mp4")
+            return
+        if path == f"/jobs/{JOB}/clips.zip":
+            params = parse_qs(parsed.query)
+            self.state["zip_requests"].append(params)
+            self.assertEqual(["1"], params.get("inspect"))
+            stale = self.state["zip_stale"]
+            result = ({"detail": "La edición cambió."} if stale
+                      else {"clips": 1, "bytes": 2048, "max_bytes": 128 * 1024**2})
+            route.fulfill(status=409 if stale else 200, content_type="application/json", body=json.dumps(result))
             return
         data, status = self.api(path, request)
         route.fulfill(status=status, content_type="application/json", body=json.dumps(data))
@@ -460,6 +470,50 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertEqual("88", self.page.locator("#clip-caption-size").input_value())
         self.assertEqual("Texto del recorte.", editor.locator("textarea").input_value())
         self.assertEqual([], self.state["selection_posts"])
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
+    def test_zip_preflight_download_and_invalidate_only_selected_revision(self):
+        base = f"/jobs/{JOB}/clips/{CLIP}"
+        other = "clip_02.mp4"
+        self.state.update(status="completed", caption={
+            "start": 392, "end": 421.5, "duration": 29.5, "revision": 3, "status": "completed",
+            "output": {"id": "f" * 64, "mp4": base, "burn_subtitles": True},
+        }, sibling_clip={
+            "file": other, "start": 10, "end": 30,
+            "captions": {"revision": 1, "status": "completed",
+                         "output": {"id": "e" * 64, "mp4": f"/jobs/{JOB}/clips/{other}", "burn_subtitles": True}},
+        })
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        button = self.page.locator("#clip-zip-download")
+        expect(button).to_be_disabled()
+        self.page.get_by_role("checkbox", name="Incluir Clip 1 en ZIP", exact=True).check()
+        expected = {"selection": [f"{CLIP}:3:" + "f" * 64]}
+        self.state["zip_stale"] = True
+        button.click()
+        self.until_text("#clip-zip-status", "La edición cambió.")
+        self.assertEqual([{**expected, "inspect": ["1"]}], self.state["zip_requests"])
+        self.state["zip_stale"] = False
+        self.page.evaluate("""() => {
+            document.addEventListener('click', event => {
+                if (event.target instanceof HTMLAnchorElement && event.target.download) {
+                    event.preventDefault();
+                    window.zipLink = {href: event.target.href, name: event.target.download};
+                }
+            }, {capture: true});
+        }""")
+        button.click()
+        self.until_text("#clip-zip-status", "Descarga iniciada para 1 clip.")
+        link = self.page.evaluate("window.zipLink")
+        self.assertEqual("clipforge-clips.zip", link["name"])
+        parsed = urlsplit(link["href"])
+        self.assertEqual((f"/jobs/{JOB}/clips.zip", expected), (parsed.path, parse_qs(parsed.query)))
+        self.assertEqual([expected | {"inspect": ["1"]}, expected | {"inspect": ["1"]}], self.state["zip_requests"])
+        self.state["caption"]["revision"] = 4
+        self.page.locator("#refresh-projects").click()
+        self.until_text("#clip-zip-status", "Un clip cambió de versión")
+        expect(button).to_be_disabled()
+        expect(self.page.get_by_role("checkbox", name="Incluir Clip 2 en ZIP", exact=True)).not_to_be_checked()
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])
 

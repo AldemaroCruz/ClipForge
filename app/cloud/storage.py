@@ -268,9 +268,11 @@ def _pinned_options(item, range_header=None):
     return {"params": {"alt": "media", "generation": generation}, "headers": headers, "stream": True}
 
 
-def open_object(item, range_header=None, *, retry=True):
+def open_object(item, range_header=None, *, retry=True, timeout=None):
     url = object_url(item["name"])
     options = _pinned_options(item, range_header)
+    if timeout is not None:
+        options["timeout"] = timeout
     if retry:
         return _read_with_retry(url, **options)
     return request("GET", url, **options)

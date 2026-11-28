@@ -35,6 +35,7 @@ ROUTES = {
         r"/(?:|login|recover|account|health|environment)",
         r"/auth/(?:csrf|me|users|admin/audit)",
         rf"/projects|/jobs/{JOB}(?:/clips/{CLIP}|/source|/workspace|/exports|/exports/{JOB}/files/{EXPORT_FILE})?",
+        rf"/jobs/{JOB}/clips[.]zip",
         r"/beta/limits",
         r"/ai/config",
         rf"/caption-styles(?:/{JOB})?",

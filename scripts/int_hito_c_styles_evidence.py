@@ -50,29 +50,37 @@ def verify(root, commit, model):
     }
 
 
-def verify_styles_release(root, commit, model, accepted_commit, run, artifact, rollout_digest, browser_digest):
+def verify_product_release(root, commit, model, phase, accepted_commit, run, artifact, rollout_digest, browser_digest):
     if (not re.fullmatch(r"[a-f0-9]{40}", commit) or not re.fullmatch(r"[a-f0-9]{40}", accepted_commit)
             or commit == accepted_commit):
-        raise ValueError("La candidata C05 debe descender de la aceptación C04")
-    expected = {"after-rollout.json": rollout_digest, "browser-styles.json": browser_digest}
+        raise ValueError("La candidata debe descender del incremento aceptado")
+    if phase == "styles":
+        increment = "c05"
+        required = {
+            "normal_creator_style_persisted_after_relogin",
+            "normal_other_creator_cannot_list_same_style_or_read_mutate_it",
+            "confirmed_project_style_applied_to_all_preserving_each_cue",
+            "style_in_export_and_caption_sidecars",
+            "default_style_snapshotted_on_new_work_and_render",
+            "template_update_and_delete_preserve_applied_values_and_export_bytes",
+        }
+    else:
+        increment = "c06"
+        required = {
+            "normal_creator_framing_preview_and_two_approved_renders_match",
+            "reopen_preserves_crop_styles_text_times_and_previous_mp4",
+        }
+    expected = {"after-rollout.json": rollout_digest, f"browser-{phase}.json": browser_digest}
     rollout, browser = (native_report(root, name, digest) for name, digest in expected.items())
     revisions = {"frontend": rollout["frontend_revision"], "api": rollout["api_revision"]}
-    required = {
-        "normal_creator_style_persisted_after_relogin",
-        "normal_other_creator_cannot_list_same_style_or_read_mutate_it",
-        "confirmed_project_style_applied_to_all_preserving_each_cue",
-        "style_in_export_and_caption_sidecars",
-        "default_style_snapshotted_on_new_work_and_render",
-        "template_update_and_delete_preserve_applied_values_and_export_bytes",
-    }
     passed = {entry["name"] for entry in browser["checks"] if entry["status"] == "passed"}
     if (rollout["commit"] != accepted_commit or rollout["editorial"]["model"] != model
             or rollout["editorial"]["daily_limit"] != 100 or browser["commit"] != accepted_commit
             or browser["revisions"] != revisions or browser["status"] != "passed"
-            or browser["phase"] != "styles" or not required <= passed):
-        raise ValueError("La evidencia C04 no corresponde a la versión aceptada")
+            or browser["phase"] != phase or not required <= passed):
+        raise ValueError("La evidencia no corresponde al incremento aceptado")
     return {
-        "schema": "clipforge-int-c05-baseline-1", "status": "passed", "target_commit": commit,
+        "schema": f"clipforge-int-{increment}-baseline-1", "status": "passed", "target_commit": commit,
         "baseline": rollout, "evidence": {"run_id": run, "artifact_id": artifact, "sha256": expected},
     }
 
@@ -83,10 +91,17 @@ def main():
     parser.add_argument("--commit", required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--receipt", required=True, type=Path)
-    parser.add_argument("--accepted-styles", nargs=5, metavar=("SHA", "RUN", "ARTIFACT", "ROLLOUT_HASH", "BROWSER_HASH"))
+    group = parser.add_mutually_exclusive_group()
+    for phase in ("styles", "framing"):
+        group.add_argument("--accepted-" + phase, nargs=5,
+                           metavar=("SHA", "RUN", "ARTIFACT", "ROLLOUT_HASH", "BROWSER_HASH"))
     args = parser.parse_args()
-    receipt = (verify_styles_release(args.source, args.commit, args.model, *args.accepted_styles)
-               if args.accepted_styles else verify(args.source, args.commit, args.model))
+    if args.accepted_styles:
+        receipt = verify_product_release(args.source, args.commit, args.model, "styles", *args.accepted_styles)
+    elif args.accepted_framing:
+        receipt = verify_product_release(args.source, args.commit, args.model, "framing", *args.accepted_framing)
+    else:
+        receipt = verify(args.source, args.commit, args.model)
     with args.receipt.open("x", encoding="utf-8") as output:
         json.dump(receipt, output, indent=2, ensure_ascii=False)
         output.write("\n")

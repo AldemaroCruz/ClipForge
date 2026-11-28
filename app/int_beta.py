@@ -69,7 +69,7 @@ app.add_middleware(AuthenticationBoundary)
 app.add_middleware(TrustedPublicOrigin)
 app.include_router(auth_router, dependencies=[Depends(require_access)])
 media_gets = {
-    "/projects", "/jobs/{job_id}", "/jobs/{job_id}/clips/{filename}", "/jobs/{job_id}/source",
+    "/projects", "/jobs/{job_id}", "/jobs/{job_id}/clips/{filename}", "/jobs/{job_id}/clips.zip", "/jobs/{job_id}/source",
     "/jobs/{job_id}/workspace", "/jobs/{job_id}/exports", "/jobs/{job_id}/exports/{export_id}/files/{filename}",
     "/ai/config", "/jobs/{job_id}/selections/context", "/jobs/{job_id}/selections",
     "/jobs/{job_id}/selections/{run_id}", "/jobs/{job_id}/drafts", "/jobs/{job_id}/drafts/{draft_id}",

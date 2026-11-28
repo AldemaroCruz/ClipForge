@@ -211,6 +211,24 @@ def clip_context(doc, filename, *, connection=None):
     return context
 
 
+def selected_output(doc, filename, revision, output_id, connection):
+    """Resolve the exact current caption render without reading the transcript."""
+    item = _clip(doc, filename)
+    state = _caption_state(doc, item, connection)
+    output = state["output"]
+    if state["revision"] != revision or not output or output["id"] != output_id or not output["mp4"]:
+        raise HTTPException(409, "Cambió un clip seleccionado. Actualizá la lista y volvé a seleccionarlo.")
+    job = doc["payload"]
+    export_id = _settings(job, item).get("export_id")
+    if export_id:
+        manifest = repo.document(job["id"], "export", export_id, connection)["manifest"]
+        stem = "clip"
+    else:
+        manifest = doc["manifest"]
+        stem = PurePosixPath(filename).stem
+    return {kind: manifest[f"{stem}.{kind}"] for kind in ("mp4", "srt", "vtt") if output[kind]}
+
+
 def _plan(connection, doc, item, style, cues, *, inherited=False, render=True, template=None):
     job, source = doc["payload"], doc["manifest"].get("input.mp4")
     if source is None:
