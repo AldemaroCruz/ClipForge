@@ -45,13 +45,15 @@ REUSED_PROVIDER_MAX_BYTES = 128 * 1024
 PARALLEL_CASES = tuple(f"20m_parallel_{index}" for index in range(1, 4))
 ACCOUNT_CASES = (("3m", "20m", "native_timing", PARALLEL_CASES[0]),
                  ("5m", PARALLEL_CASES[1]), ("10m", PARALLEL_CASES[2]))
+BENCHMARK_CASES = ("creator_1", "creator_2", "creator_3")
+BENCHMARK_ACCOUNT_CASES = tuple((label,) for label in BENCHMARK_CASES)
 EDITORIAL_ACTIONS = (
     ("guardar semillas para el huerto", r"\b(?:guard\w*|conserv\w*)\b[^.!?]{0,42}\bsemill\w*\b"),
     ("repartir el riego entre los vecinos", r"\b(?:compart\w*|turnos?)\b[^.!?]{0,42}\b(?:reg\w*|riego)\b"),
     ("compartir lo aprendido con las escuelas", r"\b(?:enseñ\w*|escuel\w*)\b[^.!?]{0,60}\b(?:conserv\w*|cultiv\w*|semill\w*)\b"),
     ("explicar el origen del huerto", r"\bhuerto comunitario\b"),
 )
-CHECKPOINT_PREDECESSORS = {"load": "setup", "cuts": "load", "editorial": "cuts"}
+CHECKPOINT_PREDECESSORS = {"load": "setup", "cuts": "load", "editorial": "cuts", "benchmark": "setup"}
 CAPACITY_STATE_SCHEMA = "clipforge-int-hito-b-capacity-state-1"
 MAX_CHECKPOINT_BYTES = 1024 * 1024
 CHECKPOINT_METADATA = {
@@ -316,6 +318,8 @@ def sample(cases, report):
         job = case.last_job if case.completed_at else facts(case.page, "/jobs/" + case.job_id)
         state = job.get("status")
         require(job.get("id") == case.job_id and state in OBSERVED_STATES, "job_state_unrecognized")
+        if "benchmark" in report:
+            require(bool(job.get("clips")) == (state == "completed"), "benchmark_publication_not_atomic")
         if not case.events or case.events[-1]["state"] != state:
             case.events.append({"state": state, "at_utc": utc(), "seconds_after_activation": elapsed(case.activated_at)})
         case.last_job = job
@@ -345,9 +349,7 @@ def within_response_budget(seconds, limit):
 
 
 def load_probe(browser, account, args, current, saved, report):
-    """Measure completed-clip access while all three new jobs remain active."""
-    filename, artifact = next(iter(saved.results.items()))
-    expected = artifact["sha256"]
+    """Measure portal access while all three new jobs remain active."""
     measured = {}
     report["response_seconds"] = measured
     with browser_test.browser_page(browser) as page:
@@ -362,22 +364,29 @@ def load_probe(browser, account, args, current, saved, report):
         job = facts(page, "/jobs/" + current.job_id)
         require(job.get("status") in ACTIVE, "owned_job_not_active_during_status_probe")
         measured["job_status"] = elapsed(started)
-        started = monotonic()
-        browser_test.open_saved_job(page, saved.job_id)
-        measured["saved_job_navigation"] = elapsed(started)
-        started = monotonic()
-        label = "Clip " + str(int(filename[5:7]))
-        with page.expect_download(timeout=args.response_budget * 1000) as event:
-            page.get_by_role("link", name="Descargar " + label + " en MP4").click()
-        with tempfile.TemporaryDirectory(prefix="beta-capacity-load-", dir=args.report.parent) as temporary:
-            file = Path(temporary) / "resultado.mp4"
-            event.value.save_as(file)
-            measured["clip_download"] = elapsed(started)
-            with file.open("rb") as stream:
-                require(hashlib.file_digest(stream, "sha256").hexdigest() == expected,
-                        "download_bytes_changed_under_load")
-        event.value.delete()
+        if saved is not None:
+            download_probe(page, args, saved, measured)
     within_response_budget(measured, args.response_budget)
+
+
+def download_probe(page, args, saved, measured):
+    filename, artifact = next(iter(saved.results.items()))
+    expected = artifact["sha256"]
+    started = monotonic()
+    browser_test.open_saved_job(page, saved.job_id)
+    measured["saved_job_navigation"] = elapsed(started)
+    started = monotonic()
+    label = "Clip " + str(int(filename[5:7]))
+    with page.expect_download(timeout=args.response_budget * 1000) as event:
+        page.get_by_role("link", name="Descargar " + label + " en MP4").click()
+    with tempfile.TemporaryDirectory(prefix="beta-capacity-load-", dir=args.report.parent) as temporary:
+        file = Path(temporary) / "resultado.mp4"
+        event.value.save_as(file)
+        measured["clip_download"] = elapsed(started)
+        with file.open("rb") as stream:
+            require(hashlib.file_digest(stream, "sha256").hexdigest() == expected,
+                    "download_bytes_changed_under_load")
+    event.value.delete()
 
 
 def observe_overlap(cases, browser, accounts, saved, args, report):
@@ -397,7 +406,8 @@ def observe_overlap(cases, browser, accounts, saved, args, report):
     report["overlap"]["end"] = final
     report["overlap"]["probed_seconds"] = elapsed(started)
     require(all(state in ACTIVE for state in final["states"].values()), "load_probe_outside_three_way_overlap")
-    browser_test.check(report, "three_processing_jobs_and_responsive_login_navigation_status_download")
+    browser_test.check(report, "three_processing_jobs_and_responsive_login_navigation_status_download"
+                       if saved is not None else "three_processing_jobs_and_responsive_login_navigation_status")
 
 
 def project_ids(page):
@@ -804,7 +814,7 @@ def run_batch(cases, args, report, overlap=None, *, remember_reservation=None):
         row["processing_wall_seconds"] = round(case.completed_at - case.activated_at, 3)
         row["upload_to_automatic_captioned_clips_seconds"] = round(case.completed_at - case.upload_start, 3)
         finish_case(case, args, report)
-    if overlap:
+    if overlap and overlap[2] is not None:
         late = max((clip["captions"] for case in cases for clip in case.results.values()),
                    key=lambda item: item["source_start"])
         require(late["source_start"] >= 180 and
@@ -884,6 +894,42 @@ def load_capacity(browser, args, report, accounts, pages, transfers, *, remember
     return parallel
 
 
+def benchmark_capacity(browser, args, report, accounts, pages, transfers, *, remember_reservation):
+    path = args.large_fixture
+    require(path.is_absolute() and path.is_file() and not path.is_symlink(), "benchmark_fixture_path")
+    size = path.stat().st_size
+    require(browser_test.CHUNK_BYTES <= size <= 300 * 1024 * 1024, "benchmark_fixture_size")
+    require(browser_test.digest_of(path) == args.benchmark_sha256, "benchmark_fixture_hash")
+    media = probe_media(path, pilot=True)
+    require((media["duration_seconds"], media["width"], media["height"],
+             media["video_codec"], media["audio_codec"]) == (600, 1280, 720, "h264", "aac"),
+            "benchmark_fixture_media")
+    report["benchmark_fixture"] = {"bytes": size, "duration_seconds": 600, "sha256": args.benchmark_sha256}
+    limits = facts(pages[0], "/beta/limits")
+    require(limits["worker_concurrency"] == 3 and limits["active_jobs_per_user"] == 1,
+            "benchmark_creator_limit")
+    for page in pages:
+        require(browser_test.browser_get(page, "/auth/users")["status"] == 403
+                and project_ids(page) == [], "benchmark_creator_scope")
+        page.wait_for_function("() => !document.querySelector('#upload-submit').disabled")
+    report["creators_logged_in"] = len(pages)
+    fixture = Fixture(path, size, 600)
+    cases = [Case(label, fixture, page, transfer)
+             for label, page, transfer in zip(BENCHMARK_CASES, pages, transfers, strict=True)]
+    run_batch(cases, args, report, (browser, accounts, None), remember_reservation=remember_reservation)
+    for case in cases:
+        item = report["cases"][case.label]
+        require(len(item["clips"]) == 5 and facts(case.page, f"/jobs/{case.job_id}/selections")["analyses"] == [],
+                "benchmark_output_or_ai_scope")
+        item["portal_publication"] = {
+            "first_and_all_observed_atomically": True,
+            "upload_to_first_and_all_seconds": item["upload_to_automatic_captioned_clips_seconds"],
+            "activated_to_first_and_all_seconds": item["processing_wall_seconds"],
+        }
+    check_isolation(cases, report)
+    browser_test.check(report, "three_equal_fixtures_published_as_atomic_five_clip_batches_without_provider")
+
+
 def cut_capacity(args, report, page, transfer, *, remember_reservation=None):
     from scripts.int_hito_c_cuts_browser import acceptance as check_precise_cuts
 
@@ -938,7 +984,10 @@ def acceptance(browser, args, admin, report, reused_provider=None):
 
 
 def checkpoint_identity(report):
-    return {key: report[key] for key in ("commit", "revisions", "editorial_model", "run_id", "run_attempt")}
+    identity = {key: report[key] for key in ("commit", "revisions", "editorial_model", "run_id", "run_attempt")}
+    if "benchmark" in report:
+        identity["benchmark"] = report["benchmark"]
+    return identity
 
 
 def load_checkpoint(path, phase, identity):
@@ -951,7 +1000,8 @@ def load_checkpoint(path, phase, identity):
         raw = stream.read(MAX_CHECKPOINT_BYTES + 1)
     require(0 < len(raw) <= MAX_CHECKPOINT_BYTES, "capacity_checkpoint_size")
     value = json.loads(raw)
-    require(type(value) is dict and CHECKPOINT_METADATA <= set(value) <= CHECKPOINT_METADATA | CHECKPOINT_RESULTS.keys()
+    metadata = CHECKPOINT_METADATA | ({"benchmark"} if "benchmark" in identity else set())
+    require(type(value) is dict and metadata <= set(value) <= metadata | CHECKPOINT_RESULTS.keys()
             and value["schema"] == SCHEMA and value["url"] == PUBLIC
             and value["phase"] == phase and value["status"] == "passed"
             and checkpoint_identity(value) == identity, "capacity_checkpoint_identity")
@@ -989,7 +1039,8 @@ def read_capacity_state(path, identity):
     require(type(attempted) is list and attempted == [row["username"] for row in accounts[:len(attempted)]]
             and all(row["id"] is None or row["username"] in attempted for row in accounts),
             "capacity_private_attempted_accounts")
-    allowed_cases = {label for account_cases in ACCOUNT_CASES for label in account_cases}
+    account_cases = BENCHMARK_ACCOUNT_CASES if "benchmark" in identity else ACCOUNT_CASES
+    allowed_cases = {label for labels in account_cases for label in labels}
     require(type(jobs) is dict and set(jobs) <= allowed_cases
             and all(browser_test.ID.fullmatch(job) for job in jobs.values())
             and len(set(jobs.values())) == len(jobs), "capacity_private_jobs")
@@ -1030,7 +1081,8 @@ def cleanup_capacity(browser, args, admin, report, state):
         users = {user["username"]: user for user in facts(page, "/auth/users")["users"]}
         pending = []
         owner_ids = []
-        for account_cases, account in zip(ACCOUNT_CASES, state["accounts"], strict=True):
+        ownership = BENCHMARK_ACCOUNT_CASES if "benchmark" in state["identity"] else ACCOUNT_CASES
+        for account_cases, account in zip(ownership, state["accounts"], strict=True):
             if account["username"] not in state["attempted"]:
                 continue
             user = users.get(account["username"])
@@ -1104,6 +1156,13 @@ def acceptance_phase(browser, args, admin, report, reused_provider):
             for page in pages:
                 browser_test.logout(page)
         return
+    if args.phase == "benchmark":
+        with creator_pages(browser, args, accounts) as (pages, transfers):
+            benchmark_capacity(browser, args, report, accounts, pages, transfers,
+                               remember_reservation=remember_reservation)
+            for page in pages:
+                browser_test.logout(page)
+        return
 
     inputs = report["large_inputs"]
     require(set(PARALLEL_CASES) <= set(state["jobs"])
@@ -1139,7 +1198,9 @@ def arguments(argv=None):
     parser.add_argument("--precise-fixture", type=Path)
     parser.add_argument("--large-fixture", type=Path)
     parser.add_argument("--report", type=Path, required=True)
-    parser.add_argument("--phase", choices=("setup", "load", "cuts", "editorial", "cleanup"))
+    parser.add_argument("--phase", choices=("setup", "load", "cuts", "editorial", "cleanup", "benchmark"))
+    parser.add_argument("--benchmark-cpus", type=int, choices=(2, 4))
+    parser.add_argument("--benchmark-sha256")
     parser.add_argument("--state", type=Path, help="private same-attempt state kept outside acceptance artifacts")
     parser.add_argument("--prior-report", type=Path, help="successful checkpoint for the preceding capacity phase")
     parser.add_argument("--editorial-model", default="")
@@ -1160,11 +1221,16 @@ def start_checkpoint(args, report):
     attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
     require(re.fullmatch(r"[1-9][0-9]{0,19}", run_id) and re.fullmatch(r"[1-9][0-9]{0,5}", attempt),
             "capacity_workflow_identity")
+    if args.benchmark_cpus is not None or args.benchmark_sha256 is not None or args.phase == "benchmark":
+        require(args.phase in {"setup", "benchmark", "cleanup"} and args.benchmark_cpus in {2, 4}
+                and browser_test.SHA256.fullmatch(args.benchmark_sha256 or "") and not args.editorial_model
+                and args.reuse_provider_report is None, "benchmark_checkpoint_identity")
+        report["benchmark"] = {"cpu": args.benchmark_cpus, "sha256": args.benchmark_sha256}
     report.update(phase=args.phase, editorial_model=args.editorial_model, run_id=run_id,
                   run_attempt=attempt, phase_started_utc=utc())
     if expected is not None:
         report.update(load_checkpoint(args.prior_report, expected, checkpoint_identity(report)))
-    if args.phase in {"load", "editorial"}:
+    if args.phase in {"load", "editorial", "benchmark"}:
         require(args.large_fixture is not None, "capacity_large_fixture_required")
     if args.phase == "cuts":
         require(args.precise_fixture is not None, "capacity_precise_fixture_required")
@@ -1184,6 +1250,7 @@ def main(argv=None):
             start_checkpoint(args, report)
         else:
             require(args.state is None and args.prior_report is None, "capacity_checkpoint_phase_required")
+            require(args.benchmark_cpus is None and args.benchmark_sha256 is None, "benchmark_checkpoint_identity")
         reused_provider = (load_provider_evidence(args.reuse_provider_report, args.editorial_model)
                            if args.reuse_provider_report else None)
         admin_value = os.environ.pop("INT_BOOTSTRAP_ADMIN_JSON", "")

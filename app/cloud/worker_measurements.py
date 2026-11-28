@@ -74,18 +74,33 @@ def _file_bytes(directory):
     return total
 
 
-def _timings(path, *, nested=False):
+def _metrics(path):
     try:
         with path.open("rb") as source:
             data = json.loads(source.read(16385))
-        if nested:
-            data = data["stage_seconds"]
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError):
         return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _valid_seconds(value):
+    return type(value) in {int, float} and 0 <= value <= 86400 and math.isfinite(value)
+
+
+def _timings(data):
     if not isinstance(data, dict):
         return {}
-    return {key: value for key, value in data.items()
-            if key in STAGES and type(value) in {int, float} and 0 <= value <= 86400 and math.isfinite(value)}
+    return {key: value for key, value in data.items() if key in STAGES and _valid_seconds(value)}
+
+
+def _clip_renders(data):
+    if not isinstance(data, list) or not 1 <= len(data) <= 5:
+        return None
+    keys = {"render_seconds", "seconds_since_recorder_start"}
+    if any(not isinstance(item, dict) or set(item) != keys
+           or not all(_valid_seconds(value) for value in item.values()) for item in data):
+        return None
+    return data
 
 
 class WorkerMeasurements:
@@ -113,7 +128,8 @@ class WorkerMeasurements:
         self.sample()
         task = self.task
         metrics = self.directory / task["job_id"] / "metrics" / f"{task['kind']}-{task['item_id']}.json"
-        stages = _timings(metrics, nested=True) | _timings(self.directory / "worker-stages.json")
+        task_metrics = _metrics(metrics)
+        stages = _timings(task_metrics.get("stage_seconds")) | _timings(_metrics(self.directory / "worker-stages.json"))
         return {
             "event": "worker_resources", "execution": self.execution, "job_id": task["job_id"],
             "task_id": task["id"], "fence": task["fence"], "kind": task["kind"], "status": status,
@@ -121,4 +137,5 @@ class WorkerMeasurements:
             "cgroup_memory_peak_bytes_execution": _read_number(CGROUP / "memory.peak") if self.limit is not None else None,
             "cgroup_memory_limit_bytes": self.limit, "child_rss_max_sampled_bytes": self.rss,
             "sample_interval_seconds": SAMPLE_INTERVAL_SECONDS, "stage_seconds": stages,
+            "clip_renders": _clip_renders(task_metrics.get("clip_renders")),
         }

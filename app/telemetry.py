@@ -17,6 +17,14 @@ class Recorder:
         self.record = {'schema':1,'version':'0.4.2','job_id':job_id,'kind':kind,'id':run_id,
                        'started_at':time.time(),'status':'running','stage_seconds':{}}
 
+    def clip_rendered(self, started: float) -> None:
+        now = time.monotonic()
+        self.record.setdefault("clip_renders", []).append({
+            "render_seconds": round(now - started, 6),
+            "seconds_since_recorder_start": round(now - self.started, 6),
+        })
+        self._flush()
+
     def _flush(self) -> None:
         try:
             write_json_atomic(self.path, self.record)

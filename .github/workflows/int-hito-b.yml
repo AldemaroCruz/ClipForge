@@ -28,6 +28,10 @@ on:
         required: false
         type: boolean
         default: false
+      worker_benchmark_base:
+        description: Accepted INT commit to keep serving during an INT worker-only comparison
+        required: false
+        type: string
 
 permissions: {}
 
@@ -285,6 +289,7 @@ jobs:
       CLOUDSDK_CORE_DISABLE_USAGE_REPORTING: '1'
       INT_EDITORIAL_OPENAI_MODEL: ${{ vars.INT_EDITORIAL_OPENAI_MODEL }}
       INT_EDITORIAL_OPENAI_KEY_VERSION: ${{ vars.INT_EDITORIAL_OPENAI_KEY_VERSION }}
+      INT_WORKER_BENCHMARK_BASE: ${{ inputs.worker_benchmark_base }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -326,11 +331,42 @@ jobs:
       - name: Verify commit, archive SHA-256 and OCI manifest before OIDC
         run: python -m scripts.int_hito_b_delivery verify "$DELIVERY_DIR/images" "$DELIVERY_DIR/reports"
 
+      - name: Limit the worker comparison to telemetry and its acceptance tools
+        if: inputs.worker_benchmark_base != ''
+        shell: bash
+        env:
+          REUSE_OTHER_EVIDENCE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c04_styles || inputs.focused_c05_framing || inputs.focused_c06_zip }}
+        run: |
+          set -euo pipefail
+          test "$REUSE_OTHER_EVIDENCE" = false
+          [[ "$INT_WORKER_BENCHMARK_BASE" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD^)" = "$INT_WORKER_BENCHMARK_BASE"
+          test "$(git rev-list --parents -n 1 HEAD | wc -w)" -eq 2
+          git diff --name-only --no-renames -z "$INT_WORKER_BENCHMARK_BASE" HEAD | while IFS= read -r -d '' path; do
+            case "$path" in
+              .github/workflows/int-hito-b.yml|scripts/deploy_int_beta.sh|scripts/int_hito_b_capacity_browser.py) ;;
+              scripts/int_hito_c_worker_benchmark.sh|scripts/int_hito_c_worker_benchmark_receipt.py) ;;
+              app/cloud/worker.py|app/cloud/worker_measurements.py|app/main.py|app/telemetry.py) ;;
+              config/int-hito-b-bandit-review.json) ;;
+              tests/test_cloud_worker_scratch.py|tests/test_int_hito_c_worker_benchmark.py) ;;
+              *) printf 'Outside the worker measurement scope: %s\n' "$path" >&2; exit 1 ;;
+            esac
+          done
+          policy=config/int-hito-b-bandit-review.json
+          git show "$INT_WORKER_BENCHMARK_BASE:$policy" | jq -e --slurpfile new "$policy" '
+            def independent_of_bindings:
+              .reviewed |= map(
+                if ((.path == "app/cloud/worker.py" and (.test_id == "B404" or .test_id == "B603"))
+                    or (.path == "app/main.py" and .test_id == "B108"))
+                then del(.line, .source_sha256) else . end);
+            ($new | length) == 1 and (independent_of_bindings == ($new[0] | independent_of_bindings))
+          ' > /dev/null
+
       - name: Constrain focused C04 acceptance to the styles increment
         if: inputs.focused_c04_styles
         shell: bash
         env:
-          REUSE_OTHER_EVIDENCE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c05_framing || inputs.focused_c06_zip }}
+          REUSE_OTHER_EVIDENCE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c05_framing || inputs.focused_c06_zip || inputs.worker_benchmark_base != '' }}
         run: |
           set -euo pipefail
           test "$REUSE_OTHER_EVIDENCE" = false
@@ -370,7 +406,7 @@ jobs:
         if: inputs.focused_c05_framing
         shell: bash
         env:
-          REUSE_OTHER_EVIDENCE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c04_styles || inputs.focused_c06_zip }}
+          REUSE_OTHER_EVIDENCE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c04_styles || inputs.focused_c06_zip || inputs.worker_benchmark_base != '' }}
         run: |
           set -euo pipefail
           test "$REUSE_OTHER_EVIDENCE" = false
@@ -411,7 +447,7 @@ jobs:
         if: inputs.focused_c06_zip
         shell: bash
         env:
-          REUSE_OTHER_EVIDENCE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c04_styles || inputs.focused_c05_framing }}
+          REUSE_OTHER_EVIDENCE: ${{ inputs.reuse_int_provider_evidence || inputs.focused_c04_styles || inputs.focused_c05_framing || inputs.worker_benchmark_base != '' }}
         run: |
           set -euo pipefail
           test "$REUSE_OTHER_EVIDENCE" = false
@@ -570,13 +606,14 @@ jobs:
           cleanup_credentials: true
       - name: Apply only the scoped beta plan
         id: deploy_prepare
+        if: inputs.worker_benchmark_base == ''
         env:
           GOOGLE_OAUTH_ACCESS_TOKEN: ${{ steps.terraform_identity.outputs.access_token }}
           CLOUDSDK_AUTH_ACCESS_TOKEN: ${{ steps.terraform_identity.outputs.access_token }}
         run: bash scripts/deploy_int_beta.sh prepare
 
       - name: Run the additive PostgreSQL migration from INT
-        if: ${{ !inputs.focused_c05_framing && !inputs.focused_c06_zip }}
+        if: ${{ inputs.worker_benchmark_base == '' && !inputs.focused_c05_framing && !inputs.focused_c06_zip }}
         env:
           CLIPFORGE_GCP_DEPLOY_TOKEN: ${{ steps.publishing.outputs.access_token }}
           GOOGLE_OAUTH_ACCESS_TOKEN: ${{ steps.terraform_identity.outputs.access_token }}
@@ -585,6 +622,7 @@ jobs:
 
       - name: Open the public frontend and verify the short creator flow
         id: acceptance_open
+        if: inputs.worker_benchmark_base == ''
         # The exported WIF credentials can refresh during long acceptance and rollback.
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
@@ -612,7 +650,7 @@ jobs:
 
       - name: Replace the public revision and verify persistence
         id: acceptance_verify
-        if: ${{ !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
         run: bash scripts/deploy_int_beta.sh acceptance-verify
@@ -631,7 +669,7 @@ jobs:
 
       - name: Create the three synthetic capacity accounts
         id: capacity_setup
-        if: ${{ !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
         run: bash scripts/deploy_int_beta.sh capacity-setup
@@ -648,7 +686,7 @@ jobs:
 
       - name: Check three near-limit uploads and concurrent processing
         id: capacity_load
-        if: ${{ !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
         run: bash scripts/deploy_int_beta.sh capacity-load
 
       - name: Publish the capacity evidence
@@ -663,7 +701,7 @@ jobs:
 
       - name: Export and measure both precise cuts
         id: capacity_cuts
-        if: ${{ !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
         run: bash scripts/deploy_int_beta.sh capacity-cuts
 
       - name: Publish the precise-cut evidence
@@ -678,7 +716,7 @@ jobs:
 
       - name: Check three-account editorial acceptance and finish cleanup
         id: capacity_editorial
-        if: ${{ !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
+        if: ${{ inputs.worker_benchmark_base == '' && !inputs.focused_c04_styles && !inputs.focused_c05_framing && !inputs.focused_c06_zip && steps.reuse_scope.outputs.mode != 'deletion' }}
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
         run: bash scripts/deploy_int_beta.sh capacity-editorial
@@ -694,17 +732,96 @@ jobs:
           if-no-files-found: error
 
       - name: Clean up this run's synthetic accounts after a failure
-        if: ${{ always() && (failure() || cancelled()) && (steps.capacity_setup.outcome == 'success' || steps.capacity_setup.outcome == 'failure' || steps.capacity_setup.outcome == 'cancelled') }}
+        if: ${{ always() && inputs.worker_benchmark_base == '' && (failure() || cancelled()) && (steps.capacity_setup.outcome == 'success' || steps.capacity_setup.outcome == 'failure' || steps.capacity_setup.outcome == 'cancelled') }}
         env:
           INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
         run: bash scripts/deploy_int_beta.sh capacity-cleanup
 
       - name: Restore the previous INT components after a failed acceptance
-        if: ${{ always() && (failure() || cancelled()) && (steps.acceptance_open.outcome == 'success' || steps.acceptance_open.outcome == 'failure' || steps.acceptance_open.outcome == 'cancelled' || ((inputs.focused_c04_styles || inputs.focused_c05_framing || inputs.focused_c06_zip) && steps.deploy_prepare.outcome == 'success')) }}
+        if: ${{ always() && inputs.worker_benchmark_base == '' && (failure() || cancelled()) && (steps.acceptance_open.outcome == 'success' || steps.acceptance_open.outcome == 'failure' || steps.acceptance_open.outcome == 'cancelled' || ((inputs.focused_c04_styles || inputs.focused_c05_framing || inputs.focused_c06_zip) && steps.deploy_prepare.outcome == 'success')) }}
         run: bash scripts/deploy_int_beta.sh rollback
 
+      - name: Record the accepted services, worker, and matched fixture
+        id: worker_benchmark_prepare
+        if: inputs.worker_benchmark_base != ''
+        run: bash scripts/deploy_int_beta.sh benchmark-prepare
+
+      - name: Publish the worker recovery checkpoint before any resource change
+        if: steps.worker_benchmark_prepare.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: worker-benchmark-${{ github.run_id }}-${{ github.run_attempt }}-baseline
+          path: ${{ env.DELIVERY_DIR }}/reports/worker-benchmark-baseline.json
+          if-no-files-found: error
+
+      - name: Create three synthetic accounts for the 2 vCPU cohort
+        id: worker_benchmark_setup_2
+        if: inputs.worker_benchmark_base != ''
+        env:
+          INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
+        run: bash scripts/deploy_int_beta.sh benchmark-setup 2
+
+      - name: Publish the scoped 2 vCPU account receipt
+        if: ${{ always() && (steps.worker_benchmark_setup_2.outcome == 'success' || steps.worker_benchmark_setup_2.outcome == 'failure') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: worker-benchmark-${{ github.run_id }}-${{ github.run_attempt }}-cpu2-setup
+          path: ${{ env.DELIVERY_DIR }}/reports/worker-benchmark-cpu2-setup.json
+          if-no-files-found: error
+
+      - name: Measure three concurrent creators at 2 vCPU and 4 GiB
+        id: worker_benchmark_2
+        if: inputs.worker_benchmark_base != ''
+        run: bash scripts/deploy_int_beta.sh benchmark-run 2
+
+      - name: Publish the 2 vCPU comparison evidence
+        if: ${{ always() && (steps.worker_benchmark_2.outcome == 'success' || steps.worker_benchmark_2.outcome == 'failure') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: worker-benchmark-${{ github.run_id }}-${{ github.run_attempt }}-cpu2
+          path: ${{ env.DELIVERY_DIR }}/reports/worker-benchmark-cpu2-*.json
+          if-no-files-found: error
+
+      - name: Create three distinct synthetic accounts for the 4 vCPU cohort
+        id: worker_benchmark_setup_4
+        if: inputs.worker_benchmark_base != ''
+        env:
+          INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
+        run: bash scripts/deploy_int_beta.sh benchmark-setup 4
+
+      - name: Publish the scoped 4 vCPU account receipt
+        if: ${{ always() && (steps.worker_benchmark_setup_4.outcome == 'success' || steps.worker_benchmark_setup_4.outcome == 'failure') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: worker-benchmark-${{ github.run_id }}-${{ github.run_attempt }}-cpu4-setup
+          path: ${{ env.DELIVERY_DIR }}/reports/worker-benchmark-cpu4-setup.json
+          if-no-files-found: error
+
+      - name: Measure three concurrent creators at 4 vCPU and 4 GiB
+        id: worker_benchmark_4
+        if: inputs.worker_benchmark_base != ''
+        run: bash scripts/deploy_int_beta.sh benchmark-run 4
+
+      - name: Restore and verify the original worker configuration
+        if: ${{ always() && steps.worker_benchmark_prepare.outcome == 'success' }}
+        run: bash scripts/deploy_int_beta.sh benchmark-restore
+
+      - name: Remove only the benchmark projects and deactivate their accounts
+        if: ${{ always() && steps.worker_benchmark_prepare.outcome == 'success' }}
+        env:
+          INT_BOOTSTRAP_ADMIN_JSON: ${{ secrets.INT_BOOTSTRAP_ADMIN_JSON }}
+        run: bash scripts/deploy_int_beta.sh benchmark-cleanup
+
+      - name: Retain the comparison, recovery, and cleanup receipts
+        if: ${{ always() && steps.worker_benchmark_prepare.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: worker-benchmark-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.DELIVERY_DIR }}/reports/worker-benchmark-*.json
+          if-no-files-found: error
+
       - name: Retain public acceptance and scoped rollout evidence
-        if: ${{ always() && steps.setup.outcome == 'success' }}
+        if: ${{ always() && inputs.worker_benchmark_base == '' && steps.setup.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hito-b-int-${{ github.run_id }}-${{ github.run_attempt }}

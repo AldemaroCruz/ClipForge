@@ -379,6 +379,13 @@ rollback_delivery() {
     fi
 }
 
+if [[ -n "${INT_WORKER_BENCHMARK_BASE:-}" ]]; then
+    case "${1:-}" in
+        publish|benchmark-prepare|benchmark-setup|benchmark-run|benchmark-restore|benchmark-cleanup) ;;
+        *) exit 2 ;;
+    esac
+fi
+
 case "${1:-}" in
     publish)
         publish_beta
@@ -462,6 +469,10 @@ case "${1:-}" in
     capacity-setup|capacity-load|capacity-cuts|capacity-editorial|capacity-cleanup)
         load_replacement_rollout
         capacity_acceptance "${1#capacity-}"
+        ;;
+    benchmark-prepare|benchmark-setup|benchmark-run|benchmark-restore|benchmark-cleanup)
+        source scripts/int_hito_c_worker_benchmark.sh
+        run_worker_benchmark "$@"
         ;;
     rollback)
         if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_C05_ACCEPTANCE:-}${INT_C06_ACCEPTANCE:-}" && ! -f "$DELIVERY_DIR/focused-promoting" ]]; then

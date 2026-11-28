@@ -66,7 +66,7 @@
       "cwe": 78,
       "line": 13,
       "context_sha256": "17ea74bb79ba96edc39a8382a97f22993b80cc4088b3e2717a98917c60c1dd5a",
-      "source_sha256": "ed67c31e07097055e8854eb679b649d319a8be6f76f5f4ea1f02c1d46dcd7df7",
+      "source_sha256": "f01acf7e32d344d95674b5f9437d43536eddc399d57294940fdc379aafff4b06",
       "reason": "Imports subprocess for the reviewed worker child, bounded waits and process-group termination."
     },
     {
@@ -75,9 +75,9 @@
       "severity": "LOW",
       "confidence": "HIGH",
       "cwe": 78,
-      "line": 287,
+      "line": 290,
       "context_sha256": "218a985e32d3d468184e18beeba5c6a5ab4c4a92738f5589dad71520409a4e3c",
-      "source_sha256": "ed67c31e07097055e8854eb679b649d319a8be6f76f5f4ea1f02c1d46dcd7df7",
+      "source_sha256": "f01acf7e32d344d95674b5f9437d43536eddc399d57294940fdc379aafff4b06",
       "reason": "A fixed Python interpreter and worker module run without a shell. The child validates the UUID and fence from the claimed PostgreSQL task. The supervisor adds a path it allocated in private scratch to the inherited environment."
     },
     {
@@ -88,7 +88,7 @@
       "cwe": 377,
       "line": 39,
       "context_sha256": "0efe935ca8a29845fb3caad89d0989ee45c5286fab44f8c5106bc737c4b9aef6",
-      "source_sha256": "43e3dbbf8213b2cfa8be7da3a85a978ec9ec1f699cfe32ffb003bf670f9abc1a",
+      "source_sha256": "804673c7772c03bcad4413030a2e6ddc44f7c75ce099f258d82eea0a1f1263c8",
       "reason": "The beta worker sets its exclusively created private TemporaryDirectory as CLIPFORGE_DATA_DIR before importing main. The public and private beta HTTP entrypoints do not mount app.main."
     },
     {

@@ -302,11 +302,13 @@ def _process(job_id: str, recorder: Recorder | None = None, *,
             if validated_media is not None and not cues:
                 render_options = options.model_copy(update={"burn_subtitles": False})
             LOGGER.info("Job %s: renderizando clip %s/%s (%s)", job_id, index, len(chosen), options.framing)
+            render_started = time.monotonic()
             render_clip(
                 folder / "input.mp4", output, start=clip["start"], end=clip["end"],
                 options=render_options, cues=cues, video_index=job["media"]["video_stream_index"],
                 threads=FFMPEG_THREADS, runner=ffmpeg, pilot=validated_media is not None,
             )
+            recorder.clip_rendered(render_started)
             clip["cues"] = cues
             clip["options"] = render_options.model_dump()
             clip["file"] = filename
@@ -615,9 +617,11 @@ def process_export(job_id: str, export_id: str, *, pilot: bool = False) -> None:
             target = export_path(job_id, export_id) / "clip.mp4"
             LOGGER.info("Variante %s: renderizando %s sin repetir Whisper", export_id, options.framing)
             recorder.phase("render")
+            render_started = time.monotonic()
             render_clip(source, target, start=item["start"], end=item["end"],
                         options=options, cues=item["cues"], video_index=media["video_stream_index"],
                         threads=FFMPEG_THREADS, pilot=pilot)
+            recorder.clip_rendered(render_started)
             item.update(status="completed", completed_at=time.time())
             persist_export(job_id, item)
     except Exception as exc:

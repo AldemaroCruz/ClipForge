@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from app.cloud import worker
 from app.cloud.worker_measurements import SCRATCH_ENV, WorkerMeasurements, scratch_context
+from app.telemetry import Recorder
 
 
 TASK = {"id": "a" * 32, "job_id": "b" * 32, "item_id": "b" * 32, "kind": "process", "fence": 1}
@@ -49,6 +50,26 @@ class WorkerMeasurementTests(TestCase):
             self.assertEqual(receipt["child_rss_max_sampled_bytes"], 2_097_152)
             self.assertGreaterEqual(receipt["scratch_max_sampled_bytes"], 4)
             self.assertEqual(receipt["stage_seconds"], {"download": 2.15})
+            self.assertIsNone(receipt["clip_renders"])
+
+    def test_receipt_reads_completed_clip_timings_and_rejects_extra_content(self):
+        with TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            with patch("app.telemetry.time.monotonic", side_effect=(10, 16, 24, 25)):
+                recorder = Recorder(scratch, TASK["job_id"], "process", TASK["item_id"])
+                recorder.clip_rendered(started=12)
+                recorder.clip_rendered(started=18)
+                recorder.finish("completed")
+            measurements = WorkerMeasurements(scratch, TASK, "synthetic-execution")
+            self.assertEqual(measurements.receipt("succeeded")["clip_renders"], [
+                {"render_seconds": 4, "seconds_since_recorder_start": 6},
+                {"render_seconds": 6, "seconds_since_recorder_start": 14},
+            ])
+
+            raw = json.loads(recorder.path.read_text(encoding="utf-8"))
+            raw["clip_renders"][0]["content"] = "Private material must not appear in a log"
+            recorder.path.write_text(json.dumps(raw), encoding="utf-8")
+            self.assertIsNone(measurements.receipt("succeeded")["clip_renders"])
 
     def test_child_can_only_borrow_the_private_managed_directory(self):
         with TemporaryDirectory() as unrelated, patch.dict(os.environ, {SCRATCH_ENV: unrelated}):

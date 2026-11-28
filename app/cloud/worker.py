@@ -230,6 +230,7 @@ def _finish_child(task):
 
 
 def drain(max_tasks=None, recovery=None):
+    started_at = time.time()
     cfg = settings()
     if not enabled():
         raise ValueError("Worker requires the explicit cloud backend")
@@ -238,6 +239,9 @@ def drain(max_tasks=None, recovery=None):
     interrupted = False
     previous = {}
     beta = beta_enabled()
+    execution = os.getenv("CLOUD_RUN_EXECUTION")
+    if beta and execution:
+        print(json.dumps({"event": "worker_started", "execution": execution}), flush=True)
     # The exact recovery command reserves and claims its target exclusively
     # so a normal shared supervisor cannot claim it between those operations.
     shared = beta and recovery is None
@@ -270,11 +274,10 @@ def drain(max_tasks=None, recovery=None):
                     if task is None:
                         cleanup_failed()
                         break
-                    execution = os.getenv("CLOUD_RUN_EXECUTION")
                     if beta and execution:
                         print(json.dumps({
                             "event": "worker_claim", "execution": execution, "job_id": task["job_id"],
-                            "task_id": task["id"], "fence": task["fence"],
+                            "task_id": task["id"], "fence": task["fence"], "worker_started_epoch": started_at,
                         }), flush=True)
                     command = [sys.executable, "-m", "app.cloud.worker", "--execute", task["id"], "--fence", str(task["fence"])]
                     # Fixed interpreter/module; only database-generated UUID/fence arguments.
@@ -379,7 +382,8 @@ def execute(task_id, fence):
         folder.mkdir()
         job = repo.document(task["job_id"])
         pilot = job["payload"].get("pilot") is True
-        measure = pilot and bool(os.getenv("CLOUD_RUN_EXECUTION"))
+        execution = os.getenv("CLOUD_RUN_EXECUTION")
+        measure = pilot and bool(execution)
         timings = {}
         began = time.monotonic()
         try:
@@ -453,6 +457,11 @@ def execute(task_id, fence):
             repo.finish_task(task, payload, manifest)
             if measure and payload["status"] == "completed":
                 record_stage(cache, timings, "publish", began)
+                print(json.dumps({
+                    "event": "worker_results_published", "execution": execution,
+                    "job_id": task["job_id"], "task_id": task["id"],
+                    "fence": task["fence"], "kind": task["kind"],
+                }), flush=True)
         finally:
             repo.CURRENT_TASK.reset(reset)
 
