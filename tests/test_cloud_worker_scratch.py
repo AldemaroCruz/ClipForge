@@ -1,4 +1,5 @@
 """Isolated task directory and measurements contract for the Cloud Run supervisor."""
+from datetime import datetime, timezone
 import io
 import json
 import os
@@ -11,11 +12,15 @@ from unittest import TestCase, skipUnless
 from unittest.mock import patch
 
 from app.cloud import worker
-from app.cloud.worker_measurements import SCRATCH_ENV, WorkerMeasurements, scratch_context
+from app.cloud.worker_measurements import (
+    CLAIM_ENV, ENTRY_ENV, SCRATCH_ENV, WorkerMeasurements, completed_receipt, scratch_context,
+)
 from app.telemetry import Recorder
 
 
-TASK = {"id": "a" * 32, "job_id": "b" * 32, "item_id": "b" * 32, "kind": "process", "fence": 1}
+TASK = {"id": "a" * 32, "job_id": "b" * 32, "item_id": "b" * 32, "kind": "process", "fence": 1,
+        "created_at": datetime.fromtimestamp(100, tz=timezone.utc),
+        "updated_at": datetime.fromtimestamp(107, tz=timezone.utc), "dispatch_ack_epoch": 101.5}
 
 
 class WorkerMeasurementTests(TestCase):
@@ -70,6 +75,26 @@ class WorkerMeasurementTests(TestCase):
             raw["clip_renders"][0]["content"] = "Private material must not appear in a log"
             recorder.path.write_text(json.dumps(raw), encoding="utf-8")
             self.assertIsNone(measurements.receipt("succeeded")["clip_renders"])
+
+    def test_completed_receipt_keeps_separate_wall_timestamps_and_local_durations(self):
+        with TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            metrics = scratch / TASK["job_id"] / "metrics"
+            metrics.mkdir(parents=True)
+            (metrics / f"process-{TASK['item_id']}.json").write_text(
+                json.dumps({"stage_seconds": {"transcription": 10, "private": 1}, "private": "not part of receipt"}),
+                encoding="utf-8",
+            )
+            (scratch / "memory.peak").write_text("131072", encoding="ascii")
+            with (patch("app.cloud.worker_measurements.CGROUP", scratch),
+                  patch.dict(os.environ, {ENTRY_ENV: "105", CLAIM_ENV: "107"}),
+                  patch("app.cloud.worker_measurements.time.time", return_value=120)):
+                receipt = completed_receipt(scratch, TASK, {"prepare": 0.8, "publish": 2, "no": 3})
+            self.assertEqual(receipt["timestamps"], {"activated_epoch": 100, "dispatch_ack_epoch": 101.5,
+                                                     "worker_entry_epoch": 105, "claim_epoch": 107,
+                                                     "upload_complete_observed_epoch": 120})
+            self.assertEqual(receipt["stage_seconds"], {"prepare": 0.8, "transcription": 10, "publish": 2})
+            self.assertEqual(receipt["container_peak_bytes_through_upload"], 131072)
 
     def test_child_can_only_borrow_the_private_managed_directory(self):
         with TemporaryDirectory() as unrelated, patch.dict(os.environ, {SCRATCH_ENV: unrelated}):

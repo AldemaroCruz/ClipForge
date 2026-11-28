@@ -22,6 +22,7 @@ from ..logo_placement import LogoPlacement
 from ..presentation import Presentation, ExportRequest
 from ..subtitles import SubtitleError, cues_from_segments, to_srt, to_vtt, validate_cues
 from . import caption_styles, clip_captions, clip_package, creator_logos, project_deletion, publication, transcript_selection
+from . import word_highlight
 from . import editorial_selection as selection
 from . import repository as repo
 from .config import beta_enabled
@@ -437,6 +438,14 @@ def transcript_view(job_id: str, response: Response):
     return view
 
 
+@router.post("/jobs/{job_id}/caption-highlight", dependencies=[Depends(_int_product_route)])
+def caption_highlight(job_id: str, payload: word_highlight.HighlightRequest, request: Request, response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    with get_engine().begin() as connection:
+        job = repo.beta_document(connection, request.state.principal, job_id)
+    return word_highlight.preview(job, payload)
+
+
 @router.post("/jobs/{job_id}/transcript-selection/prepare", status_code=202, dependencies=[Depends(_int_product_route)])
 def prepare_transcript(job_id: str, payload: transcript_selection.AlignmentRequest, request: Request):
     item = repo.prepare_alignment(job_id, request.state.principal, retry=payload.retry)
@@ -477,6 +486,9 @@ def transcript_draft(job_id: str, payload: transcript_selection.TranscriptClip, 
         now = time.time()
         item = {**content.model_dump(), "id": uuid.uuid4().hex, "job_id": job_id, "revision": 1,
                 "created_at": now, "updated_at": now, "version": VERSION, "selection_origin": origin}
+        if options.subtitle_highlight_enabled:
+            aligned = word_highlight.current(job, word_highlight.from_snapshot(view, identity), c)
+            word_highlight.attach(item, aligned, version=word_highlight.selected_version(item))
         if project.get("caption_style_template"):
             item["style_template"] = project["caption_style_template"]
         if project.get("caption_logo"):
@@ -571,6 +583,7 @@ def candidate_to_draft(job_id: str, run_id: str, candidate_id: int, request: Req
         draft["style_template"] = job["payload"]["caption_style_template"]
     if job["payload"].get("caption_logo"):
         draft["logo"] = job["payload"]["caption_logo"]
+    aligned = word_highlight.load(job) if options.subtitle_highlight_enabled else None
     with get_engine().begin() as connection:
         current = repo.beta_document(connection, principal, job_id)
         previous = repo.document(job_id, "draft", draft_id, connection, required=False)
@@ -578,6 +591,8 @@ def candidate_to_draft(job_id: str, run_id: str, candidate_id: int, request: Req
             return previous["payload"]
         if selection.source_identity(current) != identity:
             raise HTTPException(409, "Cambió la transcripción. Generá una nueva selección.")
+        if aligned:
+            word_highlight.attach(draft, word_highlight.current(current, aligned, connection))
         repo.insert_document(connection, job_id, "draft", draft)
     return draft
 
@@ -611,14 +626,24 @@ def create_draft(job_id: str, payload: CloudDraftCreate, request: Request):
         raise HTTPException(404, "Función no disponible")
     item = {**content, "id": uuid.uuid4().hex, "job_id": job_id,
             "revision": 1, "created_at": now, "updated_at": now, "version": VERSION}
-    owner = request.state.principal.id
+    principal = request.state.principal
+    owner = principal.id
+    aligned = (word_highlight.load_for_owner(job_id, principal)
+               if beta_enabled() and (payload.options.subtitle_highlight_enabled or payload.style_template) else None)
     intent = payload.model_dump(include={"logo", "style_template"}, exclude_unset=True)
+    old_options = {**content["options"]}
+    if not old_options["subtitle_highlight_enabled"] and old_options["subtitle_highlight_color"] == "#FFFF00":
+        old_options.pop("subtitle_highlight_enabled")
+        old_options.pop("subtitle_highlight_color")
+    fingerprint_content = {**content, "options": old_options}
     fingerprint = hashlib.sha256(repo.packed({"job_id": job_id, "kind": "draft",
-                                             "content": content, **intent}).encode()).hexdigest()
+                                             "content": fingerprint_content, **intent}).encode()).hexdigest()
     with repo.request_transaction(owner, request.headers.get("Idempotency-Key"), fingerprint) as (c, previous, key):
         job = None
+        project_doc = None
         if beta_enabled():
-            job = repo.beta_document(c, request.state.principal, job_id)["payload"]
+            project_doc = repo.beta_document(c, principal, job_id)
+            job = project_doc["payload"]
         if previous:
             if previous["kind"] != "draft" or previous["job_id"] != job_id:
                 raise HTTPException(409, "La clave identifica otra solicitud")
@@ -635,6 +660,8 @@ def create_draft(job_id: str, payload: CloudDraftCreate, request: Request):
                     item["style_template"] = template
                 if logo is not None:
                     item["logo"] = logo
+                if aligned:
+                    word_highlight.attach(item, word_highlight.current(project_doc, aligned, c))
             repo.insert_document(c, job_id, "draft", item)
             repo.remember_request(c, owner, key, fingerprint, job_id, "draft", item["id"])
     return item
@@ -652,9 +679,11 @@ def update_draft(job_id: str, draft_id: str, payload: CloudDraftUpdate, request:
     if not is_beta and (payload.style_template is not None or "logo" in payload.model_fields_set):
         raise HTTPException(404, "Función no disponible")
     principal = request.state.principal
+    aligned = (word_highlight.load_for_owner(job_id, principal)
+               if is_beta and (payload.options.subtitle_highlight_enabled or payload.style_template) else None)
     with get_engine().begin() as c:
         if is_beta:
-            repo.beta_document(c, principal, job_id)
+            job = repo.beta_document(c, principal, job_id)
         previous = repo.document(job_id, "draft", draft_id, c)
         if previous["revision"] != payload.revision:
             raise HTTPException(409, "El borrador cambió en otra pestaña")
@@ -674,6 +703,11 @@ def update_draft(job_id: str, draft_id: str, payload: CloudDraftUpdate, request:
                 item["logo"] = logo
             else:
                 item.pop("logo", None)
+            if aligned:
+                word_highlight.attach(item, word_highlight.current(job, aligned, c),
+                                      version=word_highlight.selected_version(current))
+            else:
+                item.pop("word_highlight", None)
         repo.update_document(c, job_id, "draft", item, payload.revision)
     return item
 
@@ -757,6 +791,8 @@ def export_draft(job_id: str, draft_id: str, payload: RevisionRequest, request: 
         item["style_template"] = snapshot["style_template"]
     if snapshot.get("logo"):
         item["logo"] = snapshot["logo"]
+    if snapshot["options"].get("subtitle_highlight_enabled") and snapshot.get("word_highlight"):
+        item["word_highlight"] = snapshot["word_highlight"]
     origin = snapshot.get("selection_origin", {})
     if origin.get("search_topic") or origin.get("mode") == "transcript":
         item["selection_origin"] = origin

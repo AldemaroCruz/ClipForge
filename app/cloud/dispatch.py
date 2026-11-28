@@ -1,6 +1,7 @@
 """Durable dispatch outbox. No processing threads run inside the API."""
 import argparse
 import json
+import time
 from urllib.parse import quote
 from sqlalchemy import text
 from ..auth_db import get_engine
@@ -86,6 +87,7 @@ def reconcile(*, cleanup_only=False):
         # still wakes a single supervisor that drains its whole queue.
         batches = [(task_id,) for task_id in pending] if beta else [pending]
         for task_ids in batches:
+            started = time.monotonic()
             try:
                 response = request("POST", url, json={}, timeout=(3, 5)) if beta else request("POST", url, json={})
                 try:
@@ -111,6 +113,9 @@ def reconcile(*, cleanup_only=False):
                         UPDATE cloud_outbox SET dispatched_at=clock_timestamp(),attempts=attempts+1,
                             last_error=NULL,operation_name=:n WHERE task_id=:i
                         """), {"n": operation, "i": task})
+                if beta:
+                    print(json.dumps({"event": "worker_dispatch_ack", "task_id": task_ids[0],
+                                      "request_seconds": round(time.monotonic() - started, 6)}), flush=True)
                 sent += len(task_ids)
     return {"status": "pending" if failed else "dispatched", "dispatched": sent}
 

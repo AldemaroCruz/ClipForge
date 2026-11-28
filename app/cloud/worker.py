@@ -28,7 +28,8 @@ from . import project_deletion
 from . import repository as repo
 from . import storage
 from .worker_measurements import (
-    SAMPLE_INTERVAL_SECONDS, SCRATCH_ENV, SCRATCH_PREFIX, WorkerMeasurements, record_stage, scratch_context,
+    CLAIM_ENV, ENTRY_ENV, SAMPLE_INTERVAL_SECONDS, SCRATCH_ENV, SCRATCH_PREFIX, WorkerMeasurements,
+    completed_receipt, record_stage, scratch_context,
 )
 
 
@@ -284,14 +285,18 @@ def drain(max_tasks=None, recovery=None):
                         cleanup_failed()
                         break
                     if beta and execution:
+                        claimed_at = task["updated_at"].timestamp()
                         print(json.dumps({
                             "event": "worker_claim", "execution": execution, "job_id": task["job_id"],
-                            "task_id": task["id"], "fence": task["fence"], "worker_started_epoch": started_at,
+                            "task_id": task["id"], "item_id": task["item_id"], "kind": task["kind"],
+                            "fence": task["fence"], "worker_started_epoch": started_at, "claim_epoch": claimed_at,
                         }), flush=True)
                     command = [sys.executable, "-m", "app.cloud.worker", "--execute", task["id"], "--fence", str(task["fence"])]
                     # Fixed interpreter/module; only database-generated UUID/fence arguments.
                     scratch = tempfile.TemporaryDirectory(prefix=SCRATCH_PREFIX)
                     env = {**os.environ, SCRATCH_ENV: str(Path(scratch.name).resolve())}
+                    if beta and execution:
+                        env.update({ENTRY_ENV: str(started_at), CLAIM_ENV: str(claimed_at)})
                     measurements = (WorkerMeasurements(scratch.name, task, execution)
                                     if beta and execution and task["kind"] in {"process", "export", "alignment"} else None)
                     status = "interrupted"
@@ -357,7 +362,7 @@ def drain(max_tasks=None, recovery=None):
     return {"status": "interrupted" if interrupted else "drained", "tasks": completed, "local_test": cfg.local_test}
 
 
-def _alignment_task(task, workspace):
+def _alignment_task(task, workspace, entry):
     from .editorial_selection import source_identity
 
     job_id = task["job_id"]
@@ -382,6 +387,9 @@ def _alignment_task(task, workspace):
         folder.mkdir()
         recorder = Recorder(root, job_id, "alignment", item["id"])
         timings, manifest = {}, {}
+        execution = os.getenv("CLOUD_RUN_EXECUTION")
+        if execution:
+            record_stage(cache, timings, "prepare", entry)
         began = time.monotonic()
         original = folder / "input.mp4"
         try:
@@ -415,14 +423,20 @@ def _alignment_task(task, workspace):
             except storage.StorageError:
                 repo.alignment_failure(item, "ALIGNMENT_FAILED")
             record_stage(cache, timings, "publish", began)
+            if execution and item["status"] == "completed":
+                item["processing_receipt"] = completed_receipt(cache, task, timings)
         repo.finish_task(task, item, manifest)
 
 
 def execute(task_id, fence):
+    entry = time.monotonic()
     cfg = settings()
     with get_engine().connect() as c:
         task = c.execute(text("""
-            SELECT t.*,p.workspace_id FROM cloud_tasks t
+            SELECT t.*,p.workspace_id,
+                EXTRACT(EPOCH FROM CASE WHEN o.last_error IS NULL THEN o.dispatched_at END)::float8 AS dispatch_ack_epoch
+            FROM cloud_tasks t
+            LEFT JOIN cloud_outbox o ON o.task_id=t.id
             JOIN auth_projects p ON p.id=t.job_id
             LEFT JOIN cloud_documents d ON d.job_id=t.job_id AND d.kind='job' AND d.id=t.job_id
             LEFT JOIN cloud_documents e ON e.job_id=t.job_id AND e.kind='export' AND e.id=t.item_id
@@ -448,7 +462,7 @@ def execute(task_id, fence):
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     if task["kind"] == "alignment":
-        return _alignment_task(task, workspace)
+        return _alignment_task(task, workspace, entry)
     with scratch_context() as cache:
         os.environ["CLIPFORGE_DATA_DIR"] = cache
         from .. import main
@@ -474,6 +488,8 @@ def execute(task_id, fence):
         execution = os.getenv("CLOUD_RUN_EXECUTION")
         measure = pilot and bool(execution)
         timings = {}
+        if measure:
+            record_stage(cache, timings, "prepare", entry)
         began = time.monotonic()
         try:
             storage.download(job["manifest"]["input.mp4"], folder / "input.mp4",
@@ -546,10 +562,17 @@ def execute(task_id, fence):
                         manifest[name] = storage.upload(object_name, source, mime)
                 if kind == "job" and ALIGNMENT_FILE in manifest:
                     from .editorial_selection import source_identity
+                    from .word_highlight import provenance
 
-                    payload["transcript_alignment"] = {
-                        "status": "completed", "source_fingerprint": source_identity({"payload": payload, "manifest": manifest}),
-                    }
+                    identity = source_identity({"payload": payload, "manifest": manifest})
+                    payload["transcript_alignment"] = {"status": "completed", "source_fingerprint": identity}
+                    for clip in payload["clips"]:
+                        plan = clip.get("word_highlight")
+                        if plan and plan["alignment_status"] == "ready":
+                            plan.update(provenance(task["job_id"], identity, manifest[ALIGNMENT_FILE]))
+            if measure and payload["status"] == "completed":
+                timings["publish"] = round(time.monotonic() - began, 6)
+                payload["processing_receipt"] = completed_receipt(cache, task, timings)
             repo.finish_task(task, payload, manifest)
             if measure and payload["status"] == "completed":
                 record_stage(cache, timings, "publish", began)

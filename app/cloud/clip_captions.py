@@ -14,7 +14,7 @@ from ..auth_db import get_engine
 from ..logo_placement import LogoPlacement
 from ..presentation import Cue, Presentation
 from ..subtitles import cues_from_segments, validate_cues
-from . import caption_styles, editorial_selection, repository as repo
+from . import caption_styles, editorial_selection, repository as repo, word_highlight
 
 _STYLE = tuple(key for key in Presentation.model_fields if key == "burn_subtitles" or key.startswith("subtitle_"))
 _CLIP = re.compile(r"clip_[0-9]{2}\.mp4")
@@ -91,16 +91,23 @@ def _options(job, item, style, cues):
     return options if cues else options.model_copy(update={"burn_subtitles": False})
 
 
-def render_fingerprint(original, start, end, options, cues, logo=None):
+def render_fingerprint(original, start, end, options, cues, logo=None, highlights=None):
     """Bind the artifact to the original generation, source interval and render inputs."""
     source = {key: original.get(key) for key in ("generation", "bytes", "md5", "sha256")}
     # Validate defaults and stored JSON the same way so integral JSON numbers
     # cannot turn a saved render into a different variant.
     normalized_options = Presentation.model_validate(options).model_dump()
+    if not normalized_options["subtitle_highlight_enabled"]:
+        # Keep all legacy/current disabled artifact IDs, including saved ZIP
+        # and publication mappings. A dormant active color changes no media.
+        normalized_options.pop("subtitle_highlight_enabled")
+        normalized_options.pop("subtitle_highlight_color")
     normalized_cues = [{**cue, "start": float(cue["start"]), "end": float(cue["end"])} for cue in cues]
     values = [source, float(start), float(end), normalized_options, normalized_cues]
     if logo is not None:
         values.append(LogoPlacement.model_validate(logo).model_dump())
+    if normalized_options.get("subtitle_highlight_enabled") and highlights is not None:
+        values.append({"word_highlight": highlights})
     data = json.dumps(values,
                       ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(data.encode()).hexdigest()
@@ -113,6 +120,16 @@ def _render_identity(fingerprint, template):
     return fingerprint
 
 
+def _highlight_receipt(item):
+    options = item["options"]
+    if not options.get("subtitle_highlight_enabled"):
+        return {}
+    plan = item.get("word_highlight", {})
+    return {"highlight": {"enabled": True, "base_color": options["subtitle_color"],
+                          "active_color": options["subtitle_highlight_color"], "version": plan.get("version"),
+                          "status": plan.get("status", "unavailable")}}
+
+
 def _base_output(doc, item, template):
     filename = item["file"]
     root = f"/jobs/{doc['payload']['id']}/clips/{filename}"
@@ -120,7 +137,8 @@ def _base_output(doc, item, template):
     options = item["options"]
     cues = item.get("cues", [])
     logo = item.get("logo")
-    fingerprint = render_fingerprint(manifest["input.mp4"], item["start"], item["end"], options, cues, logo)
+    fingerprint = render_fingerprint(manifest["input.mp4"], item["start"], item["end"], options, cues, logo,
+                                     item.get("word_highlight"))
     return {
         "id": _render_identity(fingerprint, template),
         "mp4": root,
@@ -128,6 +146,7 @@ def _base_output(doc, item, template):
         "vtt": f"{root}/subtitles/vtt" if cues and PurePosixPath(filename).with_suffix(".vtt").name in manifest else None,
         "burn_subtitles": options["burn_subtitles"],
         **({"logo": logo} if logo else {}),
+        **_highlight_receipt(item),
     }
 
 
@@ -143,6 +162,7 @@ def _variant_output(job_id, variant):
         "vtt": f"{root}/clip.vtt" if item["cues"] and "clip.vtt" in manifest else None,
         "burn_subtitles": item["options"]["burn_subtitles"],
         **({"logo": item["logo"]} if item.get("logo") else {}),
+        **_highlight_receipt(item),
     }
 
 
@@ -188,7 +208,8 @@ def _project_state(job):
 
 def _clip_style(job, settings):
     if "style" in settings:
-        return settings["style"], settings.get("style_template")
+        style = style_from(Presentation.model_validate({"burn_subtitles": True, **settings["style"]}))
+        return style, settings.get("style_template")
     project = _project_state(job)
     return project["style"], project.get("style_template")
 
@@ -226,6 +247,8 @@ def clip_context(doc, filename, *, connection=None):
         context["logo"] = logo
     if template:
         context["style_template"] = template
+    if style.get("subtitle_highlight_enabled") and (highlight := settings.get("word_highlight", item.get("word_highlight"))):
+        context["word_highlight"] = highlight
     return context
 
 
@@ -247,7 +270,7 @@ def selected_output(doc, filename, revision, output_id, connection):
     return {kind: manifest[f"{stem}.{kind}"] for kind in ("mp4", "srt", "vtt") if output[kind]}
 
 
-def _plan(connection, doc, item, style, cues, *, inherited=False, render=True, template=None, logo=None):
+def _plan(connection, doc, item, style, cues, *, inherited=False, render=True, template=None, logo=None, alignment=None):
     job, source = doc["payload"], doc["manifest"].get("input.mp4")
     if source is None:
         raise HTTPException(409, "Original no disponible")
@@ -256,12 +279,17 @@ def _plan(connection, doc, item, style, cues, *, inherited=False, render=True, t
     except ValueError as error:
         raise HTTPException(422, str(error)) from None
     options = _options(job, item, style, cues).model_dump()
-    fingerprint = render_fingerprint(source, item["start"], item["end"], options, cues, logo)
     settings = _settings(job, item)
+    highlights = None
+    if options["subtitle_highlight_enabled"]:
+        previous = settings.get("word_highlight") or item.get("word_highlight") or {}
+        highlights = word_highlight.plan(cues, item["start"], item["end"], alignment or {"alignment_status": "not_prepared"},
+                                         version=previous.get("version"))
+    fingerprint = render_fingerprint(source, item["start"], item["end"], options, cues, logo, highlights)
     current_render = (
         item.get("caption_rendered") is True
         and fingerprint == render_fingerprint(
-            source, item["start"], item["end"], item["options"], item["cues"], item.get("logo")
+            source, item["start"], item["end"], item["options"], item["cues"], item.get("logo"), item.get("word_highlight")
         )
     )
     render_identity = _render_identity(fingerprint, template)
@@ -279,6 +307,8 @@ def _plan(connection, doc, item, style, cues, *, inherited=False, render=True, t
             desired["logo"] = logo
     if template:
         desired["style_template"] = template
+    if highlights:
+        desired["word_highlight"] = highlights
     if desired != settings:
         desired["revision"] += 1
     if export_id is None or existing or not render:
@@ -294,6 +324,8 @@ def _plan(connection, doc, item, style, cues, *, inherited=False, render=True, t
         variant.update(style_template=template, caption_revision=desired["revision"])
     if logo is not None:
         variant["logo"] = logo
+    if highlights:
+        variant["word_highlight"] = highlights
     return desired, variant
 
 
@@ -312,6 +344,8 @@ def _publish(connection, principal, doc, planned):
 
 
 def save_clip(job_id, filename, payload: ClipCaptionUpdate, principal):
+    alignment = (word_highlight.load_for_owner(job_id, principal)
+                 if payload.style.root["subtitle_highlight_enabled"] or payload.style_template else None)
     with get_engine().begin() as connection:
         doc = repo.beta_document(connection, principal, job_id)
         item = _clip(doc, filename)
@@ -325,12 +359,15 @@ def save_clip(job_id, filename, payload: ClipCaptionUpdate, principal):
             previous_template, _clip_logo(job, settings),
         )
         desired, variant = _plan(connection, doc, item, style, [cue.model_dump() for cue in payload.cues],
-                                 render=payload.render, template=template, logo=logo)
+                                 render=payload.render, template=template, logo=logo,
+                                 alignment=word_highlight.current(doc, alignment, connection) if alignment else None)
         _publish(connection, principal, doc, [(filename, desired, variant)])
         return clip_context(doc, filename, connection=connection)
 
 
 def save_project(job_id, payload: ProjectCaptionUpdate, principal):
+    alignment = (word_highlight.load_for_owner(job_id, principal)
+                 if payload.style.root["subtitle_highlight_enabled"] or payload.style_template else None)
     with get_engine().begin() as connection:
         doc = repo.beta_document(connection, principal, job_id)
         job = doc["payload"]
@@ -344,9 +381,11 @@ def save_project(job_id, payload: ProjectCaptionUpdate, principal):
             current.get("style_template"), current.get("logo"),
         )
         planned = []
+        if alignment:
+            alignment = word_highlight.current(doc, alignment, connection)
         for item in job["clips"]:
             desired, variant = _plan(connection, doc, item, style, _cues(doc, item, _settings(job, item)),
-                                     inherited=True, render=payload.render, template=template, logo=logo)
+                                     inherited=True, render=payload.render, template=template, logo=logo, alignment=alignment)
             planned.append((item["file"], desired, variant))
         job.update(caption_style=style, caption_style_revision=payload.revision + 1)
         job["caption_style_template"] = template

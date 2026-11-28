@@ -226,10 +226,12 @@ def _process(job_id: str, recorder: Recorder | None = None, *,
         job["status"] = "transcribing"
         persist(job_id, job)
         LOGGER.info("Job %s: cargando Whisper y transcribiendo", job_id)
+        native_alignment = None
         if validated_media is not None:
             result = transcribe_pilot(source, validated["duration_seconds"], recorder)
             segs, language = result.segments, result.language
-            write_alignment(folder / ALIGNMENT_FILE, result.alignment)
+            if write_alignment(folder / ALIGNMENT_FILE, result.alignment):
+                native_alignment = result.alignment
             job["analysis_seconds"] = round(result.decoded_seconds, 2)
             job["speech_until_seconds"] = round(max((s["end"] for s in segs), default=0.0), 2)
         else:
@@ -254,9 +256,14 @@ def _process(job_id: str, recorder: Recorder | None = None, *,
             raise MediaValidationError("NO_CLIP_WINDOWS", "No se encontraron ventanas de voz de entre 20 y 60 segundos. Se obtuvo una transcripción, pero no alcanza el rango del selector actual. Prueba una conversación más larga.", job["media"])
         recorder.phase("render")
         options = Presentation.model_validate(job.get("options", {}))
+        aligned = None
         if validated_media is not None:
             from .cloud.clip_captions import project_presentation
             options = project_presentation(job)
+            if options.subtitle_highlight_enabled:
+                from .cloud import word_highlight
+
+                aligned = word_highlight.local_alignment(native_alignment, validated["duration_seconds"])
         for index, clip in enumerate(chosen, 1):
             filename = f"clip_{index:02}.mp4"
             output = folder / filename
@@ -264,13 +271,18 @@ def _process(job_id: str, recorder: Recorder | None = None, *,
             render_options = options
             if validated_media is not None and not cues:
                 render_options = options.model_copy(update={"burn_subtitles": False})
+            highlight_options = {}
+            if aligned:
+                highlights = word_highlight.plan(cues, clip["start"], clip["end"], aligned)
+                clip["word_highlight"] = highlights
+                highlight_options["word_highlight"] = highlights
             LOGGER.info("Job %s: renderizando clip %s/%s (%s)", job_id, index, len(chosen), options.framing)
             render_started = time.monotonic()
             render_clip(
                 folder / "input.mp4", output, start=clip["start"], end=clip["end"],
                 options=render_options, cues=cues, video_index=job["media"]["video_stream_index"],
                 threads=FFMPEG_THREADS, runner=ffmpeg, pilot=validated_media is not None,
-                logo=logo, logo_path=logo_path,
+                logo=logo, logo_path=logo_path, **highlight_options,
             )
             recorder.clip_rendered(render_started)
             clip["cues"] = cues
@@ -585,9 +597,10 @@ def process_export(job_id: str, export_id: str, *, pilot: bool = False,
             LOGGER.info("Variante %s: renderizando %s sin repetir Whisper", export_id, options.framing)
             recorder.phase("render")
             render_started = time.monotonic()
+            highlights = {"word_highlight": item["word_highlight"]} if pilot and item.get("word_highlight") else {}
             render_clip(source, target, start=item["start"], end=item["end"],
                         options=options, cues=item["cues"], video_index=media["video_stream_index"],
-                        threads=FFMPEG_THREADS, pilot=pilot, logo=logo, logo_path=logo_path)
+                        threads=FFMPEG_THREADS, pilot=pilot, logo=logo, logo_path=logo_path, **highlights)
             recorder.clip_rendered(render_started)
             item.update(status="completed", completed_at=time.time())
             persist_export(job_id, item)

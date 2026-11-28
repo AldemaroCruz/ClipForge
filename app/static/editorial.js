@@ -69,6 +69,7 @@
     if (frameCallback !== null) source.cancelVideoFrameCallback(frameCallback);
     frameCallback = null;
     if (view) view.frameTime = null;
+    draftHighlight.frame(null);
     updateFrameControls();
   }
 
@@ -79,6 +80,7 @@
       if (!visible(state)) return;
       state.frameTime = frame.mediaTime;
       updateFrameControls();
+      if (!source.seeking) draftHighlight.frame(source.paused ? source.currentTime : frame.mediaTime);
       if (!source.seeking && previewEnd !== null && frame.mediaTime >= previewEnd) stopPreview();
       observeSourceFrames(state);
     });
@@ -93,6 +95,7 @@
       clearTimers(view);
       view.controller.abort();
     }
+    draftHighlight.sync(null);
     stopPreview();
     resetFrameObservation();
     resetFramingPreview();
@@ -623,7 +626,8 @@
 
     function stylePayload(value) {
       const keys = ["subtitle_font_size", "subtitle_color", "subtitle_position", "subtitle_outline",
-        "subtitle_outline_color", "subtitle_margin_v", "subtitle_shadow"];
+        "subtitle_outline_color", "subtitle_margin_v", "subtitle_shadow",
+        "subtitle_highlight_enabled", "subtitle_highlight_color"];
       return Object.fromEntries(keys.map(key => [key, value[key]]));
     }
 
@@ -747,10 +751,11 @@
   }
 
   const hexColorPattern = /^#[0-9a-f]{6}$/i;
+  const defaultHighlightColor = "#FFFF00";
 
-  function showColorValidation(field) {
-    const hex = field("color-hex");
-    const error = field("color-error");
+  function showColorValidation(field, name = "color") {
+    const hex = field(name + "-hex");
+    const error = field(name + "-error");
     const valid = hexColorPattern.test(hex.value);
     hex.setCustomValidity(valid ? "" : error.textContent);
     if (valid) hex.removeAttribute("aria-invalid");
@@ -759,18 +764,18 @@
     return valid;
   }
 
-  function mountColorControls(field, onChange) {
-    const picker = field("color");
-    const hex = field("color-hex");
+  function mountColorControls(field, onChange, name = "color") {
+    const picker = field(name);
+    const hex = field(name + "-hex");
     const fromPicker = () => {
       const color = picker.value.toUpperCase();
       const changed = color !== hex.value;
       hex.value = color;
-      showColorValidation(field);
+      showColorValidation(field, name);
       return changed;
     };
     const fromHex = () => {
-      if (!showColorValidation(field)) return false;
+      if (!showColorValidation(field, name)) return false;
       const color = hex.value.toLowerCase();
       const changed = color !== picker.value;
       picker.value = color;
@@ -795,10 +800,24 @@
     });
   }
 
+  function highlightControls(field) {
+    const enabled = field("highlight-enabled").checked;
+    field("highlight-colors").hidden = !enabled;
+    field("highlight-color").disabled = !enabled;
+    field("highlight-color-hex").disabled = !enabled;
+  }
+
+  function mountHighlightControls(field, onChange) {
+    mountColorControls(field, onChange, "highlight-color");
+    field("highlight-enabled").addEventListener("input", () => highlightControls(field));
+  }
+
   function styleControls(field, options) {
     return {...options, burn_subtitles: field("burn").checked,
       subtitle_font_size: field("size").valueAsNumber, subtitle_color: field("color").value.toUpperCase(),
-      subtitle_position: field("position").value, subtitle_outline: field("edge").valueAsNumber};
+      subtitle_position: field("position").value, subtitle_outline: field("edge").valueAsNumber,
+      subtitle_highlight_enabled: field("highlight-enabled").checked,
+      subtitle_highlight_color: field("highlight-color").value.toUpperCase()};
   }
 
   function fillStyleControls(field, style) {
@@ -810,15 +829,47 @@
     showColorValidation(field);
     field("position").value = style.subtitle_position ?? "bottom";
     field("edge").value = style.subtitle_outline ?? 3;
+    field("highlight-enabled").checked = style.subtitle_highlight_enabled === true;
+    field("highlight-color").value = (style.subtitle_highlight_color ?? defaultHighlightColor).toLowerCase();
+    field("highlight-color-hex").value = field("highlight-color").value.toUpperCase();
+    showColorValidation(field, "highlight-color");
+    highlightControls(field);
   }
 
   function editorStyle(field, options) {
-    if (!["size", "edge", "color-hex"].every(name => field(name).reportValidity())) return null;
+    if (!["size", "edge", "color-hex", "highlight-color-hex"].every(name => field(name).reportValidity())) return null;
     return styleControls(field, options);
   }
 
-  function showCaptionSample(sample, container, style, logo = null, showUnburned = true) {
-    const row = container.querySelector("[data-preview]") ?? container.firstElementChild;
+  function renderCaptionWords(span, text, cue, time) {
+    if (span.highlightCue !== cue || span.textContent !== text) {
+      span.highlightCue = cue;
+      span.textContent = text;
+      if (cue?.words.length) {
+        const letters = Array.from(text);
+        const children = document.createDocumentFragment();
+        let cursor = 0;
+        for (const word of cue.words) {
+          children.append(letters.slice(cursor, word.offset_start).join(""));
+          const marked = node("span", letters.slice(word.offset_start, word.offset_end).join(""));
+          marked.dataset.captionWord = word.id;
+          children.append(marked);
+          cursor = word.offset_end;
+        }
+        children.append(letters.slice(cursor).join(""));
+        span.replaceChildren(children);
+      }
+    }
+    const activeWord = time === null ? null : cue?.words.find(word => word.start <= time && time < word.end);
+    for (const word of span.querySelectorAll("[data-caption-word]")) {
+      if (word.dataset.captionWord === activeWord?.id) word.dataset.active = "true";
+      else delete word.dataset.active;
+    }
+  }
+
+  function showCaptionSample(sample, container, style, logo = null, showUnburned = true, timing = null) {
+    const row = timing?.index != null ? container.children[timing.index]
+      : container.querySelector("[data-preview]") ?? container.firstElementChild;
     const frame = sample.querySelector(".caption-frame");
     const span = frame.firstElementChild;
     const showText = Boolean(row && (style.burn_subtitles || showUnburned));
@@ -828,11 +879,17 @@
     sample.querySelector("h4").textContent = logo ? (showText ? "Vista previa del subtítulo y logo" : "Vista previa del logo")
       : "Vista previa del subtítulo";
     logos.show(frame, logo);
-    if (!showText) return;
+    if (!showText) {
+      renderCaptionWords(span, "", null, null);
+      return;
+    }
     const units = value => `calc(${value} / 1080 * 100cqw)`;
     frame.dataset.position = style.subtitle_position;
-    span.textContent = row.querySelector(".caption-text").value;
+    const index = [...container.children].indexOf(row);
+    const cue = timing?.rows[index] || null;
+    renderCaptionWords(span, cue?.text ?? row.querySelector(".caption-text").value, cue, timing?.time ?? null);
     span.style.color = style.subtitle_color;
+    span.style.setProperty("--caption-highlight", style.subtitle_highlight_color ?? defaultHighlightColor);
     // ASS font size measures the font's ascent plus descent. CSS measures its em square.
     span.style.fontSize = units((style.subtitle_font_size || 52) * 2048 / 2384);
     span.style.setProperty("--caption-margin", units(style.subtitle_margin_v ?? 230));
@@ -842,13 +899,198 @@
     span.style.textShadow = shadow ? `${units(shadow)} ${units(shadow)} rgb(0 0 0 / 50%)` : "none";
   }
 
+  function mountCaptionHighlight(field, player, redraw, {observeFrames = true} = {}) {
+    const notice = field("highlight-status");
+    const prepareButton = field("highlight-prepare");
+    let context = null;
+    let key = null;
+    let result = null;
+    let error = "";
+    let requestController;
+    let timer;
+    let preparing = false;
+    let mediaTime = null;
+    let frameId = null;
+    let lastPaint = null;
+    const fallbackReasons = {
+      not_prepared: "Este proyecto todavía no tiene marcas por palabra. Se usará el color base.",
+      failed: "No se pudieron comprobar las marcas por palabra. Se usará el color base.",
+      alignment_changed: "Las marcas de la versión guardada ya no están disponibles. Se usará el color base.",
+      unmatched_cues: "No hay marcas que coincidan con estos subtítulos. Se usará el color base.",
+    };
+
+    function showStatus(frame) {
+      const alignment = result?.alignment_status;
+      const pending = alignment === "queued" || alignment === "running";
+      const retry = alignment === "failed" && result.retryable;
+      prepareButton.hidden = !context?.enabled || !(alignment === "not_prepared" || retry);
+      prepareButton.textContent = retry ? "Reintentar preparación por palabra" : "Preparar marcas por palabra";
+      prepareButton.disabled = preparing;
+      notice.hidden = !context?.enabled;
+      const version = result?.version;
+      if (notice.dataset.timing !== (result?.timing || "")) notice.dataset.timing = result?.timing || "";
+      if (notice.dataset.version !== (version || "")) notice.dataset.version = version || "";
+      let message = error || context?.hint || "";
+      if (context?.enabled && !message) {
+        if (pending) message = "Se están preparando las marcas por palabra. Mientras tanto, se usa el color base.";
+        else if (result?.status === "ready") message = "Marcas por palabra verificadas.";
+        else if (result?.status === "partial") {
+          message = frame?.index >= 0 && !frame.rows[frame.index]?.words.length
+            ? "Este subtítulo se mostrará con su color base."
+            : "Los subtítulos sin marcas que coincidan con el texto usarán su color base.";
+        } else if (result?.status === "unavailable") {
+          message = fallbackReasons[result.reason] || fallbackReasons.unmatched_cues;
+        } else if (key) message = "Comprobando las marcas por palabra…";
+      }
+      if (notice.textContent !== message) notice.textContent = message;
+    }
+
+    function sample() {
+      if (!context?.enabled) return null;
+      const time = mediaTime === null ? null : Math.round((mediaTime - context.offset) * 1e6) / 1e6;
+      const rows = result?.cues || [];
+      const intervals = rows.length ? rows : context.body?.cues || [];
+      const index = time === null ? null : intervals.findIndex(cue => cue.start <= time && time < cue.end);
+      const frame = {index, rows, time};
+      showStatus(frame);
+      return frame;
+    }
+
+    function frame(time) {
+      mediaTime = time;
+      const view = sample();
+      if (!view) return;
+      const active = view.rows[view.index]?.words.find(word => word.start <= view.time && view.time < word.end);
+      const paint = (view.index ?? "sample") + ":" + (active?.id || "");
+      if (paint !== lastPaint) {
+        lastPaint = paint;
+        redraw();
+      }
+    }
+
+    function queue(expected, delay) {
+      clearTimeout(timer);
+      timer = setTimeout(() => void evaluate(expected), delay);
+    }
+
+    async function evaluate(expected) {
+      if (!expected || key !== expected) return;
+      const controller = new AbortController();
+      requestController = controller;
+      try {
+        const value = await auth.json("/jobs/" + context.id + "/caption-highlight", {
+          ...auth.payload(context.body), signal: controller.signal,
+        });
+        if (controller.signal.aborted || key !== expected) return;
+        result = value;
+        error = "";
+        if (["queued", "running"].includes(result.alignment_status)) queue(expected, 3000);
+      } catch (failure) {
+        if (controller.signal.aborted || key !== expected) return;
+        error = failure.message;
+      }
+      showStatus();
+      redraw();
+    }
+
+    function sync(next) {
+      context = next;
+      const signature = next?.enabled && next.body ? JSON.stringify([next.id, next.body]) : null;
+      if (signature !== key) {
+        requestController?.abort();
+        clearTimeout(timer);
+        key = signature;
+        result = null;
+        error = "";
+        if (key) queue(key, 200);
+      }
+      showStatus();
+    }
+
+    prepareButton.addEventListener("click", async () => {
+      if (!key || preparing) return;
+      const expected = key;
+      const retry = result?.alignment_status === "failed";
+      preparing = true;
+      showStatus();
+      try {
+        await auth.json("/jobs/" + context.id + "/transcript-selection/prepare", auth.payload({retry}));
+        if (key === expected) queue(expected, 0);
+      } catch (failure) {
+        if (key === expected) error = failure.message;
+      } finally {
+        preparing = false;
+        showStatus();
+      }
+    });
+
+    const usesFrames = typeof player.requestVideoFrameCallback === "function";
+    function scheduleFrame() {
+      if (!observeFrames || !usesFrames || frameId !== null || player.paused) return;
+      frameId = player.requestVideoFrameCallback((_now, metadata) => {
+        frameId = null;
+        frame(metadata.mediaTime);
+        scheduleFrame();
+      });
+    }
+    const readPlayer = () => frame(player.currentTime);
+    for (const event of ["seeking", "seeked", "pause", "ratechange", "loadeddata"]) {
+      player.addEventListener(event, readPlayer);
+    }
+    player.addEventListener("play", () => {
+      readPlayer();
+      scheduleFrame();
+    });
+    player.addEventListener("timeupdate", () => {
+      if (!usesFrames || player.paused || player.seeking) readPlayer();
+    });
+    player.addEventListener("emptied", () => frame(null));
+    player.addEventListener("pause", () => {
+      if (frameId === null) return;
+      player.cancelVideoFrameCallback(frameId);
+      frameId = null;
+    });
+
+    return {sync, sample, frame};
+  }
+
+  function highlightExportText(summary) {
+    if (!summary?.enabled) return "";
+    const base = summary.base_color ?? "#FFFFFF";
+    const highlight = summary.active_color ?? defaultHighlightColor;
+    const version = summary.version;
+    const coverage = summary.status === "ready" ? "" : summary.status === "partial"
+      ? " · parcial" : " · subtítulos estáticos";
+    return "Resaltado " + base + " / " + highlight + coverage + (version ? " · marcas " + version.slice(0, 12) : "");
+  }
+
   function captionStyle(options) {
     return styleControls(el, options);
   }
 
   function updateSample() {
+    const draft = view?.draft;
+    const style = captionStyle(draft?.options);
+    const range = view?.range;
+    let context = null;
+    if (visible(view) && draft && style.subtitle_highlight_enabled) {
+      const inputs = rangeFields();
+      const origin = draft.selection_origin;
+      const version = draft.word_highlight?.version
+        || (origin?.method === "faster-whisper-word-timestamps" ? origin.transcript_version : null);
+      const cues = readCues();
+      const applied = range.start === inputs.start && range.end === inputs.end;
+      context = {enabled: true, id: view.id, offset: range.start,
+        body: applied && cues.length ? {...range, cues, ...(version ? {version} : {})} : null,
+        hint: !applied ? "Aplicá el recorte para actualizar las marcas." : !cues.length ? "Agregá subtítulos para usar el resaltado." : ""};
+    }
+    draftHighlight.sync(context);
+    paintCaptionSample();
+  }
+
+  function paintCaptionSample() {
     const logo = draftLogos.read();
-    showCaptionSample(el("sample"), el("cues"), captionStyle(view?.draft?.options), logo);
+    showCaptionSample(el("sample"), el("cues"), captionStyle(view?.draft?.options), logo, true, draftHighlight.sample());
     if (!el("framing-result").hidden) logos.show(el("framing-composition"), logo);
   }
 
@@ -1080,6 +1322,7 @@
     // includes it, and an exclusive end at this frame leaves it out.
     const time = Math.floor(Math.max(0, state.frameTime) * 1000 + 1e-7) / 1000;
     el(edge).value = time.toFixed(3);
+    updateSample();
     status(state, (edge === "start" ? "Inicio" : "Fin") + " ajustado a " + time.toFixed(3)
       + " s del original.", "draft-status");
   }
@@ -1103,6 +1346,9 @@
       && value.options.burn_subtitles === (item.options.burn_subtitles === true)
       && value.options.subtitle_font_size === (item.options.subtitle_font_size ?? 52)
       && value.options.subtitle_color === (item.options.subtitle_color ?? "#FFFFFF").toUpperCase()
+      && (!value.options.subtitle_highlight_enabled || el("highlight-color-hex").validity.valid)
+      && value.options.subtitle_highlight_enabled === (item.options.subtitle_highlight_enabled === true)
+      && value.options.subtitle_highlight_color === (item.options.subtitle_highlight_color ?? defaultHighlightColor).toUpperCase()
       && value.options.subtitle_position === (item.options.subtitle_position ?? "bottom")
       && value.options.subtitle_outline === (item.options.subtitle_outline ?? 3)
       && Object.entries(framingDefaults).every(([key, fallback]) => {
@@ -1213,6 +1459,15 @@
       + (item.logo ? " · Con logo" : "")
       + (item.status === "completed" && hasCues && item.options?.burn_subtitles ? " · Subtítulos incrustados" : ""), "muted"));
     if (item.status === "completed") {
+      const timeline = item.word_highlight;
+      const highlight = highlightExportText({enabled: item.options?.burn_subtitles && item.options?.subtitle_highlight_enabled,
+        base_color: item.options?.subtitle_color, active_color: item.options?.subtitle_highlight_color,
+        version: timeline?.version, status: timeline?.status});
+      if (highlight) {
+        const note = node("p", highlight, "muted caption-highlight-version");
+        if (timeline?.version) note.dataset.version = timeline.version;
+        card.append(note);
+      }
       const files = "/jobs/" + state.id + "/exports/" + item.id + "/files/";
       const player = node("video");
       player.src = files + "clip.mp4?inline=true";
@@ -1280,11 +1535,13 @@
       resetFrameObservation();
       resetFramingPreview();
       resetConsent();
+      draftHighlight.sync(null);
       return;
     }
     source.src = sourcePath(state);
     observeSourceFrames(state);
     selectionControls(state);
+    if (state.draft) updateSample();
     if (state.draftTogglePending) {
       state.draftTogglePending = false;
       return;
@@ -1338,6 +1595,8 @@
     apply: applyDraftStyle,
   });
   mountColorControls(el, updateSample);
+  mountHighlightControls(el, updateSample);
+  const draftHighlight = mountCaptionHighlight(el, source, paintCaptionSample, {observeFrames: false});
   el("draft-form").addEventListener("submit", event => { event.preventDefault(); void draftAction("save"); });
   el("draft-form").addEventListener("input", event => {
     if (!event.target.closest(".caption-styles")) updateSample();
@@ -1372,5 +1631,6 @@
 
   window.ClipForgeEditorial = {selectJob, createManualDraft, createTranscriptDraft};
   window.ClipForgeCaptionFields = {cueInput, cueRow, readCues, addCue, replaceCueRows, trackCaptionCue,
-    showCaptionSample, styleControls, fillStyleControls, editorStyle, mountCaptionStyles, mountColorControls, sourceTime};
+    showCaptionSample, styleControls, fillStyleControls, editorStyle, mountCaptionStyles, mountColorControls, sourceTime,
+    mountHighlightControls, mountCaptionHighlight, highlightExportText};
 })();

@@ -73,6 +73,7 @@ class BrowserHitoBTest(unittest.TestCase):
                       "transcript_timeline": None, "transcript_prepare_posts": [], "transcript_draft_posts": [],
                       "range_posts": [], "draft_updates": [], "approved": {},
                       "caption": None, "project_caption": None, "caption_updates": [], "deletions": [],
+                      "highlight_requests": [], "highlight_available": True,
                       "publications": {}, "publication_writes": [], "publication_previews": [], "publication_requests": [],
                       "saved_style": None, "framing_source": None, "source_reads": 0,
                       "zip_requests": [], "zip_stale": False, "logo": None, "logo_versions": {}}
@@ -124,8 +125,11 @@ class BrowserHitoBTest(unittest.TestCase):
             if path.endswith("/source"):
                 self.state["source_reads"] += 1
                 if self.state["framing_source"] is not None:
-                    route.fulfill(status=200, content_type="video/webm", body=self.state["framing_source"])
+                    self.serve_webm(route, self.state["framing_source"])
                     return
+            elif self.state.get("caption_preview_media", False):
+                self.serve_webm(route, FRAMING_WEBM)
+                return
             route.fulfill(status=404 if self.state["status"] == "deleted" else 503, content_type="video/mp4")
             return
         if path == f"/jobs/{JOB}/clips.zip":
@@ -148,6 +152,20 @@ class BrowserHitoBTest(unittest.TestCase):
             return
         data, status = self.api(path, request)
         route.fulfill(status=status, content_type="application/json", body=json.dumps(data))
+
+    @staticmethod
+    def serve_webm(route, data):
+        headers = {"accept-ranges": "bytes"}
+        requested = route.request.headers.get("range")
+        status = 200
+        if requested:
+            start, end = requested.removeprefix("bytes=").split("-", 1)
+            start = int(start)
+            end = min(int(end), len(data) - 1) if end else len(data) - 1
+            headers["content-range"] = f"bytes {start}-{end}/{len(data)}"
+            data = data[start:end + 1]
+            status = 206
+        route.fulfill(status=status, content_type="video/webm", headers=headers, body=data)
 
     def handle_gcs(self, route):
         request = route.request
@@ -304,6 +322,27 @@ class BrowserHitoBTest(unittest.TestCase):
             data = request.post_data_json
             self.state["range_posts"].append(data)
             return {**data, "cues": data.get("cues", self.cue_fixture())}, 200
+        if path == f"/jobs/{JOB}/caption-highlight" and method == "POST":
+            body = request.post_data_json
+            self.state["highlight_requests"].append(body)
+            words = {
+                "voz voz": [("w1.1", 0, .1, 0, 3), ("w1.2", .2, .32, 4, 7)],
+                "final": [("w2.1", .4, .58, 0, 5)],
+            }
+            available = self.state["highlight_available"]
+            cues = []
+            for index, cue in enumerate(body["cues"]):
+                matches = words.get(cue["text"].casefold().strip(".!?"), []) if available else []
+                cues.append({**cue, "index": index, "words": [
+                    {"id": identity, "text": cue["text"][left:right], "start": start, "end": end,
+                     "offset_start": left, "offset_end": right}
+                    for identity, start, end, left, right in matches
+                ]})
+            count = sum(bool(cue["words"]) for cue in cues)
+            return {"status": "ready" if count and count == len(cues) else "partial" if count else "unavailable",
+                    "alignment_status": "ready" if available else "not_prepared", "timing": "centiseconds",
+                    "reason": "unmatched_cues" if available else "not_prepared",
+                    "version": "b" * 64 if available else None, "cues": cues}, 200
         if path == f"/jobs/{OTHER_JOB}/publication":
             return {"saved": []}, 200
         if path.startswith(f"/jobs/{JOB}/publication"):
@@ -312,6 +351,9 @@ class BrowserHitoBTest(unittest.TestCase):
             return self.state["transcript_timeline"], 200
         if path == f"/jobs/{JOB}/transcript-selection/prepare" and method == "POST":
             self.state["transcript_prepare_posts"].append(request.post_data_json)
+            if self.state["transcript_timeline"] is None:
+                self.state["highlight_available"] = True
+                return {"status": "completed"}, 202
             self.state["transcript_timeline"]["alignment_status"] = "queued"
             return {"alignment_status": "queued"}, 202
         if path == f"/jobs/{JOB}/transcript-selection/drafts" and method == "POST":
@@ -1003,7 +1045,8 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertEqual([(1.2, 3.25, "Primera frase editada."), (8.25, 10.5, "Frase posterior editada.")],
                          [(cue["start"], cue["end"], cue["text"]) for cue in saved["cues"]])
         self.assertEqual({"burn_subtitles": True, "subtitle_font_size": 76, "subtitle_color": "#EDAD42",
-                          "subtitle_position": "top", "subtitle_outline": 6}, saved["style"])
+                          "subtitle_position": "top", "subtitle_outline": 6,
+                          "subtitle_highlight_enabled": False, "subtitle_highlight_color": "#FFFF00"}, saved["style"])
 
         self.page.reload()
         open_editor.click()
@@ -1017,6 +1060,132 @@ class BrowserHitoBTest(unittest.TestCase):
         self.assertEqual("#edad42", editor.get_by_label("Color del texto").input_value())
         self.assertEqual("top", editor.get_by_label("Posición").input_value())
         self.assertEqual("6", editor.get_by_label("Grosor del contorno").input_value())
+        self.assertEqual([], self.state["selection_posts"])
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
+    @staticmethod
+    def seek_caption_video(player, time):
+        player.evaluate("""async (video, time) => {
+            video.pause();
+            if (!video.readyState) {
+                const metadata = new Promise(resolve => video.addEventListener('loadedmetadata', resolve, {once: true}));
+                video.preload = 'auto';
+                video.load();
+                await metadata;
+            }
+            const sought = new Promise(resolve => video.addEventListener('seeked', resolve, {once: true}));
+            video.currentTime = time;
+            await sought;
+        }""", time)
+
+    def test_word_highlight_uses_video_clock_pause_seek_rate_and_valid_edit(self):
+        cues = [{"start": 0, "end": .38, "text": "Voz voz"}, {"start": .38, "end": .6, "text": "Final"}]
+        self.state.update(status="completed", caption_preview_media=True, caption={
+            "start": 392, "end": 421.5, "duration": 29.5, "cues": cues, "revision": 1, "status": "completed",
+            "style": {"burn_subtitles": True, "subtitle_color": "#FFFFFF"}, "output": None,
+        })
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        self.page.get_by_role("button", name="Editar subtítulos", exact=True).click()
+        toggle = self.page.locator("#clip-caption-highlight-enabled")
+        expect(toggle).not_to_be_checked()
+        expect(self.page.locator("#clip-caption-highlight-color")).to_be_hidden()
+        self.assertEqual([], self.state["highlight_requests"])
+        toggle.check()
+        notice = self.page.locator("#clip-caption-highlight-status")
+        expect(notice).to_have_attribute("data-version", "b" * 64)
+        self.assertEqual({"start": 392, "end": 421.5, "cues": cues}, self.state["highlight_requests"][0])
+        picker = self.page.locator("#clip-caption-highlight-color")
+        color_hex = self.page.locator("#clip-caption-highlight-color-hex")
+        picker.fill("#10c0de")
+        expect(color_hex).to_have_value("#10C0DE")
+        color_hex.fill("#ed00ab")
+        expect(picker).to_have_value("#ed00ab")
+        player = self.page.locator("#clip-caption-preview")
+        sample = self.page.locator("#clip-caption-sample .caption-frame > span")
+        active = sample.locator('[data-active="true"]')
+        self.seek_caption_video(player, .05)
+        expect(active).to_have_attribute("data-caption-word", "w1.1")
+        expect(active).to_have_css("color", "rgb(237, 0, 171)")
+        expect(sample.locator('[data-caption-word="w1.2"]')).to_have_css("color", "rgb(255, 255, 255)")
+        bounds = sample.bounding_box()
+        color_hex.fill("#00cc99")
+        expect(active).to_have_css("color", "rgb(0, 204, 153)")
+        self.assertEqual(bounds, sample.bounding_box())
+        self.page.wait_for_timeout(150)
+        expect(active).to_have_attribute("data-caption-word", "w1.1")
+        self.assertAlmostEqual(.05, player.evaluate("video => video.currentTime"), places=3)
+        self.seek_caption_video(player, .15)
+        expect(active).to_have_count(0)
+        expect(sample).to_have_text("Voz voz")
+        self.seek_caption_video(player, .24)
+        expect(active).to_have_attribute("data-caption-word", "w1.2")
+        player.evaluate("video => { video.playbackRate = .5; return video.play(); }")
+        expect(active).to_have_attribute("data-caption-word", "w2.1", timeout=5000)
+        expect(sample).to_have_text("Final")
+        player.evaluate("video => video.pause()")
+        self.seek_caption_video(player, .24)
+        editor = self.page.locator("#clip-caption-cues textarea").first
+        editor.fill("VOZ voz!")
+        expect(active).to_have_attribute("data-caption-word", "w1.2")
+        expect(sample).to_have_text("VOZ voz!")
+        editor.fill("Otra voz voz")
+        expect(notice).to_contain_text("color base")
+        expect(active).to_have_count(0)
+        expect(sample).to_have_text("Otra voz voz")
+        self.seek_caption_video(player, .45)
+        expect(active).to_have_attribute("data-caption-word", "w2.1")
+        self.page.set_viewport_size({"width": 375, "height": 760})
+        self.assertTrue(sample.evaluate("element => element.getBoundingClientRect().right <= innerWidth"))
+        toggle.uncheck()
+        expect(active).to_have_count(0)
+        expect(picker).to_be_hidden()
+        self.assertEqual([], self.state["selection_posts"])
+        self.assertEqual([], self.state["transcript_prepare_posts"])
+        self.assertEqual([], self.errors)
+        self.assertEqual([], self.state["unexpected"])
+
+    def test_editorial_highlight_prepares_explicitly_and_reloads_saved_style(self):
+        cues = [{"start": 0, "end": .38, "text": "Voz voz"}, {"start": .38, "end": .6, "text": "Final"}]
+        self.state.update(status="completed", framing_source=FRAMING_WEBM, highlight_available=False)
+        self.store_draft(title="Resaltado por palabra", start=.15, end=1.25, cues=cues,
+                         options={"burn_subtitles": True},
+                         selection_origin={"mode": "transcript", "start": .15, "end": 1.25,
+                                           "transcript_version": "b" * 64, "method": "faster-whisper-word-timestamps",
+                                           "first": "w1.1", "last": "w2.1"})
+        self.page.goto(ORIGIN + "/?job=" + JOB)
+        self.page.locator("#editorial-heading").click()
+        toggle = self.page.locator("#editorial-highlight-enabled")
+        expect(toggle).not_to_be_checked()
+        toggle.check()
+        notice = self.page.locator("#editorial-highlight-status")
+        expect(notice).to_contain_text("color base")
+        self.assertEqual([], self.state["transcript_prepare_posts"])
+        self.assertEqual("b" * 64, self.state["highlight_requests"][0]["version"])
+        self.page.locator("#editorial-highlight-prepare").click()
+        expect(notice).to_have_attribute("data-version", "b" * 64)
+        self.assertEqual([{"retry": False}], self.state["transcript_prepare_posts"])
+        color = self.page.locator("#editorial-highlight-color-hex")
+        color.fill("#123abc")
+        self.seek_caption_video(self.page.locator("#editorial-source"), .39)
+        active = self.page.locator('#editorial-sample [data-active="true"]')
+        expect(active).to_have_attribute("data-caption-word", "w1.2")
+        expect(active).to_have_css("color", "rgb(18, 58, 188)")
+        self.page.locator("#editorial-save-style").click()
+        styles = self.page.locator("#editorial-styles")
+        styles.get_by_label("Nombre del estilo").fill("Resaltado del recorte")
+        styles.get_by_role("button", name="Guardar como estilo nuevo").click()
+        expect(styles.get_by_role("status")).to_have_text("Estilo guardado.")
+        template = self.state["saved_style"]["style"]
+        self.assertEqual((True, "#123ABC"),
+                         (template["subtitle_highlight_enabled"], template["subtitle_highlight_color"]))
+        styles.get_by_role("button", name="Aplicar estilo", exact=True).click()
+        expect(styles.get_by_role("status")).to_have_text("Estilo aplicado.")
+        self.page.reload()
+        self.page.locator("#editorial-heading").click()
+        expect(toggle).to_be_checked()
+        expect(color).to_have_value("#123ABC")
+        expect(self.page.locator("#editorial-highlight-color")).to_have_value("#123abc")
         self.assertEqual([], self.state["selection_posts"])
         self.assertEqual([], self.errors)
         self.assertEqual([], self.state["unexpected"])

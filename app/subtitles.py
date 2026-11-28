@@ -121,18 +121,75 @@ def to_vtt(cues: list[dict[str, Any]]) -> str:
     return "\n".join(blocks)
 
 
+def _ass_literal(text):
+    # Fullwidth literals block ASS overrides and \N / \h injection.
+    return text.translate(str.maketrans({"\\": "＼", "{": "｛", "}": "｝"})).replace("\n", r"\N")
+
+
+def _ass_bgr(color):
+    rgb = color[1:]
+    return f"{rgb[4:6]}{rgb[2:4]}{rgb[0:2]}"
+
+
+def _highlight_events(cue, text, row, base_color, active_color):
+    """Repeat the complete cue for each adjacent interval on the ASS clock."""
+    start, end = cue["start"], cue["end"]
+    base = [(start, end, _ass_literal(text))]
+    if not row or row.get("text") != text or not (words := row.get("words")):
+        return base
+    start, end = round(start * 100) / 100, round(end * 100) / 100
+    if (start, end) != (row.get("start"), row.get("end")):
+        return base
+    spans = []
+    offset = 0
+    cursor = start
+    for item in words:
+        try:
+            a, b = item["offset_start"], item["offset_end"]
+            enters, leaves = item["start"], item["end"]
+            if not (type(a) is int and type(b) is int and offset <= a < b <= len(text)
+                    and cursor <= enters < leaves <= end and text[a:b] == item["text"]):
+                return base
+        except (KeyError, TypeError):
+            return base
+        spans.append((_ass_literal(text[offset:a]), _ass_literal(text[a:b]), enters, leaves))
+        offset = b
+        cursor = leaves
+    tail = _ass_literal(text[offset:])
+    tags = {False: r"{\1c&H" + base_color + "&}", True: r"{\1c&H" + active_color + "&}"}
+
+    def styled(active):
+        # Keep the same style boundaries in every event, including gaps. The
+        # frame changes only one primary color and never wraps a partial cue.
+        return "".join(gap + tags[index == active] + word + tags[False]
+                       for index, (gap, word, _, _) in enumerate(spans)) + tail
+
+    static = styled(None)
+    events = []
+    cursor = start
+    for index, (_, _, enters, leaves) in enumerate(spans):
+        if cursor < enters:
+            events.append((cursor, enters, static))
+        events.append((enters, leaves, styled(index)))
+        cursor = leaves
+    if cursor < end:
+        events.append((cursor, end, static))
+    return events
+
+
 def to_ass(cues: list[dict[str, Any]], *, font_size: int = 52,
            color: str = "#FFFFFF", position: str = "bottom", margin_v: int = 230,
-           outline: int = 3, outline_color: str = "#201510", shadow: int = 1) -> str:
+           outline: int = 3, outline_color: str = "#201510", shadow: int = 1,
+           highlight_color: str = "#FFFF00", word_highlight: dict | None = None) -> str:
     # Validate even direct calls: never interpolate arbitrary ASS/style markup.
     style = Presentation(subtitle_font_size=font_size, subtitle_color=color,
                          subtitle_position=position, subtitle_margin_v=margin_v,
-                         subtitle_outline=outline, subtitle_outline_color=outline_color,
+                         subtitle_outline=outline, subtitle_outline_color=outline_color, subtitle_highlight_color=highlight_color,
                          subtitle_shadow=shadow)
-    rgb = style.subtitle_color[1:]
-    ass_color = f"&H00{rgb[4:6]}{rgb[2:4]}{rgb[0:2]}"  # opaque AABBGGRR
-    border = style.subtitle_outline_color[1:]
-    ass_border = f"&H00{border[4:6]}{border[2:4]}{border[0:2]}"
+    base_color = _ass_bgr(style.subtitle_color)
+    active_color = _ass_bgr(style.subtitle_highlight_color)
+    ass_color = f"&H00{base_color}"  # opaque AABBGGRR
+    ass_border = f"&H00{_ass_bgr(style.subtitle_outline_color)}"
     alignment = {"bottom": 2, "center": 5, "top": 8}[style.subtitle_position]
     # Font is provided by the container OS package; no font bytes are bundled.
     header = f"""[Script Info]
@@ -150,9 +207,8 @@ Style: Default,DejaVu Sans,{style.subtitle_font_size},{ass_color},{ass_color},{a
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     rows = []
-    for cue in cues:
-        # Fullwidth literals block ASS override tags and \N / \h injection.
-        text = _caption_text(cue["text"]).translate(str.maketrans({"\\": "＼", "{": "｛", "}": "｝"}))
-        text = text.replace("\n", r"\N")
-        rows.append(f"Dialogue: 0,{timestamp(cue['start'], ass=True)},{timestamp(cue['end'], ass=True)},Default,,0,0,0,,{text}")
+    planned = {row["index"]: row for row in word_highlight.get("cues", [])} if word_highlight else {}
+    for index, cue in enumerate(cues):
+        for start, end, text in _highlight_events(cue, _caption_text(cue["text"]), planned.get(index), base_color, active_color):
+            rows.append(f"Dialogue: 0,{timestamp(start, ass=True)},{timestamp(end, ass=True)},Default,,0,0,0,,{text}")
     return header + "\n".join(rows) + "\n"

@@ -12,11 +12,13 @@ import time
 from ..state import write_json_atomic
 
 SCRATCH_ENV = "CLIPFORGE_WORKER_SCRATCH"
+ENTRY_ENV = "CLIPFORGE_WORKER_ENTRY_EPOCH"
+CLAIM_ENV = "CLIPFORGE_WORKER_CLAIM_EPOCH"
 SCRATCH_PREFIX = "clipforge-worker-"
 SAMPLE_INTERVAL_SECONDS = 2
 CGROUP = Path("/sys/fs/cgroup")
 PROC = Path("/proc")
-STAGES = {"download", "probe", "validation", "model_load", "transcription", "selection", "render", "publish"}
+STAGES = {"prepare", "download", "probe", "validation", "model_load", "transcription", "selection", "render", "publish"}
 
 
 def scratch_context():
@@ -101,6 +103,31 @@ def _clip_renders(data):
            or not all(_valid_seconds(value) for value in item.values()) for item in data):
         return None
     return data
+
+
+def completed_receipt(directory, task, timings):
+    """Capture a completed task's timings within the same publication fence."""
+    directory = Path(directory)
+    metrics_path = directory / task["job_id"] / "metrics" / f"{task['kind']}-{task['item_id']}.json"
+    metrics = _metrics(metrics_path)
+    # Cross-process timestamps come from UTC wall time. In-process durations
+    # use monotonic clocks. A claim by an existing supervisor may have no
+    # measured Cloud Run dispatch for the task.
+    timestamps = {"activated_epoch": task["created_at"].timestamp(),
+                  "dispatch_ack_epoch": task["dispatch_ack_epoch"]}
+    for name, variable in (("worker_entry_epoch", ENTRY_ENV), ("claim_epoch", CLAIM_ENV)):
+        value = os.getenv(variable)
+        if value:
+            try:
+                stamp = float(value)
+            except ValueError:
+                continue
+            if math.isfinite(stamp) and stamp > 0:
+                timestamps[name] = stamp
+    return {"schema": 1, "task_id": task["id"], "fence": task["fence"],
+            "kind": task["kind"], "timestamps": {**timestamps, "upload_complete_observed_epoch": time.time()},
+            "stage_seconds": _timings(metrics.get("stage_seconds")) | _timings(timings),
+            "container_peak_bytes_through_upload": _read_number(CGROUP / "memory.peak")}
 
 
 class WorkerMeasurements:

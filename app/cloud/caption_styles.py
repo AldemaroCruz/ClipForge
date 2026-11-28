@@ -90,7 +90,7 @@ def owned_style(connection, owner, style_id, revision=None):
         raise HTTPException(404, "Estilo no encontrado.")
     if revision is not None and item["revision"] != revision:
         raise HTTPException(409, "El estilo cambió. Volvé a abrir la lista de estilos.")
-    return dict(item)
+    return {**item, "style": style_values(item["style"])}
 
 
 def snapshot(item):
@@ -132,7 +132,8 @@ def list_styles(request: Request):
             SELECT id,name,font,style,logo,revision,is_default
             FROM cloud_caption_styles WHERE owner_id=:o ORDER BY name_key,id
             """), {"o": principal.id}).mappings().all()
-    return {"styles": [dict(row) for row in rows], "fonts": [{"id": FONT, "label": FONT}]}
+    return {"styles": [{**row, "style": style_values(row["style"])} for row in rows],
+            "fonts": [{"id": FONT, "label": FONT}]}
 
 
 @router.post("", status_code=201)

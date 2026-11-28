@@ -98,6 +98,7 @@
               <div class="caption-frame"><span></span></div>
               <p class="muted caption-export-note" hidden>Activa «Incrustar subtítulos en el MP4» para incluir este estilo en el video.</p>
             </section>
+            <p id="clip-caption-highlight-status" class="status beta-message" role="status" hidden></p>
             <fieldset id="clip-caption-fields" class="beta-caption-fields">
               <legend id="clip-caption-legend">Estilo y sincronización</legend>
               <div id="clip-caption-advanced">
@@ -113,6 +114,16 @@
                   </div>
                   <div><label for="clip-caption-position">Posición</label><select id="clip-caption-position"><option value="bottom">Abajo</option><option value="center">Centro</option><option value="top">Arriba</option></select></div>
                   <div><label for="clip-caption-edge">Grosor del contorno</label><input type="number" id="clip-caption-edge" min="0" max="12" step="1" value="3" required></div>
+                </div>
+                <label class="beta-check"><input type="checkbox" id="clip-caption-highlight-enabled">Resaltar palabra actual</label>
+                <div id="clip-caption-highlight-colors" class="caption-highlight-colors" hidden>
+                  <div class="caption-color-inputs">
+                    <div><label for="clip-caption-highlight-color">Color de la palabra resaltada</label><input type="color" id="clip-caption-highlight-color" value="#ffff00" disabled></div>
+                    <div><label for="clip-caption-highlight-color-hex">Color HEX del resaltado</label><input type="text" id="clip-caption-highlight-color-hex" value="#FFFF00" spellcheck="false" required disabled aria-describedby="clip-caption-highlight-color-error"></div>
+                  </div>
+                  <p id="clip-caption-highlight-color-error" class="status beta-message caption-color-error" role="status" hidden>Escribí un color como #FFFF00.</p>
+                  <p class="muted">El resaltado se incluye en el MP4 con subtítulos incrustados. SRT y VTT conservan el texto y los tiempos.</p>
+                  <button type="button" id="clip-caption-highlight-prepare" class="secondary" hidden>Preparar marcas por palabra</button>
                 </div>
                 <button id="clip-caption-save-style" class="secondary caption-save-style" type="button" aria-controls="clip-caption-styles">Guardar como estilo</button>
               </div>
@@ -308,12 +319,23 @@
                   <div><label for="editorial-position">Posición</label><select id="editorial-position"><option value="bottom">Abajo</option><option value="center">Centro</option><option value="top">Arriba</option></select></div>
                   <div><label for="editorial-edge">Grosor del contorno</label><input type="number" id="editorial-edge" min="0" max="12" step="1" value="3" required></div>
                 </div>
+                <label class="editorial-check"><input type="checkbox" id="editorial-highlight-enabled">Resaltar palabra actual</label>
+                <div id="editorial-highlight-colors" class="caption-highlight-colors" hidden>
+                  <div class="caption-color-inputs">
+                    <div><label for="editorial-highlight-color">Color de la palabra resaltada</label><input type="color" id="editorial-highlight-color" value="#ffff00" disabled></div>
+                    <div><label for="editorial-highlight-color-hex">Color HEX del resaltado</label><input type="text" id="editorial-highlight-color-hex" value="#FFFF00" spellcheck="false" required disabled aria-describedby="editorial-highlight-color-error"></div>
+                  </div>
+                  <p id="editorial-highlight-color-error" class="status beta-message caption-color-error" role="status" hidden>Escribí un color como #FFFF00.</p>
+                  <p class="muted">El resaltado se incluye en el MP4 con subtítulos incrustados. SRT y VTT conservan el texto y los tiempos.</p>
+                  <button type="button" id="editorial-highlight-prepare" class="secondary" hidden>Preparar marcas por palabra</button>
+                </div>
                 <button id="editorial-save-style" class="secondary caption-save-style" type="button" aria-controls="editorial-styles">Guardar como estilo</button>
                 <section id="editorial-sample" class="caption-sample" aria-labelledby="editorial-sample-heading" hidden>
                   <h4 id="editorial-sample-heading">Vista previa del subtítulo</h4>
                   <div class="caption-frame"><span></span></div>
                   <p class="muted caption-export-note" hidden>Activa «Incrustar subtítulos en el MP4» para incluir este estilo en el video.</p>
                 </section>
+                <p id="editorial-highlight-status" class="status beta-message" role="status" hidden></p>
                 <details id="editorial-styles" class="caption-styles">
                   <summary>Estilos guardados</summary>
                 </details>

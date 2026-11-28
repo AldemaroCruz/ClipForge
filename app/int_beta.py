@@ -83,6 +83,7 @@ media_gets = {
     "/jobs/{job_id}/publication", "/jobs/{job_id}/publication/file",
 }
 media_posts = {
+    "/jobs/{job_id}/caption-highlight",
     "/jobs/{job_id}/editor/range", "/jobs/{job_id}/editor/exports",
     "/jobs/{job_id}/transcript-selection/prepare", "/jobs/{job_id}/transcript-selection/drafts",
     "/jobs/{job_id}/publication/preview", "/jobs/{job_id}/publication/suggestions", "/jobs/{job_id}/publication/reuse",

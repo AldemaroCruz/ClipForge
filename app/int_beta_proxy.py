@@ -55,6 +55,7 @@ ROUTES = {
         rf"/beta/(?:uploads|uploads/{JOB}/start|jobs/{JOB}/retry)",
         rf"/jobs/{JOB}/editor/(?:range|exports)",
         rf"/jobs/{JOB}/transcript-selection/(?:prepare|drafts)",
+        rf"/jobs/{JOB}/caption-highlight",
         rf"/jobs/{JOB}/publication/(?:preview|suggestions|reuse)",
         rf"/jobs/{JOB}/exports/{JOB}/retry",
         rf"/jobs/{JOB}/(?:selections(?:/preview|/{JOB}/candidates/[1-5]/draft)?|drafts(?:/{JOB}/exports)?|deletion)",

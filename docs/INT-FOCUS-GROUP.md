@@ -49,6 +49,16 @@ Disponible en INT desde el commit `352e0f7f8fdbe6622dd5d798c7c735f43cea6274` par
 
 En la prueba desde una cuenta normal, OpenAI sugirió «Agua de lluvia para el huerto» y «Cómo ajustar el freno de una bicicleta» para dos intervalos del mismo video. La edición manual persistió tras una respuesta tardía y al volver a iniciar sesión. El ZIP reunió cinco variantes y cuatro archivos `publicacion.txt`. Los MP4, SRT y VTT coincidieron byte por byte con sus descargas individuales. [Capturas y comprobaciones](https://github.com/AldemaroCruz/ClipForge/actions/runs/46159322368/artifacts/15270171551)
 
+## Resaltar palabra actual
+
+En **Subtítulos**, activá **Resaltar palabra actual** y elegí el color base y el activo con el selector o el código HEX. Reproducí el recorte o mové el cabezal para comprobar el efecto. En una pausa del habla, el texto vuelve al color base.
+
+Pulsá **Guardar como estilo** para conservar ambos colores y la opción de resaltado en tu biblioteca. Podés aplicar la plantilla a otro borrador. Los trabajos y estilos existentes empiezan con el resaltado apagado.
+
+Si una frase editada ya no coincide con las marcas, se mantiene estática y el editor muestra un aviso. Para un trabajo anterior sin marcas, usá **Preparar marcas por palabra** cuando esté disponible. El texto corregido se conserva.
+
+Exportá con **Incrustar subtítulos** habilitado para ver el efecto en el MP4. Los archivos SRT y VTT conservan su texto y sus tiempos. Podés seleccionar esta variante exacta en el ZIP y reutilizar los textos de publicación si el contenido sigue siendo el mismo.
+
 ## Base de continuidad y reversión de logos
 
 | Componente | Pin aceptado |

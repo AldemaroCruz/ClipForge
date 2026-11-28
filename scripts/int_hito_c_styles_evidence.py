@@ -298,6 +298,80 @@ def verify_d03_baseline(root, commit, model):
     }
 
 
+def verify_e01_baseline(root, commit, model):
+    accepted = "352e0f7f8fdbe6622dd5d798c7c735f43cea6274"
+    if not re.fullmatch(r"[a-f0-9]{40}", commit) or commit == accepted:
+        raise ValueError("E01 requiere una candidata distinta del portal aceptado")
+    hashes = {
+        "after-rollout.json": "bf1d3ad4589be713ccff7b7279a0aee931302c5ba248e0395574d8c975238f2d",
+        "browser-d03.json": "18e983603ff57e27113cdf680143f7477064972dcc88c30976be6d5a5eda88cd",
+        "browser-d03-cleanup.json": "9c8af3f98fa4ba0ecbace87e60a49450aee1d6582e348c828f990e0f68e73244",
+    }
+    rollout, browser, cleanup = (native_report(root, name, digest) for name, digest in hashes.items())
+    revisions = {"frontend": rollout["frontend_revision"], "api": rollout["api_revision"]}
+    required = {"d03_saved_exact_revision_reopened_copied_and_downloaded",
+                "d03_mixed_zip_pins_utf8_texts_and_original_media_byte_for_byte",
+                "d03_project_ownership_and_deleted_project_gates"}
+    approved = {row["name"] for row in browser["checks"] if row["status"] == "passed"}
+    worker = rollout["worker_configuration"]
+    if (rollout["commit"] != accepted or browser["commit"] != accepted or browser["revisions"] != revisions
+            or browser["phase"] != "d03" or browser["status"] != "passed" or not required <= approved
+            or browser["package"]["media_variants"] != 5 or len(browser["package"]["publication_revisions"]) != 4
+            or browser["usage"] != {"reservations": 2, "calls": 2, "responses": 2}
+            or cleanup["commit"] != accepted or cleanup["status"] != "passed"
+            or rollout["editorial"]["model"] != model or rollout["editorial"]["daily_limit"] != 100
+            or rollout["editorial"]["api_daily_limit"] != 100 or worker["generation"] != 82
+            or worker["cpu"] != "4" or worker["memory"] != "4Gi"):
+        raise ValueError("Falta la aceptación nativa de D03 o el perfil de trabajo aprobado")
+    return {
+        "schema": "clipforge-int-e01-baseline-1", "status": "passed", "target_commit": commit,
+        "baseline": {**rollout, "worker_source": accepted, "worker_cpu": worker["cpu"], "worker_memory": worker["memory"]},
+        "evidence": {"run_id": "46159322368", "artifact_id": "15270171551", "sha256": hashes},
+    }
+
+
+def preserve_e01_historical_audio(root, output):
+    reports = {
+        "browser-d02.json": "9457b0729abc890b16c39fc56d6f951b09931294c8e353e061e8e3c3420a4012",
+        "browser-d02-prepare.json": "b1568c8191f76866f77deb585396405d0944dea6bccf2074ffdcd67f7190630f",
+        "browser-d02-cleanup.json": "8bd524270d3fce5d286467c24a95c04177c34133e30d8e5fca0e7b7633c361aa",
+    }
+    late, historical, cleanup = (native_report(root, name, digest) for name, digest in reports.items())
+    waveforms = {
+        "d02-export-audio-edges.wav": "c27edfa8061a798d9c32979ec8630c04f965a2a2b49c5e58dff94c7f6e67bb01",
+        "d02-source-audio-edges.wav": "d522f689f8ea844ee15e6777be103d642623653489b42923133d5981f44351d8",
+    }
+    export = late["export"]
+    if (late["status"] != "passed" or historical["status"] != "passed" or cleanup["status"] != "passed"
+            or {export["audio"]["listen_export"], export["audio"]["listen_source"]} != set(waveforms)
+            or historical["historical_caption"]["revision"] != 2):
+        raise ValueError("El par de audio no corresponde al recorte histórico registrado")
+    for name, digest in waveforms.items():
+        path = root / name
+        if not path.is_file() or path.is_symlink() or path.stat().st_size != 45376:
+            raise ValueError("Falta el fragmento de audio archivado")
+        data = path.read_bytes()
+        if hashlib.sha256(data).hexdigest() != digest:
+            raise ValueError("Cambió el fragmento de audio archivado")
+        with (output / name).open("xb") as target:
+            target.write(data)
+    receipt = {
+        "schema": "clipforge-int-e01-historical-listening-1",
+        "source": {"run_id": "46153668496", "artifact_id": "15267434009", "reports": reports,
+                   "recording": "Don Quijote, capítulo VIII, lectura de Lu; LibriVox",
+                   "recording_license": "Public Domain Mark 1.0"},
+        "paired_cut": {"export_id": export["id"], "nominal_seconds": [export["first_word"]["start"], export["last_word"]["end"]],
+                       "export_seconds": export["adjusted_source_range"], "waveforms_sha256": waveforms,
+                       "human_listening": "pending"},
+        "second_historical_cut": {**historical["historical_caption"],
+                                  "audio_and_exact_bounds": "absent_from_original_archive",
+                                  "fixture_logically_deleted": True},
+    }
+    with (output / "e01-d02-historical-listening.json").open("x", encoding="utf-8") as target:
+        json.dump(receipt, target, ensure_ascii=False, indent=2)
+        target.write("\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, type=Path)
@@ -316,6 +390,7 @@ def main():
     group.add_argument("--accepted-d01-provider-base", action="store_true")
     group.add_argument("--accepted-d02-base", action="store_true")
     group.add_argument("--accepted-d03-base", action="store_true")
+    group.add_argument("--accepted-e01-base", type=Path, metavar="D02_AUDIO_DIR")
     args = parser.parse_args()
     if args.accepted_styles:
         receipt = verify_product_release(args.source, args.commit, args.model, "styles", *args.accepted_styles)
@@ -335,6 +410,9 @@ def main():
         receipt = verify_d02_baseline(args.source, args.commit, args.model)
     elif args.accepted_d03_base:
         receipt = verify_d03_baseline(args.source, args.commit, args.model)
+    elif args.accepted_e01_base:
+        receipt = verify_e01_baseline(args.source, args.commit, args.model)
+        preserve_e01_historical_audio(args.accepted_e01_base, args.receipt.parent)
     else:
         receipt = verify(args.source, args.commit, args.model)
     with args.receipt.open("x", encoding="utf-8") as output:

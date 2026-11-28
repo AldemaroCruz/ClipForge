@@ -138,7 +138,8 @@ def measurements(case, worker, events, executions):
     require(activated_at <= create_at <= launch_at <= ready_at <= claim_at <= publish_at <= finish_at <= resource_at,
             "Worker and browser event order")
     durations = resources["stage_seconds"]
-    require(set(durations) == STAGES and len(resources["clip_renders"]) == 5, "Complete media stage metrics")
+    require(set(durations) in (STAGES, STAGES | {"prepare"}) and len(resources["clip_renders"]) == 5,
+            "Complete media stage metrics")
     clips = [{key: seconds(item[key]) for key in ("render_seconds", "seconds_since_recorder_start")}
              for item in resources["clip_renders"]]
     public = case["portal_publication"]

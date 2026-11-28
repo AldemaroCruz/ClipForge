@@ -496,6 +496,26 @@ d03_acceptance() {
     browser_acceptance d03
 }
 
+e01_acceptance() {
+    verify_focused_baseline e01 "$INT_E01_ACCEPTANCE"
+    d02_fixture
+    # Keep the unchanged D02 waveforms and a continuous window around each edge.
+    ffmpeg -hide_banner -loglevel error -nostdin -ss 1097.980 -i "$DELIVERY_DIR/chapter.mp3" \
+        -t 4 -vn -ac 1 -ar 16000 -c:a pcm_s16le "$reports/e01-d02-original-start.wav"
+    ffmpeg -hide_banner -loglevel error -nostdin -ss 1108.140 -i "$DELIVERY_DIR/chapter.mp3" \
+        -t 4 -vn -ac 1 -ar 16000 -c:a pcm_s16le "$reports/e01-d02-original-end.wav"
+    : > "$DELIVERY_DIR/focused-promoting"
+    run jobs update clipforge-int-worker --image "$TF_VAR_worker_image" \
+        --update-env-vars "CLIPFORGE_REVISION=$GITHUB_SHA"
+    apply_beta true "run-$GITHUB_RUN_ID-a$GITHUB_RUN_ATTEMPT" replacement
+    capture_rollout after
+    jq -e '.worker_configuration.cpu == "4" and .worker_configuration.memory == "4Gi" and
+        .editorial.daily_limit == 100 and .editorial.api_daily_limit == 100' \
+        "$reports/after-rollout.json" > /dev/null
+    browser_acceptance e01 --video "$DELIVERY_DIR/transcript.mp4"
+    python -m scripts.int_hito_e01_timing "$reports/browser-e01.json" "$reports/e01-processing.json"
+}
+
 capture_prior_worker() {
     run jobs describe clipforge-int-worker --format='json(metadata.generation,status.observedGeneration,spec.template.spec)' |
         jq -e --slurpfile prior "$reports/previous-live.json" '
@@ -530,7 +550,7 @@ caption_color_cleanup() {
 verify_focused_baseline() {
     local increment="$1" receipt="$2"
     case "$increment" in
-        c04|c05|c06|logos|caption-color|mixed-zip|d01|d02|d03) ;;
+        c04|c05|c06|logos|caption-color|mixed-zip|d01|d02|d03|e01) ;;
         *) return 1 ;;
     esac
     [[ "$receipt" == "$reports/$increment-baseline.json" && -f "$receipt" && ! -L "$receipt" ]]
@@ -542,7 +562,7 @@ verify_focused_baseline() {
             commit, frontend_revision, api_revision, worker_image, migrator_image,
             editorial: (.editorial | del(.api_daily_limit))
         }) == ($live | {commit,frontend_revision,api_revision,worker_image,migrator_image,editorial}) and
-        (($increment != "logos" and $increment != "caption-color" and $increment != "mixed-zip" and $increment != "d01" and $increment != "d02" and $increment != "d03") or
+        (($increment != "logos" and $increment != "caption-color" and $increment != "mixed-zip" and $increment != "d01" and $increment != "d02" and $increment != "d03" and $increment != "e01") or
            (($expected | {worker_source,worker_cpu,worker_memory}) == ($live | {worker_source,worker_cpu,worker_memory})
             and $live.migrator_source == $expected.commit)))
     ' "$receipt" > /dev/null
@@ -611,7 +631,10 @@ case "${1:-}" in
             -backend-config=bucket=clipforgebeta2-tfstate-int -backend-config=prefix=terraform/int-beta
         tf validate -no-color
         capture_previous
-        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}${INT_D02_ACCEPTANCE:-}${INT_D03_ACCEPTANCE:-}" ]]; then
+        if [[ -n "${INT_E01_ACCEPTANCE:-}" ]]; then
+            verify_focused_baseline e01 "$INT_E01_ACCEPTANCE"
+            capture_prior_worker "$reports/e01-prior-worker.json"
+        elif [[ -n "${INT_C04_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}${INT_D02_ACCEPTANCE:-}${INT_D03_ACCEPTANCE:-}" ]]; then
             if [[ -n "${INT_D03_ACCEPTANCE:-}" ]]; then
                 verify_focused_baseline d03 "$INT_D03_ACCEPTANCE"
                 capture_prior_worker "$reports/d03-prior-worker.json"
@@ -696,6 +719,8 @@ case "${1:-}" in
             d02_acceptance
         elif [[ -n "${INT_D03_ACCEPTANCE:-}" ]]; then
             d03_acceptance
+        elif [[ -n "${INT_E01_ACCEPTANCE:-}" ]]; then
+            e01_acceptance
         elif [[ -n "${INT_DELETION_REPLAY_REPORT:-}" ]]; then
             [[ "$INT_DELETION_REPLAY_REPORT" == "$reports/deletion-replay.json" && ! -L "$INT_DELETION_REPLAY_REPORT" ]]
             jq -e '.schema == "clipforge-int-hito-b-delete-evidence-1" and .status == "passed"
@@ -725,7 +750,7 @@ case "${1:-}" in
         run_worker_benchmark "$@"
         ;;
     rollback)
-        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_C05_ACCEPTANCE:-}${INT_C06_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}${INT_CAPTION_COLOR_ACCEPTANCE:-}${INT_MIXED_ZIP_ACCEPTANCE:-}${INT_D01_ACCEPTANCE:-}${INT_D02_ACCEPTANCE:-}${INT_D03_ACCEPTANCE:-}" && ! -f "$DELIVERY_DIR/focused-promoting" ]]; then
+        if [[ -n "${INT_C04_ACCEPTANCE:-}${INT_C05_ACCEPTANCE:-}${INT_C06_ACCEPTANCE:-}${INT_CREATOR_LOGOS_ACCEPTANCE:-}${INT_CAPTION_COLOR_ACCEPTANCE:-}${INT_MIXED_ZIP_ACCEPTANCE:-}${INT_D01_ACCEPTANCE:-}${INT_D02_ACCEPTANCE:-}${INT_D03_ACCEPTANCE:-}${INT_E01_ACCEPTANCE:-}" && ! -f "$DELIVERY_DIR/focused-promoting" ]]; then
             restore_migrator_pin
         else
             restore_failed_delivery
@@ -746,6 +771,10 @@ case "${1:-}" in
     d03-cleanup)
         [[ -n "${INT_D03_ACCEPTANCE:-}" ]]
         caption_color_cleanup d03-cleanup
+        ;;
+    e01-cleanup)
+        [[ -n "${INT_E01_ACCEPTANCE:-}" ]]
+        caption_color_cleanup e01-cleanup
         ;;
     *)
         exit 2

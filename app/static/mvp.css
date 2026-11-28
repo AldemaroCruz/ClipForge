@@ -163,6 +163,12 @@
 .caption-color-error, .caption-export-note {
   margin: 8px 0 0;
 }
+.caption-highlight-colors {
+  max-width: 28rem;
+}
+.caption-frame [data-caption-word][data-active="true"] {
+  color: var(--caption-highlight);
+}
 .caption-save-style {
   margin-top: 12px;
 }

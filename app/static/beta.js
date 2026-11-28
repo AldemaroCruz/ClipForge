@@ -224,6 +224,7 @@ async function initBeta() {
   const uploadBurnSubtitles = element("upload-burn-subtitles");
   const caption = suffix => element("clip-caption-" + suffix);
   const captionFields = window.ClipForgeCaptionFields;
+  const captionHighlight = captionFields?.mountCaptionHighlight(caption, caption("preview"), paintCaptionSample);
   const logos = window.ClipForgeLogos;
   const deleteDialog = element("project-delete-dialog");
   const zipActions = element("clip-zip-actions");
@@ -573,6 +574,13 @@ async function initBeta() {
         state.setAttribute("role", "status");
         card.append(state);
       }
+      const timeline = output && clip.captions.output.highlight;
+      const highlight = captionFields?.highlightExportText(timeline);
+      if (highlight) {
+        const note = betaText("p", highlight, "muted caption-highlight-version");
+        if (timeline.version) note.dataset.version = timeline.version;
+        card.append(note);
+      }
       card.append(player, actions);
       const include = zipCheckbox(selectedId, "automatic", clip.file, label);
       if (include) card.append(include);
@@ -599,6 +607,7 @@ async function initBeta() {
   function closeCaptions() {
     if (!captionView) return;
     captionView = undefined;
+    captionHighlight?.sync(null);
     savedStyles?.reset();
     clipLogos.reset();
     logos.show(caption("sample").querySelector(".caption-frame"), null);
@@ -622,8 +631,27 @@ async function initBeta() {
   function updateCaptionSample() {
     if (!captionView?.data) return;
     const style = captionView.quick ? captionView.data.style : captionStyle(captionView);
+    let context = null;
+    if (style.subtitle_highlight_enabled) {
+      const data = captionView.data;
+      const container = caption("cues");
+      const quickInputs = captionView.quick ? container.querySelectorAll("textarea") : null;
+      const cues = quickInputs ? data.cues.map((cue, index) => ({...cue, text: quickInputs[index]?.value ?? cue.text}))
+        : captionFields.readCues(container);
+      const version = data.word_highlight?.version;
+      context = {enabled: true, id: captionView.id, offset: 0,
+        body: cues.length ? {start: data.start, end: data.end, cues, ...(version ? {version} : {})} : null,
+        hint: cues.length ? "" : "Agregá subtítulos para usar el resaltado."};
+    }
+    captionHighlight?.sync(context);
+    paintCaptionSample();
+  }
+
+  function paintCaptionSample() {
+    if (!captionView?.data) return;
+    const style = captionView.quick ? captionView.data.style : captionStyle(captionView);
     const logo = captionView.quick ? captionView.data.logo : clipLogos.read();
-    captionFields.showCaptionSample(caption("sample"), caption("cues"), style, logo, !captionView.quick);
+    captionFields.showCaptionSample(caption("sample"), caption("cues"), style, logo, !captionView.quick, captionHighlight?.sample());
   }
 
   function quickCueRow(cue, index) {
@@ -1080,6 +1108,10 @@ async function initBeta() {
     caption("downloads").hidden = true;
   }
   captionFields?.mountColorControls(caption, () => {
+    markCaptionEdited();
+    updateCaptionSample();
+  });
+  captionFields?.mountHighlightControls(caption, () => {
     markCaptionEdited();
     updateCaptionSample();
   });

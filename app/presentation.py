@@ -12,6 +12,9 @@ class Presentation(BaseModel):
     subtitle_font_size: int = Field(default=52, ge=24, le=120, strict=True)
     subtitle_color: str = Field(default="#FFFFFF", min_length=7, max_length=7,
                                 pattern=r"^#[0-9a-fA-F]{6}$")
+    subtitle_highlight_enabled: bool = Field(default=False, strict=True)
+    subtitle_highlight_color: str = Field(default="#FFFF00", min_length=7, max_length=7,
+                                          pattern=r"^#[0-9a-fA-F]{6}$")
 
     subtitle_position: Literal["bottom", "center", "top"] = "bottom"
     subtitle_margin_v: int = Field(default=230, ge=0, le=650, strict=True)
@@ -24,7 +27,7 @@ class Presentation(BaseModel):
     crop_y: float = Field(default=0.5, ge=0, le=1, allow_inf_nan=False)
     crop_zoom: float = Field(default=1, ge=1, le=3, allow_inf_nan=False)
 
-    @field_validator("subtitle_color", "subtitle_outline_color")
+    @field_validator("subtitle_color", "subtitle_outline_color", "subtitle_highlight_color")
     @classmethod
     def normalize_subtitle_color(cls, value: str) -> str:
         return value.upper()

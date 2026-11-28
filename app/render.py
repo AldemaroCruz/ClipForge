@@ -128,7 +128,7 @@ def render_clip(source: Path, output: Path, *, start: float, end: float,
                 options: Presentation, cues: list[dict[str, Any]], video_index: int = 0,
                 threads: int = 2, runner: Callable[..., None] = run_ffmpeg,
                 pilot: bool = False, logo: LogoPlacement | None = None,
-                logo_path: Path | None = None) -> None:
+                logo_path: Path | None = None, word_highlight: dict | None = None) -> None:
     if not 0 < end - start <= 60.001:
         raise ValueError("La duración de exportación debe ser mayor que 0 y no superar 60 segundos.")
     if (logo is None) != (logo_path is None):
@@ -161,7 +161,9 @@ def render_clip(source: Path, output: Path, *, start: float, end: float,
                               color=options.subtitle_color, position=options.subtitle_position,
                               margin_v=options.subtitle_margin_v, outline=options.subtitle_outline,
                               outline_color=options.subtitle_outline_color,
-                              shadow=options.subtitle_shadow), encoding="utf-8")
+                              shadow=options.subtitle_shadow,
+                              highlight_color=options.subtitle_highlight_color,
+                              word_highlight=word_highlight if options.subtitle_highlight_enabled else None), encoding="utf-8")
         target = folder / "clip.mp4"
         runner(
             "-filter_complex_threads", max(1, threads),
