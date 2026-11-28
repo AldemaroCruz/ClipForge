@@ -348,8 +348,10 @@ def editor_flow(page, job_id, late, scratch, evidence):
     portal.close_preview(page.locator("#editorial-source"))
     export_id, _, _ = portal.start_editorial_export(page, job_id, saved)
     selected = mixed.exported(page, job_id, export_id, "editorial", scratch, (start, end), saved["cues"])
-    exported = get_json(page, f"/jobs/{job_id}/exports/{export_id}")
-    portal.require(exported["draft_revision"] == saved["revision"] and exported["selection_origin"] == origin
+    published = get_json(page, f"/jobs/{job_id}/exports")["exports"]
+    exported = next((item for item in published if item["id"] == export_id), None)
+    portal.require(exported is not None and exported["draft_revision"] == saved["revision"]
+                   and exported["selection_origin"] == origin
                    and exported["style_template"] == saved["style_template"] and exported["logo"] == saved["logo"]
                    and exported["options"] == saved["options"], "d01_export_pins_search_draft_style_and_logo")
     mp4 = scratch / (selected["stem"] + ".mp4")
