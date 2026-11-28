@@ -88,13 +88,18 @@ class WorkerMeasurementTests(TestCase):
             (scratch / "memory.peak").write_text("131072", encoding="ascii")
             with (patch("app.cloud.worker_measurements.CGROUP", scratch),
                   patch.dict(os.environ, {ENTRY_ENV: "105", CLAIM_ENV: "107"}),
-                  patch("app.cloud.worker_measurements.time.time", return_value=120)):
+                  patch("app.cloud.worker_measurements.time.time", return_value=120),
+                  patch("app.cloud.worker_measurements._render_rss", return_value={
+                      "worker_process_peak_rss_bytes": 65536, "largest_child_peak_rss_bytes": 262144,
+                  })):
                 receipt = completed_receipt(scratch, TASK, {"prepare": 0.8, "publish": 2, "no": 3})
             self.assertEqual(receipt["timestamps"], {"activated_epoch": 100, "dispatch_ack_epoch": 101.5,
                                                      "worker_entry_epoch": 105, "claim_epoch": 107,
                                                      "upload_complete_observed_epoch": 120})
             self.assertEqual(receipt["stage_seconds"], {"prepare": 0.8, "transcription": 10, "publish": 2})
             self.assertEqual(receipt["container_peak_bytes_through_upload"], 131072)
+            self.assertEqual(receipt["worker_process_peak_rss_bytes"], 65536)
+            self.assertEqual(receipt["largest_child_peak_rss_bytes"], 262144)
 
     def test_child_can_only_borrow_the_private_managed_directory(self):
         with TemporaryDirectory() as unrelated, patch.dict(os.environ, {SCRATCH_ENV: unrelated}):

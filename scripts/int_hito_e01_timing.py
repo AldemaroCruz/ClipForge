@@ -37,14 +37,16 @@ def compare(browser):
         required_stages = {"prepare", "download", "render", "publish"}
         if kind == "process":
             required_stages |= {"model_load", "transcription"}
-        memory = receipt["container_peak_bytes_through_upload"]
+        memory = [receipt.get(key) for key in ("container_peak_bytes_through_upload",
+                                                "worker_process_peak_rss_bytes", "largest_child_peak_rss_bytes")]
         if (receipt["schema"] != 1 or receipt["kind"] != kind or type(receipt["fence"]) is not int
                 or receipt["fence"] < 1 or not re.fullmatch(r"[a-f0-9]{32}", task_id) or task_id in task_ids
                 or set(timestamps) != EPOCHS or not all(number(value) for key, value in timestamps.items()
                                                          if key != "dispatch_ack_epoch")
                 or (timestamps["dispatch_ack_epoch"] is not None and not number(timestamps["dispatch_ack_epoch"]))
                 or not required_stages <= stages.keys() <= STAGES or not all(map(number, stages.values()))
-                or (memory is not None and (type(memory) is not int or not 0 < memory <= 4 * 1024**3))):
+                or any(value is not None and (type(value) is not int or not 0 <= value <= 4 * 1024**3)
+                       for value in memory)):
             raise ValueError("Invalid fenced worker timing receipt")
         task_ids.add(task_id)
         activated = timestamps["activated_epoch"]
@@ -70,7 +72,11 @@ def compare(browser):
         "separate_worker_entries": (
             highlight["timestamps"]["worker_entry_epoch"] != static["timestamps"]["worker_entry_epoch"]
         ),
-        "memory_scope": "Cloud Run container high-water mark through upload, inclusive of earlier tasks in the execution",
+        "memory_scope": {
+            "container_peak_bytes_through_upload": "Execution high-water mark, including earlier tasks if any",
+            "worker_process_peak_rss_bytes": "Media worker subprocess high-water RSS through upload",
+            "largest_child_peak_rss_bytes": "Largest reaped child high-water RSS (normally FFmpeg), measured independently",
+        },
     }
 
 

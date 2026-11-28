@@ -108,6 +108,10 @@ def select_frame(times, start, end):
     return min(eligible, key=lambda result: abs(center - result[1]), default=None)
 
 
+def word_key(word):
+    return word["text"].strip().strip(".,;:¿?¡!").casefold()
+
+
 def reference_frames(draft, words, times, *, extended=False):
     candidates = []
     for label, row in (("first", words[0]), ("last", words[-1])):
@@ -143,7 +147,7 @@ def reference_frames(draft, words, times, *, extended=False):
             if gap:
                 break
     for index, word in words:
-        key = word["text"].strip(" 	.,;:¿?¡!").casefold()
+        key = word_key(word)
         stamp = select_frame(times, word["start"], word["end"])
         if key and stamp is not None:
             prior = by_text.setdefault(key, (index, word, stamp))
@@ -441,26 +445,63 @@ def cue_rows(page):
     return page.locator("#editorial-cues .editorial-cue")
 
 
-def pause_margin(page, job, draft):
-    end = round(draft["end"] + .28, 3)
-    page.locator("#editorial-end").fill(str(end))
-    portal.click_response(page, page.locator("#editorial-apply-range"), f"/jobs/{job}/editor/range",
-                          "POST", 200, retry_range_capacity=True)
-    page.get_by_text("Recorte aplicado. Guarda el borrador para conservarlo.", exact=True).wait_for()
+def late_fixture(version):
+    segments = version["segments"]
+    seen = {}
+    for left, right in zip(segments, segments[1:]):
+        for index, first in enumerate(left["words"]):
+            key = word_key(first)
+            earlier = seen.setdefault(key, first)
+            if first["start"] < 1100 or len(key) < 2 or earlier["id"] == first["id"]:
+                continue
+            leading = left["words"][index:]
+            for length in range(len(right["words"]), 0, -1):
+                trailing = right["words"][:length]
+                last = trailing[-1]
+                if not 4 <= last["end"] - first["start"] <= 14:
+                    continue
+                words = leading + trailing
+                measurable = {word["id"] for word in words if word["end"] - word["start"] >= .085}
+                repeats = [word_key(word) for word in words if word["id"] in measurable and word_key(word)]
+                before, after = max(zip(words, words[1:]), key=lambda pair: pair[1]["start"] - pair[0]["end"])
+                if ({word["id"] for word in (first, leading[-1], trailing[0], last)} <= measurable
+                        and len(set(repeats)) < len(repeats) and after["start"] - before["end"] >= .085):
+                    return (leading, trailing), earlier, [before["end"], after["start"]]
+    raise portal.BrowserAcceptanceError("e01_no_late_fixture_with_measurable_edges_repeat_transition_and_gap")
+
+
+def late_cues(groups):
+    start_of_clip = groups[0][0]["start"]
+    expected, references = [], []
+    for group in groups:
+        start = round(group[0]["start"] - start_of_clip, 3)
+        if expected and start - expected[-1]["end"] >= .075:
+            # Keep the preceding subtitle visible across an actual gap in the marks.
+            expected[-1]["end"] = start
+        references.extend(word["id"] for word in group)
+        expected.append({"start": start,
+                         "end": round(group[-1]["end"] - start_of_clip, 3),
+                         "text": " ".join(word["text"] for word in group)})
+    return expected, references
+
+
+def save_late_cues(page, job, draft, expected):
+    if draft["cues"] == expected:
+        return draft
     rows = cue_rows(page)
-    expected = [dict(cue) for cue in draft["cues"]]
-    expected[-1]["end"] = round(end - draft["start"] - .03, 3)
-    while rows.count() > len(expected):
+    difference = rows.count() - len(expected)
+    for _ in range(difference):
         rows.last.get_by_role("button", name="Quitar subtítulo", exact=True).click()
-    while rows.count() < len(expected):
+    for _ in range(-difference):
         page.locator("#editorial-add-cue").click()
+    portal.require(rows.count() == len(expected), "e01_late_editor_displays_exact_cue_count")
     for number, cue in enumerate(expected):
         for field in ("start", "end", "text"):
             rows.nth(number).locator(f'[data-field="{field}"]').fill(str(cue[field]))
     saved = save_draft(page, job, draft, True)
-    portal.require(saved["end"] == end and saved["start"] == draft["start"] and saved["cues"] == expected
+    portal.require(saved["end"] == draft["end"] and saved["start"] == draft["start"] and saved["cues"] == expected
                    and saved["selection_origin"] == draft["selection_origin"],
-                   "e01_adjusted_bounds_preserve_selected_words_with_visible_tail_pause")
+                   "e01_authored_cues_preserve_exact_transcript_range")
     return saved
 
 
@@ -508,13 +549,24 @@ def short_clip(page, job, version, scratch, evidence, report):
 
 def late_clips(page, job, version, template, scratch, evidence, report):
     portal.open_saved_job(page, job)
-    first, last, earlier = d02.choose_late(version)
+    groups, earlier, gap = late_fixture(version)
+    first, last = groups[0][0], groups[-1][-1]
+    cues, references = late_cues(groups)
+    selection = {"range": [first["start"], last["end"]], "expected_edges": [first, last],
+                 "expected_word_ids": references, "source_pause": gap, "cues": cues}
+    report["late_word_selection"] = selection
     initial = create_draft(page, job, version, first, last)
     saved = apply_template(page, job, initial, template)
-    active = pause_margin(page, job, saved)
+    active = save_late_cues(page, job, saved, cues)
     plan = highlight_plan(page, job, active)
+    aligned = [word for cue in plan["cues"] for word in cue["words"]]
+    selection.update(plan_status=plan["status"], aligned_word_ids=[word["id"] for word in aligned],
+                     aligned_edges=aligned[:1] + aligned[-1:] if len(aligned) > 1 else aligned,
+                     aligned_words_per_cue=[len(cue["words"]) for cue in plan["cues"]])
     words = expect_plan(plan, active)
     assert_selected_edges(words, first, last)
+    portal.require(plan["status"] == "ready" and references == [word["id"] for _, word in words],
+                   "e01_late_cues_match_every_selected_word")
 
     set_highlight(page, False)
     static = save_draft(page, job, active, False)

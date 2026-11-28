@@ -105,6 +105,18 @@ def _clip_renders(data):
     return data
 
 
+def _render_rss():
+    # Linux reports each high-water mark in KiB. RUSAGE_CHILDREN is the
+    # largest reaped child (typically FFmpeg), never a container aggregate.
+    try:
+        import resource
+
+        return {"worker_process_peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024,
+                "largest_child_peak_rss_bytes": resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * 1024}
+    except (ImportError, OSError):
+        return {}
+
+
 def completed_receipt(directory, task, timings):
     """Capture a completed task's timings within the same publication fence."""
     directory = Path(directory)
@@ -127,7 +139,8 @@ def completed_receipt(directory, task, timings):
     return {"schema": 1, "task_id": task["id"], "fence": task["fence"],
             "kind": task["kind"], "timestamps": {**timestamps, "upload_complete_observed_epoch": time.time()},
             "stage_seconds": _timings(metrics.get("stage_seconds")) | _timings(timings),
-            "container_peak_bytes_through_upload": _read_number(CGROUP / "memory.peak")}
+            "container_peak_bytes_through_upload": _read_number(CGROUP / "memory.peak"),
+            **_render_rss()}
 
 
 class WorkerMeasurements:
